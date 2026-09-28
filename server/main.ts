@@ -1,13 +1,14 @@
 import { serve } from '@hono/node-server';
 import { createApp } from './api/app';
-import { loadConfig } from './config';
+import { loadConfig, loadEnvironment, resolveToken } from './config';
 import { openDb } from './db/db';
 import { getMeta } from './db/meta';
 import { SyncManager } from './sync/manager';
 
-const config = loadConfig();
+const env = loadEnvironment();
+const config = loadConfig(env);
 const db = openDb(config.dbPath, { allowDestructiveMigrations: config.syncEnabled });
-const sync = new SyncManager({ db, schedule: config.syncEnabled });
+const sync = new SyncManager({ db, schedule: config.syncEnabled, resolveToken: () => resolveToken(env) });
 
 try {
   await sync.ensureViewer();

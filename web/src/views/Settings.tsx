@@ -9,7 +9,7 @@ import { useToast } from '../components/Toasts';
 import { dur, fmtDateTime, fmtNum, fmtTime, relFuture, relLong } from '../lib/time';
 import { cx } from '../lib/util';
 
-const TOKEN_TEXT = { env: 'GITHUB_TOKEN environment variable', 'gh-cli': 'GitHub CLI (gh auth token)', none: 'No token found' } as const;
+const TOKEN_TEXT = { env: 'GITHUB_TOKEN (environment or config file)', 'gh-cli': 'GitHub CLI (gh auth token)', none: 'No token found' } as const;
 
 /** The editable part of Settings: what the form holds and what PATCH sends (never myEmailsFromEnv). */
 type SettingsForm = Pick<Settings, 'syncIntervalMinutes' | 'backfillDays' | 'myEmails' | 'includeForks'>;
@@ -125,7 +125,7 @@ export function SettingsView() {
             <details className="help" open={tokenSource === 'none'}>
               <summary>How to set a token</summary>
               <p>
-                gh-dash uses <code>GITHUB_TOKEN</code> from the server's environment, else the output of <code>gh auth token</code>.
+                gh-dash uses <code>GITHUB_TOKEN</code> from the server's environment or XDG config file, else the output of <code>gh auth token</code>.
                 For a dedicated token, create a <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener noreferrer">fine-grained personal access token</a> with
                 access to <b>All repositories</b> and these repository permissions set to <b>Read-only</b>: <b>Metadata</b>, <b>Contents</b>, <b>Pull requests</b>, <b>Issues</b>.
               </p>

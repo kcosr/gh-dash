@@ -12,7 +12,7 @@ export function NoTokenCard() {
           gh-dash needs a read-only GitHub token to sync your repositories. It looks for one in this order:
         </p>
         <ol>
-          <li>the <code>GITHUB_TOKEN</code> environment variable of the server process;</li>
+          <li><code>GITHUB_TOKEN</code> from the server environment or its XDG config file;</li>
           <li>the output of <code>gh auth token</code> (if the GitHub CLI is installed and logged in).</li>
         </ol>
         <h3>Option A · GitHub CLI</h3>

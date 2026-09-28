@@ -1,5 +1,5 @@
-import { useMemo, useRef, useState } from 'react';
-import type { CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import type { CSSProperties, KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { Link } from 'react-router';
 import type { Repo, RepoSet } from '../../../shared/api';
@@ -119,11 +119,27 @@ function PinButton({ repo }: { repo: Repo }) {
 function RepoMenu({ repo }: { repo: Repo }) {
   const [open, setOpen] = useState(false);
   const btn = useRef<HTMLButtonElement>(null);
+  const menu = useRef<HTMLDivElement>(null);
   const patch = usePatchRepo();
   const toast = useToast();
-  useLayer(open, () => setOpen(false));
+  // The menu is portaled to the end of <body>: move focus into it on open (arrow keys move between
+  // items) and back to the trigger on close, or keyboard users could never reach its items.
+  const close = () => { setOpen(false); btn.current?.focus({ preventScroll: true }); };
+  useLayer(open, close);
+  useEffect(() => { if (open) menu.current?.querySelector<HTMLElement>('.opt')?.focus(); }, [open]);
+  const onMenuKey = (e: KeyboardEvent<HTMLDivElement>) => {
+    // Continue normal tab order from the trigger when leaving the portaled menu.
+    if (e.key === 'Tab') { close(); return; }
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp' && e.key !== 'Home' && e.key !== 'End') return;
+    e.preventDefault();
+    const items = [...(menu.current?.querySelectorAll<HTMLElement>('.opt') ?? [])];
+    const i = items.indexOf(document.activeElement as HTMLElement);
+    const next = e.key === 'Home' ? 0 : e.key === 'End' ? items.length - 1
+      : (i + (e.key === 'ArrowUp' ? -1 : 1) + items.length) % items.length;
+    items[next]?.focus();
+  };
   const r = btn.current?.getBoundingClientRect();
-  const act = (fn: () => void) => () => { setOpen(false); fn(); };
+  const act = (fn: () => void) => () => { close(); fn(); };
   return (
     <>
       <button ref={btn} type="button" className="pin-btn" aria-haspopup="menu" aria-expanded={open} aria-label={`More actions for ${repo.name}`} title="More" onClick={() => setOpen((o) => !o)}>
@@ -131,18 +147,18 @@ function RepoMenu({ repo }: { repo: Repo }) {
       </button>
       {open && r && createPortal(
         <>
-          <div className="pop-scrim" onClick={() => setOpen(false)} />
-          <div className="pop menu" role="menu" style={{ top: r.bottom + 4, left: Math.max(8, r.right - 220) }}>
+          <div className="pop-scrim" onClick={close} />
+          <div ref={menu} className="pop menu" role="menu" aria-label={`Actions for ${repo.name}`} style={{ top: r.bottom + 4, left: Math.max(8, r.right - 220) }} onKeyDown={onMenuKey}>
             <button type="button" role="menuitem" className="opt" onClick={act(() => patch.mutate({ name: repo.name, patch: { pinned: !repo.pinned } }))}>
               <span className="ck"><Icon name="pin" /></span>{repo.pinned ? 'Unpin' : 'Pin'}
             </button>
             <button type="button" role="menuitem" className="opt" onClick={act(() => patch.mutate({ name: repo.name, patch: { hidden: !repo.hidden } }, { onSuccess: () => toast(repo.hidden ? `${repo.name} is back in the default scope` : `${repo.name} hidden from the default scope`) }))}>
               <span className="ck"><Icon name={repo.hidden ? 'eye' : 'eyeOff'} /></span>{repo.hidden ? 'Unhide' : 'Hide from default scope'}
             </button>
-            <Link role="menuitem" className="opt" to={`/activity?repos=${encodeURIComponent(repo.name)}`}>
+            <Link role="menuitem" className="opt" to={`/activity?repos=${encodeURIComponent(repo.name)}`} onClick={() => setOpen(false)}>
               <span className="ck"><Icon name="pulse" /></span>Activity in this repo
             </Link>
-            <a role="menuitem" className="opt" href={repo.url} target="_blank" rel="noopener noreferrer" onClick={() => setOpen(false)}>
+            <a role="menuitem" className="opt" href={repo.url} target="_blank" rel="noopener noreferrer" onClick={close}>
               <span className="ck"><Icon name="ext" /></span>Open on GitHub
             </a>
           </div>

@@ -1,0 +1,55 @@
+{
+ "kind": "pr",
+ "repo": "gh-dash",
+ "number": 3,
+ "title": "Add screenshots to README",
+ "baseOid": "b6e18f6bf265996d9f3d1fcfe8b08f3605c19124",
+ "headOid": "fd6a8efada37f00fce0673d304da0428132df151",
+ "files": [
+  {
+   "path": "README.md",
+   "previousPath": null,
+   "status": "modified",
+   "additions": 15,
+   "deletions": 0,
+   "patch": "@@ -7,6 +7,21 @@ trends over time. Filter by repository, date, visibility or contributor.\n gh-dash syncs to a local database for fast browsing. It reads from GitHub without\n changing your repositories.\n \n+![Activity timeline](docs/images/activity.png)\n+\n+<table>\n+  <tr>\n+    <td><a href=\"docs/images/pull-requests.png\"><img src=\"docs/images/pull-requests.png\" alt=\"Pull requests view with the detail drawer open\"></a></td>\n+    <td><a href=\"docs/images/repositories.png\"><img src=\"docs/images/repositories.png\" alt=\"Repositories grid\"></a></td>\n+    <td><a href=\"docs/images/insights.png\"><img src=\"docs/images/insights.png\" alt=\"Insights charts\"></a></td>\n+  </tr>\n+  <tr>\n+    <td align=\"center\">Pull requests</td>\n+    <td align=\"center\">Repositories</td>\n+    <td align=\"center\">Insights</td>\n+  </tr>\n+</table>\n+\n ## Getting started\n \n You need **Node.js 22.13 or newer** and a GitHub token with read access to your repositories."
+  },
+  {
+   "path": "docs/images/activity.png",
+   "previousPath": null,
+   "status": "added",
+   "additions": 0,
+   "deletions": 0,
+   "patch": null
+  },
+  {
+   "path": "docs/images/insights.png",
+   "previousPath": null,
+   "status": "added",
+   "additions": 0,
+   "deletions": 0,
+   "patch": null
+  },
+  {
+   "path": "docs/images/pull-requests.png",
+   "previousPath": null,
+   "status": "added",
+   "additions": 0,
+   "deletions": 0,
+   "patch": null
+  },
+  {
+   "path": "docs/images/repositories.png",
+   "previousPath": null,
+   "status": "added",
+   "additions": 0,
+   "deletions": 0,
+   "patch": null
+  }
+ ],
+ "totalFiles": 5,
+ "additions": 15,
+ "deletions": 0,
+ "fetchedAt": "2026-09-28T18:47:32.201Z",
+ "url": "https://github.com/kcosr/gh-dash/pull/3/files"
+}

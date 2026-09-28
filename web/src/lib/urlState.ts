@@ -10,7 +10,7 @@ import { RANGE_IDS, resolveRange } from './range';
 import type { RangeId, ResolvedRange } from './range';
 import { isValidDateOnly } from './time';
 
-export type ViewName = 'prs' | 'activity' | 'repos' | 'repo' | 'insights' | 'settings';
+export type ViewName = 'prs' | 'issues' | 'activity' | 'repos' | 'repo' | 'insights' | 'settings';
 export type Density = 'titles' | 'summary' | 'full';
 export type RepoSort = 'activity' | 'stars' | 'open' | 'name';
 export type RepoLayout = 'grid' | 'list';
@@ -34,14 +34,13 @@ export interface UrlState {
   // /repos only
   sort: RepoSort;
   layout: RepoLayout;
-  archived: boolean;
-  forks: boolean;
 }
 
 export type UrlPatch = Partial<UrlState>;
 
 export function viewFromPath(pathname: string): ViewName {
   const p = pathname.replace(/\/+$/, '') || '/';
+  if (p === '/issues') return 'issues';
   if (p.startsWith('/activity')) return 'activity';
   if (p === '/repos') return 'repos';
   if (p.startsWith('/repos/')) return 'repo';
@@ -65,7 +64,7 @@ export function defaultsFor(view: ViewName): UrlState {
     range: view === 'insights' ? '90d' : '30d',
     from: null,
     to: null,
-    state: 'merged',
+    state: view === 'issues' ? 'open' : 'merged',
     group: 'week',
     density: 'summary',
     rel: true,
@@ -74,8 +73,6 @@ export function defaultsFor(view: ViewName): UrlState {
     pr: null,
     sort: 'activity',
     layout: 'grid',
-    archived: false,
-    forks: false,
   };
 }
 
@@ -104,7 +101,7 @@ export function parseUrlState(search: string, view: ViewName): UrlState {
     range,
     from: range === 'custom' ? from : null,
     to: range === 'custom' ? to : null,
-    state: oneOf(p.get('state'), ['open', 'merged', 'closed', 'all'] as const, d.state),
+    state: oneOf(p.get('state'), view === 'issues' ? ['open', 'closed', 'all'] as const : ['open', 'merged', 'closed', 'all'] as const, d.state),
     group: oneOf(p.get('group'), ['day', 'week', 'month', 'repo'] as const, d.group),
     density: oneOf(p.get('density'), ['titles', 'summary', 'full'] as const, d.density),
     rel: p.get('rel') !== '0',
@@ -114,13 +111,11 @@ export function parseUrlState(search: string, view: ViewName): UrlState {
     pr: pr && /^[^#\s]+#\d+$/.test(pr) ? pr : null,
     sort: oneOf(p.get('sort'), ['activity', 'stars', 'open', 'name'] as const, d.sort),
     layout: oneOf(p.get('layout'), ['grid', 'list'] as const, d.layout),
-    archived: p.get('archived') === '1',
-    forks: p.get('forks') === '1',
   };
 }
 
 /** Param order in written URLs (unknown params are kept at the end). */
-const ORDER = ['repos', 'vis', 'who', 'range', 'from', 'to', 'state', 'group', 'density', 'rel', 'types', 'q', 'sort', 'layout', 'archived', 'forks', 'pr'];
+const ORDER = ['repos', 'vis', 'who', 'range', 'from', 'to', 'state', 'group', 'density', 'rel', 'types', 'q', 'sort', 'layout', 'pr'];
 
 /** Serialize a full state to params, omitting defaults for the view. */
 function toParams(s: UrlState, view: ViewName): [string, string][] {
@@ -139,8 +134,6 @@ function toParams(s: UrlState, view: ViewName): [string, string][] {
   if (s.q) out.push(['q', s.q]);
   if (s.sort !== d.sort) out.push(['sort', s.sort]);
   if (s.layout !== d.layout) out.push(['layout', s.layout]);
-  if (s.archived) out.push(['archived', '1']);
-  if (s.forks) out.push(['forks', '1']);
   if (s.pr) out.push(['pr', s.pr]);
   return out;
 }
@@ -158,6 +151,9 @@ export function patchSearch(search: string, view: ViewName, patch: UrlPatch): st
   const pairs = toParams(next, view);
   // keep params we don't know about
   const known = new Set(ORDER);
+  // Retired repository toggles: selection is now controlled entirely by the sidebar.
+  known.add('archived');
+  known.add('forks');
   for (const [k, v] of new URLSearchParams(search)) if (!known.has(k)) pairs.push([k, v]);
   const qs = encodeParams(pairs);
   return qs ? `?${qs}` : '';

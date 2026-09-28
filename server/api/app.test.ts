@@ -38,6 +38,40 @@ describe('HTTP API', () => {
     expect((await app.request('/api/v1/sets/1', { method: 'DELETE' })).status).toBe(404);
   });
 
+  it('filters issues by creator, state, repository and date and paginates without losing items', async () => {
+    const read = async (query: string) => (await (await app.request(`/api/v1/issues?${range}&${query}`)).json()) as { total: number; nextCursor: string | null; items: { id: string }[] };
+    expect((await read('state=open&who=me')).items.map((i) => i.id)).toEqual(['app#11']);
+    // Alice closed issue 10, but Bob created it: author filtering uses Bob.
+    expect((await read('state=closed&who=others&repos=app&q=10')).items.map((i) => i.id)).toEqual(['app#10']);
+    expect((await read('state=closed&who=me')).total).toBe(0);
+    expect((await read('repos=secret')).total).toBe(0);
+    expect((await read('repos=')).total).toBe(0);
+    const first = await read('state=all&limit=1');
+    expect(first.total).toBe(2);
+    expect(first.items.map((i) => i.id)).toEqual(['app#11']);
+    const second = await read(`state=all&limit=1&cursor=${encodeURIComponent(first.nextCursor!)}`);
+    expect(second.items.map((i) => i.id)).toEqual(['app#10']);
+    expect(second.nextCursor).toBeNull();
+    const md = await (await app.request(`/api/v1/issues?${range}&state=closed&format=md`)).text();
+    expect(md).toContain('Issue 10');
+    expect(md).not.toContain('Issue 11');
+  });
+
+  it('keeps repository inventory complete while exporting the selected repository scope', async () => {
+    const read = async (query: string) => (await (await app.request(`/api/v1/repos?${query}`)).json()) as { items: { name: string }[] };
+    expect((await read('')).items.map((r) => r.name).sort()).toEqual(['app', 'fork', 'hidden', 'old', 'secret']);
+    expect((await read('scope=default')).items.map((r) => r.name).sort()).toEqual(['app', 'secret']);
+    expect((await read('scope=default&repos=hidden,old,fork&sort=name')).items.map((r) => r.name)).toEqual(['fork', 'old', 'hidden']);
+    expect((await read('scope=default&repos=')).items).toEqual([]);
+    expect((await read('scope=default&visibility=private')).items.map((r) => r.name)).toEqual(['secret']);
+    expect((await read('scope=default&q=APP')).items.map((r) => r.name)).toEqual(['app']);
+    expect((await app.request('/api/v1/repos?sort=nope')).status).toBe(400);
+    const forkApp = makeApp();
+    await forkApp.request('/api/v1/settings', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: '{"includeForks":true}' });
+    const selected = await (await forkApp.request('/api/v1/repos?scope=default')).json() as { items: { name: string }[] };
+    expect(selected.items.map((r) => r.name).sort()).toEqual(['app', 'fork', 'secret']);
+  });
+
   it('reports sync status and refuses to sync without a token', async () => {
     expect(await (await app.request('/api/v1/sync/status')).json()).toMatchObject({ running: false, tokenSource: 'none', viewer: 'Alice' });
     expect((await app.request('/api/v1/sync', { method: 'POST' })).status).toBe(503);

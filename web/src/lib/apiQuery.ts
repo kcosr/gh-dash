@@ -3,7 +3,7 @@
  * "Copy API URL", so what you see is exactly what the API link returns.
  */
 import { EVENT_TYPES } from '../../../shared/api';
-import type { ActivityQuery, PrQuery, ScopeQuery, StatsQuery } from '../../../shared/api';
+import type { ActivityQuery, IssueQuery, PrQuery, RepoQuery, ScopeQuery, StatsQuery } from '../../../shared/api';
 import { apiUrl } from '../api/client';
 import type { Endpoint } from '../api/client';
 import { resolveRange } from './range';
@@ -29,6 +29,14 @@ export function scopeParams(s: UrlState, opts: { q?: boolean } = {}): ScopeQuery
 /** The PR list as the UI fetches it. No `group`: grouping is client-side (it only shapes format=md). */
 export function prFetchParams(s: UrlState): PrQuery {
   return { ...scopeParams(s), state: s.state };
+}
+
+export function issueListParams(s: UrlState): IssueQuery & { state: 'open' | 'closed' | 'all' } {
+  return { ...scopeParams(s), state: s.state === 'merged' ? 'open' : s.state };
+}
+
+export function repoListParams(s: UrlState): RepoQuery {
+  return { scope: 'default', repos: s.repos?.join(','), visibility: s.vis, q: s.q || undefined, sort: s.sort };
 }
 
 /** The PR list as exported / shown in the API tab (`group` sets the Markdown headings). */
@@ -61,6 +69,8 @@ export interface ExportTarget {
 /** What the current view corresponds to in the API. */
 export function exportTarget(view: ViewName, s: UrlState, repoName?: string): ExportTarget {
   switch (view) {
+    case 'issues':
+      return { endpoint: 'issues', params: { ...issueListParams(s) }, md: true, label: 'issues' };
     case 'activity':
       return { endpoint: 'activity', params: { ...activityParams(s) }, md: true, label: 'activity feed' };
     case 'insights':
@@ -68,7 +78,7 @@ export function exportTarget(view: ViewName, s: UrlState, repoName?: string): Ex
     case 'repo':
       return { endpoint: 'stats', params: { ...statsParams({ ...s, repos: repoName ? [repoName] : s.repos }) }, md: false, label: 'repository stats' };
     case 'repos':
-      return { endpoint: 'repos', params: {}, md: false, label: 'repositories' };
+      return { endpoint: 'repos', params: { ...repoListParams(s) }, md: false, label: 'repositories' };
     case 'settings':
       return { endpoint: 'settings', params: {}, md: false, label: 'settings' };
     case 'prs':

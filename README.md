@@ -29,6 +29,7 @@ the signed-in user are synced.
 ## Using the dashboard
 
 - **Pull requests:** read descriptions, filter by state, and open a detail drawer.
+- **Issues:** browse open or closed issues, expand descriptions, and filter by creator, repository, or date.
 - **Activity:** browse a combined timeline and jump to a day using the activity strip.
 - **Repositories and Insights:** explore repository activity, contributors and trends.
 - **Keyboard shortcuts:** `Ctrl/Cmd+K` opens search; `/` focuses the filter. In the PR
@@ -37,7 +38,9 @@ the signed-in user are synced.
 Use **Settings** to adjust the sync interval, backfill window and fork inclusion.
 Add any unlinked commit emails under **My commit emails** so those commits count as yours.
 Click a sidebar repository row to focus on it; use its checkbox to add or remove it
-from your selection. Sidebar badges show nonzero open PR and issue counts as of the last sync.
+from your selection. The selection applies to Pull requests, Issues, Activity,
+Repositories, and Insights, and carries across tabs. Expand **Show inactive** to select
+archived, hidden, or forked repositories explicitly. Sidebar badges show nonzero open PR and issue counts as of the last sync.
 Click repository names in lists and activity to filter to them. Drag the sidebar's
 divider to resize it; its width is saved in your browser. You can also focus the
 divider and use arrow keys, or double-click it to reset the width.

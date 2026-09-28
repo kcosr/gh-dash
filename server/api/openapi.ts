@@ -214,7 +214,13 @@ export const ENDPOINTS: EndpointDoc[] = [
     params: [...SCOPE, q('bucket', "Default: 'day' if range <= 45 days, 'week' if <= 190, else 'month'.", enumOf('day', 'week', 'month'))],
     response: { status: 200, schema: ref('StatsResponse') }, example: 'from=-90d&tz=UTC',
   },
-  { method: 'get', path: '/api/v1/repos', tag: 'Repos', summary: 'All repos (incl. archived, hidden, forks) with stats', response: { status: 200, schema: obj({ items: arr(ref('Repo')) }) } },
+  { method: 'get', path: '/api/v1/repos', tag: 'Repos', summary: 'Repository inventory or a filtered selection', params: [
+    q('repos', 'Comma-separated names; explicit empty selects nothing. Overrides scope.'),
+    q('scope', 'all (default) returns the inventory; default excludes archived/hidden and forks unless enabled in settings.', enumOf('all', 'default')),
+    q('visibility', 'Repository visibility', enumOf('all', 'public', 'private')),
+    q('q', 'Case-insensitive substring in name, description, topics or language'),
+    q('sort', 'Sort within pinned/hidden groups; default activity', enumOf('activity', 'stars', 'open', 'name')),
+  ], response: { status: 200, schema: obj({ items: arr(ref('Repo')) }) } },
   { method: 'get', path: '/api/v1/repos/{name}', tag: 'Repos', summary: 'One repo', params: [p('name', 'Repo name')], response: { status: 200, schema: ref('Repo') } },
   {
     method: 'patch', path: '/api/v1/repos/{name}', tag: 'Repos', summary: 'Pin/unpin or hide/unhide a repo (local preference)',

@@ -15,7 +15,7 @@ import { useUI } from '../components/ui';
 import { ALL_TIME_FROM, scopeParams, statsParams } from '../lib/apiQuery';
 import { activityColumns, contributorBars, tileProps } from '../lib/statsCharts';
 import { fmtDate, fmtDateTime, isoDate, rel } from '../lib/time';
-import { encodeParams, useUrlState } from '../lib/urlState';
+import { carrySearch, encodeParams, useUrlState } from '../lib/urlState';
 import { actorName, cx } from '../lib/util';
 import { InsightsSkeleton } from './Insights';
 
@@ -35,7 +35,7 @@ function CompactPr({ pr, onOpen, active }: { pr: PullRequest; onOpen: () => void
 
 export function RepoDetailView() {
   const { name = '' } = useParams();
-  const { s, set, range } = useUrlState();
+  const { s, set, range, location } = useUrlState();
   const { openExport } = useUI();
   const repos = useRepos();
   const patch = usePatchRepo();
@@ -61,7 +61,7 @@ export function RepoDetailView() {
     return (
       <main className="main tint">
         <div className="scroll">
-          <EmptyState icon="book" title={`No repository named “${name}”`} action={<Link className="btn" to="/repos">All repositories</Link>}>
+          <EmptyState icon="book" title={`No repository named “${name}”`} action={<Link className="btn" to={`/repos${carrySearch(location.search)}`}>All repositories</Link>}>
             It may have been renamed, deleted, or not synced yet.
           </EmptyState>
         </div>
@@ -83,7 +83,7 @@ export function RepoDetailView() {
     <main className="main tint">
       <div className="toolbar">
         <div className="row">
-          <Link to="/repos" className="btn ghost crumb"><Icon name="chevronLeft" />Repositories</Link>
+          <Link to={`/repos${carrySearch(location.search)}`} className="btn ghost crumb"><Icon name="chevronLeft" />Repositories</Link>
           <DateRangeButton />
           <Seg value={s.who} onChange={(who) => set({ who })} options={WHO_OPTIONS} ariaLabel="Author" />
           <span className="summary">{range.text}</span>

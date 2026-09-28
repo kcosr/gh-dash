@@ -81,7 +81,7 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme }: { onCl
             label: r.name,
             right: <>{r.visibility === 'private' && <Icon name="lock" />}<span>Select only this repo</span></>,
             run: () => {
-              if (view === 'prs' || view === 'activity' || view === 'insights') set({ repos: [r.name] });
+              if (view === 'prs' || view === 'issues' || view === 'repos' || view === 'activity' || view === 'insights') set({ repos: [r.name] });
               else navigate(`/prs?repos=${encodeURIComponent(r.name)}`);
             },
           },
@@ -112,10 +112,15 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme }: { onCl
     }
     if (prItems.length) out.push({ title: ql ? 'Pull requests' : 'Recent pull requests', items: prItems });
 
+    if (ql && !refMatch) out.push({ title: 'Issues', items: [{
+      key: 'search-issues', icon: ic('issue'), label: `Search issues for “${q.trim()}”`,
+      run: () => navigate({ pathname: '/issues', search: patchSearch(carrySearch(location.search), 'issues', { q: q.trim(), state: 'all' }) }),
+    }] });
+
     const vs = (views.data ?? []).filter((v) => has(v.name));
     if (vs.length) out.push({ title: 'Saved views', items: vs.map((v) => ({ key: `view:${v.id}`, icon: ic('bookmark'), label: v.name, run: () => navigate(`${v.path}${v.query ? `?${v.query}` : ''}`) })) });
 
-    const nav: [string, string, IconName][] = [['Pull requests', '/prs', 'merge'], ['Activity', '/activity', 'pulse'], ['Repositories', '/repos', 'book'], ['Insights', '/insights', 'chart'], ['Settings', '/settings', 'sliders']];
+    const nav: [string, string, IconName][] = [['Pull requests', '/prs', 'merge'], ['Issues', '/issues', 'issue'], ['Activity', '/activity', 'pulse'], ['Repositories', '/repos', 'book'], ['Insights', '/insights', 'chart'], ['Settings', '/settings', 'sliders']];
     const navItems = nav.filter(([l]) => has(l)).map(([l, p, i]) => ({ key: `go:${p}`, icon: ic(i), label: l, run: () => go(p) }));
     if (navItems.length) out.push({ title: 'Go to', items: navItems });
 

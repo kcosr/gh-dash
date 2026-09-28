@@ -279,6 +279,16 @@ export interface IssueQuery extends ScopeQuery, PageQuery {
   state?: IssueState | 'all';
 }
 
+/** Repository inventory by default; scope=default uses the dashboard's usual selection. */
+export interface RepoQuery {
+  /** Explicit names override scope; an empty string selects nothing. */
+  repos?: string;
+  scope?: 'all' | 'default';
+  visibility?: VisibilityFilter;
+  q?: string;
+  sort?: 'activity' | 'stars' | 'open' | 'name';
+}
+
 export interface StatsQuery extends ScopeQuery {
   /** Default: 'day' if range <= 45 days, 'week' if <= 190 days, else 'month'. */
   bucket?: Bucket;
@@ -369,7 +379,7 @@ export interface StatsResponse {
 //
 // GET    /api/health                           -> { ok: true, version: string }
 // GET    /api/v1/me                            -> Me
-// GET    /api/v1/repos                         -> { items: Repo[] }          (all repos incl. archived/hidden/forks)
+// GET    /api/v1/repos          RepoQuery      -> { items: Repo[] }          (unfiltered: all repos incl. archived/hidden/forks)
 // GET    /api/v1/repos/:name                   -> Repo
 // PATCH  /api/v1/repos/:name   {pinned?, hidden?} -> Repo
 // GET    /api/v1/sets                          -> { items: RepoSet[] }

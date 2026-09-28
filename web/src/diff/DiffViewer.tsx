@@ -3,10 +3,10 @@
  * virtualized CodeView for every file (smooth on PRs with thousands of files) beside a hand-rolled
  * file list, with headers, colors and type in the app's own visual language (diff.css, pierre.css).
  */
-import type { CodeView as CodeViewClass, CodeViewItem, CodeViewOptions, FileDiffLoadedFiles, FileDiffMetadata } from '@pierre/diffs';
+import type { CodeView as CodeViewClass, CodeViewItem, CodeViewOptions, FileDiffLoadedFiles, FileDiffMetadata, PostRenderPhase } from '@pierre/diffs';
 import { CodeView, WorkerPoolContextProvider, type CodeViewHandle } from '@pierre/diffs/react';
 import HighlightWorker from '@pierre/diffs/worker/worker.js?worker';
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from 'react';
 import type { Diff } from '../../../shared/api';
 import { Icon } from '../components/Icon';
 import { Seg } from '../components/Seg';
@@ -40,6 +40,8 @@ type CodeViewInstance = CodeViewClass<undefined, undefined>;
 /** Row metrics shared by the CSS (pierre.css, diff.css) and the virtualizer's height estimates. */
 const LINE_HEIGHT = 18;
 const SEPARATOR_HEIGHT = 24;
+/** Compact: headers and separators hold 40px touch targets, like the shell's (--dvr-touch in diff.css). */
+const TOUCH = 40;
 /** Parse budgets for big PRs: before the first render, then per background slice. */
 const FIRST_PARSE_MS = 40;
 const SLICE_PARSE_MS = 12;
@@ -47,6 +49,8 @@ const SLICE_PARSE_MS = 12;
 const EXPAND_LINES = 20;
 /** Space between files; a file whose top is within it of the top edge is the one in view. */
 const GAP = 12;
+/** Quiet time after a jump's last scroll event before the scroll position picks the file again. */
+const SETTLE_MS = 150;
 
 registerThemes();
 
@@ -63,6 +67,71 @@ function subscribeTheme(onChange: () => void) {
   const mo = new MutationObserver(onChange);
   mo.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
   return () => mo.disconnect();
+}
+
+const isExpandControl = (el: EventTarget | undefined): el is HTMLElement => el instanceof HTMLElement && el.hasAttribute('data-expand-button');
+
+/** An expand control as a re-render can find it again: its file, its separator and its direction. */
+interface ExpandControl { host: Element; index: string | null; kind: string | undefined }
+const EXPAND_KINDS = ['data-expand-up', 'data-expand-down', 'data-expand-both', 'data-expand-all-button'];
+const expandControl = (el: HTMLElement): ExpandControl => ({
+  host: (el.getRootNode() as ShadowRoot).host,
+  index: el.closest('[data-expand-index]')?.getAttribute('data-expand-index') ?? null,
+  kind: EXPAND_KINDS.find((k) => el.hasAttribute(k)),
+});
+
+/**
+ * Pierre's expand controls are divs with role="button" and just an icon: no name, and out of the
+ * tab order. Name them like GitHub's (after the way the chevron points: Pierre's "up" shows the
+ * lines below the hunk above) and make them focusable; Enter and Space click them. A click
+ * re-renders the file and replaces the control, which drops focus to the page, so the file's next
+ * render puts focus back on the control in its place, or on the scroller once the gap is gone.
+ */
+function useExpandControls(scroller: RefObject<HTMLDivElement | null>) {
+  const focused = useRef<ExpandControl | null>(null);
+  const track = useCallback((e: Event) => {
+    // A pointer lands on the control's icon.
+    const el = e.composedPath().find(isExpandControl);
+    focused.current = el ? expandControl(el) : null;
+  }, []);
+  // pointerdown too: a click that focuses nothing (focus falls to the page) must not bring it back here.
+  useEffect(() => {
+    document.addEventListener('focusin', track);
+    document.addEventListener('pointerdown', track);
+    return () => {
+      document.removeEventListener('focusin', track);
+      document.removeEventListener('pointerdown', track);
+    };
+  }, [track]);
+  // Focus moving within one file's shadow root doesn't reach the document: each root reports it too.
+  const roots = useRef(new WeakSet<ShadowRoot>());
+  const onPostRender = useCallback((node: HTMLElement, _instance: unknown, phase: PostRenderPhase) => {
+    const root = node.shadowRoot;
+    if (phase === 'unmount' || !root) return;
+    if (!roots.current.has(root)) {
+      roots.current.add(root);
+      root.addEventListener('focusin', track);
+    }
+    for (const el of root.querySelectorAll<HTMLElement>('[data-expand-button]:not([tabindex])')) {
+      const label = el.hasAttribute('data-expand-up') ? 'Expand down' : el.hasAttribute('data-expand-down') ? 'Expand up' : 'Expand all';
+      el.tabIndex = 0;
+      el.title = label;
+      el.setAttribute('aria-label', label);
+    }
+    const f = focused.current;
+    if (f?.host !== node || document.activeElement !== document.body) return;
+    // Split view renders each separator in both gutters, one of them hidden.
+    const controls = [...root.querySelectorAll<HTMLElement>(`[data-expand-index="${f.index}"] [data-expand-button]`)].filter((el) => el.checkVisibility());
+    (controls.find((el) => f.kind != null && el.hasAttribute(f.kind)) ?? controls[0] ?? scroller.current)?.focus({ preventScroll: true });
+  }, [scroller, track]);
+  const onKeyDown = useCallback((e: ReactKeyboardEvent) => {
+    const el = e.nativeEvent.composedPath()[0];
+    if ((e.key === 'Enter' || e.key === ' ') && isExpandControl(el)) {
+      e.preventDefault();
+      el.click();
+    }
+  }, []);
+  return { onPostRender, onKeyDown };
 }
 
 /** "3 of 21": where j/k are in the list. The shell's header has the totals. */
@@ -92,6 +161,8 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
   const updatePrefs = useCallback((patch: Partial<DiffPrefs>) => setPrefs((p) => ({ ...p, ...patch })), []);
   useEffect(() => setDiffPrefs(prefs), [prefs]);
   const split = prefs.split && !compact;
+  // Compact always wraps (code would run off a phone's screen); the saved preference is the desktop's.
+  const wrap = prefs.wrap || compact;
   // The file list is a column on desktop (a saved preference) and an overlay toggled per visit on compact.
   const [listOpen, setListOpen] = useState(false);
   const showList = compact ? listOpen : prefs.files;
@@ -138,11 +209,14 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
     return { oldFile: { name: oldPath, contents: texts[0] }, newFile: { name: f.path, contents: texts[1] } };
   }, [byId, rev, diff.baseOid, diff.headOid, loadFile]);
 
+  const scroller = useRef<HTMLDivElement>(null);
+  const expandControls = useExpandControls(scroller);
+
   const options = useMemo((): CodeViewOptions<undefined, undefined> => ({
     theme: THEMES,
     themeType: theme,
     diffStyle: split ? 'split' : 'unified',
-    overflow: prefs.wrap ? 'wrap' : 'scroll',
+    overflow: wrap ? 'wrap' : 'scroll',
     diffIndicators: 'classic',
     lineDiffType: 'word-alt',
     hunkSeparators: 'line-info-basic',
@@ -150,16 +224,24 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
     stickyHeaders: true,
     // Root commits have no old side (and only added files).
     loadDiffFiles: diff.baseOid ? loadDiffFiles : undefined,
-    itemMetrics: { lineHeight: LINE_HEIGHT, diffHeaderHeight: HEADER_HEIGHT, hunkSeparatorHeight: SEPARATOR_HEIGHT, spacing: 0, paddingTop: 0, paddingBottom: 0 },
-    layout: { paddingTop: GAP, paddingBottom: 2 * GAP, gap: GAP },
+    itemMetrics: {
+      lineHeight: LINE_HEIGHT,
+      diffHeaderHeight: compact ? TOUCH : HEADER_HEIGHT,
+      hunkSeparatorHeight: compact ? TOUCH : SEPARATOR_HEIGHT,
+      spacing: 0,
+      paddingTop: 0,
+      paddingBottom: 0,
+    },
+    // Compact files run edge to edge from the toolbar down.
+    layout: { paddingTop: compact ? 0 : GAP, paddingBottom: 2 * GAP, gap: GAP },
     unsafeCSS,
-  }), [theme, split, prefs.wrap, diff.baseOid, loadDiffFiles]);
+    onPostRender: expandControls.onPostRender,
+  }), [theme, split, wrap, compact, diff.baseOid, loadDiffFiles, expandControls.onPostRender]);
 
   // The file in view: the last file whose top has scrolled past the top edge. After a jump to a
   // file that can't reach the top (the end of the diff), that file stays current until the user
   // scrolls. Kept outside React state: a change re-renders two file list rows, not the viewer.
   const view = useRef<CodeViewHandle<undefined, undefined>>(null);
-  const scroller = useRef<HTMLDivElement>(null);
   // Starts on the first file without reporting it: nothing to put in the URL until the reader moves.
   const [current] = useState(() => createCurrentFile(files[0]?.id ?? null));
   const pinned = useRef<string | null>(null);
@@ -179,7 +261,7 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
     if (!byId.has(current.get() ?? '')) current.set(files[0]?.id ?? null);
   }, [current, byId, files]);
 
-  const onScroll = useCallback((scrollTop: number, cv: CodeViewInstance) => {
+  const follow = useCallback((scrollTop: number, cv: CodeViewInstance) => {
     if (!count) return;
     let lo = 0, hi = count - 1;
     while (lo < hi) {
@@ -194,6 +276,43 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
     else pinned.current = null;
     current.set(id);
   }, [files, count, indexOf, current]);
+  const followRef = useRef(follow);
+  followRef.current = follow;
+
+  // A jump (j/k, the file list, a deep link) scrolls programmatically, and its scroll events arrive a
+  // frame or more later, when a quick next j may already have set another file. So while a jump is
+  // in flight, `current` stays its target (j/k step from it) and scroll events don't move it; the
+  // scroll position takes over once scrolling has been quiet for SETTLE_MS, or at once when the
+  // reader scrolls (wheel, touch, scrollbar).
+  const settling = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const settle = useCallback(() => {
+    clearTimeout(settling.current);
+    settling.current = setTimeout(() => {
+      settling.current = undefined;
+      const cv = view.current?.getInstance();
+      if (cv) followRef.current(cv.getScrollTop(), cv);
+    }, SETTLE_MS);
+  }, []);
+  const onScroll = useCallback((scrollTop: number, cv: CodeViewInstance) => {
+    if (settling.current !== undefined) settle();
+    else follow(scrollTop, cv);
+  }, [follow, settle]);
+  const hasFiles = files.length > 0;
+  useEffect(() => {
+    const el = scroller.current;
+    if (!el) return;
+    const release = (e: Event) => {
+      // A pointer on the scroller itself is on its scrollbar; anything else is a click in the diff.
+      if (e.type === 'pointerdown' && e.target !== el) return;
+      clearTimeout(settling.current);
+      settling.current = undefined;
+    };
+    for (const type of ['wheel', 'touchstart', 'pointerdown']) el.addEventListener(type, release, { passive: true });
+    return () => {
+      for (const type of ['wheel', 'touchstart', 'pointerdown']) el.removeEventListener(type, release);
+      clearTimeout(settling.current);
+    };
+  }, [hasFiles]);
 
   // A jump to a file not parsed yet parses up to it right away and scrolls once the CodeView has it.
   const countRef = useRef(count);
@@ -202,6 +321,7 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
   const goTo = useCallback((id: string) => {
     pinned.current = id;
     current.set(id);
+    settle();
     const i = indexOf.get(id) ?? 0;
     if (i < countRef.current) view.current?.scrollTo({ type: 'item', id, align: 'start' });
     else {
@@ -209,13 +329,14 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
       setParsed((p) => (p.files === files ? { files, count: parseFiles(files, p.count, Infinity, i + 1) } : p));
     }
     if (compact) setListOpen(false);
-  }, [current, compact, files, indexOf]);
+  }, [current, compact, files, indexOf, settle]);
   useEffect(() => {
     const id = jumpTo.current;
     if (id == null || (indexOf.get(id) ?? Infinity) >= count) return;
     jumpTo.current = null;
+    settle();
     view.current?.scrollTo({ type: 'item', id, align: 'start' });
-  }, [count, indexOf]);
+  }, [count, indexOf, settle]);
 
   // Deep link: `file` is the shell's URL as of opening; after that the URL only follows the viewer.
   const goToRef = useRef(goTo);
@@ -230,7 +351,7 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
     if (!a || a === document.body || (a !== root.current && a.contains(root.current))) scroller.current?.focus({ preventScroll: true });
   }, []);
 
-  // j/k: next/previous file; s: split/unified; w: wrap long lines.
+  // j/k: next/previous file; s: split/unified; w: wrap long lines (desktop only for both).
   const keyState = useRef({ files, prefs, compact });
   keyState.current = { files, prefs, compact };
   useEffect(() => {
@@ -244,7 +365,7 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
       } else if (e.key === 's' && !s.compact) {
         e.preventDefault();
         updatePrefs({ split: !s.prefs.split });
-      } else if (e.key === 'w') {
+      } else if (e.key === 'w' && !s.compact) {
         e.preventDefault();
         updatePrefs({ wrap: !s.prefs.wrap });
       }
@@ -277,7 +398,7 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
   )), [compact]);
 
   return (
-    <div className={cx('diff-viewer', compact && 'compact')} ref={root}>
+    <div className={cx('diff-viewer', compact && 'compact')} ref={root} onKeyDown={expandControls.onKeyDown}>
       <div className="dvr-bar">
         <button type="button" className={cx('btn icon ghost dvr-list-btn', showList && 'on')} onClick={toggleList} aria-pressed={showList} title={showList ? 'Hide file list' : 'Show file list'} aria-label="File list">
           <Icon name="list" />
@@ -285,15 +406,17 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
         <Position current={current} indexOf={indexOf} total={files.length} />
         <span className="spacer" />
         {!compact && (
-          <Seg
-            className="sm"
-            ariaLabel="Layout"
-            value={split ? 'split' : 'unified'}
-            onChange={(v) => updatePrefs({ split: v === 'split' })}
-            options={[{ value: 'unified', label: 'Unified', title: 'Unified (s)' }, { value: 'split', label: 'Split', title: 'Split (s)' }]}
-          />
+          <>
+            <Seg
+              className="sm"
+              ariaLabel="Layout"
+              value={split ? 'split' : 'unified'}
+              onChange={(v) => updatePrefs({ split: v === 'split' })}
+              options={[{ value: 'unified', label: 'Unified', title: 'Unified (s)' }, { value: 'split', label: 'Split', title: 'Split (s)' }]}
+            />
+            <button type="button" className={cx('tbl-btn', prefs.wrap && 'on')} aria-pressed={prefs.wrap} onClick={() => updatePrefs({ wrap: !prefs.wrap })} title="Wrap long lines (w)">Wrap</button>
+          </>
         )}
-        <button type="button" className={cx('tbl-btn', prefs.wrap && 'on')} aria-pressed={prefs.wrap} onClick={() => updatePrefs({ wrap: !prefs.wrap })} title="Wrap long lines (w)">Wrap</button>
       </div>
       <div className="dvr-main">
         {showList && <FileList files={files} current={current} onPick={goTo} footer={hints} />}

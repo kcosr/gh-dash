@@ -44,7 +44,8 @@ export const qk = {
 
 /**
  * Queries a finished sync (or a settings change) should refetch. Diffs and file contents are fetched
- * from GitHub on demand and fixed per commit, so they're left alone (the diff view has a refresh).
+ * from GitHub on demand, so a sync doesn't swap an open diff under the reader (the diff view has a
+ * refresh); a PR diff is revalidated when it's next opened (useDiff).
  */
 export const refetchAfterSync = (q: Query) => !['sync-status', 'diff', 'blob'].includes(q.queryKey[0] as string);
 
@@ -187,8 +188,9 @@ export function findCachedCommit(qc: QueryClient, repo: string, oid: string): Pi
 // ---------------------------------------------------------------- diffs
 
 /**
- * The diff for a `diff` URL param. Fetched only when the diff view opens (GitHub is asked on a cache
- * miss); fixed for a given head, so it never goes stale by itself.
+ * The diff for a `diff` URL param. Fetched only when the diff view opens. A commit's diff never
+ * changes. A PR's can (new pushes, a moved base), so reopening one asks the server again: it answers
+ * from its own cache, checking GitHub only when the synced PR says the diff may be out of date.
  */
 export function useDiff(id: string) {
   const t = parseDiffId(id);
@@ -196,7 +198,7 @@ export function useDiff(id: string) {
     queryKey: qk.diff(id),
     queryFn: () => fetchDiff(id, false),
     enabled: !!t,
-    staleTime: Infinity,
+    staleTime: t?.kind === 'commit' ? Infinity : 0,
     // Once, for a GitHub hiccup or the server restarting; not for a missing token or the rate limit.
     retry: (count, err) => count < 1 && (isUnreachable(err) || (err as { status?: number }).status === 502),
   });

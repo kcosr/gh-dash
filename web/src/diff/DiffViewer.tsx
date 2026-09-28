@@ -73,7 +73,9 @@ function Position({ current, indexOf, total }: { current: CurrentFile; indexOf: 
 }
 
 export default function DiffViewer({ diff, loadFile, compact, isActive, file, onFileChange }: DiffViewerProps) {
-  const files = useMemo(() => buildFiles(diff), [diff]);
+  // Keyed by what buildFiles reads, not the diff object: a PR diff revalidated on reopen comes back
+  // as a new object (fetchedAt moved) with structurally shared, unchanged files, and must not re-render.
+  const files = useMemo(() => buildFiles(diff), [diff.files, diff.baseOid, diff.headOid]);
   // Big PRs parse in slices so the view opens at once: what fits a small budget now, the rest in
   // the background, appended to the CodeView as it's ready (its append-only fast path).
   const [parsed, setParsed] = useState(() => ({ files, count: parseFiles(files, 0, FIRST_PARSE_MS) }));
@@ -116,21 +118,25 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
   // A failure leaves the hunks as they are and says so in the header. loadFile resolves null for
   // files the server can't serve (missing, binary, too large): those aren't asked for again. It
   // rejects on transient failures (network, rate limit), which the next click retries.
+  // Both sets are keyed by revision and path: a refreshed diff (new head or merge base) asks again,
+  // and a load still pending from the previous revision can't mark a file of the new one.
+  const rev = `${diff.baseOid}..${diff.headOid}`;
   const [failed, setFailed] = useState<ReadonlySet<string>>(new Set());
   const unavailable = useRef(new Set<string>());
   const loadDiffFiles = useCallback(async (fd: FileDiffMetadata): Promise<FileDiffLoadedFiles> => {
     const f = byId.get(fd.name)?.file;
-    if (!f || !diff.baseOid || unavailable.current.has(fd.name)) throw new Error(`No context for ${fd.name}`);
+    const key = `${rev}\0${fd.name}`;
+    if (!f || !diff.baseOid || unavailable.current.has(key)) throw new Error(`No context for ${fd.name}`);
     const oldPath = f.previousPath ?? f.path;
     const texts = await Promise.all([loadFile(diff.baseOid, oldPath), loadFile(diff.headOid, f.path)]).catch(() => null);
     if (texts?.[0] == null || texts[1] == null) {
-      if (texts) unavailable.current.add(f.path);
-      setFailed((s) => new Set(s).add(f.path));
+      if (texts) unavailable.current.add(key);
+      setFailed((s) => new Set(s).add(key));
       throw new Error(`Couldn't load ${f.path} for context`);
     }
-    setFailed((s) => (s.has(f.path) ? new Set([...s].filter((p) => p !== f.path)) : s));
+    setFailed((s) => (s.has(key) ? new Set([...s].filter((k) => k !== key)) : s));
     return { oldFile: { name: oldPath, contents: texts[0] }, newFile: { name: f.path, contents: texts[1] } };
-  }, [byId, diff.baseOid, diff.headOid, loadFile]);
+  }, [byId, rev, diff.baseOid, diff.headOid, loadFile]);
 
   const options = useMemo((): CodeViewOptions<undefined, undefined> => ({
     theme: THEMES,
@@ -256,10 +262,10 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
         diffUrl={diff.url}
         collapsed={item.collapsed === true}
         onToggle={toggleCollapsed}
-        contextFailed={failed.has(vf.id)}
+        contextFailed={failed.has(`${rev}\0${vf.id}`)}
       />
     );
-  }, [byId, diff.url, failed, toggleCollapsed]);
+  }, [byId, diff.url, rev, failed, toggleCollapsed]);
 
   // Desktop only (the compact list is a touch overlay); memoized so the file list doesn't re-render.
   const hints = useMemo(() => (compact ? undefined : (

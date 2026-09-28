@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import type { Settings } from '../../../shared/api';
-import { useMe, usePatchSettings, useSettings, useSyncStatus } from '../api/hooks';
+import { useClearDiffCache, useDiffCacheStats, useMe, usePatchSettings, useSettings, useSyncStatus } from '../api/hooks';
 import { useSyncNow } from '../components/TopBar';
 import { Icon } from '../components/Icon';
 import { ErrorNote } from '../components/EmptyState';
 import { useToast } from '../components/Toasts';
-import { dur, fmtDateTime, fmtNum, fmtTime, relFuture, relLong } from '../lib/time';
+import { dur, fmtBytes, fmtDateTime, fmtNum, fmtTime, plural, relFuture, relLong } from '../lib/time';
 import { cx } from '../lib/util';
 
 const TOKEN_TEXT = { env: 'GITHUB_TOKEN (environment or config file)', 'gh-cli': 'GitHub CLI (gh auth token)', none: 'No token found' } as const;
@@ -64,6 +64,63 @@ function EmailChips({ value, onChange }: { value: string[]; onChange: (v: string
         type="email"
       />
     </div>
+  );
+}
+
+/** Diffs fetched from GitHub and kept on the server: usage, the size cap, and clearing it. */
+function DiffCacheSection() {
+  const stats = useDiffCacheStats();
+  const settings = useSettings();
+  const save = usePatchSettings();
+  const clear = useClearDiffCache();
+  const toast = useToast();
+  const [cap, setCap] = useState<number | null>(null);
+
+  useEffect(() => { if (settings.data && cap === null) setCap(settings.data.diffCacheMb); }, [settings.data, cap]);
+
+  const capOk = cap !== null && Number.isInteger(cap) && cap >= 10 && cap <= 10000;
+  const dirty = cap !== null && !!settings.data && cap !== settings.data.diffCacheMb;
+  const st = stats.data;
+
+  const submit = () => {
+    if (!capOk || !dirty) return;
+    save.mutate({ diffCacheMb: cap }, {
+      onSuccess: (s) => { setCap(s.diffCacheMb); toast('Diff cache size saved'); },
+      onError: (e) => toast(`Couldn't save: ${(e as Error).message}`, { error: true }),
+    });
+  };
+  const onClear = () => clear.mutate(undefined, {
+    onSuccess: () => toast(st?.bytes ? `Diff cache cleared · ${fmtBytes(st.bytes)} freed` : 'Diff cache cleared'),
+    onError: (e) => toast(`Couldn't clear: ${(e as Error).message}`, { error: true }),
+  });
+
+  return (
+    <section className="card set-sec">
+      <h2>Diff cache</h2>
+      <p>Diffs and the file contents they show are fetched from GitHub when you open a diff, then kept on the server.</p>
+      <form className="set-form" onSubmit={(e) => { e.preventDefault(); submit(); }}>
+        <div className="set-row">
+          <span className="set-l">In use<small>Cached diffs and files.</small></span>
+          <span className="set-c">
+            {st ? <>{fmtBytes(st.bytes)} of {settings.data ? `${fmtNum(settings.data.diffCacheMb)} MB` : fmtBytes(st.maxBytes)} · {fmtNum(st.entries)} {plural(st.entries, 'entry', 'entries')}</>
+              : stats.isError ? <span className="muted">Couldn't load: {(stats.error as Error).message}</span> : <span className="muted">Loading…</span>}
+          </span>
+        </div>
+        {cap !== null && (
+          <label className="set-row">
+            <span className="set-l">Size limit<small>10–10000 MB. When the cache is full, the least recently viewed go first.</small></span>
+            <span className="set-c">
+              <input className={cx('input num-in', !capOk && 'bad')} type="number" min={10} max={10000} step={1} value={cap}
+                onChange={(e) => setCap(Math.round(Number(e.target.value)))} /> MB
+            </span>
+          </label>
+        )}
+        <div className="set-actions">
+          {cap !== null && <button type="submit" className="btn primary" disabled={!dirty || !capOk || save.isPending}>Save limit</button>}
+          <button type="button" className="btn" disabled={!st?.entries || clear.isPending} onClick={onClear}><Icon name="trash" />Clear cache</button>
+        </div>
+      </form>
+    </section>
   );
 }
 
@@ -200,6 +257,8 @@ export function SettingsView() {
               </form>
             )}
           </section>
+
+          <DiffCacheSection />
 
           <section className="card set-sec">
             <h2>API</h2>

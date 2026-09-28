@@ -31,6 +31,10 @@ export interface UrlState {
   q: string;
   /** "<repo>#<n>" open in the drawer. */
   pr: string | null;
+  /** Diff open over the list and drawer: "<repo>#<n>" (a PR) or "<repo>@<oid>" (a commit). */
+  diff: string | null;
+  /** Path of the file in view in the open diff (only with `diff`). */
+  file: string | null;
   // /repos only
   sort: RepoSort;
   layout: RepoLayout;
@@ -71,6 +75,8 @@ export function defaultsFor(view: ViewName): UrlState {
     types: [...EVENT_TYPES],
     q: '',
     pr: null,
+    diff: null,
+    file: null,
     sort: 'activity',
     layout: 'grid',
   };
@@ -94,6 +100,8 @@ export function parseUrlState(search: string, view: ViewName): UrlState {
   // `types=` (empty) is an explicit "none"; a value naming no known type (typo, old link) is ignored.
   const typesDefault = typesRaw === null || (typesValid.length === 0 && typesRaw.trim() !== '');
   const pr = p.get('pr');
+  const diff = p.get('diff');
+  const diffOk = parseDiffId(diff) !== null;
   return {
     repos: reposRaw === null ? null : list(reposRaw),
     vis: oneOf(p.get('vis'), ['all', 'public', 'private'] as const, d.vis),
@@ -109,13 +117,15 @@ export function parseUrlState(search: string, view: ViewName): UrlState {
     types: typesDefault ? d.types : EVENT_TYPES.filter((t) => typesValid.includes(t)),
     q: p.get('q') ?? '',
     pr: pr && /^[^#\s]+#\d+$/.test(pr) ? pr : null,
+    diff: diffOk ? diff : null,
+    file: diffOk ? p.get('file') || null : null,
     sort: oneOf(p.get('sort'), ['activity', 'stars', 'open', 'name'] as const, d.sort),
     layout: oneOf(p.get('layout'), ['grid', 'list'] as const, d.layout),
   };
 }
 
 /** Param order in written URLs (unknown params are kept at the end). */
-const ORDER = ['repos', 'vis', 'who', 'range', 'from', 'to', 'state', 'group', 'density', 'rel', 'types', 'q', 'sort', 'layout', 'pr'];
+const ORDER = ['repos', 'vis', 'who', 'range', 'from', 'to', 'state', 'group', 'density', 'rel', 'types', 'q', 'sort', 'layout', 'pr', 'diff', 'file'];
 
 /** Serialize a full state to params, omitting defaults for the view. */
 function toParams(s: UrlState, view: ViewName): [string, string][] {
@@ -135,12 +145,16 @@ function toParams(s: UrlState, view: ViewName): [string, string][] {
   if (s.sort !== d.sort) out.push(['sort', s.sort]);
   if (s.layout !== d.layout) out.push(['layout', s.layout]);
   if (s.pr) out.push(['pr', s.pr]);
+  if (s.diff) {
+    out.push(['diff', s.diff]);
+    if (s.file) out.push(['file', s.file]);
+  }
   return out;
 }
 
-/** Encode keeping ',' readable; '#', '&', spaces etc. are escaped. */
+/** Encode keeping ',', '/' and '@' readable (lists, file paths, commit diffs); '#', '&', spaces etc. are escaped. */
 export function encodeParams(pairs: [string, string][]): string {
-  return pairs.map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v).replace(/%2C/gi, ',')}`).join('&');
+  return pairs.map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v).replace(/%2C/gi, ',').replace(/%2F/gi, '/').replace(/%40/g, '@')}`).join('&');
 }
 
 /** Apply a patch to a search string for a view; returns "?..." or "". */
@@ -170,12 +184,29 @@ export function carrySearch(search: string, keys = SCOPE_KEYS): string {
   return qs ? `?${qs}` : '';
 }
 
-/** Canonical query string (sorted, without `pr`) for comparing saved views. */
+/** Params for what's open on top of a view (details, diff): never part of a saved view. */
+export const OVERLAY_KEYS = ['pr', 'diff', 'file'];
+
+/** Canonical query string (sorted, without `pr`/`diff`/`file`) for comparing saved views. */
 export function canonicalQuery(query: string): string {
   const p = new URLSearchParams(query.replace(/^\?/, ''));
-  p.delete('pr');
+  for (const k of OVERLAY_KEYS) p.delete(k);
   const pairs = [...p.entries()].sort(([a], [b]) => a.localeCompare(b));
   return encodeParams(pairs);
+}
+
+export type DiffTarget =
+  | { kind: 'pr'; repo: string; number: number }
+  | { kind: 'commit'; repo: string; oid: string };
+
+/** A PR's diff param is its id ("<repo>#<n>", like `pr`); a commit's is "<repo>@<oid>". */
+export const commitDiffId = (repo: string, oid: string) => `${repo}@${oid}`;
+
+/** Parse a `diff` param; null when malformed. Commit oids may be abbreviated (7–40 hex chars). */
+export function parseDiffId(id: string | null): DiffTarget | null {
+  const m = id ? /^([^#@\s]+)(?:#([1-9]\d{0,9})|@([0-9a-f]{7,40}))$/i.exec(id) : null;
+  if (!m) return null;
+  return m[2] ? { kind: 'pr', repo: m[1], number: Number(m[2]) } : { kind: 'commit', repo: m[1], oid: m[3] };
 }
 
 export function useUrlState() {

@@ -44,11 +44,14 @@ the signed-in user are synced.
 ## Using the dashboard
 
 - **Pull requests:** read descriptions, filter by state, and open a detail drawer.
+- **Diffs:** open a PR's changes with **Files changed** in its drawer, or click a commit's SHA
+  in the drawer or Activity (modifier-click still opens GitHub). Diffs are fetched from GitHub
+  on demand and cached on the server; see **Settings → Diff cache** for its size limit and to clear it.
 - **Issues:** browse open or closed issues, expand descriptions, and filter by creator, repository, or date.
 - **Activity:** browse a combined timeline and jump to a day using the activity strip.
 - **Repositories and Insights:** explore repository activity, contributors and trends.
 - **Keyboard shortcuts:** `Ctrl/Cmd+K` opens search; `/` focuses the filter. In the PR
-  list, use `j`/`k` to move, `Enter` to open details, and `Esc` to close.
+  list, use `j`/`k` to move, `Enter` to open details, `d` to view the diff, and `Esc` to close.
 
 Use **Settings** to adjust the sync interval, backfill window and fork inclusion.
 Add any unlinked commit emails under **My commit emails** so those commits count as yours.
@@ -61,7 +64,7 @@ divider to resize it; its width is saved in your browser. You can also focus the
 divider and use arrow keys, or double-click it to reset the width.
 On narrow screens, the sidebar starts closed. Use the sidebar button to open it
 full screen, then choose a repository or tap Close to return to the list. PR details
-also use the full content area on narrow screens; close them to return to the list.
+and diffs also use the full content area on narrow screens; close them to return to the list.
 Mobile filter bars start as a single summary row; tap Filters to expand or collapse the controls.
 
 ## Configuration and deployment

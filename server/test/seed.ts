@@ -54,6 +54,7 @@ function pr(number: number, over: Partial<PrRecord> & Pick<PrRecord, 'state' | '
     changedFiles: 1,
     commitCount: 1,
     headRef: 'feature',
+    headOid: String(number).repeat(40).slice(0, 40),
     baseRef: 'main',
     labels: [],
     closingIssues: [],

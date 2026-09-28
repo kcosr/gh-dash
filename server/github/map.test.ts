@@ -37,12 +37,13 @@ describe('GraphQL → rows', () => {
     expect(upstream!.prNumber).toBeNull();
   });
 
-  it('maps pull requests with state, activityAt, labels, closing issues and commits', () => {
+  it('maps pull requests with state, activityAt, head commit, labels, closing issues and commits', () => {
     const [open, merged] = detail.pullRequests!.nodes.map(mapPullRequest);
     expect(open).toMatchObject({ number: 2, state: 'open', isDraft: true, activityAt: '2026-09-22T09:00:00Z', mergedBy: null, commitCount: 0 });
     expect(open!.author).toEqual({ login: 'bob', name: 'Bob B', email: null, avatarUrl: 'https://avatars.example/bob' });
     expect(merged).toMatchObject({
       state: 'merged', activityAt: '2026-09-21T10:00:00Z', mergedBy: 'alice', headRef: 'fix', baseRef: 'main', commitCount: 1,
+      headOid: 'aaaa000000000000000000000000000000000000',
       labels: [{ name: 'bug', color: 'd73a4a' }],
       closingIssues: [{ number: 10, title: 'Login broken', state: 'closed', url: 'https://github.com/alice/app/issues/10' }],
     });

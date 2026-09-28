@@ -443,7 +443,7 @@ export class DiffService {
           baseOid: first.parents[0]?.sha ?? null,
           headOid: first.sha,
           files: items.map(toFile),
-          totalFiles: items.length >= MAX_FILES ? await this.changedFiles(repo, first.sha, items.length) : items.length,
+          totalFiles: items.length >= MAX_FILES ? await this.changedFiles(repo, first.sha, items.length, signal) : items.length,
           additions: first.stats?.additions ?? items.reduce((n, f) => n + f.additions, 0),
           deletions: first.stats?.deletions ?? items.reduce((n, f) => n + f.deletions, 0),
           fetchedAt: new Date(this.now()).toISOString(),
@@ -455,10 +455,10 @@ export class DiffService {
     );
   }
 
-  /** The real file count of a commit whose list GitHub capped (1 GraphQL point); `fallback` if unavailable. */
-  private async changedFiles(repo: RepoRow, sha: string, fallback: number): Promise<number> {
+  /** The real file count of a commit whose list GitHub capped (1 GraphQL point); `fallback` if unavailable in time. */
+  private async changedFiles(repo: RepoRow, sha: string, fallback: number, signal: AbortSignal): Promise<number> {
     try {
-      const data = await this.github().graphql.query<ChangedFilesData>(CHANGED_FILES, { owner: repo.owner, name: repo.name, oid: sha });
+      const data = await this.github().graphql.query<ChangedFilesData>(CHANGED_FILES, { owner: repo.owner, name: repo.name, oid: sha }, { signal });
       return Math.max(fallback, data.repository?.object?.changedFilesIfAvailable ?? fallback);
     } catch (err) {
       this.log(`[diff] could not count the files of ${repo.name}@${sha.slice(0, 7)}: ${(err as Error).message}`);

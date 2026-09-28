@@ -485,6 +485,31 @@ describe('commit diffs', () => {
     expect(requests.at(-1)).toBe('/graphql');
   });
 
+  it('stops waiting for the file count at the build deadline', async () => {
+    const C = sha('c');
+    const routes: Record<string, Reply> = {};
+    for (let p = 1; p <= 10; p++) {
+      routes[p === 1 ? `/repos/alice/app/commits/${C}` : `/repositories/1/commits/${C}?page=${p}`] = page(
+        commit(C, [], Array.from({ length: 300 }, (_, i) => restFile(p * 1000 + i))),
+        `/repositories/1/commits/${C}?page=${p + 1}`,
+      );
+    }
+    let graphql = 0;
+    const { svc, logs } = setup(routes, {
+      buildTimeoutMs: 200,
+      // GraphQL never answers (until the request is aborted); its own timeout is a minute.
+      fetchImpl: (inner) => async (input, init) => {
+        if (!String(input).endsWith('/graphql')) return inner(input, init);
+        graphql++;
+        return new Promise<Response>((_, reject) => init!.signal!.addEventListener('abort', () => reject(new Error('aborted'))));
+      },
+    });
+    const diff = await Promise.race([diffOf(svc.commitDiff('app', C)), new Promise<never>((_, reject) => setTimeout(() => reject(new Error('still waiting')), 2000))]);
+    expect(diff.totalFiles).toBe(3000);
+    expect(graphql).toBe(1);
+    expect(logs.some((l) => l.startsWith('[diff] could not count the files of app@ccccccc: Gave up waiting for GitHub'))).toBe(true);
+  });
+
   it('rejects bad SHAs and reports unknown commits as 404', async () => {
     const { svc } = setup({ [`/repos/alice/app/commits/${sha('e')}`]: { status: 422, body: { message: `No commit found for SHA: ${sha('e')}` } } });
     for (const bad of ['xyz1234', '123456', sha('a') + 'a', 'HEAD']) expect(await status(svc.commitDiff('app', bad))).toBe(400);

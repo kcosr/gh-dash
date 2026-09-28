@@ -82,6 +82,23 @@ describe('GitHubClient', () => {
     expect(sleeps).toEqual([]);
   });
 
+  it("aborts at the caller's signal and doesn't retry after it", async () => {
+    const controller = new AbortController();
+    let calls = 0;
+    const c = new GitHubClient({
+      token: 't',
+      sleep: async () => {},
+      fetchImpl: async (_input, init) => {
+        calls++;
+        return new Promise<Response>((_, reject) => init!.signal!.addEventListener('abort', () => reject(new Error('aborted'))));
+      },
+    });
+    const pending = c.query('query { x }', {}, { signal: controller.signal });
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ kind: 'transient', message: 'Gave up waiting for GitHub (GraphQL)' });
+    expect(calls).toBe(1);
+  });
+
   it('gives up after maxAttempts', async () => {
     const { c, calls } = client([() => new Response('', { status: 503 })]);
     await expect(c.query('query { x }')).rejects.toMatchObject({ kind: 'transient' });

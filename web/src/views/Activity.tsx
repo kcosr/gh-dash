@@ -22,8 +22,8 @@ import { plainPreview } from '../lib/markdown';
 import { LAST_VISIT } from '../lib/storage';
 import type { ResolvedRange } from '../lib/range';
 import { addDays, dayDiff, fmtDateSmart, fmtDateTime, fmtShortDay, fmtTime, isoDate, parseDateOnly } from '../lib/time';
-import { useUrlState } from '../lib/urlState';
-import { actorName, actorSubject } from '../lib/util';
+import { commitDiffId, useUrlState } from '../lib/urlState';
+import { actorName, actorSubject, isPlainClick } from '../lib/util';
 
 const TYPES: { type: EventType; label: string; icon: IconName; color: string }[] = [
   { type: 'commit', label: 'Commits', icon: 'commit', color: 'var(--text-2)' },
@@ -139,6 +139,7 @@ export function ActivityView() {
   // Stable callbacks so memoized day sections / rows only re-render when their own data changes.
   const onExpand = useCallback((k: string) => setExpanded((e) => new Set(e).add(k)), []);
   const onOpenPr = useCallback((id: string) => set({ pr: id }), [set]);
+  const onOpenDiff = useCallback((id: string) => set({ diff: id }), [set]);
   const defaultBranch = useCallback((repo: string) => repoMap.get(repo)?.defaultBranch ?? 'main', [repoMap]);
 
   const toggleType = (t: EventType) => {
@@ -229,6 +230,7 @@ export function ActivityView() {
                   expanded={expanded}
                   onExpand={onExpand}
                   onOpenPr={onOpenPr}
+                  onOpenDiff={onOpenDiff}
                   activePr={s.pr}
                   defaultBranch={defaultBranch}
                 />
@@ -246,7 +248,7 @@ export function ActivityView() {
   );
 }
 
-const DaySection = memo(function DaySection({ day, count, dividerBefore, expanded, onExpand, onOpenPr, activePr, defaultBranch }: {
+const DaySection = memo(function DaySection({ day, count, dividerBefore, expanded, onExpand, onOpenPr, onOpenDiff, activePr, defaultBranch }: {
   day: FeedDay;
   /** Events that day: facets.byDay when available (complete even while later pages are unloaded). */
   count: number;
@@ -254,6 +256,7 @@ const DaySection = memo(function DaySection({ day, count, dividerBefore, expande
   expanded: Set<string>;
   onExpand: (key: string) => void;
   onOpenPr: (id: string) => void;
+  onOpenDiff: (id: string) => void;
   activePr: string | null;
   defaultBranch: (repo: string) => string;
 }) {
@@ -274,6 +277,7 @@ const DaySection = memo(function DaySection({ day, count, dividerBefore, expande
               expanded={expanded.has(r.key)}
               onExpand={onExpand}
               onOpenPr={onOpenPr}
+              onOpenDiff={onOpenDiff}
               active={!!activePr && r.kind === 'event' && r.event.type === 'pr' && r.event.pr.id === activePr}
               defaultBranch={defaultBranch}
             />
@@ -286,17 +290,23 @@ const DaySection = memo(function DaySection({ day, count, dividerBefore, expande
 
 const Who = ({ actor }: { actor: Actor | null }) => <><Avatar actor={actor} size={18} /><b>{actorSubject(actor)}</b></>;
 
-const FeedItem = memo(function FeedItem({ row, expanded, onExpand, onOpenPr, active, defaultBranch }: {
+const FeedItem = memo(function FeedItem({ row, expanded, onExpand, onOpenPr, onOpenDiff, active, defaultBranch }: {
   row: FeedRow;
   expanded: boolean;
   onExpand: (key: string) => void;
   onOpenPr: (id: string) => void;
+  onOpenDiff: (id: string) => void;
   /** This row's PR is open in the drawer. */
   active: boolean;
   defaultBranch: (repo: string) => string;
 }) {
   let cls = '', icon: IconName = 'commit', text: ReactNode = null, sub: ReactNode = null;
   const repo = (name: string) => <RepoChip name={name} className="ev-repo" />;
+  // Commit links open the diff in-app; modifier and middle clicks still go to GitHub.
+  const diffLink = (name: string, c: { oid: string; url: string }, className: string, children: ReactNode) => (
+    <a className={className} href={c.url} target="_blank" rel="noopener noreferrer" data-diff={commitDiffId(name, c.oid)} title="View the commit's diff"
+      onClick={(ev) => { if (isPlainClick(ev)) { ev.preventDefault(); onOpenDiff(commitDiffId(name, c.oid)); } }}>{children}</a>
+  );
 
   if (row.kind === 'commits') {
     const n = row.commits.length;
@@ -307,7 +317,7 @@ const FeedItem = memo(function FeedItem({ row, expanded, onExpand, onOpenPr, act
       <div className="c-box">
         {row.commits.slice(0, open ? n : COMMITS_SHOWN).map((c) => (
           <div key={c.oid} className="c-li">
-            <a className="sha" href={c.url} target="_blank" rel="noopener noreferrer">{c.shortOid || c.oid.slice(0, 7)}</a>
+            {diffLink(row.repo, c, 'sha', c.shortOid || c.oid.slice(0, 7))}
             <span title={c.body ? `${c.headline}\n\n${c.body}` : c.headline}>{c.headline}</span>
             <time dateTime={c.committedAt} title={fmtDateTime(c.committedAt)}>{fmtTime(c.committedAt)}</time>
           </div>
@@ -365,7 +375,7 @@ const FeedItem = memo(function FeedItem({ row, expanded, onExpand, onOpenPr, act
     } else if (e.type === 'commit') {
       // (normally aggregated; kept for completeness)
       cls = 'commit'; icon = 'commit';
-      text = <><Who actor={e.actor} /> pushed <a className="t" href={e.commit.url} target="_blank" rel="noopener noreferrer">{e.commit.headline}</a> to {repo(e.repo)}</>;
+      text = <><Who actor={e.actor} /> pushed {diffLink(e.repo, e.commit, 't', e.commit.headline)} to {repo(e.repo)}</>;
     } else {
       cls = 'star'; icon = 'starFill';
       text = <><Avatar actor={e.actor} size={18} /><b>{actorName(e.actor)}</b> starred {repo(e.repo)}</>;

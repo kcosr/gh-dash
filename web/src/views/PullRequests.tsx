@@ -76,6 +76,10 @@ export function PullRequestsView() {
       } else if (e.key === 'o' && cursor >= 0) {
         e.preventDefault();
         window.open(order[cursor].url, '_blank', 'noopener');
+      } else if (e.key === 'd' && cursor >= 0 && !s.pr) {
+        // With details open, the drawer handles `d` (for its PR).
+        e.preventDefault();
+        set({ diff: order[cursor].id });
       }
     };
     document.addEventListener('keydown', onKey);
@@ -207,6 +211,7 @@ export function PullRequestsView() {
               <div className="list-foot">
                 <span><kbd>j</kbd> <kbd>k</kbd> move</span>
                 <span><kbd>↵</kbd> details</span>
+                <span><kbd>d</kbd> diff</span>
                 <span><kbd>o</kbd> open on GitHub</span>
                 <span><kbd>/</kbd> filter</span>
                 <span><kbd>{MOD_K}</kbd> jump anywhere</span>

@@ -25,9 +25,10 @@ changing your repositories.
 ## Getting started
 
 You need **Node.js 22.13 or newer** and a GitHub token with read access to your repositories.
-For a fine-grained token, select your repositories and grant **Metadata**, **Contents**,
+For a fine-grained token, choose **All repositories** and grant **Metadata**, **Contents**,
 **Pull requests** and **Issues** read access. Set it in the `GITHUB_TOKEN` environment
-variable, or sign in with `gh auth login` if you use the GitHub CLI.
+variable or a token file (`GITHUB_TOKEN_FILE`), or sign in with `gh auth login` if you use
+the GitHub CLI. For a desktop window instead of a server, see [Desktop app](#desktop-app).
 
 From the project directory:
 
@@ -171,8 +172,10 @@ remembered token in its own folder, separate from the headless server's `~/.conf
 
 The database is `data/gh-dash.db` in that folder unless you pick another data folder in
 **Settings**. Picking a folder doesn't move an existing database: gh-dash uses the one in
-that folder or starts a new one. The app writes `config.json` from Settings; environment
-variables still override it. Logs, including the server's, are in `logs/main.log`.
+that folder or starts a new one. The app writes `config.json` from Settings. Unlike the
+headless server, it ignores `HOST`, `PORT`, `GH_DASH_*` and the other configuration variables
+from its environment, so Settings always shows what's in effect; `GITHUB_TOKEN` still applies.
+Logs, including the server's, are in `logs/main.log`.
 
 **GitHub account.** In **Settings → GitHub account**, either use the GitHub CLI (`gh auth token`;
 run `gh auth login` first) or paste a token. **Remember on this device** stores a pasted token
@@ -198,10 +201,11 @@ Troubleshooting: `GH_DASH_DEBUG=1` enables reload and DevTools in the View menu,
 ## Development
 
 ```sh
-npm run dev        # API on :4780, web app on :5173
+npm run dev        # API on :4780, web app on :5173 (tsx watch + Vite)
 npm run typecheck
 npm test
-npm run build
+npm run build      # web app, plus the bundled server and desktop main process in dist/
+npm run desktop    # build, then run the desktop app
 ```
 
 ## License

@@ -109,6 +109,59 @@ The **API** button shows the current view's URL. Lists can be exported as Markdo
 or CSV. Explore the endpoint reference at `/api/docs` and the OpenAPI document at
 `/api/v1/openapi.json` on your running instance.
 
+## Desktop app
+
+The desktop app runs gh-dash in its own window on macOS, Windows and Linux. It starts the
+server in the background and talks to it privately; nothing listens on the network unless you
+turn on the **Local API**. Links open in your browser.
+
+```sh
+npm ci
+npm run desktop        # build, then run the app from the checkout
+npm run dist:desktop   # build installers for this OS into release/
+```
+
+`npm run dist:desktop` produces an AppImage and a `.deb` on Linux, an NSIS installer on
+Windows, and a `.dmg` and `.zip` on macOS. The [Desktop app workflow](.github/workflows/desktop.yml)
+builds all three on pull requests. The builds are not signed: macOS asks you to confirm opening
+the app, and Windows SmartScreen warns. Signing and notarization are not set up yet.
+
+`npm ci` doesn't download Electron itself: Electron fetches its binary the first time it
+runs (`npm run desktop`), or run `npx install-electron` beforehand.
+
+**Where things live.** The app keeps its settings (`config.json`), window size, logs and any
+remembered token in its own folder, separate from the headless server's `~/.config/gh-dash`:
+
+| Linux | macOS | Windows |
+| --- | --- | --- |
+| `~/.config/gh-dash-desktop` | `~/Library/Application Support/gh-dash-desktop` | `%APPDATA%\gh-dash-desktop` |
+
+The database is `data/gh-dash.db` in that folder unless you pick another data folder in
+**Settings**. Picking a folder doesn't move an existing database: gh-dash uses the one in
+that folder or starts a new one. The app writes `config.json` from Settings; environment
+variables still override it. Logs, including the server's, are in `logs/main.log`.
+
+**GitHub account.** In **Settings → GitHub account**, either use the GitHub CLI (`gh auth token`;
+run `gh auth login` first) or paste a token. **Remember on this device** stores a pasted token
+encrypted with the system keychain (macOS Keychain, Windows DPAPI, or GNOME Keyring/KWallet
+on Linux). Without a keychain, as on Linux desktops that have neither, the token is kept only
+until you quit. On macOS, an unsigned build may ask for keychain access after each update; if
+you deny it, the app forgets the token and asks again. `GITHUB_TOKEN` in the app's environment
+overrides both.
+
+**Local API.** Turn it on in **Settings** to reach the API from browsers, curl and scripts
+(`/api/docs`). It listens on `127.0.0.1` only, unless you allow other devices on the network,
+which requires a password. Add an API key for scripts, and list any host names other than
+`localhost` and IP addresses under allowed hosts. If its port is taken when the app starts, the
+app offers to turn the Local API off.
+
+**Linux.** When `/dev/shm` is smaller than 512 MB, as in many containers, the app passes
+`--disable-dev-shm-usage` to Chromium itself. The AppImage needs FUSE; without it, run it with
+`--appimage-extract-and-run`.
+
+Troubleshooting: `GH_DASH_DEBUG=1` enables reload and DevTools in the View menu, and
+`GH_DASH_DESKTOP_USER_DATA=/absolute/path` runs the app with a separate settings folder.
+
 ## Development
 
 ```sh

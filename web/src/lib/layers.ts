@@ -3,25 +3,30 @@
  * global Escape handler closes the top-most one. Blocking layers also disable
  * list shortcuts (j/k/Enter/o) while they're open.
  */
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { RefObject } from 'react';
 
 interface Layer { id: number; close: () => void; blocking: boolean }
 const stack: Layer[] = [];
 let seq = 0;
 
-export function useLayer(active: boolean, close: () => void, blocking = true) {
+/** Returns a stable `isTop()` check, for layers with their own shortcuts (true only while nothing is open above). */
+export function useLayer(active: boolean, close: () => void, blocking = true): () => boolean {
   const ref = useRef(close);
   ref.current = close;
+  const idRef = useRef(0);
   useEffect(() => {
     if (!active) return;
     const layer: Layer = { id: ++seq, close: () => ref.current(), blocking };
     stack.push(layer);
+    idRef.current = layer.id;
     return () => {
       const i = stack.findIndex((l) => l.id === layer.id);
       if (i >= 0) stack.splice(i, 1);
+      idRef.current = 0;
     };
   }, [active, blocking]);
+  return useCallback(() => idRef.current !== 0 && topLayer()?.id === idRef.current, []);
 }
 
 export const topLayer = (): Layer | undefined => stack[stack.length - 1];

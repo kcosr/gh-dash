@@ -96,6 +96,7 @@ const schemas: Record<string, Schema> = {
     myEmails: arr(str()),
     myEmailsFromEnv: { ...arr(str()), readOnly: true, description: 'Emails from GH_DASH_MY_EMAILS; always count as "me". Ignored in PATCH.' },
     includeForks: bool,
+    diffCacheMb: { ...int(), minimum: 10, maximum: 10000, description: 'Diff cache size cap in MB' },
   }, ['myEmailsFromEnv']),
   Me: obj({ login: str(), name: nullable(str()), avatarUrl: nullable(str()), tokenSource: enumOf('env', 'gh-cli', 'none') }),
   SyncStatus: obj({

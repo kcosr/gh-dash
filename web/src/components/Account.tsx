@@ -13,27 +13,37 @@ import { useToast } from './Toasts';
 
 const connected = (a: AccountStatus) => (a.login ? `Connected as ${a.login}` : 'Connected');
 
-/** "Use GitHub CLI" with who gh is signed in as, or why it can't be used. */
-export function GhCliChoice({ account }: { account: AccountStatus }) {
+/**
+ * "Use GitHub CLI" with who gh is signed in as, or why it can't be used. A rejected switch is explained here:
+ * the account shown elsewhere stays the one still in use.
+ */
+export function GhCliChoice({ account, idPrefix = 'gh-cli' }: { account: AccountStatus; idPrefix?: string }) {
   const { ghCli } = useDesktopActions();
   const toast = useToast();
+  const [error, setError] = useState<string | null>(null);
   const reason = ghUnavailable(account);
   const inUse = account.source === 'gh-cli';
-  const run = () => ghCli.mutate(undefined, {
-    onSuccess: (r) => (r.ok ? toast(connected(r.account)) : toast(r.account.error ?? "The GitHub CLI didn't return a usable token", { error: true })),
-    onError: (e) => toast(bridgeError(e), { error: true }),
-  });
+  const run = () => {
+    setError(null);
+    ghCli.mutate(undefined, {
+      onSuccess: (r) => (r.ok ? toast(connected(r.account)) : setError(r.account.error ?? "The GitHub CLI didn't return a usable token.")),
+      onError: (e) => setError(bridgeError(e)),
+    });
+  };
+  const shownError = inUse ? null : error;
   return (
     <span className="acct-choice">
-      <button type="button" className="btn" onClick={run} disabled={!!reason || inUse || ghCli.isPending} aria-describedby="gh-cli-note">
+      <button type="button" className="btn" onClick={run} disabled={!!reason || inUse || ghCli.isPending}
+        aria-describedby={shownError ? `${idPrefix}-note ${idPrefix}-err` : `${idPrefix}-note`}>
         <Icon name={inUse ? 'check' : 'key'} />{inUse ? 'Using GitHub CLI' : ghCli.isPending ? 'Connecting…' : 'Use GitHub CLI'}
       </button>
-      <small id="gh-cli-note" className="muted">
+      <small id={`${idPrefix}-note`} className="muted">
         {account.locked ? null
           : !account.gh.available ? <>Not found: get it from <a href="https://cli.github.com" target="_blank" rel="noopener noreferrer">cli.github.com</a></>
             : account.gh.login ? <>Signed in as <b>{account.gh.login}</b></>
               : <>Run <code>gh auth login</code> first.</>}
       </small>
+      {shownError && <span id={`${idPrefix}-err`} className="form-err" role="alert">{shownError}</span>}
     </span>
   );
 }

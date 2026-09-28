@@ -5,7 +5,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { QueryClient } from '@tanstack/react-query';
 import type { AccountStatus } from '../../../shared/api';
-import type { DesktopBridge, DesktopConfigPatch, DesktopState } from '../../../shared/desktop';
+import type { DesktopBridge, DesktopConfigPatch, DesktopState, DesktopTokenResult } from '../../../shared/desktop';
 import { invalidateAccountData, qk } from './hooks';
 
 /** The bridge, only inside the desktop app. */
@@ -30,25 +30,41 @@ export function useDesktop(): { bridge: DesktopBridge | null; state: DesktopStat
   return { bridge, state: q.data, loading: !!bridge && q.isPending };
 }
 
-/** After the token changed: the account from the answer, then everything that depends on it. */
-function tokenChanged(qc: QueryClient, account: AccountStatus) {
-  qc.setQueryData(qk.account, account);
+/**
+ * After the token changed: the account from the answer, then everything that depends on it. With null the
+ * account is refetched from the server instead (see tokenResult).
+ */
+function tokenChanged(qc: QueryClient, account: AccountStatus | null) {
+  if (account) qc.setQueryData(qk.account, account);
+  else void qc.invalidateQueries({ queryKey: qk.account });
   invalidateAccountData(qc);
   void qc.invalidateQueries({ queryKey: qk.instance });
   void qc.invalidateQueries({ queryKey: qk.desktop });
+}
+
+/**
+ * Applies the answer to "use GitHub CLI" or a pasted token. When GitHub rejected it, main has already put the
+ * previous token back, and `r.account` describes the rejected attempt: the form that made it shows its error,
+ * while the cache keeps the active account and everything is refetched (a poll may have caught the attempt).
+ */
+export function tokenResult(qc: QueryClient, r: DesktopTokenResult) {
+  tokenChanged(qc, r.ok ? r.account : null);
 }
 
 /** Token and instance actions of the desktop app. Each rejects outside the app. */
 export function useDesktopActions() {
   const bridge = getBridge();
   const qc = useQueryClient();
+  // A failed call may have left the server on either token: refetch what it uses.
   const ghCli = useMutation({
     mutationFn: () => need(bridge).useGitHubCli(),
-    onSuccess: (r) => tokenChanged(qc, r.account),
+    onSuccess: (r) => tokenResult(qc, r),
+    onError: () => tokenChanged(qc, null),
   });
   const setToken = useMutation({
     mutationFn: ({ token, remember }: { token: string; remember: boolean }) => need(bridge).setToken(token, remember),
-    onSuccess: (r) => tokenChanged(qc, r.account),
+    onSuccess: (r) => tokenResult(qc, r),
+    onError: () => tokenChanged(qc, null),
   });
   const signOut = useMutation({
     mutationFn: () => need(bridge).signOut(),

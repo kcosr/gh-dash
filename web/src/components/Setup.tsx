@@ -34,7 +34,7 @@ export function NoTokenCard() {
             <>
               <h3>GitHub CLI</h3>
               <p>Use the account you're signed in to with <code>gh</code>.</p>
-              {account ? <GhCliChoice account={account} /> : <p className="muted">Looking for the GitHub CLI…</p>}
+              {account ? <GhCliChoice account={account} idPrefix="setup-gh" /> : <p className="muted">Looking for the GitHub CLI…</p>}
               <h3>Personal access token</h3>
               <p><CreateTokenNote /> Then paste it here:</p>
               <TokenForm secureStorage={state?.secureStorage} idPrefix="setup-tok" />

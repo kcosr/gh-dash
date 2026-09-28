@@ -130,7 +130,7 @@ export function AccountSection({ rateLimit }: { rateLimit: SyncStatus['rateLimit
               <div className="set-form set-sub">
                 <div className="set-row">
                   <span className="set-l">GitHub CLI<small>Use the account you're signed in to with <code>gh</code>.</small></span>
-                  <span className="set-c grow"><GhCliChoice account={a} /></span>
+                  <span className="set-c grow"><GhCliChoice account={a} idPrefix="set-gh" /></span>
                 </div>
                 <div className="set-row top">
                   <span className="set-l">Personal access token<small>{a.source === 'app' ? 'In use. Paste another to replace it.' : "Paste a token. It's never shown again."}</small></span>

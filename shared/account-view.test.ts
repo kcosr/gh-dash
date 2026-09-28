@@ -1,6 +1,9 @@
+import { QueryClient } from '@tanstack/react-query';
 import { describe, expect, it } from 'vitest';
-import type { InstanceInfo } from './api';
+import type { AccountStatus, InstanceInfo } from './api';
 import type { DesktopConfig } from './desktop';
+import { tokenResult } from '../web/src/api/desktop';
+import { qk } from '../web/src/api/hooks';
 import {
   apiLink, authLabel, bridgeError, ghUnavailable, instanceForm, instancePatch, instanceProblems, parseHosts, resolveApiBase,
   settingSource, tokenAccess, tokenExpiry, tokenKindLabel, tokenSourceLabel,
@@ -150,5 +153,39 @@ describe('desktop instance form', () => {
     expect(parseHosts('MyBox.local, dash.example.com:8443  nas.')).toEqual(['mybox.local', 'dash.example.com', 'nas']);
     expect(parseHosts('bad_name, -x.com, ok-1.lan')).toEqual(['ok-1.lan']);
     expect(parseHosts('  ')).toEqual([]);
+  });
+});
+
+describe('desktop token answers', () => {
+  const account = (over: Partial<AccountStatus> = {}): AccountStatus => ({
+    source: 'none', choice: null, locked: false, login: null, name: null, avatarUrl: null, dbLogin: null, mismatch: false, kind: null,
+    expiresAt: null, scopes: null, repos: null, error: null, gh: { available: true, path: '/usr/bin/gh', login: 'me' }, tokenFile: null, checkedAt: null,
+    ...over,
+  });
+  const active = account({ source: 'gh-cli', choice: 'gh', login: 'me', kind: 'oauth' });
+  const setup = () => {
+    const qc = new QueryClient();
+    for (const key of [qk.account, qk.me, qk.sync]) qc.setQueryData(key, key === qk.account ? active : {});
+    const stale = (key: readonly unknown[]) => qc.getQueryState(key)?.isInvalidated;
+    return { qc, stale };
+  };
+
+  it('caches the account of an accepted token and refetches what depends on it', () => {
+    const { qc, stale } = setup();
+    const next = account({ source: 'app', choice: 'app', login: 'other', kind: 'fine-grained' });
+    tokenResult(qc, { ok: true, account: next, remembered: true });
+    expect(qc.getQueryData(qk.account)).toEqual(next);
+    expect(stale(qk.account)).toBe(false);
+    expect(stale(qk.me)).toBe(true);
+    expect(stale(qk.sync)).toBe(true);
+  });
+
+  it('keeps the active account after a rejected token and refetches it from the server', () => {
+    const { qc, stale } = setup();
+    tokenResult(qc, { ok: false, account: account({ source: 'app', choice: 'app', error: 'Bad credentials' }), remembered: false });
+    expect(qc.getQueryData(qk.account)).toEqual(active);
+    expect(stale(qk.account)).toBe(true);
+    expect(stale(qk.me)).toBe(true);
+    expect(stale(qk.sync)).toBe(true);
   });
 });

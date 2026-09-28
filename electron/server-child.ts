@@ -1,0 +1,247 @@
+/**
+ * The server child (dist/server/desktop.mjs in a utilityProcess): start, ready/fatal, restart with backoff after
+ * crashes, graceful shutdown, and the set-token round trip. Protocol: shared/desktop.ts (MainToServer/ServerToMain).
+ */
+import { utilityProcess, type UtilityProcess } from 'electron';
+import type { AccountStatus, TokenChoice } from '../shared/api';
+import type { MainToServer, ServerToMain } from '../shared/desktop';
+
+export type ChildStatus = 'idle' | 'starting' | 'running' | 'stopping' | 'failed';
+export type StartResult = { ok: true; apiUrl: string | null } | { ok: false; message: string };
+export interface TokenResult {
+  ok: boolean;
+  account: AccountStatus;
+}
+
+export interface ServerChildOptions {
+  script: string;
+  /** Environment for each start (read fresh, so a restart picks up changes). */
+  env: () => Record<string, string>;
+  log: (line: string) => void;
+  /** Called on every successful start (first start, config restart, crash recovery), before requests flow. */
+  onReady?: (apiUrl: string | null) => void;
+  /** A database migration or a slow disk can take a while; a hung child is killed after this. */
+  startTimeoutMs?: number;
+}
+
+/** Crash-restart budget: this many unexpected exits within the window, then give up (error page). */
+const MAX_CRASHES = 4;
+const CRASH_WINDOW_MS = 5 * 60_000;
+const BACKOFF_MS = [500, 1_000, 3_000, 8_000];
+/** gh may wait on a keyring prompt (60 s in the server); leave room for the GitHub check after it. */
+const TOKEN_TIMEOUT_MS = 90_000;
+
+type Outcome = { kind: 'ready'; apiUrl: string | null } | { kind: 'fatal'; message: string } | { kind: 'exit'; message: string };
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+export class ServerChild {
+  status: ChildStatus = 'idle';
+  apiUrl: string | null = null;
+  /** Why the last start failed (fatal message, crash); cleared by a successful start. */
+  lastError: string | null = null;
+  private proc: UtilityProcess | null = null;
+  private exited: Promise<number> | null = null;
+  private starting: Promise<StartResult> | null = null;
+  private stopRequested = false;
+  private crashes: number[] = [];
+  private waiters: (() => void)[] = [];
+  private nextId = 1;
+  private pending = new Map<number, { resolve: (r: TokenResult) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }>();
+
+  constructor(private readonly opts: ServerChildOptions) {}
+
+  get pid(): number | undefined {
+    return this.proc?.pid;
+  }
+
+  /** Resolves once the child is running, failed or stopped (i.e. not in the middle of starting or stopping). */
+  async whenSettled(): Promise<ChildStatus> {
+    while (this.status === 'starting' || this.status === 'stopping') await new Promise<void>((r) => this.waiters.push(r));
+    return this.status;
+  }
+
+  start(): Promise<StartResult> {
+    if (this.status === 'running') return Promise.resolve({ ok: true, apiUrl: this.apiUrl });
+    this.stopRequested = false;
+    this.starting ??= this.startLoop().finally(() => (this.starting = null));
+    return this.starting;
+  }
+
+  async restart(): Promise<StartResult> {
+    await this.stop();
+    return this.start();
+  }
+
+  /** `shutdown` message, then wait for the exit; kill after the timeout. */
+  async stop(timeoutMs = 5_000): Promise<void> {
+    this.stopRequested = true;
+    const proc = this.proc;
+    const exited = this.exited;
+    if (proc && exited) {
+      const failed = this.status === 'failed';
+      this.setStatus('stopping');
+      const timer = setTimeout(() => {
+        this.opts.log(`[server] did not exit within ${timeoutMs} ms; killing it`);
+        proc.kill();
+      }, timeoutMs);
+      // A child that reported fatal is already on its way out.
+      if (!failed) {
+        try {
+          this.send({ type: 'shutdown' });
+        } catch {
+          proc.kill();
+        }
+      }
+      const code = await exited;
+      clearTimeout(timer);
+      this.opts.log(`[server] stopped (exit code ${code})`);
+    }
+    await this.starting;
+    this.apiUrl = null;
+    this.setStatus('idle');
+  }
+
+  /** Sends set-token once the child is running, and waits for the matching token-result. */
+  async setToken(choice: TokenChoice | null, token?: string | null): Promise<TokenResult> {
+    if ((await this.whenSettled()) !== 'running') throw new Error(this.lastError ?? 'The gh-dash server is not running.');
+    return this.sendSetToken(choice, token);
+  }
+
+  /** Sends set-token right away (from onReady, before any request is forwarded). */
+  sendSetToken(choice: TokenChoice | null, token?: string | null): Promise<TokenResult> {
+    const id = this.nextId++;
+    return new Promise<TokenResult>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error('The gh-dash server did not answer in time.'));
+      }, TOKEN_TIMEOUT_MS);
+      this.pending.set(id, { resolve, reject, timer });
+      try {
+        this.send(token === undefined ? { type: 'set-token', id, choice } : { type: 'set-token', id, choice, token });
+      } catch (error) {
+        clearTimeout(timer);
+        this.pending.delete(id);
+        reject(error as Error);
+      }
+    });
+  }
+
+  private send(message: MainToServer) {
+    if (!this.proc) throw new Error('The gh-dash server is not running.');
+    this.proc.postMessage(message);
+  }
+
+  private setStatus(status: ChildStatus) {
+    this.status = status;
+    if (status === 'starting' || status === 'stopping') return;
+    for (const wake of this.waiters.splice(0)) wake();
+  }
+
+  private async startLoop(): Promise<StartResult> {
+    for (;;) {
+      this.setStatus('starting');
+      const outcome = await this.spawnOnce();
+      if (this.stopRequested) return { ok: false, message: 'stopped' };
+      if (outcome.kind === 'ready') {
+        this.apiUrl = outcome.apiUrl;
+        this.lastError = null;
+        this.opts.onReady?.(outcome.apiUrl);
+        this.setStatus('running');
+        return { ok: true, apiUrl: outcome.apiUrl };
+      }
+      this.lastError = outcome.message;
+      // A fatal message is a verdict (bad config, locked database): retrying won't help until something changes.
+      if (outcome.kind === 'fatal' || !this.crashBudget()) {
+        this.opts.log(`[server] failed to start: ${outcome.message}`);
+        this.setStatus('failed');
+        return { ok: false, message: outcome.message };
+      }
+      const delay = BACKOFF_MS[Math.min(this.crashes.length, BACKOFF_MS.length) - 1]!;
+      this.opts.log(`[server] ${outcome.message}; retrying in ${delay} ms`);
+      await sleep(delay);
+      if (this.stopRequested) return { ok: false, message: 'stopped' };
+    }
+  }
+
+  /** Records an unexpected exit; false once the budget is spent. */
+  private crashBudget(): boolean {
+    const now = Date.now();
+    this.crashes = [...this.crashes.filter((t) => now - t < CRASH_WINDOW_MS), now];
+    return this.crashes.length <= MAX_CRASHES;
+  }
+
+  private spawnOnce(): Promise<Outcome> {
+    const t0 = Date.now();
+    const proc = utilityProcess.fork(this.opts.script, [], { serviceName: 'gh-dash-server', stdio: 'pipe', env: this.opts.env() });
+    this.proc = proc;
+    this.exited = new Promise<number>((resolve) => proc.once('exit', resolve));
+    for (const stream of [proc.stdout, proc.stderr]) {
+      let buffered = '';
+      stream?.setEncoding('utf8');
+      stream?.on('data', (chunk: string) => {
+        const lines = (buffered + chunk).split('\n');
+        buffered = lines.pop()!;
+        for (const line of lines) if (line) this.opts.log(`[server] ${line}`);
+      });
+    }
+    let settled = false;
+    let fatal: string | null = null;
+    return new Promise<Outcome>((resolve) => {
+      const done = (outcome: Outcome) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(outcome);
+      };
+      const timeoutMs = this.opts.startTimeoutMs ?? 120_000;
+      const timer = setTimeout(() => {
+        done({ kind: 'fatal', message: `The server did not start within ${Math.round(timeoutMs / 1000)} s.` });
+        proc.kill();
+      }, timeoutMs);
+      proc.once('spawn', () => this.opts.log(`[server] pid ${proc.pid}: ${this.opts.script}`));
+      proc.on('message', (message: ServerToMain) => {
+        if (message?.type === 'ready') {
+          this.opts.log(`[server] ready in ${Date.now() - t0} ms${message.apiUrl ? ` · Local API ${message.apiUrl}` : ''}`);
+          done({ kind: 'ready', apiUrl: typeof message.apiUrl === 'string' ? message.apiUrl : null });
+        } else if (message?.type === 'fatal') {
+          fatal = String(message.message);
+          done({ kind: 'fatal', message: fatal });
+        } else if (message?.type === 'token-result') {
+          const entry = this.pending.get(message.id);
+          if (!entry) return;
+          this.pending.delete(message.id);
+          clearTimeout(entry.timer);
+          entry.resolve({ ok: message.ok === true, account: message.account });
+        }
+      });
+      proc.once('exit', (code) => {
+        if (this.proc === proc) this.proc = null;
+        for (const [id, entry] of this.pending) {
+          clearTimeout(entry.timer);
+          entry.reject(new Error('The gh-dash server stopped before answering.'));
+          this.pending.delete(id);
+        }
+        if (!settled) {
+          done(fatal ? { kind: 'fatal', message: fatal } : { kind: 'exit', message: `The server exited during startup (code ${code})` });
+        } else if (this.status === 'running' && !this.stopRequested) {
+          this.opts.log(`[server] exited unexpectedly (code ${code})`);
+          this.apiUrl = null;
+          if (this.crashBudget()) {
+            this.setStatus('starting');
+            const delay = BACKOFF_MS[Math.min(this.crashes.length, BACKOFF_MS.length) - 1]!;
+            // Requests wait (whenSettled) while the replacement starts.
+            void sleep(delay).then(() => {
+              if (this.stopRequested) return;
+              this.status = 'idle';
+              void this.start();
+            });
+          } else {
+            this.lastError = `The server stopped unexpectedly (exit code ${code}) and kept failing.`;
+            this.setStatus('failed');
+          }
+        }
+      });
+    });
+  }
+}

@@ -6,17 +6,27 @@
 #   sudo systemctl daemon-reload && sudo systemctl enable --now gh-dash
 #   journalctl -u gh-dash -f
 #
-# Build the web app once before starting (and after updates): npm ci && npm run build
+# Build before starting, and after every update: npm ci && npm run build (npm start runs what it builds).
 #
 # /etc/gh-dash/env (KEY=value lines; keep it mode 600, it holds secrets):
 #   GITHUB_TOKEN=github_pat_...      # fine-grained, read-only: Metadata, Contents, Pull requests, Issues
-#                                    # (without it the service falls back to `gh auth token` for User=)
+#                                    # (or a token file, see below; without either, `gh auth token` for User=)
 #   PORT=4780
 #   HOST=127.0.0.1                   # keep on localhost behind nginx
 #   TZ=UTC                          # default bucketing timezone when clients send no tz
 #   GH_DASH_PASSWORD=...             # optional UI login when exposed beyond localhost
 #   GH_DASH_API_KEY=...              # optional; API clients send Authorization: Bearer <key> or X-API-Key
 #   GH_DASH_MY_EMAILS=me@laptop.example,me@work.example   # optional; commit emails that count as "you"
+#
+# A token file instead of GITHUB_TOKEN keeps the token out of the environment: uncomment LoadCredential= and
+# GITHUB_TOKEN_FILE= below, and put just the token in /etc/gh-dash/github-token (root-owned, mode 600; systemd
+# hands the service a private copy, so replacing the token needs a restart). A GITHUB_TOKEN_FILE the service user
+# can read directly is re-read on use instead.
+#
+# Settings can also live in a JSON file (keys like "port", "allowedHosts", "tokenFile"; see the README); the
+# environment wins over it. The service reads it as User=, so for example:
+#   sudo chgrp gh-dash /etc/gh-dash && sudo install -m 600 -o gh-dash /dev/null /etc/gh-dash/config.json
+# then uncomment GH_DASH_CONFIG= below. Without it, User='s own ~/.config/gh-dash/config.json is read if present.
 #
 # Use an existing service account for User=, and adjust WorkingDirectory= and PATH.
 # This system service uses /etc/gh-dash/env and /var/lib/gh-dash/gh-dash.db.
@@ -38,6 +48,9 @@ StateDirectory=gh-dash
 StateDirectoryMode=0700
 Environment=PATH=/opt/node/bin:/usr/local/bin:/usr/bin:/bin
 Environment=NPM_CONFIG_UPDATE_NOTIFIER=false
+#LoadCredential=github-token:/etc/gh-dash/github-token
+#Environment=GITHUB_TOKEN_FILE=%d/github-token
+#Environment=GH_DASH_CONFIG=/etc/gh-dash/config.json
 ExecStart=/usr/bin/env npm start
 Restart=on-failure
 RestartSec=5

@@ -2,21 +2,17 @@ import { useMemo, useState } from 'react';
 import type { Repo } from '../../../shared/api';
 import {
   defaultScope,
-  useActivityFeed,
   useCreateSet,
   useCreateView,
   useDeleteSet,
   useDeleteView,
-  usePrList,
   useRepos,
   useSets,
   useSettings,
   useViews,
 } from '../api/hooks';
-import { activityParams, prFetchParams, scopeParams } from '../lib/apiQuery';
 import { DAY } from '../lib/time';
 import { canonicalQuery, encodeParams, useUrlState } from '../lib/urlState';
-import type { UrlState, ViewName } from '../lib/urlState';
 import { cx } from '../lib/util';
 import { Icon } from './Icon';
 import { Seg } from './Seg';
@@ -25,29 +21,15 @@ import { useUI } from './ui';
 
 const ACTIVE_DAYS = 180;
 
-/** Per-repo counts for the current view, from `facets.byRepo` (which ignores the repos filter). */
-function useSidebarCounts(view: ViewName, s: UrlState): { counts: Record<string, number> | undefined; note: string } {
-  const prs = usePrList(prFetchParams(s), view === 'prs');
-  const feed = useActivityFeed(activityParams(s), view === 'activity');
-  const merged = usePrList({ ...scopeParams(s, { q: false }), state: 'merged', limit: 1 }, view === 'insights');
-  if (view === 'prs') {
-    const note = { open: 'open PRs', merged: 'merged PRs', closed: 'closed PRs', all: 'PRs' }[s.state];
-    return { counts: prs.data?.facets.byRepo, note };
-  }
-  if (view === 'activity') return { counts: feed.data?.pages[0]?.facets.byRepo, note: 'events' };
-  return { counts: merged.data?.facets.byRepo, note: 'merged PRs' };
-}
-
 const byActivity = (a: Repo, b: Repo) =>
   (b.lastActivityAt ?? b.pushedAt ?? '').localeCompare(a.lastActivityAt ?? a.pushedAt ?? '') || a.name.localeCompare(b.name);
 
-export function Sidebar() {
-  const { s, set, view, location, navigate } = useUrlState();
+export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
+  const { s, set, location, navigate } = useUrlState();
   const repos = useRepos();
   const settings = useSettings();
   const sets = useSets();
   const views = useViews();
-  const { counts, note } = useSidebarCounts(view, s);
   const { openPrompt } = useUI();
   const toast = useToast();
   const createSet = useCreateSet();
@@ -69,13 +51,10 @@ export function Sidebar() {
   const pinned = shown.filter((r) => r.pinned).sort(byActivity);
   const rest = shown.filter((r) => !r.pinned).sort(byActivity);
   const cutoff = Date.now() - ACTIVE_DAYS * DAY;
-  // Stars never make a repo "active" (lastActivityAt is star-free). On /activity the per-repo counts
-  // include star events whenever stars are among the requested types (an empty selection requests
-  // all types), so there they only promote a repo when stars are filtered out.
-  const countsPromote = view !== 'activity' || (s.types.length > 0 && !s.types.includes('star'));
+  // Keep repositories with an open backlog visible; stars never promote an inactive repo.
   const isMain = (r: Repo) =>
     !r.isArchived && !r.hidden && (!r.isFork || includeForks) &&
-    ((!!r.lastActivityAt && Date.parse(r.lastActivityAt) >= cutoff) || (countsPromote && (counts?.[r.name] ?? 0) > 0));
+    ((!!r.lastActivityAt && Date.parse(r.lastActivityAt) >= cutoff) || r.stats.openPrs > 0 || r.stats.openIssues > 0);
   const main = fq ? rest : rest.filter(isMain);
   const inactive = fq ? [] : rest.filter((r) => !isMain(r));
   const nSel = shown.filter((r) => selected.has(r.name)).length;
@@ -123,31 +102,56 @@ export function Sidebar() {
 
   const item = (r: Repo) => {
     const on = selected.has(r.name);
-    const n = counts?.[r.name] ?? 0;
+    const description = [
+      r.visibility === 'private' ? 'Private' : '', r.isArchived ? 'Archived' : '',
+      r.hidden ? 'Hidden' : '', r.isFork ? 'Fork' : '',
+      r.stats.openPrs > 0 ? `${r.stats.openPrs} open pull requests` : '',
+      r.stats.openIssues > 0 ? `${r.stats.openIssues} open issues` : '',
+    ].filter(Boolean).join('. ');
+    const describedBy = description ? `repo-info-${r.name}` : undefined;
     return (
-      <div
-        key={r.name}
-        className={cx('repo-item', on && 'on', !n && 'zero')}
-        role="checkbox"
-        aria-checked={on}
-        tabIndex={0}
-        title={r.description ?? r.name}
-        onClick={() => toggle(r.name)}
-        onKeyDown={(e) => { if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); toggle(r.name); } }}
-      >
-        <span className="cb">{on && <Icon name="check" />}</span>
-        <span className="rname">{r.name}</span>
-        {r.visibility === 'private' && <span className="lk" title="Private"><Icon name="lock" /></span>}
-        {r.isArchived && <span className="arch">archived</span>}
-        {!r.isArchived && r.hidden && <span className="arch">hidden</span>}
-        {!r.isArchived && !r.hidden && r.isFork && <span className="arch">fork</span>}
-        <span className="count">{counts ? n || '' : ''}</span>
+      <div key={r.name} className={cx('repo-item', on && 'on')}>
+        <label className="repo-check-hit" title={`Include ${r.name} in selection`}>
+          <input
+            type="checkbox"
+            className="repo-check"
+            checked={on}
+            aria-label={`Include ${r.name}`}
+            aria-describedby={describedBy}
+            onChange={() => toggle(r.name)}
+          />
+        </label>
+        <button
+          type="button"
+          className="repo-select"
+          aria-label={`Filter to ${r.name}`}
+          aria-describedby={describedBy}
+          title={`Filter to ${r.name}${r.description ? ` · ${r.description}` : ''}`}
+          onClick={() => { set({ repos: [r.name], ...(onNavigate ? { pr: null } : {}) }); onNavigate?.(); }}
+        >
+          <span className="repo-name">
+            <span className="rname">{r.name}</span>
+            {r.visibility === 'private' && <span className="lk" title="Private"><Icon name="lock" /></span>}
+          </span>
+          {r.isArchived && <span className="arch">archived</span>}
+          {!r.isArchived && r.hidden && <span className="arch">hidden</span>}
+          {!r.isArchived && !r.hidden && r.isFork && <span className="arch">fork</span>}
+          {(r.stats.openPrs > 0 || r.stats.openIssues > 0) && <span className="repo-counts" aria-hidden="true">
+            {r.stats.openPrs > 0 && <span title={`${r.stats.openPrs} open pull requests`}>
+              <Icon name="prOpen" />{r.stats.openPrs.toLocaleString()}
+            </span>}
+            {r.stats.openIssues > 0 && <span title={`${r.stats.openIssues} open issues`}>
+              <Icon name="issue" />{r.stats.openIssues.toLocaleString()}
+            </span>}
+          </span>}
+        </button>
+        {description && <span className="sr-only" id={describedBy}>{description}</span>}
       </div>
     );
   };
 
   return (
-    <aside className="sidebar" aria-label="Repository scope">
+    <aside className="sidebar" id="repository-sidebar" aria-label="Repository scope">
       <div className="side-top">
         <label className="field">
           <Icon name="search" />
@@ -177,13 +181,13 @@ export function Sidebar() {
 
       {pinned.length > 0 && (
         <>
-          <div className="side-h"><span>Pinned</span><span className="note">{note}</span></div>
+          <div className="side-h"><span>Pinned</span><span className="note">Open PRs / issues</span></div>
           {pinned.map(item)}
         </>
       )}
       {!repos.isPending && (
         <>
-          <div className="side-h"><span>Repositories</span>{!pinned.length && <span className="note">{note}</span>}</div>
+          <div className="side-h"><span>Repositories</span>{!pinned.length && <span className="note">Open PRs / issues</span>}</div>
           {main.map(item)}
           {!main.length && !inactive.length && <div className="side-empty">No matching repositories</div>}
           {inactive.length > 0 && (
@@ -234,7 +238,7 @@ export function Sidebar() {
       </div>
       {(views.data ?? []).map((v) => {
         const on = v.path === location.pathname && canonicalQuery(v.query) === curQuery;
-        const go = () => navigate(`${v.path}${v.query ? `?${v.query}` : ''}`);
+        const go = () => { navigate(`${v.path}${v.query ? `?${v.query}` : ''}`); onNavigate?.(); };
         return (
           <div
             key={v.id}

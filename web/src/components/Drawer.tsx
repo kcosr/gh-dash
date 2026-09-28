@@ -2,7 +2,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { PullRequest, PullRequestDetail } from '../../../shared/api';
 import { findCachedPr, usePrDetail } from '../api/hooks';
-import { useLayer } from '../lib/layers';
+import { hasBlockingLayer, useLayer } from '../lib/layers';
 import { dur, fmtDate, fmtDateTime, plural, rel } from '../lib/time';
 import { useUrlState } from '../lib/urlState';
 import { actorName, actorSubject, copyText } from '../lib/util';
@@ -14,8 +14,8 @@ import { Markdown } from './Markdown';
 import { RepoChip } from './RepoChip';
 import { useToast } from './Toasts';
 
-/** PR detail drawer (right column). Driven by the `pr` URL param. */
-export function PrDrawer({ id }: { id: string }) {
+/** PR details: a right column on desktop, the content pane on narrow screens. */
+export function PrDrawer({ id, compact }: { id: string; compact: boolean }) {
   const { set } = useUrlState();
   const qc = useQueryClient();
   const toast = useToast();
@@ -30,6 +30,12 @@ export function PrDrawer({ id }: { id: string }) {
   useLayer(true, close, false);
 
   useEffect(() => { scroller.current?.scrollTo({ top: 0 }); }, [id]);
+  useEffect(() => {
+    // The list is hidden in compact mode, so move keyboard focus into its replacement.
+    if (compact && !hasBlockingLayer() && !scroller.current?.contains(document.activeElement)) {
+      scroller.current?.querySelector<HTMLButtonElement>('button[aria-label="Close"]')?.focus({ preventScroll: true });
+    }
+  }, [compact]);
   useLayoutEffect(() => {
     const drawer = scroller.current;
     return () => {
@@ -39,10 +45,16 @@ export function PrDrawer({ id }: { id: string }) {
       const row = document.querySelector<HTMLElement>(`article.pr[data-id="${CSS.escape(id)}"]`);
       const target = row ?? opener;
       if (target && target !== document.body && target.isConnected && !drawer.contains(target)) {
-        target.focus({ preventScroll: true });
+        // Wait until the list is visible again after the drawer's grid class is removed.
+        requestAnimationFrame(() => {
+          if (target.isConnected && target.getClientRects().length && getComputedStyle(target).visibility === 'visible' && document.activeElement === document.body) {
+            target.focus({ preventScroll: true });
+            if (compact) target.scrollIntoView({ block: 'nearest' });
+          }
+        });
       }
     };
-  }, [id, opener]);
+  }, [id, opener, compact]);
 
   const copy = async (text: string, msg: string) => toast((await copyText(text)) ? msg : 'Copy failed');
 

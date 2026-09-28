@@ -69,7 +69,7 @@ export interface OpenOptions {
 }
 
 export function openDb(path: string, opts: OpenOptions = { allowDestructiveMigrations: true }): Db {
-  if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
+  if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const sqlite = new DatabaseSync(path, { timeout: 5000 });
   if (path !== ':memory:') sqlite.exec('PRAGMA journal_mode = WAL');
   sqlite.exec('PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;');

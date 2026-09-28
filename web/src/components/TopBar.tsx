@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import type { ReactNode } from 'react';
 import { Link, useLocation } from 'react-router';
 import { useStartSync, useSyncStatus } from '../api/hooks';
 import { getTheme, setTheme } from '../lib/storage';
@@ -43,7 +44,9 @@ export function useSyncNow() {
   };
 }
 
-export function TopBar({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () => void }) {
+export function TopBar({ theme, onToggleTheme, onOpenSidebar, sidebarOpen = false }: {
+  theme: Theme; onToggleTheme: () => void; onOpenSidebar?: () => void; sidebarOpen?: boolean;
+}) {
   const location = useLocation();
   const view = viewFromPath(location.pathname);
   const { openPalette } = useUI();
@@ -51,8 +54,12 @@ export function TopBar({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: 
 
   return (
     <header className="topbar">
+      {onOpenSidebar && <button type="button" className="btn icon" onClick={onOpenSidebar}
+        aria-label="Open sidebar" aria-haspopup="dialog" aria-controls="mobile-sidebar" aria-expanded={sidebarOpen}>
+        <Icon name="list" />
+      </button>}
       <Link to={`/prs${carry}`} className="brand" aria-label="gh-dash home">
-        <span className="mark"><Icon name="pulse" /></span>gh-dash
+        <span className="mark"><Icon name="pulse" /></span><span className="brand-name">gh-dash</span>
       </Link>
       <nav className="nav" aria-label="Main">
         {NAV.map((n) => {
@@ -66,7 +73,7 @@ export function TopBar({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: 
         })}
       </nav>
       <span className="spacer" />
-      <button type="button" className="top-search" onClick={openPalette}>
+      <button type="button" className="top-search" onClick={openPalette} aria-label="Search repos, PRs, views">
         <Icon name="search" />
         <span>Search repos, PRs, views…</span>
         <kbd>{MOD_K}</kbd>
@@ -83,13 +90,17 @@ export function TopBar({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: 
   );
 }
 
+function SyncStatus({ label, title, children }: { label: string; title?: string; children: ReactNode }) {
+  return <div className="sync" title={[label, title].filter(Boolean).join(' · ')}>{children}<span className="sync-text">{label}</span></div>;
+}
+
 function SyncIndicator() {
   const { data: st, isError } = useSyncStatus();
   const now = useNow(20_000);
   if (isError) {
-    return <div className="sync" title="The gh-dash server is not responding"><span className="dot off" />Server unreachable</div>;
+    return <SyncStatus label="Server unreachable" title="The gh-dash server is not responding"><span className="dot err" /></SyncStatus>;
   }
-  if (!st) return <div className="sync"><span className="dot off" />…</div>;
+  if (!st) return <SyncStatus label="Loading sync status"><span className="dot off" /></SyncStatus>;
 
   const tip: string[] = [];
   if (st.nextSyncAt && !st.running) tip.push(`Next automatic sync ${relFuture(st.nextSyncAt, now)} (${fmtTime(st.nextSyncAt)})`);
@@ -100,20 +111,18 @@ function SyncIndicator() {
   if (st.running) {
     const p = st.progress;
     return (
-      <div className="sync" title={[p?.current ? `Syncing ${p.current}` : null, ...tip].filter(Boolean).join(' · ')}>
+      <SyncStatus label={p && p.total ? `Syncing ${p.done}/${p.total} repos…` : 'Syncing…'} title={[p?.current ? `Syncing ${p.current}` : null, ...tip].filter(Boolean).join(' · ')}>
         <span className="spin"><Icon name="sync" /></span>
-        {p && p.total ? `Syncing ${p.done}/${p.total} repos…` : 'Syncing…'}
-      </div>
+      </SyncStatus>
     );
   }
   if (st.tokenSource === 'none') {
-    return <div className="sync" title="No GitHub token found. See Settings."><span className="dot warn" />No token</div>;
+    return <SyncStatus label="No token" title="No GitHub token found. See Settings."><span className="dot warn" /></SyncStatus>;
   }
   return (
-    <div className="sync" title={tip.join(' · ')}>
+    <SyncStatus label={st.lastSyncAt ? `Synced ${relLong(st.lastSyncAt, now)}` : 'Never synced'} title={tip.join(' · ')}>
       <span className={`dot${st.lastResult?.errors.length ? ' warn' : ''}${st.lastSyncAt ? '' : ' off'}`} />
-      {st.lastSyncAt ? `Synced ${relLong(st.lastSyncAt, now)}` : 'Never synced'}
-    </div>
+    </SyncStatus>
   );
 }
 
@@ -124,13 +133,14 @@ function SyncButton() {
   return (
     <button
       type="button"
-      className="btn"
+      className="btn sync-trigger"
+      aria-label="Sync now"
       disabled={disabled}
       onClick={() => sync.run()}
       title={st?.tokenSource === 'none' ? 'Set GITHUB_TOKEN or run `gh auth login` first' : 'Fetch what changed on GitHub'}
     >
       <Icon name="sync" />
-      Sync now
+      <span className="sync-label">Sync now</span>
     </button>
   );
 }

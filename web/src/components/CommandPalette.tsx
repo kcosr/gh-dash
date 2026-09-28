@@ -27,7 +27,7 @@ function Highlight({ text, q }: { text: string; q: string }) {
 
 const ic = (name: IconName) => <Icon name={name} />;
 
-export function CommandPalette({ onClose, onSync, onToggleTheme }: { onClose: () => void; onSync: () => void; onToggleTheme: () => void }) {
+export function CommandPalette({ onClose, onRun, onSync, onToggleTheme }: { onClose: () => void; onRun: () => void; onSync: () => void; onToggleTheme: () => void }) {
   const { s, view, location, navigate, set } = useUrlState();
   const repoParam = repoFromPath(location.pathname);
   const toast = useToast();
@@ -140,6 +140,7 @@ export function CommandPalette({ onClose, onSync, onToggleTheme }: { onClose: ()
 
   const run = (it: Item | undefined) => {
     if (!it) return;
+    onRun();
     onClose();
     it.run();
   };

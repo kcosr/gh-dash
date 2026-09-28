@@ -8,6 +8,7 @@ import { Avatar, AvatarStack } from '../components/Avatar';
 import { prIconName } from '../components/bits';
 import { DateRangeButton } from '../components/DateRange';
 import { EmptyState, ErrorNote, ProgressBar } from '../components/EmptyState';
+import { FilterToolbar } from '../components/FilterToolbar';
 import { Icon } from '../components/Icon';
 import type { IconName } from '../components/Icon';
 import { RepoChip } from '../components/RepoChip';
@@ -160,7 +161,7 @@ export function ActivityView() {
 
   return (
     <main className="main">
-      <div className="toolbar">
+      <FilterToolbar summary={[range.text, s.who === 'me' ? 'By you' : s.who === 'others' ? 'By others' : 'Everyone', s.types.length === TYPES.length ? 'All events' : `${s.types.length} event types`].join(' · ')}>
         <div className="row">
           <DateRangeButton />
           <Seg value={s.who} onChange={(who) => set({ who })} options={WHO_OPTIONS} ariaLabel="Author" />
@@ -178,7 +179,7 @@ export function ActivityView() {
           <span className="spacer" />
           <button type="button" className="btn" onClick={() => openExport('api')} title="Export as Markdown or get the API URL"><Icon name="braces" />API</button>
         </div>
-      </div>
+      </FilterToolbar>
 
       <div className="scroll" id="scroll" ref={scroller}>
         <ProgressBar active={fetching} />
@@ -336,7 +337,7 @@ const FeedItem = memo(function FeedItem({ row, expanded, onExpand, onOpenPr, act
         <>
           <Who actor={e.actor} /> {e.kind}{' '}
           <a className={`t${active ? ' on' : ''}`} href={p.url} onClick={(ev) => { ev.preventDefault(); onOpenPr(p.id); }}>{p.title}</a>
-          <span className="num">{p.repo}#{p.number}</span>
+          <span className="num"><RepoChip name={p.repo} className="repo-ref" />#{p.number}</span>
         </>
       );
       if (e.kind === 'merged' && p.body.trim()) sub = <p className="ev-desc">{plainPreview(p.body)}</p>;
@@ -348,7 +349,7 @@ const FeedItem = memo(function FeedItem({ row, expanded, onExpand, onOpenPr, act
         <>
           <Who actor={e.actor} /> {e.kind} issue{' '}
           <a className="t" href={i.url} target="_blank" rel="noopener noreferrer">{i.title}</a>
-          <span className="num">{i.repo}#{i.number}</span>
+          <span className="num"><RepoChip name={i.repo} className="repo-ref" />#{i.number}</span>
         </>
       );
     } else if (e.type === 'release') {

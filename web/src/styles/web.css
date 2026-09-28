@@ -12,7 +12,17 @@
 /* ---------- frame additions */
 .app.no-side.has-drawer { grid-template-columns: minmax(0,1fr) var(--drawer-w); }
 @media (max-width: 1280px) { :root { --drawer-w: 460px; } }
-@media (max-width: 1100px) { :root { --side-w: 236px; } }
+.sidebar-pane { position: relative; display: flex; min-height: 0; min-width: 0; }
+.sidebar-pane .sidebar { flex: 1; min-width: 0; }
+.sidebar-resize { position: absolute; top: 0; bottom: 0; right: -4px; width: 8px; z-index: 3; cursor: col-resize; touch-action: none; }
+.sidebar-resize::after { content: ''; position: absolute; inset: 0 3px; }
+.sidebar-resize:hover::after, .sidebar-resize:focus-visible::after, .resizing-sidebar .sidebar-resize::after { background: var(--accent); }
+.sidebar-resize:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.resizing-sidebar, .resizing-sidebar * { cursor: col-resize !important; user-select: none !important; }
+.repo-filter:hover { text-decoration: underline; text-underline-offset: 3px; color: var(--accent-text); }
+.t-repo .repo-filter:focus-visible { outline-offset: -2px; }
+.repo-ref { display: inline-flex; align-items: center; gap: 3px; }
+.repo-ref svg { width: 12px; height: 12px; color: var(--muted); }
 .brand { color: var(--text); }
 .nav a { display: flex; align-items: center; gap: 7px; height: 32px; padding: 0 11px; border-radius: 7px; color: var(--text-2); font-weight: 500; font-size: 13.5px; white-space: nowrap; }
 .nav a svg { width: 15px; height: 15px; color: var(--muted); }
@@ -25,6 +35,7 @@
 @media (max-width: 1180px) { .top-search span { display: none; } .top-search { flex: none; width: auto; } }
 .sync .dot.off { background: var(--muted); }
 .sync .dot.warn { background: var(--star); }
+.sync .dot.err { background: var(--del); }
 .btn.icon.ghost.on { background: var(--surface-2); }
 a.btn { text-decoration: none; }
 .btn.on-accent { color: var(--accent-text); background: var(--accent-weak); border-color: transparent; }
@@ -331,3 +342,48 @@ ul.links { margin: 0; padding-left: 18px; font-size: 13px; color: var(--text-2);
 .repo-grid { grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); }
 .rcard .rc-foot { margin-top: auto; }
 .btn-group { display: inline-flex; gap: 8px; margin-left: auto; }
+
+/* Repository controls occupy the full screen on phones instead of squeezing the list. */
+.filter-controls { display: contents; }
+.filter-toggle { display: none; }
+.mobile-sidebar { position: fixed; inset: 0; z-index: 50; display: flex; flex-direction: column; height: 100dvh; background: var(--page); }
+.mobile-sidebar-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: max(12px, env(safe-area-inset-top)) 16px 12px; border-bottom: 1px solid var(--border); }
+.mobile-sidebar-head h2 { margin: 0; font-size: 17px; }
+.mobile-sidebar-head .btn { min-height: 44px; }
+.mobile-sidebar .sidebar { flex: 1; border-right: 0; overscroll-behavior: contain; padding-bottom: max(24px, env(safe-area-inset-bottom)); }
+.mobile-sidebar .repo-item, .mobile-sidebar .set-item { height: 44px; }
+.mobile-sidebar .side-quick button, .mobile-sidebar .seg button, .mobile-sidebar .side-more { min-height: 40px; }
+.mobile-sidebar input { font-size: 16px; }
+.mobile-sidebar .mini { min-width: 40px; min-height: 40px; }
+.mobile-sidebar .set-item .del { display: grid; width: 40px; height: 40px; flex: none; }
+@media (max-width: 900px) {
+  .app { height: 100dvh; grid-template-rows: auto minmax(0, 1fr); }
+  .filter-toolbar { flex: none; padding: 4px 12px; gap: 0; max-height: 60dvh; overflow-y: auto; }
+  .filter-toggle { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 44px; text-align: left; font-weight: 600; }
+  .filter-toggle > svg { flex: none; }
+  .filter-summary { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 400; color: var(--text-2); }
+  .filter-toolbar.expanded .filter-chevron { transform: rotate(180deg); }
+  .filter-controls { display: none; }
+  .filter-toolbar.expanded .filter-controls { display: flex; flex-direction: column; gap: 10px; padding: 8px 0; }
+  .filter-toolbar .ctl, .filter-toolbar .seg { flex-wrap: wrap; max-width: 100%; }
+  .filter-toolbar .summary { white-space: normal; }
+  .filter-toolbar .field { flex: 1 1 100%; min-width: 0; }
+  .filter-toolbar input { font-size: 16px; }
+  /* Details replace the list here; a desktop drawer column would squeeze it to zero. */
+  .app.no-side.has-drawer { grid-template-columns: minmax(0, 1fr); }
+  .app.has-drawer > .main { grid-area: 2 / 1; visibility: hidden; }
+  .app.has-drawer > .drawer { grid-area: 2 / 1; min-width: 0; border-left: 0; box-shadow: none; }
+  .drawer .dr-top > .btn { flex: none; min-width: 40px; min-height: 40px; }
+  .drawer .dr-top > .repo-chip { min-width: 0; }
+  .drawer .kv { grid-template-columns: 80px minmax(0, 1fr); }
+  .drawer .kv dd { min-width: 0; overflow-wrap: anywhere; }
+  .topbar { flex-wrap: wrap; gap: 8px; padding: 8px; }
+  .topbar .brand { margin-right: 0; }
+  .topbar .brand-name, .topbar .top-search kbd, .topbar .sync-label { display: none; }
+  .topbar > .sync { position: relative; }
+  .topbar .sync-text { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .topbar .nav { order: 1; flex: 0 0 100%; min-width: 0; overflow-x: auto; }
+  .topbar .nav a { flex: none; min-height: 40px; }
+  .topbar .btn, .topbar .top-search { min-width: 40px; height: 40px; justify-content: center; }
+  .topbar .top-search { padding: 0; }
+}

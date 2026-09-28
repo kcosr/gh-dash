@@ -13,6 +13,8 @@ export function DateRangeButton() {
   const { s, set, range } = useUrlState();
   const [open, setOpen] = useState(false);
   const btn = useRef<HTMLButtonElement>(null);
+  // Closing (Esc, pick, click outside) returns focus to the button so keyboard users keep their place.
+  const close = () => { setOpen(false); btn.current?.focus({ preventScroll: true }); };
 
   return (
     <>
@@ -35,9 +37,9 @@ export function DateRangeButton() {
           current={s.range}
           from={range.from}
           to={range.to}
-          onClose={() => setOpen(false)}
-          onPick={(id) => { set({ range: id }); setOpen(false); }}
-          onCustom={(from, to) => { set({ range: 'custom', from, to }); setOpen(false); }}
+          onClose={close}
+          onPick={(id) => { set({ range: id }); close(); }}
+          onCustom={(from, to) => { set({ range: 'custom', from, to }); close(); }}
         />
       )}
     </>
@@ -73,7 +75,8 @@ function DateRangePopover({ anchor, current, from, to, onClose, onPick, onCustom
   }, [anchor, custom]);
 
   useEffect(() => {
-    const el = pop.current?.querySelector<HTMLElement>(custom ? 'input' : '.opt.on, .opt');
+    // The current preset (not simply the first option in the list).
+    const el = custom ? pop.current?.querySelector<HTMLElement>('input') : pop.current?.querySelector<HTMLElement>('.opt.on') ?? pop.current?.querySelector<HTMLElement>('.opt');
     el?.focus();
   }, [custom]);
 

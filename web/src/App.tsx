@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider, useIsFetching, useQueryClient } from '@tanstack/react-query';
-import { Suspense, lazy, useEffect, useRef } from 'react';
+import { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import { Navigate, Outlet, RouterProvider, createBrowserRouter, useLocation, useRouteError } from 'react-router';
 import { useRepos, useSyncStatus } from './api/hooks';
 import { CommandPalette } from './components/CommandPalette';
@@ -8,6 +8,8 @@ import { ExportModal } from './components/ExportModal';
 import { PromptDialog } from './components/PromptDialog';
 import { FirstSyncCard, NoTokenCard } from './components/Setup';
 import { Sidebar } from './components/Sidebar';
+import { useSidebarResize } from './components/SidebarResize';
+import { MobileSidebar, useCompactSidebar } from './components/MobileSidebar';
 import { ToastProvider, useToast } from './components/Toasts';
 import { TopBar, useSyncNow, useTheme } from './components/TopBar';
 import { UIProvider, useUI } from './components/ui';
@@ -93,7 +95,7 @@ function useSyncWatcher() {
   }, [st, qc, toast]);
 }
 
-function useGlobalKeys() {
+function useGlobalKeys(openSidebarSearch?: () => void) {
   const ui = useUI();
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -111,13 +113,14 @@ function useGlobalKeys() {
       }
       if (hasBlockingLayer() || isTypingTarget(document.activeElement) || e.metaKey || e.ctrlKey || e.altKey) return;
       if (e.key === '/') {
-        const el = document.getElementById('q') ?? document.getElementById('repoQ');
+        const el = ['q', 'repoQ'].map((id) => document.getElementById(id)).find((el) => el && el.getClientRects().length > 0 && getComputedStyle(el).visibility === 'visible');
         if (el) { e.preventDefault(); (el as HTMLInputElement).focus(); (el as HTMLInputElement).select(); }
+        else if (openSidebarSearch) { e.preventDefault(); openSidebarSearch(); }
       }
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [ui]);
+  }, [ui, openSidebarSearch]);
 }
 
 function Shell() {
@@ -128,7 +131,6 @@ function Shell() {
   const status = useSyncStatus();
   const repos = useRepos();
   useSyncWatcher();
-  useGlobalKeys();
   usePreloadWhenIdle();
   const name = repoFromPath(useLocation().pathname);
   useEffect(() => {
@@ -142,12 +144,26 @@ function Shell() {
     : null;
   const hasSide = !setup && view !== 'repos' && view !== 'repo' && view !== 'settings';
   const drawer = !setup && s.pr ? s.pr : null;
+  const compact = useCompactSidebar();
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sidebarSearch, setSidebarSearch] = useState(false);
+  useEffect(() => setSidebarOpen(false), [compact, view, drawer]);
+  useEffect(() => {
+    const close = () => setSidebarOpen(false);
+    window.addEventListener('popstate', close);
+    return () => window.removeEventListener('popstate', close);
+  }, []);
+  useGlobalKeys(hasSide && compact ? () => { setSidebarSearch(true); setSidebarOpen(true); } : undefined);
+  const mobileOpen = hasSide && compact && sidebarOpen;
+  const desktopSide = hasSide && !compact;
+  const sidebar = useSidebarResize(desktopSide, !!drawer);
 
   return (
     <>
-      <div className={cx('app', !hasSide && 'no-side', drawer && 'has-drawer')}>
-        <TopBar theme={theme} onToggleTheme={toggleTheme} />
-        {hasSide && <Sidebar />}
+      <div ref={sidebar.frame} style={sidebar.style} inert={mobileOpen} className={cx('app', !desktopSide && 'no-side', drawer && 'has-drawer', sidebar.dragging && 'resizing-sidebar')}>
+        <TopBar theme={theme} onToggleTheme={toggleTheme} sidebarOpen={mobileOpen}
+          onOpenSidebar={hasSide && compact ? () => { setSidebarSearch(false); setSidebarOpen(true); } : undefined} />
+        {desktopSide && <div className="sidebar-pane"><Sidebar />{sidebar.separator}</div>}
         {setup ? (
           <main className="main tint">
             <div className="scroll">
@@ -161,9 +177,10 @@ function Shell() {
             <Outlet />
           </Suspense>
         )}
-        {drawer && <PrDrawer key={drawer} id={drawer} />}
+        {drawer && <PrDrawer key={drawer} id={drawer} compact={compact} />}
       </div>
-      {ui.paletteOpen && <CommandPalette onClose={ui.closePalette} onSync={() => sync.run()} onToggleTheme={toggleTheme} />}
+      {mobileOpen && <MobileSidebar focusSearch={sidebarSearch} onClose={() => setSidebarOpen(false)} />}
+      {ui.paletteOpen && <CommandPalette onClose={ui.closePalette} onRun={() => setSidebarOpen(false)} onSync={() => sync.run()} onToggleTheme={toggleTheme} />}
       {ui.exportTab && <ExportModal initialTab={ui.exportTab} onClose={ui.closeExport} />}
       {ui.prompt && <PromptDialog req={ui.prompt} onClose={ui.closePrompt} />}
     </>

@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider, useIsFetching, useQueryClient } from '@tanstack/react-query';
 import { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import { Navigate, Outlet, RouterProvider, createBrowserRouter, useLocation, useRouteError } from 'react-router';
-import { refetchAfterSync, useRepos, useSyncStatus } from './api/hooks';
+import { qk, refetchAfterSync, useRepos, useSyncStatus } from './api/hooks';
 import { CommandPalette } from './components/CommandPalette';
 import { DiffView } from './components/DiffView';
 import { PrDrawer } from './components/Drawer';
@@ -80,9 +80,17 @@ function useSyncWatcher() {
   const { data: st } = useSyncStatus();
   const wasRunning = useRef<boolean | null>(null);
   const lastDone = useRef({ done: -1, at: 0 });
+  const lastToken = useRef<string | null>(null);
 
   useEffect(() => {
     if (!st) return;
+    // The token changed on the server (gh auth login, a new token file, the desktop app): refresh the account.
+    const token = `${st.tokenSource}:${st.viewer ?? ''}`;
+    if (lastToken.current !== null && lastToken.current !== token) {
+      void qc.invalidateQueries({ queryKey: qk.account });
+      void qc.invalidateQueries({ queryKey: qk.me });
+    }
+    lastToken.current = token;
     const prev = wasRunning.current;
     wasRunning.current = st.running;
     if (prev && !st.running) {

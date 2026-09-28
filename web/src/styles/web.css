@@ -295,6 +295,8 @@ table.rtable .pin-mark svg { width: 12px; height: 12px; }
 pre.code.err { color: var(--del); }
 pre.code.muted { color: var(--muted); }
 .modal-f a { color: var(--accent-text); }
+.api-off { margin: 0 0 12px; font-size: 12.5px; color: var(--muted); }
+.api-off a { color: var(--accent-text); }
 .modal.prompt { width: min(440px, 92vw); top: 18vh; }
 .prompt-l { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; font-weight: 500; color: var(--text-2); }
 .prompt-hint { margin-top: 8px; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
@@ -365,6 +367,45 @@ pre.code.muted { color: var(--muted); }
 .switch:checked { background: var(--accent); }
 .switch:checked::after { transform: translateX(14px); }
 ul.links { margin: 0; padding-left: 18px; font-size: 13px; color: var(--text-2); line-height: 1.8; }
+ul.links a { overflow-wrap: anywhere; }
+/* GitHub account + instance */
+.set-sec dl.kv dd { min-width: 0; }
+.set-sec code.path { padding: 0; background: none; font-size: 12px; word-break: break-all; }
+.set-src { font-size: 11.5px; color: var(--muted); margin-left: 2px; }
+.set-when { align-self: center; font-size: 12px; color: var(--muted); }
+.set-sec .set-note { display: flex; align-items: baseline; gap: 9px; margin: 0 0 14px; padding: 8px 12px; border-radius: 8px; background: var(--surface-2); font-size: 12.5px; color: var(--text-2); line-height: 1.5; }
+.set-note::before { content: ""; flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--star); transform: translateY(-1px); }
+.set-note.err::before { background: var(--del); }
+.set-sec .set-foot { margin: 14px 0 0; padding-top: 12px; border-top: 1px solid var(--border); font-size: 12.5px; }
+.set-foot.with-ic { display: flex; align-items: baseline; gap: 8px; }
+.set-foot svg { width: 13px; height: 13px; color: var(--muted); transform: translateY(2px); }
+.set-sub { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+.set-sec .help ol { margin: 0 0 10px; padding-left: 20px; font-size: 13px; color: var(--text-2); line-height: 1.7; }
+.set-fields { display: flex; flex-direction: column; min-width: 0; margin: 0; padding: 0; border: 0; }
+.set-c.wrap { flex-wrap: wrap; }
+.set-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.set-key { font-size: 12px; user-select: all; overflow-wrap: anywhere; }
+.set-secret { width: 220px; max-width: 100%; }
+.acct-who { display: inline-flex; align-items: center; gap: 7px; min-width: 0; }
+img.acct-av { width: 20px; height: 20px; border-radius: 50%; flex: none; background: var(--surface-2); }
+.acct-scopes { font: 12px var(--mono); color: var(--text-2); }
+.acct-err { color: var(--text-2); }
+.set-row.top { align-items: flex-start; }
+.acct-choice { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; }
+.acct-choice small { font-size: 12px; }
+.acct-token { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; width: 100%; max-width: 460px; }
+.acct-token-row { display: flex; gap: 8px; width: 100%; }
+.acct-token-row .input { flex: 1; min-width: 0; }
+.acct-token small { font-size: 12px; }
+.acct-token .form-err { margin-top: 0; }
+.acct-check { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--text-2); cursor: pointer; }
+.acct-check:has(input:disabled) { cursor: default; opacity: .6; }
+.set-c.stack > small { font-size: 12px; line-height: 1.45; }
+.setup-card .acct-choice { margin-bottom: 4px; }
+.setup-card .acct-token { margin-bottom: 8px; }
+.setup-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; margin-top: 16px; }
+a.sync { border-radius: 6px; }
+a.sync:hover .sync-text { color: var(--text); text-decoration: underline; text-underline-offset: 3px; }
 
 /* Summary text absorbs spare toolbar width (ellipsis) instead of pushing buttons onto a new line. */
 .toolbar .summary.grow { flex: 1 1 0; min-width: 240px; }
@@ -420,6 +461,7 @@ ul.links { margin: 0; padding-left: 18px; font-size: 13px; color: var(--text-2);
   /* Settings rows stack their label above the control instead of pushing it out of the card. */
   .set-row { flex-wrap: wrap; gap: 8px 20px; }
   .set-l { flex: 1 1 100%; }
+  .set-sec dl.kv { grid-template-columns: 96px minmax(0, 1fr); }
   .topbar { flex-wrap: wrap; gap: 8px; padding: 8px; }
   .topbar .brand { margin-right: 0; }
   .topbar .brand-name, .topbar .top-search kbd, .topbar .sync-label { display: none; }

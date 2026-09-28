@@ -9,7 +9,7 @@ import { Component, Suspense, lazy, useCallback, useEffect, useLayoutEffect, use
 import type { ReactNode } from 'react';
 import { Link } from 'react-router';
 import { isUnreachable, rateLimitResetAt } from '../api/client';
-import { findCachedCommit, findCachedPr, useDiff, useLoadFile, useRefreshDiff, useRepoMap } from '../api/hooks';
+import { findCachedCommit, findCachedPr, useDiff, useLoadFile, usePrDetail, useRefreshDiff, useRepoMap } from '../api/hooks';
 import { useLayer } from '../lib/layers';
 import { fmtTime, plural, rel, relFuture } from '../lib/time';
 import { parseDiffId, useUrlState } from '../lib/urlState';
@@ -45,7 +45,10 @@ export function DiffView({ id, compact }: { id: string; compact: boolean }) {
   const diff = useDiff(id);
   const refresh = useRefreshDiff(id);
   const loadFile = useLoadFile(t.repo);
-  const cached = useMemo(() => cachedSummary(qc, t), [qc, t]);
+  // The PR's details (from the local API, as the drawer loads them) fill the header while the diff
+  // loads or when it fails, also on a deep link that opened before any list was loaded.
+  const prDetail = usePrDetail(t.kind === 'pr' ? `${t.repo}#${t.number}` : null);
+  const cached = useMemo(() => cachedSummary(qc, t), [qc, t, prDetail.data]);
   const panel = useRef<HTMLElement>(null);
   const body = useRef<HTMLDivElement>(null);
   const [opener] = useState(() => document.activeElement as HTMLElement | null);

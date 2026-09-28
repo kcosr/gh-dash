@@ -3,7 +3,9 @@ import type { CSSProperties, KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { Link } from 'react-router';
 import type { Repo, RepoSet } from '../../../shared/api';
-import { usePatchRepo, useRepos, useSets } from '../api/hooks';
+import { selectRepos } from '../../../shared/repos';
+import { repoListParams } from '../lib/apiQuery';
+import { usePatchRepo, useRepos, useSets, useSettings } from '../api/hooks';
 import { Sparkline } from '../charts';
 import { Ctl } from '../components/bits';
 import { EmptyState, ErrorNote, ProgressBar } from '../components/EmptyState';
@@ -15,18 +17,11 @@ import { useToast } from '../components/Toasts';
 import { useUI } from '../components/ui';
 import { useLayer } from '../lib/layers';
 import { addDays, fmtDate, rel, startOfWeek } from '../lib/time';
-import { useUrlState } from '../lib/urlState';
+import { carrySearch, useUrlState } from '../lib/urlState';
 import type { RepoLayout, RepoSort } from '../lib/urlState';
 import { cx } from '../lib/util';
 
 const last = (r: Repo) => r.lastActivityAt ?? r.pushedAt ?? r.createdAt;
-
-const SORTERS: Record<RepoSort, (a: Repo, b: Repo) => number> = {
-  activity: (a, b) => last(b).localeCompare(last(a)),
-  stars: (a, b) => b.stars - a.stars,
-  open: (a, b) => b.stats.openPrs - a.stats.openPrs,
-  name: (a, b) => a.name.localeCompare(b.name),
-};
 
 /** Week-start titles for the 12-week sparkline (oldest first; last = this week). */
 function weekTitles(): string[] {
@@ -35,44 +30,28 @@ function weekTitles(): string[] {
 }
 
 export function RepositoriesView() {
-  const { s, set } = useUrlState();
+  const { s, set, location } = useUrlState();
+  const search = carrySearch(location.search);
   const repos = useRepos();
+  const settings = useSettings();
   const sets = useSets();
   const { openExport } = useUI();
   const titles = useMemo(weekTitles, []);
   const setById = useMemo(() => new Map((sets.data ?? []).map((x) => [x.id, x])), [sets.data]);
 
-  const q = s.q.trim().toLowerCase();
-  const all = repos.data ?? [];
-  const list = all
-    .filter((r) => (s.vis === 'all' || r.visibility === s.vis)
-      && (s.archived || !r.isArchived)
-      && (s.forks || !r.isFork)
-      && (!q || `${r.name} ${r.description ?? ''} ${r.topics.join(' ')} ${r.language?.name ?? ''}`.toLowerCase().includes(q)))
-    .sort((a, b) => Number(b.pinned) - Number(a.pinned) || Number(a.hidden) - Number(b.hidden) || SORTERS[s.sort](a, b) || a.name.localeCompare(b.name));
+  const list = selectRepos(repos.data ?? [], repoListParams(s), settings.data?.includeForks);
   const nPinned = list.filter((r) => r.pinned).length;
-  const nArchived = all.filter((r) => r.isArchived).length;
-  const nForks = all.filter((r) => r.isFork).length;
 
   return (
     <main className="main tint">
-      <FilterToolbar summary={[`${list.length} repositories`, s.q && `“${s.q}”`, s.archived && 'Including archived', s.forks && 'Including forks'].filter(Boolean).join(' · ')}>
+      <FilterToolbar summary={[`${list.length} repositories`, s.q && `“${s.q}”`].filter(Boolean).join(' · ')}>
         <div className="row">
           <FilterInput value={s.q} onChange={(v) => set({ q: v }, { replace: true })} placeholder="Search repositories" />
-          <Seg value={s.vis} onChange={(vis) => set({ vis })} ariaLabel="Visibility" options={[
-            { value: 'all', label: 'All' }, { value: 'public', label: 'Public' }, { value: 'private', label: <><Icon name="lock" />Private</> },
-          ]} />
           <Ctl label="Sort">
             <Seg<RepoSort> className="sm" value={s.sort} onChange={(sort) => set({ sort })} ariaLabel="Sort" options={[
               { value: 'activity', label: 'Recent activity' }, { value: 'stars', label: 'Stars' }, { value: 'open', label: 'Open PRs' }, { value: 'name', label: 'Name' },
             ]} />
           </Ctl>
-          <button type="button" className={`chip-toggle${s.archived ? ' on' : ''}`} aria-pressed={s.archived} onClick={() => set({ archived: !s.archived })}>
-            Show archived{nArchived ? <span className="n">{nArchived}</span> : null}
-          </button>
-          <button type="button" className={`chip-toggle${s.forks ? ' on' : ''}`} aria-pressed={s.forks} onClick={() => set({ forks: !s.forks })}>
-            Show forks{nForks ? <span className="n">{nForks}</span> : null}
-          </button>
           <span className="summary">{list.length} {list.length === 1 ? 'repository' : 'repositories'} · {nPinned} pinned</span>
           <span className="spacer" />
           <button type="button" className="btn" onClick={() => openExport('api')}><Icon name="braces" />API</button>
@@ -85,16 +64,23 @@ export function RepositoriesView() {
         <ProgressBar active={repos.isFetching && !!repos.data} />
         {repos.isError && !repos.data ? (
           <ErrorNote error={repos.error} onRetry={() => repos.refetch()} />
-        ) : !repos.data ? (
+        ) : settings.isError && !settings.data ? (
+          <ErrorNote error={settings.error} onRetry={() => settings.refetch()} />
+        ) : !repos.data || !settings.data ? (
           <div className="repo-grid">{Array.from({ length: 8 }, (_, i) => <div key={i} className="rcard skel-card" />)}</div>
         ) : list.length === 0 ? (
-          <EmptyState icon="book" title="No repositories match">Try clearing the search or showing archived and forked repositories.</EmptyState>
+          <EmptyState icon="book" title={s.repos?.length === 0 ? 'No repositories selected' : 'No repositories match'} action={
+            <div className="empty-actions">
+              {s.q && <button type="button" className="btn" onClick={() => set({ q: '' })}>Clear search</button>}
+              {s.repos !== null && <button type="button" className="btn" onClick={() => set({ repos: null })}>Select default repositories</button>}
+            </div>
+          }>Choose repositories in the sidebar, or change the visibility filter.</EmptyState>
         ) : s.layout === 'grid' ? (
           <div className="repo-grid">
-            {list.map((r) => <RepoCard key={r.name} repo={r} sets={r.setIds.map((id) => setById.get(id)).filter((x): x is RepoSet => !!x)} titles={titles} />)}
+            {list.map((r) => <RepoCard key={r.name} repo={r} search={search} sets={r.setIds.map((id) => setById.get(id)).filter((x): x is RepoSet => !!x)} titles={titles} />)}
           </div>
         ) : (
-          <RepoTable list={list} titles={titles} />
+          <RepoTable list={list} titles={titles} search={search} />
         )}
       </div>
     </main>
@@ -141,6 +127,13 @@ function RepoMenu({ repo }: { repo: Repo }) {
   };
   const r = btn.current?.getBoundingClientRect();
   const act = (fn: () => void) => () => { close(); fn(); };
+  const toggleHidden = () => {
+    // Hiding a default-scope card unmounts this component before the mutation completes.
+    void patch.mutateAsync({ name: repo.name, patch: { hidden: !repo.hidden } }).then(() => {
+      toast(repo.hidden ? `${repo.name} is back in the default scope`
+        : `${repo.name} hidden. To unhide, find it with the sidebar search, select it, then open its menu.`, { ms: 6000 });
+    }).catch((error: Error) => toast(`Couldn't update ${repo.name}: ${error.message}`, { error: true }));
+  };
   return (
     <>
       <button ref={btn} type="button" className="pin-btn" aria-haspopup="menu" aria-expanded={open} aria-label={`More actions for ${repo.name}`} title="More" onClick={() => setOpen((o) => !o)}>
@@ -153,7 +146,7 @@ function RepoMenu({ repo }: { repo: Repo }) {
             <button type="button" role="menuitem" className="opt" onClick={act(() => patch.mutate({ name: repo.name, patch: { pinned: !repo.pinned } }))}>
               <span className="ck"><Icon name="pin" /></span>{repo.pinned ? 'Unpin' : 'Pin'}
             </button>
-            <button type="button" role="menuitem" className="opt" onClick={act(() => patch.mutate({ name: repo.name, patch: { hidden: !repo.hidden } }, { onSuccess: () => toast(repo.hidden ? `${repo.name} is back in the default scope` : `${repo.name} hidden from the default scope`) }))}>
+            <button type="button" role="menuitem" className="opt" onClick={act(toggleHidden)}>
               <span className="ck"><Icon name={repo.hidden ? 'eye' : 'eyeOff'} /></span>{repo.hidden ? 'Unhide' : 'Hide from default scope'}
             </button>
             <Link role="menuitem" className="opt" to={`/activity?repos=${encodeURIComponent(repo.name)}`} onClick={() => setOpen(false)}>
@@ -181,12 +174,12 @@ function VisBadge({ repo }: { repo: Repo }) {
   );
 }
 
-function RepoCard({ repo: r, sets, titles }: { repo: Repo; sets: RepoSet[]; titles: string[] }) {
+function RepoCard({ repo: r, sets, titles, search }: { repo: Repo; sets: RepoSet[]; titles: string[]; search: string }) {
   const st = r.stats;
   return (
     <div className={cx('rcard', (r.isArchived || r.hidden) && 'archived')}>
       <div className="rc-h">
-        <Link className="rc-name" to={`/repos/${encodeURIComponent(r.name)}`}>{r.name}</Link>
+        <Link className="rc-name" to={`/repos/${encodeURIComponent(r.name)}${search}`}>{r.name}</Link>
         <VisBadge repo={r} />
         <span className="spacer" />
         <PinButton repo={r} />
@@ -214,7 +207,7 @@ function RepoCard({ repo: r, sets, titles }: { repo: Repo; sets: RepoSet[]; titl
   );
 }
 
-function RepoTable({ list, titles }: { list: Repo[]; titles: string[] }) {
+function RepoTable({ list, titles, search }: { list: Repo[]; titles: string[]; search: string }) {
   return (
     <div className="rtable-wrap">
       <table className="rtable">
@@ -227,7 +220,7 @@ function RepoTable({ list, titles }: { list: Repo[]; titles: string[] }) {
         <tbody>
           {list.map((r) => (
             <tr key={r.name} className={cx((r.isArchived || r.hidden) && 'dim')}>
-              <td><Link to={`/repos/${encodeURIComponent(r.name)}`}>{r.name}</Link>{r.pinned && <span className="pin-mark" title="Pinned"><Icon name="pin" /></span>}</td>
+              <td><Link to={`/repos/${encodeURIComponent(r.name)}${search}`}>{r.name}</Link>{r.pinned && <span className="pin-mark" title="Pinned"><Icon name="pin" /></span>}</td>
               <td>{r.visibility === 'private' ? 'Private' : 'Public'}{r.isArchived ? ' · archived' : ''}{r.isFork ? ' · fork' : ''}{r.hidden ? ' · hidden' : ''}</td>
               <td>{r.language ? <><i className="lang" style={{ '--lc': r.language.color ?? 'var(--muted)' } as CSSProperties} /> {r.language.name}</> : '—'}</td>
               <td className="r">{r.visibility === 'public' ? <>{r.stars.toLocaleString()}{r.stats.newStars30d > 0 && <em className="plus"> +{r.stats.newStars30d}</em>}</> : '—'}</td>

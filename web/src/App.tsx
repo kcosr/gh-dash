@@ -26,12 +26,14 @@ import { PullRequestsView } from './views/PullRequests';
 // browser is idle after the first render, so navigating to them is instant. Route changes run in
 // a transition, so while a chunk is still loading the current view stays on screen (no flash).
 const loaders = {
+  issues: () => import('./views/Issues'),
   activity: () => import('./views/Activity'),
   repos: () => import('./views/Repositories'),
   repo: () => import('./views/RepoDetail'),
   insights: () => import('./views/Insights'),
   settings: () => import('./views/Settings'),
 };
+const IssuesView = lazy(() => loaders.issues().then((m) => ({ default: m.IssuesView })));
 const ActivityView = lazy(() => loaders.activity().then((m) => ({ default: m.ActivityView })));
 const RepositoriesView = lazy(() => loaders.repos().then((m) => ({ default: m.RepositoriesView })));
 const RepoDetailView = lazy(() => loaders.repo().then((m) => ({ default: m.RepoDetailView })));
@@ -134,7 +136,7 @@ function Shell() {
   usePreloadWhenIdle();
   const name = repoFromPath(useLocation().pathname);
   useEffect(() => {
-    const t = { prs: 'Pull requests', activity: 'Activity', repos: 'Repositories', repo: name ?? 'Repository', insights: 'Insights', settings: 'Settings' }[view];
+    const t = { prs: 'Pull requests', issues: 'Issues', activity: 'Activity', repos: 'Repositories', repo: name ?? 'Repository', insights: 'Insights', settings: 'Settings' }[view];
     document.title = `${t} · gh-dash`;
   }, [view, name]);
 
@@ -142,7 +144,7 @@ function Shell() {
   const setup = noData && view !== 'settings'
     ? status.data?.tokenSource === 'none' ? 'token' : 'first'
     : null;
-  const hasSide = !setup && view !== 'repos' && view !== 'repo' && view !== 'settings';
+  const hasSide = !setup && view !== 'repo' && view !== 'settings';
   const drawer = !setup && s.pr ? s.pr : null;
   const compact = useCompactSidebar();
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -243,6 +245,7 @@ const router = createBrowserRouter([
     children: [
       { index: true, element: <RedirectHome /> },
       { path: 'prs', element: <PullRequestsView /> },
+      { path: 'issues', element: <IssuesView /> },
       { path: 'activity', element: <ActivityView /> },
       { path: 'repos', element: <RepositoriesView /> },
       { path: 'repos/:name', element: <RepoDetailView /> },

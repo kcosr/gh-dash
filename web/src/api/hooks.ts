@@ -5,6 +5,7 @@ import { useMemo } from 'react';
 import type {
   ActivityQuery,
   ActivityResponse,
+  IssueQuery,
   PrListResponse,
   PrQuery,
   PullRequest,
@@ -17,6 +18,7 @@ import type {
   SyncStatus,
 } from '../../../shared/api';
 import { api } from './client';
+import { defaultRepoScope } from '../../../shared/repos';
 
 export const qk = {
   repos: ['repos'] as const,
@@ -26,6 +28,7 @@ export const qk = {
   me: ['me'] as const,
   sync: ['sync-status'] as const,
   prs: (q: PrQuery) => ['prs', q] as const,
+  issues: (q: IssueQuery) => ['issues', q] as const,
   pr: (repo: string, n: number) => ['pr', repo, n] as const,
   activity: (q: ActivityQuery) => ['activity', q] as const,
   releases: (q: ScopeQuery) => ['releases', q] as const,
@@ -72,7 +75,7 @@ export function useSyncStatus() {
 
 /** Default scope: not archived, not hidden, not a fork (unless includeForks). */
 export function defaultScope(repos: Repo[], settings?: Settings): string[] {
-  return repos.filter((r) => !r.isArchived && !r.hidden && (!r.isFork || !!settings?.includeForks)).map((r) => r.name);
+  return defaultRepoScope(repos, settings?.includeForks);
 }
 
 // ---------------------------------------------------------------- lists
@@ -88,6 +91,17 @@ export function usePrList(q: PrQuery, enabled = true) {
 export function useReleases(q: ScopeQuery, enabled = true) {
   const params = { ...q, limit: 200 };
   return useQuery({ queryKey: qk.releases(params), queryFn: () => api.releases(params), placeholderData: keepPreviousData, enabled });
+}
+
+export function useIssueList(q: IssueQuery) {
+  const params = { ...q, limit: 100 };
+  return useInfiniteQuery({
+    queryKey: qk.issues(params),
+    queryFn: ({ pageParam }) => api.issues({ ...params, cursor: pageParam ?? undefined }),
+    initialPageParam: null as string | null,
+    getNextPageParam: (last) => last.nextCursor,
+    placeholderData: keepPreviousData,
+  });
 }
 
 export const ACTIVITY_PAGE = 200;

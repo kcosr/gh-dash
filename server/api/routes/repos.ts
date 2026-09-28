@@ -1,5 +1,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
+import { selectRepos } from '../../../shared/repos';
+import { getSettings } from '../../db/settings';
 import { createSet, createView, deleteSet, deleteView, getRepo, listRepos, listSets, listViews, setRepoPrefs, updateSet } from '../../db/repos';
 import type { AppDeps } from '../app';
 import { HttpError, jsonBody, parseWith } from '../http';
@@ -8,6 +10,13 @@ const name = z.string().trim().min(1).max(100);
 const repoList = z.array(z.string().trim().min(1)).max(1000);
 
 const repoPatch = z.object({ pinned: z.boolean().optional(), hidden: z.boolean().optional() }).strict();
+const repoQuery = z.object({
+  repos: z.string().max(100_000).optional(),
+  scope: z.enum(['all', 'default']).optional(),
+  visibility: z.enum(['all', 'public', 'private']).optional(),
+  q: z.string().max(4000).optional(),
+  sort: z.enum(['activity', 'stars', 'open', 'name']).optional(),
+});
 const setCreate = z.object({ name, repos: repoList }).strict();
 const setPatch = z.object({ name: name.optional(), repos: repoList.optional() }).strict();
 const viewCreate = z
@@ -27,7 +36,10 @@ function idParam(value: string): number {
 export function repoRoutes({ db, config }: AppDeps): Hono {
   const r = new Hono();
 
-  r.get('/repos', (c) => c.json({ items: listRepos(db, config.defaultTz) }));
+  r.get('/repos', (c) => {
+    const query = parseWith(repoQuery, c.req.query());
+    return c.json({ items: selectRepos(listRepos(db, config.defaultTz), query, getSettings(db).includeForks) });
+  });
 
   r.get('/repos/:name', (c) => {
     const repo = getRepo(db, c.req.param('name'), config.defaultTz);

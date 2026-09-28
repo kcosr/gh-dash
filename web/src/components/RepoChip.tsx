@@ -21,7 +21,7 @@ export function RepoMapProvider({ children }: { children: ReactNode }) {
   const location = useLocation();
   const navigate = useNavigate();
   const view = viewFromPath(location.pathname);
-  const pathname = view === 'prs' || view === 'activity' || view === 'insights' ? location.pathname : '/activity';
+  const pathname = view === 'prs' || view === 'issues' || view === 'repos' || view === 'activity' || view === 'insights' ? location.pathname : '/activity';
   const params = new URLSearchParams(location.search);
   params.delete('pr');
   const search = params.toString();

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Link, useLocation } from 'react-router';
 import { useStartSync, useSyncStatus } from '../api/hooks';
@@ -15,6 +15,7 @@ import { useUI } from './ui';
 
 const NAV: { path: string; label: string; icon: IconName; views: string[] }[] = [
   { path: '/prs', label: 'Pull requests', icon: 'merge', views: ['prs'] },
+  { path: '/issues', label: 'Issues', icon: 'issue', views: ['issues'] },
   { path: '/activity', label: 'Activity', icon: 'pulse', views: ['activity'] },
   { path: '/repos', label: 'Repositories', icon: 'book', views: ['repos', 'repo'] },
   { path: '/insights', label: 'Insights', icon: 'chart', views: ['insights'] },
@@ -51,6 +52,19 @@ export function TopBar({ theme, onToggleTheme, onOpenSidebar, sidebarOpen = fals
   const view = viewFromPath(location.pathname);
   const { openPalette } = useUI();
   const carry = carrySearch(location.search);
+  const navRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const nav = navRef.current;
+    const active = nav?.querySelector('[aria-current="page"]');
+    if (!nav || !active) return;
+    const reveal = () => active.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    reveal();
+    // Font loading and responsive layout can resize the tabs after navigation.
+    const observer = new ResizeObserver(reveal);
+    observer.observe(nav);
+    for (const link of nav.children) observer.observe(link);
+    return () => observer.disconnect();
+  }, [view]);
 
   return (
     <header className="topbar">
@@ -61,7 +75,7 @@ export function TopBar({ theme, onToggleTheme, onOpenSidebar, sidebarOpen = fals
       <Link to={`/prs${carry}`} className="brand" aria-label="gh-dash home">
         <span className="mark"><Icon name="pulse" /></span><span className="brand-name">gh-dash</span>
       </Link>
-      <nav className="nav" aria-label="Main">
+      <nav ref={navRef} className="nav" aria-label="Main">
         {NAV.map((n) => {
           const on = n.views.includes(view);
           return (

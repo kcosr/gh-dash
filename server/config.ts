@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { basename, dirname, extname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseEnv } from 'node:util';
 
@@ -11,6 +11,8 @@ export interface Config {
   port: number;
   host: string;
   dbPath: string;
+  /** Diff cache database (GH_DASH_CACHE_DB); by default next to the main database. */
+  cacheDbPath: string;
   syncEnabled: boolean;
   apiKey: string | null;
   password: string | null;
@@ -56,14 +58,26 @@ function defaultTimezone(tz: string | undefined): string {
   return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
 }
 
+const absolute = (path: string) => (path === ':memory:' || isAbsolute(path) ? path : resolve(ROOT_DIR, path));
+
+/** gh-dash.db → gh-dash-cache.db in the same directory; an in-memory database gets an in-memory cache. */
+export function defaultCachePath(dbPath: string): string {
+  if (dbPath === ':memory:') return dbPath;
+  const ext = extname(dbPath);
+  return join(dirname(dbPath), `${basename(dbPath, ext)}-cache${ext || '.db'}`);
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = loadEnvironment()): Config {
   const port = Number(env.PORT ?? 4780);
   if (!Number.isInteger(port) || port <= 0 || port > 65535) throw new Error(`Invalid PORT: ${env.PORT}`);
-  const dbPath = env.GH_DASH_DB || join(xdgHome(env, 'XDG_STATE_HOME', '.local/state'), 'gh-dash', 'gh-dash.db');
+  const dbPath = absolute(env.GH_DASH_DB || join(xdgHome(env, 'XDG_STATE_HOME', '.local/state'), 'gh-dash', 'gh-dash.db'));
+  const cacheDbPath = env.GH_DASH_CACHE_DB ? absolute(env.GH_DASH_CACHE_DB) : defaultCachePath(dbPath);
+  if (cacheDbPath === dbPath && dbPath !== ':memory:') throw new Error('GH_DASH_CACHE_DB must not be the main database (GH_DASH_DB)');
   return {
     port,
     host: env.HOST || '127.0.0.1',
-    dbPath: dbPath === ':memory:' || isAbsolute(dbPath) ? dbPath : resolve(ROOT_DIR, dbPath),
+    dbPath,
+    cacheDbPath,
     syncEnabled: (env.GH_DASH_SYNC ?? 'on').toLowerCase() !== 'off',
     apiKey: optionalEnv(env, 'GH_DASH_API_KEY'),
     password: optionalEnv(env, 'GH_DASH_PASSWORD'),

@@ -2,11 +2,13 @@ import { type Context, Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import type { Config } from '../config';
 import type { Db } from '../db/db';
+import type { DiffService } from '../diff/service';
 import type { SyncManager } from '../sync/manager';
 import { installAuth, sameOriginWrites } from './auth';
 import { docsPage } from './docs';
 import { HttpError } from './http';
 import { openApiDocument } from './openapi';
+import { diffRoutes } from './routes/diffs';
 import { listRoutes } from './routes/lists';
 import { repoRoutes } from './routes/repos';
 import { statsRoutes } from './routes/stats';
@@ -17,6 +19,7 @@ export interface AppDeps {
   db: Db;
   config: Config;
   sync: SyncManager;
+  diffs: DiffService;
 }
 
 /** Public origin of the request, honouring a reverse proxy's forwarded headers. */
@@ -49,6 +52,7 @@ export function createApp(deps: AppDeps): Hono {
   app.route('/api/v1', repoRoutes(deps));
   app.route('/api/v1', listRoutes(deps));
   app.route('/api/v1', statsRoutes(deps));
+  app.route('/api/v1', diffRoutes(deps));
   app.get('/api/v1/openapi.json', (c) => c.json(openApiDocument(config.version)));
   app.get('/api/docs', (c) =>
     c.html(

@@ -76,6 +76,7 @@ contains credentials. Shell expansion is not performed; use absolute paths in it
 | `GITHUB_TOKEN` | GitHub CLI credentials | Read-only GitHub access |
 | `HOST` / `PORT` | `127.0.0.1` / `4780` | Listen address |
 | `GH_DASH_DB` | `$XDG_STATE_HOME/gh-dash/gh-dash.db` | Database location |
+| `GH_DASH_CACHE_DB` | `gh-dash-cache.db` next to the database | Diff cache location |
 | `GH_DASH_SYNC` | `on` | Set to `off` to disable automatic syncs |
 | `GH_DASH_PASSWORD` | Unset | Require a password to access the dashboard |
 | `GH_DASH_API_KEY` | Unset | Authenticate API clients with Bearer or `X-API-Key` |
@@ -86,6 +87,11 @@ Without `XDG_STATE_HOME`, the database defaults to `~/.local/state/gh-dash/gh-da
 Empty or relative XDG paths use the home defaults. UI settings remain in the database.
 An existing checkout-local database is not moved automatically; set `GH_DASH_DB` to
 its absolute path to keep using it.
+
+Diffs and file contents are fetched from GitHub when you open them and kept in a
+separate cache database (named after the main database, e.g. `gh-dash-cache.db`). Its size
+is capped by the `diffCacheMb` setting (200 MB by default); least recently viewed entries are
+dropped first. The cache can be deleted at any time and left out of backups.
 
 For a persistent installation, adapt the [systemd unit](deploy/gh-dash.service).
 For remote access, use HTTPS through a reverse proxy such as the supplied

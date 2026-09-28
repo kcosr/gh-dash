@@ -58,7 +58,7 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme }: { onCl
   const openPr = (p: PullRequest) => {
     const stay = view === 'prs' || view === 'activity' || view === 'repo';
     const base = stay ? location.search : carrySearch(location.search);
-    navigate({ pathname: stay ? location.pathname : '/prs', search: patchSearch(base, stay ? view : 'prs', { pr: p.id }) });
+    navigate({ pathname: stay ? location.pathname : '/prs', search: patchSearch(base, stay ? view : 'prs', { pr: p.id, diff: null }) });
   };
 
   const sections = useMemo<Section[]>(() => {

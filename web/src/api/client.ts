@@ -3,6 +3,8 @@ import type {
   ActivityQuery,
   ActivityResponse,
   Commit,
+  Diff,
+  DiffCacheStats,
   Issue,
   IssueQuery,
   ListResponse,
@@ -41,6 +43,26 @@ type Params = Record<string, string | number | boolean | null | undefined>;
  */
 const UNREACHABLE = 'Cannot reach the gh-dash server';
 const gatewayDown = (status: number) => status === 502 || status === 503 || status === 504;
+
+/** The server itself is down or unreachable (as opposed to an error it reported, e.g. a 503 for a missing token). */
+export const isUnreachable = (e: unknown) => e instanceof ApiError && (e.status === 0 || e.message.startsWith(UNREACHABLE));
+
+/** A 4xx answer won't change on retry. */
+export const isClientError = (e: unknown) => {
+  const status = (e as { status?: number } | null)?.status ?? 0;
+  return status >= 400 && status < 500;
+};
+
+/**
+ * When GitHub's rate limit resets, from a 429's details: `{ resetAt }` (ISO or epoch seconds),
+ * `{ reset }`, or the bare value. null when absent or unparseable.
+ */
+export function rateLimitResetAt(e: unknown): Date | null {
+  const d = (e as { details?: unknown } | null)?.details;
+  const raw = d !== null && typeof d === 'object' ? (d as { resetAt?: unknown; reset?: unknown }).resetAt ?? (d as { reset?: unknown }).reset : d;
+  const t = typeof raw === 'number' ? (raw < 1e12 ? raw * 1000 : raw) : typeof raw === 'string' ? (/^\d+$/.test(raw) ? Number(raw) * 1000 : Date.parse(raw)) : NaN;
+  return Number.isFinite(t) ? new Date(t) : null;
+}
 
 /**
  * Build a query string. `undefined`/`null` are omitted; empty strings are kept
@@ -138,6 +160,20 @@ export const api = {
 
   syncStatus: () => get<SyncStatus>('/api/v1/sync/status'),
   sync: (body: { repo?: string; full?: boolean } = {}) => request<SyncStatus>('POST', '/api/v1/sync', body),
+
+  /** refresh re-checks GitHub for the PR's current head instead of the last synced one. */
+  prDiff: (repo: string, number: number, refresh = false) =>
+    get<Diff>(apiUrl(`prs/${enc(repo)}/${number}/diff`, { refresh: refresh ? '1' : undefined })),
+  commitDiff: (repo: string, oid: string, refresh = false) =>
+    get<Diff>(apiUrl(`commits/${enc(repo)}/${enc(oid)}/diff`, { refresh: refresh ? '1' : undefined })),
+  /** A file's contents at a commit; null when it doesn't exist there, is binary, or is too large. */
+  blob: (repo: string, ref: string, path: string) =>
+    getText(apiUrl(`blob/${enc(repo)}`, { ref, path })).catch((e: unknown) => {
+      if (e instanceof ApiError && (e.status === 404 || e.status === 413 || e.status === 415)) return null;
+      throw e;
+    }),
+  diffCache: () => get<DiffCacheStats>('/api/v1/diff-cache'),
+  clearDiffCache: () => request<DiffCacheStats>('DELETE', '/api/v1/diff-cache'),
 
   settings: () => get<Settings>('/api/v1/settings'),
   patchSettings: (body: Partial<Settings>) => request<Settings>('PATCH', '/api/v1/settings', body),

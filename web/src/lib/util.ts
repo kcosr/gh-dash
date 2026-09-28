@@ -64,4 +64,12 @@ export function actorKey(a: Actor | null | undefined): string {
   return (a.login ?? a.name ?? '?').toLowerCase();
 }
 
+/** A plain left click: in-app links handle it and leave modifier/middle clicks to the browser (their real href). */
+export const isPlainClick = (e: { button: number; metaKey: boolean; ctrlKey: boolean; altKey: boolean; shiftKey: boolean; defaultPrevented: boolean }) =>
+  !e.defaultPrevented && e.button === 0 && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey;
+
+/** A lazy chunk failed to load (e.g. the app was redeployed, or the server is down). */
+export const isChunkLoadError = (e: unknown) =>
+  e instanceof Error && /dynamically imported module|Importing a module script failed|error loading dynamically/i.test(e.message);
+
 export const cx = (...xs: (string | false | null | undefined)[]) => xs.filter(Boolean).join(' ');

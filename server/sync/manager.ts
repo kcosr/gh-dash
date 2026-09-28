@@ -7,7 +7,7 @@ import { getSettings } from '../db/settings';
 import { GitHubClient } from '../github/client';
 import { VIEWER } from '../github/queries';
 import type { ViewerData } from '../github/types';
-import { runSync, type SyncProgress, type SyncRequest } from './sync';
+import { runSync, saveViewer, type SyncProgress, type SyncRequest, viewerMismatch } from './sync';
 
 /** A lock whose heartbeat is older than this belongs to a dead process. */
 const LOCK_STALE_MS = 90_000;
@@ -77,14 +77,19 @@ export class SyncManager {
     };
   }
 
-  /** Fetches the viewer once if the DB doesn't know it yet (1 API point). */
+  /**
+   * Fetches the viewer once (1 API point) if the DB doesn't know it yet, or only by login (databases from before ids
+   * were stored). A token for another account is only reported here: the sync refuses it (see viewerMismatch).
+   */
   async ensureViewer(): Promise<void> {
-    if (getMeta(this.db, 'viewer')) return;
+    if (getMeta(this.db, 'viewer')?.id) return;
     const { token } = this.resolve();
     if (!token) return;
     const client = this.client(token);
-    const data = await client.query<ViewerData>(VIEWER);
-    setMeta(this.db, 'viewer', { login: data.viewer.login, name: data.viewer.name, avatarUrl: data.viewer.avatarUrl });
+    const { viewer } = await client.query<ViewerData>(VIEWER);
+    const mismatch = viewerMismatch(getMeta(this.db, 'viewer'), viewer);
+    if (mismatch) this.log(`[sync] warning: ${mismatch}`);
+    else saveViewer(this.db, viewer);
   }
 
   private client(token: string): GitHubClient {

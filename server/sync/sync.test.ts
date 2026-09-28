@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { type Db, openDb } from '../db/db';
-import { getMeta } from '../db/meta';
+import { getMeta, setMeta } from '../db/meta';
 import type { RepoProbe, RepoRecord } from '../db/records';
 import { DEFAULT_SETTINGS } from '../db/settings';
 import type { Settings } from '../../shared/api';
@@ -10,7 +10,7 @@ import type { GqlIssue, GqlPullRequest } from '../github/types';
 import detailFixture from '../test/fixtures/repo-detail.json';
 import probesFixture from '../test/fixtures/repo-probes.json';
 import reposFixture from '../test/fixtures/viewer-repos.json';
-import { planRepo, runSync } from './sync';
+import { planRepo, runSync, viewerMismatch } from './sync';
 
 const NOW = Date.parse('2026-09-27T12:00:00Z');
 const HOUR = 3_600_000;
@@ -41,6 +41,12 @@ function fakeGitHub() {
   };
   const calls: Call[] = [];
   const conn = (nodes: unknown[]) => ({ pageInfo: { hasNextPage: false, endCursor: null }, nodes });
+  const viewerRepo = (name: string) => {
+    const { repositories, ...viewer } = fx.repos.viewer;
+    const node = repositories.nodes.find((n) => n.name === name);
+    const probe = fx.probes.nodes.find((p) => p?.id === node?.id);
+    return { viewer: { ...viewer, repository: node ? { ...node, ...probe } : null }, rateLimit: fx.repos.rateLimit };
+  };
   const fetchImpl = (async (_url: string, init: RequestInit) => {
     const { query, variables } = JSON.parse(init.body as string) as { query: string; variables: Record<string, unknown> };
     const op = /query (\w+)/.exec(query)![1]!;
@@ -58,6 +64,7 @@ function fakeGitHub() {
     const data =
       op === 'ViewerRepos' ? fx.repos
       : op === 'RepoProbes' ? fx.probes
+      : op === 'ViewerRepo' ? viewerRepo(String(variables.name))
       : variables.name === 'app'
         ? {
             ...fx.detail,
@@ -105,7 +112,7 @@ describe('runSync', () => {
   });
 
   it('stores everything on the first sync', () => {
-    expect(getMeta(db, 'viewer')).toEqual({ login: 'alice', name: 'Alice A', avatarUrl: 'https://avatars.example/alice' });
+    expect(getMeta(db, 'viewer')).toEqual({ id: 'U_alice', login: 'alice', name: 'Alice A', avatarUrl: 'https://avatars.example/alice' });
     expect([count(db, 'repos'), count(db, 'commits'), count(db, 'pull_requests'), count(db, 'pr_commits'), count(db, 'issues'), count(db, 'releases'), count(db, 'stars')])
       .toEqual([2, 3, 2, 1, 2, 1, 2]);
     expect(db.all('SELECT headline, pr_number FROM commits ORDER BY committed_at')).toEqual([
@@ -285,6 +292,51 @@ describe('runSync', () => {
     const res = await sync(NOW + HOUR);
     expect(res.errors).toEqual(['app: repository not found']);
     expect(db.get('SELECT last_error FROM sync_state JOIN repos r ON r.id = repo_id WHERE r.name = ?', ['app'])).toEqual({ last_error: 'repository not found' });
+  });
+});
+
+describe('account guard', () => {
+  const MISMATCH = 'This database belongs to @alice, but the GitHub token is for @mallory. Switch back to @alice, or use a different database.';
+  function setup() {
+    const db = openDb(':memory:');
+    const gh = fakeGitHub();
+    const sync = (req = {}) => runSync({ db, client: new GitHubClient({ token: 't', fetchImpl: gh.fetchImpl }), settings: DEFAULT_SETTINGS, now: () => NOW }, req);
+    return { db, gh, sync };
+  }
+
+  it('refuses a token for another account before writing anything', async () => {
+    const { db, gh, sync } = setup();
+    await sync();
+    const repos = () => db.all('SELECT * FROM repos ORDER BY id');
+    const before = { repos: repos(), viewer: getMeta(db, 'viewer') };
+    // `gh auth switch` to another account, with its own repos of the same names.
+    const v = gh.fx.repos.viewer;
+    Object.assign(v, { id: 'U_mallory', login: 'mallory' });
+    v.repositories.nodes = v.repositories.nodes.map((n) => ({ ...n, id: `M_${n.id}`, nameWithOwner: `mallory/${n.name}`, owner: { login: 'mallory' } }));
+    gh.calls.length = 0;
+    await expect(sync()).rejects.toThrow(MISMATCH);
+    await expect(sync({ repo: 'app' })).rejects.toThrow(MISMATCH);
+    expect(gh.calls.map((c) => c.op)).toEqual(['ViewerRepos', 'ViewerRepo']);
+    expect({ repos: repos(), viewer: getMeta(db, 'viewer') }).toEqual(before);
+  });
+
+  it('follows a renamed account by id, and matches logins for databases stored without one', async () => {
+    const { db, gh, sync } = setup();
+    setMeta(db, 'viewer', { login: 'Alice', name: null, avatarUrl: null });
+    await sync({ repo: 'app' });
+    expect(getMeta(db, 'viewer')).toMatchObject({ id: 'U_alice', login: 'alice' });
+    gh.fx.repos.viewer.login = 'alice-renamed';
+    expect(await sync()).toMatchObject({ errors: [] });
+    expect(getMeta(db, 'viewer')).toMatchObject({ id: 'U_alice', login: 'alice-renamed' });
+  });
+
+  it('compares ids when both sides have one', () => {
+    const alice = { id: 'U_alice', login: 'alice', name: null, avatarUrl: null };
+    expect(viewerMismatch(null, { id: 'U_x', login: 'x' })).toBeNull();
+    expect(viewerMismatch(alice, { id: 'U_alice', login: 'someone-else' })).toBeNull();
+    expect(viewerMismatch(alice, { id: 'U_new', login: 'alice' })).toContain('belongs to @alice');
+    expect(viewerMismatch({ ...alice, id: undefined }, { id: 'U_new', login: 'ALICE' })).toBeNull();
+    expect(viewerMismatch({ ...alice, id: undefined }, { login: 'mallory' })).toBe(MISMATCH);
   });
 });
 

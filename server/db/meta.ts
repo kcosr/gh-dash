@@ -1,6 +1,9 @@
 import type { Db } from './db';
 
+/** The GitHub account this database belongs to (set by the first sync; see viewerMismatch). */
 export interface ViewerMeta {
+  /** GraphQL node id; missing in databases synced before it was stored. */
+  id?: string;
   login: string;
   name: string | null;
   avatarUrl: string | null;

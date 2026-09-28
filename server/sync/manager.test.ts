@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { openDb } from '../db/db';
 import { getMeta, setMeta } from '../db/meta';
 import { SyncManager } from './manager';
@@ -58,5 +58,38 @@ describe('SyncManager', () => {
     manager(false, 'token').startScheduler();
     expect(getMeta(db, 'nextSyncAt')).toBeNull();
     expect(getMeta(db, 'syncLock')).toBeNull();
+  });
+});
+
+describe('ensureViewer', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const RL = { limit: 5000, remaining: 4999, resetAt: '2099-01-01T00:00:00Z', cost: 1 };
+  /** GitHub answering the viewer query as `login`. */
+  const answerAs = (id: string, login: string) => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify({ data: { viewer: { id, login, name: null, avatarUrl: null }, rateLimit: RL } })));
+    vi.stubGlobal('fetch', fetch);
+    return fetch;
+  };
+
+  it('adds the id to a viewer stored by login only, and just warns about a token for another account', async () => {
+    const own = openDb(':memory:');
+    const logs: string[] = [];
+    const m = new SyncManager({ db: own, schedule: false, resolveToken: () => ({ token: 't', source: 'env' }), log: (line) => logs.push(line) });
+    setMeta(own, 'viewer', { login: 'Alice', name: 'Alice A', avatarUrl: null });
+
+    answerAs('U_mallory', 'mallory');
+    await m.ensureViewer();
+    expect(getMeta(own, 'viewer')).toEqual({ login: 'Alice', name: 'Alice A', avatarUrl: null });
+    expect(logs).toEqual([
+      '[sync] warning: This database belongs to @Alice, but the GitHub token is for @mallory. Switch back to @Alice, or use a different database.',
+    ]);
+
+    answerAs('U_alice', 'alice');
+    await m.ensureViewer();
+    expect(getMeta(own, 'viewer')).toEqual({ id: 'U_alice', login: 'alice', name: null, avatarUrl: null });
+    // Known by id: no more requests.
+    const fetch = answerAs('U_mallory', 'mallory');
+    await m.ensureViewer();
+    expect(fetch).not.toHaveBeenCalled();
   });
 });

@@ -1,0 +1,3 @@
+# Large fixtures stay local (copy them from the diff-view notes to use them in the gallery).
+herdr-web-pr-4-huge.json
+gh-dash-commit-root.json

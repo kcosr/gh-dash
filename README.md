@@ -44,11 +44,14 @@ the signed-in user are synced.
 ## Using the dashboard
 
 - **Pull requests:** read descriptions, filter by state, and open a detail drawer.
+- **Diffs:** open a PR's changes with **Files changed** in its drawer, or click a commit's SHA
+  in the drawer or Activity (modifier-click still opens GitHub). Diffs are fetched from GitHub
+  on demand and cached on the server; see **Settings → Diff cache** for its size limit and to clear it.
 - **Issues:** browse open or closed issues, expand descriptions, and filter by creator, repository, or date.
 - **Activity:** browse a combined timeline and jump to a day using the activity strip.
 - **Repositories and Insights:** explore repository activity, contributors and trends.
 - **Keyboard shortcuts:** `Ctrl/Cmd+K` opens search; `/` focuses the filter. In the PR
-  list, use `j`/`k` to move, `Enter` to open details, and `Esc` to close.
+  list, use `j`/`k` to move, `Enter` to open details, `d` to view the diff, and `Esc` to close.
 
 Use **Settings** to adjust the sync interval, backfill window and fork inclusion.
 Add any unlinked commit emails under **My commit emails** so those commits count as yours.
@@ -61,7 +64,7 @@ divider to resize it; its width is saved in your browser. You can also focus the
 divider and use arrow keys, or double-click it to reset the width.
 On narrow screens, the sidebar starts closed. Use the sidebar button to open it
 full screen, then choose a repository or tap Close to return to the list. PR details
-also use the full content area on narrow screens; close them to return to the list.
+and diffs also use the full content area on narrow screens; close them to return to the list.
 Mobile filter bars start as a single summary row; tap Filters to expand or collapse the controls.
 
 ## Configuration and deployment
@@ -76,6 +79,7 @@ contains credentials. Shell expansion is not performed; use absolute paths in it
 | `GITHUB_TOKEN` | GitHub CLI credentials | Read-only GitHub access |
 | `HOST` / `PORT` | `127.0.0.1` / `4780` | Listen address |
 | `GH_DASH_DB` | `$XDG_STATE_HOME/gh-dash/gh-dash.db` | Database location |
+| `GH_DASH_CACHE_DB` | `gh-dash-cache.db` next to the database | Diff cache location |
 | `GH_DASH_SYNC` | `on` | Set to `off` to disable automatic syncs |
 | `GH_DASH_PASSWORD` | Unset | Require a password to access the dashboard |
 | `GH_DASH_API_KEY` | Unset | Authenticate API clients with Bearer or `X-API-Key` |
@@ -86,6 +90,11 @@ Without `XDG_STATE_HOME`, the database defaults to `~/.local/state/gh-dash/gh-da
 Empty or relative XDG paths use the home defaults. UI settings remain in the database.
 An existing checkout-local database is not moved automatically; set `GH_DASH_DB` to
 its absolute path to keep using it.
+
+Diffs and file contents are fetched from GitHub when you open them and kept in a
+separate cache database (named after the main database, e.g. `gh-dash-cache.db`). Its size
+is capped by the `diffCacheMb` setting (200 MB by default); least recently viewed entries are
+dropped first. The cache can be deleted at any time and left out of backups.
 
 For a persistent installation, adapt the [systemd unit](deploy/gh-dash.service).
 For remote access, use HTTPS through a reverse proxy such as the supplied

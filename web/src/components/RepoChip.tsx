@@ -4,7 +4,7 @@ import { useLocation, useNavigate } from 'react-router';
 import type { Repo } from '../../../shared/api';
 import { useRepoMap } from '../api/hooks';
 import { Icon } from './Icon';
-import { patchSearch, viewFromPath } from '../lib/urlState';
+import { OVERLAY_KEYS, patchSearch, viewFromPath } from '../lib/urlState';
 
 /**
  * The repo map, provided once by the app shell. Chips read it from context instead of each
@@ -23,9 +23,9 @@ export function RepoMapProvider({ children }: { children: ReactNode }) {
   const view = viewFromPath(location.pathname);
   const pathname = view === 'prs' || view === 'issues' || view === 'repos' || view === 'activity' || view === 'insights' ? location.pathname : '/activity';
   const params = new URLSearchParams(location.search);
-  params.delete('pr');
+  for (const k of OVERLAY_KEYS) params.delete(k);
   const search = params.toString();
-  // Drawer navigation must not re-render every chip in a long list. Cache one target per repo,
+  // Drawer and diff navigation must not re-render every chip in a long list. Cache one target per repo,
   // and keep this context stable until the actual filters (or repo metadata) change.
   const hrefFor = useMemo(() => {
     const base = new URLSearchParams(search);
@@ -36,7 +36,7 @@ export function RepoMapProvider({ children }: { children: ReactNode }) {
       const vis = base.get('vis');
       const repo = repos.get(name);
       const conflict = repo && (vis === 'public' || vis === 'private') && vis !== repo.visibility;
-      href = pathname + patchSearch(search, viewFromPath(pathname), { repos: [name], pr: null, ...(conflict ? { vis: 'all' } : {}) });
+      href = pathname + patchSearch(search, viewFromPath(pathname), { repos: [name], pr: null, diff: null, ...(conflict ? { vis: 'all' } : {}) });
       cache.set(name, href);
       return href;
     };
@@ -60,7 +60,7 @@ export function RepoChip({ name, className = 'repo-chip' }: { name: string; clas
         if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
         e.preventDefault();
         const here = window.location;
-        // Normalize encoding/defaults while retaining `pr`, so a drawer link still closes it.
+        // Normalize encoding/defaults while retaining `pr`/`diff`, so a link in the drawer or diff still closes it.
         if (href !== here.pathname + patchSearch(here.search, viewFromPath(here.pathname), {})) navigate(href);
       }}>
       {priv && <Icon name="lock" title="Private" />}

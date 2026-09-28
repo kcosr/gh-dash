@@ -19,7 +19,12 @@ function paramRows(params: ParamDoc[]): string {
 }
 
 function curl(e: EndpointDoc, origin: string): string {
-  const path = e.path.replace('{repo}', 'gh-dash').replace('{number}', '1').replace('{name}', 'gh-dash').replace('{id}', '1');
+  const path = e.path
+    .replace('{repo}', 'gh-dash')
+    .replace('{number}', '1')
+    .replace('{name}', 'gh-dash')
+    .replace('{id}', '1')
+    .replace('{oid}', '0123abc');
   const url = `${origin}${path}${e.example ? `?${e.example}` : ''}`;
   if (e.method === 'get') return `curl -s '${url}'`;
   if (e.method === 'delete') return `curl -s -X DELETE '${url}'`;

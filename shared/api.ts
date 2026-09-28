@@ -205,6 +205,8 @@ export interface Settings {
    */
   myEmailsFromEnv?: string[];
   includeForks: boolean; // default false: forks are synced but excluded from the default scope
+  /** Size cap for the on-disk diff cache in MB (default 200; allowed 10..10000). Least recently viewed entries go first. */
+  diffCacheMb: number;
 }
 
 export interface Me {
@@ -374,6 +376,60 @@ export interface StatsResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Diffs: fetched from GitHub's REST API when a user opens one, cached in a separate
+// on-disk cache database. Never part of the background sync.
+// ---------------------------------------------------------------------------
+
+export type DiffFileStatus = 'added' | 'removed' | 'modified' | 'renamed' | 'copied' | 'changed' | 'unchanged';
+
+export interface DiffFile {
+  /** Path on the new side (for a removed file, the path it had). */
+  path: string;
+  /** Old path for renamed/copied files; null otherwise. */
+  previousPath: string | null;
+  status: DiffFileStatus;
+  additions: number;
+  deletions: number;
+  /**
+   * Unified-diff hunks as GitHub returns them: starts at the first "@@" line, with no
+   * "diff --git" / "---" / "+++" header lines. null when GitHub omits the patch
+   * (binary files, or text diffs too large for the API).
+   */
+  patch: string | null;
+}
+
+export interface Diff {
+  kind: 'pr' | 'commit';
+  repo: string;
+  /** PR number for kind 'pr'; null for commits. */
+  number: number | null;
+  /** PR title or commit headline. */
+  title: string;
+  /** Old side of every file: the merge base for a PR, the first parent for a commit (null for a root commit). */
+  baseOid: string | null;
+  /** New side of every file: the PR head, or the commit itself. */
+  headOid: string;
+  /** In GitHub's order. */
+  files: DiffFile[];
+  /** Files GitHub reports as changed; exceeds files.length when GitHub caps the list (3000 files). */
+  totalFiles: number;
+  additions: number;
+  deletions: number;
+  /** When this diff was fetched from GitHub (earlier than the request when served from the cache). */
+  fetchedAt: string;
+  /** The PR's "Files changed" tab or the commit page on GitHub. */
+  url: string;
+}
+
+export interface DiffCacheStats {
+  entries: number;
+  /** Bytes used by cached diffs and file contents. */
+  bytes: number;
+  /** Current cap (Settings.diffCacheMb in bytes). */
+  maxBytes: number;
+}
+
+// ---------------------------------------------------------------------------
 // Endpoint index (for reference; implemented in server/, consumed in web/src/api)
 // ---------------------------------------------------------------------------
 //
@@ -399,6 +455,14 @@ export interface StatsResponse {
 // GET    /api/v1/stats          StatsQuery     -> StatsResponse
 // GET    /api/v1/sync/status                   -> SyncStatus
 // POST   /api/v1/sync           {repo?: string, full?: boolean} -> 202 SyncStatus (409 if already running)
+// GET    /api/v1/prs/:repo/:number/diff  {refresh?: '1'} -> Diff
+// GET    /api/v1/commits/:repo/:oid/diff {refresh?: '1'} -> Diff     (oid: 7-40 hex chars; need not be synced)
+//          Diff errors: 404 unknown repo/PR/commit, 503 no GitHub token, 429 GitHub rate limit, 502 other GitHub failure.
+//          refresh=1 re-checks GitHub for a PR's current head instead of using the last synced one.
+// GET    /api/v1/blob/:repo     {ref, path}    -> text/plain file contents at a commit (for expanding diff context);
+//          404 missing, 415 binary, 413 too large
+// GET    /api/v1/diff-cache                    -> DiffCacheStats
+// DELETE /api/v1/diff-cache                    -> DiffCacheStats (after clearing)
 // GET    /api/v1/settings                      -> Settings
 // PATCH  /api/v1/settings       Partial<Settings> -> Settings
 // GET    /api/v1/openapi.json                  -> OpenAPI 3.1 document

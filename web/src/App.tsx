@@ -1,8 +1,9 @@
 import { QueryClient, QueryClientProvider, useIsFetching, useQueryClient } from '@tanstack/react-query';
 import { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import { Navigate, Outlet, RouterProvider, createBrowserRouter, useLocation, useRouteError } from 'react-router';
-import { useRepos, useSyncStatus } from './api/hooks';
+import { refetchAfterSync, useRepos, useSyncStatus } from './api/hooks';
 import { CommandPalette } from './components/CommandPalette';
+import { DiffView } from './components/DiffView';
 import { PrDrawer } from './components/Drawer';
 import { ExportModal } from './components/ExportModal';
 import { PromptDialog } from './components/PromptDialog';
@@ -16,7 +17,7 @@ import { UIProvider, useUI } from './components/ui';
 import { hasBlockingLayer, isTypingTarget, topLayer } from './lib/layers';
 import { plural } from './lib/time';
 import { repoFromPath, useUrlState } from './lib/urlState';
-import { cx } from './lib/util';
+import { cx, isChunkLoadError } from './lib/util';
 import { preloadMarkdown } from './components/Markdown';
 import { RepoMapProvider } from './components/RepoChip';
 import { Icon } from './components/Icon';
@@ -71,7 +72,7 @@ const queryClient = new QueryClient({
   },
 });
 
-/** Invalidate everything when a sync finishes, and toast the result. */
+/** Invalidate synced data when a sync finishes, and toast the result. */
 function useSyncWatcher() {
   const qc = useQueryClient();
   const toast = useToast();
@@ -84,7 +85,7 @@ function useSyncWatcher() {
     const prev = wasRunning.current;
     wasRunning.current = st.running;
     if (prev && !st.running) {
-      qc.invalidateQueries({ predicate: (q) => q.queryKey[0] !== 'sync-status' });
+      qc.invalidateQueries({ predicate: refetchAfterSync });
       const n = st.lastResult?.newItems ?? 0;
       const errs = st.lastResult?.errors.length ?? 0;
       toast(`Synced · ${n.toLocaleString()} new ${plural(n, 'item')}${errs ? ` · ${errs} ${plural(errs, 'error')}` : ''}`, { error: errs > 0 });
@@ -92,7 +93,7 @@ function useSyncWatcher() {
     // During the very first sync, refresh lists as repos land (throttled).
     if (st.running && !st.lastSyncAt && st.progress && st.progress.done !== lastDone.current.done && Date.now() - lastDone.current.at > 5000) {
       lastDone.current = { done: st.progress.done, at: Date.now() };
-      qc.invalidateQueries({ predicate: (q) => q.queryKey[0] !== 'sync-status' });
+      qc.invalidateQueries({ predicate: refetchAfterSync });
     }
   }, [st, qc, toast]);
 }
@@ -146,6 +147,7 @@ function Shell() {
     : null;
   const hasSide = !setup && view !== 'repo' && view !== 'settings';
   const drawer = !setup && s.pr ? s.pr : null;
+  const diff = !setup && s.diff ? s.diff : null;
   const compact = useCompactSidebar();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarSearch, setSidebarSearch] = useState(false);
@@ -162,7 +164,7 @@ function Shell() {
 
   return (
     <>
-      <div ref={sidebar.frame} style={sidebar.style} inert={mobileOpen} className={cx('app', !desktopSide && 'no-side', drawer && 'has-drawer', sidebar.dragging && 'resizing-sidebar')}>
+      <div ref={sidebar.frame} style={sidebar.style} inert={mobileOpen} className={cx('app', !desktopSide && 'no-side', drawer && 'has-drawer', diff && 'has-diff', sidebar.dragging && 'resizing-sidebar')}>
         <TopBar theme={theme} onToggleTheme={toggleTheme} sidebarOpen={mobileOpen}
           onOpenSidebar={hasSide && compact ? () => { setSidebarSearch(false); setSidebarOpen(true); } : undefined} />
         {desktopSide && <div className="sidebar-pane"><Sidebar />{sidebar.separator}</div>}
@@ -180,6 +182,8 @@ function Shell() {
           </Suspense>
         )}
         {drawer && <PrDrawer key={drawer} id={drawer} compact={compact} />}
+        {/* A PR's diff id is its drawer id: keep the sibling keys distinct. */}
+        {diff && <DiffView key={`diff:${diff}`} id={diff} compact={compact} />}
       </div>
       {mobileOpen && <MobileSidebar focusSearch={sidebarSearch} onClose={() => setSidebarOpen(false)} />}
       {ui.paletteOpen && <CommandPalette onClose={ui.closePalette} onRun={() => setSidebarOpen(false)} onSync={() => sync.run()} onToggleTheme={toggleTheme} />}
@@ -202,7 +206,7 @@ function AppShell() {
 /** A view failed to render or its code failed to load (e.g. the app was redeployed): keep the shell. */
 function ViewError() {
   const error = useRouteError();
-  const chunk = error instanceof Error && /dynamically imported module|Importing a module script failed|error loading dynamically/i.test(error.message);
+  const chunk = isChunkLoadError(error);
   return (
     <main className="main">
       <div className="scroll">

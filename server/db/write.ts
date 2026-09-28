@@ -100,7 +100,7 @@ const UPSERT_PR = upsertSql(
   [
     'repo_id', 'number', 'title', 'body', 'state', 'is_draft', ...actorCols('author'), 'merged_by', 'created_at', 'updated_at',
     'merged_at', 'closed_at', 'activity_at', 'additions', 'deletions', 'changed_files', 'commit_count', 'head_ref', 'base_ref',
-    'labels', 'closing_issues', 'url',
+    'labels', 'closing_issues', 'url', 'head_oid',
   ],
   ['repo_id', 'number'],
 );
@@ -110,7 +110,7 @@ export function upsertPr(db: Db, repoId: number, p: PrRecord): boolean {
   const { id } = db.get<{ id: number }>(UPSERT_PR, [
     repoId, p.number, p.title, p.body, p.state, Number(p.isDraft), ...actorVals(p.author), p.mergedBy, p.createdAt, p.updatedAt,
     p.mergedAt, p.closedAt, p.activityAt, p.additions, p.deletions, p.changedFiles, p.commitCount, p.headRef, p.baseRef,
-    JSON.stringify(p.labels), JSON.stringify(p.closingIssues), p.url,
+    JSON.stringify(p.labels), JSON.stringify(p.closingIssues), p.url, p.headOid,
   ])!;
   db.run('DELETE FROM pr_commits WHERE pr_id = ?', [id]);
   p.commits.forEach((c, i) => {

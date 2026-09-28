@@ -1,11 +1,11 @@
 import { useQueryClient } from '@tanstack/react-query';
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { PullRequest, PullRequestDetail } from '../../../shared/api';
 import { findCachedPr, usePrDetail } from '../api/hooks';
-import { hasBlockingLayer, useLayer } from '../lib/layers';
+import { hasBlockingLayer, isTypingTarget, useLayer } from '../lib/layers';
 import { dur, fmtDate, fmtDateTime, plural, rel } from '../lib/time';
-import { useUrlState } from '../lib/urlState';
-import { actorName, actorSubject, copyText } from '../lib/util';
+import { commitDiffId, useUrlState } from '../lib/urlState';
+import { actorName, actorSubject, copyText, isPlainClick } from '../lib/util';
 import { Avatar } from './Avatar';
 import { Diffstat, prIconName } from './bits';
 import { Icon } from './Icon';
@@ -28,6 +28,18 @@ export function PrDrawer({ id, compact }: { id: string; compact: boolean }) {
 
   const close = () => set({ pr: null });
   useLayer(true, close, false);
+  // Diffs come from GitHub on demand: nothing is fetched until one is opened. A PR's diff id is its id.
+  const openDiff = useCallback((diffId: string) => set({ diff: diffId }), [set]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'd' || hasBlockingLayer() || isTypingTarget(document.activeElement) || e.metaKey || e.ctrlKey || e.altKey) return;
+      e.preventDefault();
+      openDiff(id);
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [id, openDiff]);
 
   useEffect(() => { scroller.current?.scrollTo({ top: 0 }); }, [id]);
   useEffect(() => {
@@ -103,6 +115,9 @@ export function PrDrawer({ id, compact }: { id: string; compact: boolean }) {
         </div>
         <div className="dr-actions">
           <a className="btn primary" href={pr.url} target="_blank" rel="noopener noreferrer"><Icon name="ext" />Open on GitHub</a>
+          <button type="button" className="btn" data-diff={id} onClick={() => openDiff(id)} title="View the diff (d)">
+            <Icon name="diff" />Files changed<span className="n">{pr.changedFiles.toLocaleString()}</span>
+          </button>
           <button type="button" className="btn" onClick={() => copy(pr.url, 'Link copied')}><Icon name="copy" />Copy link</button>
           <button type="button" className="btn" onClick={() => copy(mdCopy, 'Copied as Markdown')}><Icon name="md" />Copy as Markdown</button>
         </div>
@@ -134,7 +149,8 @@ export function PrDrawer({ id, compact }: { id: string; compact: boolean }) {
         {full ? (
           full.commits.length ? full.commits.map((c) => (
             <div key={c.oid} className="c-li">
-              <a className="sha" href={c.url} target="_blank" rel="noopener noreferrer">{c.oid.slice(0, 7)}</a>
+              <a className="sha" href={c.url} target="_blank" rel="noopener noreferrer" data-diff={commitDiffId(pr.repo, c.oid)} title="View the commit's diff"
+                onClick={(e) => { if (isPlainClick(e)) { e.preventDefault(); openDiff(commitDiffId(pr.repo, c.oid)); } }}>{c.oid.slice(0, 7)}</a>
               <span title={actorName(c.author)}>{c.headline}</span>
               <time dateTime={c.committedAt} title={fmtDateTime(c.committedAt)}>{fmtDate(c.committedAt)}</time>
             </div>

@@ -219,10 +219,14 @@ const V2 = `CREATE INDEX IF NOT EXISTS commits_repo_committed_at ON commits(repo
 // commit, which after an interrupted walk would leave a gap).
 const V3 = `ALTER TABLE sync_state ADD COLUMN commits_head TEXT;`;
 
+// PR head commit as of the last sync: diffs are cached by it, so an unchanged PR needs no GitHub request.
+const V4 = `ALTER TABLE pull_requests ADD COLUMN head_oid TEXT;`;
+
 const MIGRATIONS: Migration[] = [
   { version: 1, destructive: false, sql: V1 },
   { version: 2, destructive: false, sql: V2 },
   { version: 3, destructive: false, sql: V3 },
+  { version: 4, destructive: false, sql: V4 },
 ];
 
 export function migrate(db: Db, allowDestructive: boolean): void {

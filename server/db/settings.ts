@@ -7,6 +7,7 @@ export const DEFAULT_SETTINGS: Settings = {
   backfillDays: 365,
   myEmails: [],
   includeForks: false,
+  diffCacheMb: 200,
 };
 
 export const settingsPatchSchema = z
@@ -18,6 +19,7 @@ export const settingsPatchSchema = z
       .max(50)
       .transform((emails) => [...new Set(emails)]),
     includeForks: z.boolean(),
+    diffCacheMb: z.number().int().min(10).max(10000),
   })
   .partial()
   // Read-only (GH_DASH_MY_EMAILS): accepted and ignored, so a client can PATCH back a Settings object it fetched.

@@ -72,6 +72,8 @@ export interface PrRecord {
   changedFiles: number;
   commitCount: number;
   headRef: string;
+  /** Head commit; keys the diff cache. Internal: not part of the API's PullRequest. */
+  headOid: string;
   baseRef: string;
   labels: Label[];
   closingIssues: ClosingIssueRecord[];

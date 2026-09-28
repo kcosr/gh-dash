@@ -1,14 +1,17 @@
 /** react-query hooks over the API client. */
 import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { InfiniteData, QueryClient } from '@tanstack/react-query';
-import { useMemo } from 'react';
+import type { InfiniteData, Query, QueryClient } from '@tanstack/react-query';
+import { useCallback, useMemo } from 'react';
 import type {
   ActivityQuery,
   ActivityResponse,
+  Commit,
+  Diff,
   IssueQuery,
   PrListResponse,
   PrQuery,
   PullRequest,
+  PullRequestDetail,
   Repo,
   RepoSet,
   SavedView,
@@ -17,8 +20,9 @@ import type {
   StatsQuery,
   SyncStatus,
 } from '../../../shared/api';
-import { api } from './client';
+import { api, isClientError, isUnreachable } from './client';
 import { defaultRepoScope } from '../../../shared/repos';
+import { parseDiffId } from '../lib/urlState';
 
 export const qk = {
   repos: ['repos'] as const,
@@ -33,7 +37,17 @@ export const qk = {
   activity: (q: ActivityQuery) => ['activity', q] as const,
   releases: (q: ScopeQuery) => ['releases', q] as const,
   stats: (q: StatsQuery) => ['stats', q] as const,
+  diff: (id: string) => ['diff', id] as const,
+  blob: (repo: string, ref: string, path: string) => ['blob', repo, ref, path] as const,
+  diffCache: ['diff-cache'] as const,
 };
+
+/**
+ * Queries a finished sync (or a settings change) should refetch. Diffs and file contents are fetched
+ * from GitHub on demand, so a sync doesn't swap an open diff under the reader (the diff view has a
+ * refresh); a PR diff is revalidated when it's next opened (useDiff).
+ */
+export const refetchAfterSync = (q: Query) => !['sync-status', 'diff', 'blob'].includes(q.queryKey[0] as string);
 
 // ---------------------------------------------------------------- reference data
 
@@ -157,6 +171,93 @@ export function findCachedPr(qc: QueryClient, id: string): PullRequest | undefin
   return undefined;
 }
 
+/** A commit already loaded by the activity feed or a PR's details (for the diff header while it loads). */
+export function findCachedCommit(qc: QueryClient, repo: string, oid: string): Pick<Commit, 'headline' | 'url'> & Partial<Commit> | undefined {
+  for (const [, data] of qc.getQueriesData<InfiniteData<ActivityResponse>>({ queryKey: ['activity'] })) {
+    for (const page of data?.pages ?? []) {
+      for (const e of page.items) if (e.type === 'commit' && e.repo === repo && e.commit.oid.startsWith(oid)) return e.commit;
+    }
+  }
+  for (const [, data] of qc.getQueriesData<PullRequestDetail>({ queryKey: ['pr', repo] })) {
+    const hit = data?.commits.find((c) => c.oid.startsWith(oid));
+    if (hit) return hit;
+  }
+  return undefined;
+}
+
+// ---------------------------------------------------------------- diffs
+
+/**
+ * The diff for a `diff` URL param. Fetched only when the diff view opens. A commit's diff never
+ * changes. A PR's can (new pushes, a moved base), so reopening one asks the server again: it answers
+ * from its own cache, checking GitHub only when the synced PR says the diff may be out of date.
+ */
+export function useDiff(id: string) {
+  const t = parseDiffId(id);
+  return useQuery({
+    queryKey: qk.diff(id),
+    queryFn: () => fetchDiff(id, false),
+    enabled: !!t,
+    staleTime: t?.kind === 'commit' ? Infinity : 0,
+    // Once, for a GitHub hiccup or the server restarting; not for a missing token or the rate limit.
+    retry: (count, err) => count < 1 && (isUnreachable(err) || (err as { status?: number }).status === 502),
+  });
+}
+
+function fetchDiff(id: string, refresh: boolean): Promise<Diff> {
+  const t = parseDiffId(id);
+  if (!t) return Promise.reject(new Error(`Not a diff: ${id}`));
+  return t.kind === 'pr' ? api.prDiff(t.repo, t.number, refresh) : api.commitDiff(t.repo, t.oid, refresh);
+}
+
+/**
+ * Re-check GitHub and replace the cached diff. A plain fetch still in flight (the revalidation when
+ * a PR diff reopens) is cancelled first: it may answer later with the older head and overwrite this.
+ */
+export async function refreshDiff(qc: QueryClient, id: string, fetch = fetchDiff): Promise<Diff> {
+  await qc.cancelQueries({ queryKey: qk.diff(id) });
+  const d = await fetch(id, true);
+  qc.setQueryData(qk.diff(id), d);
+  return d;
+}
+
+/** Re-check GitHub (a PR may have new commits since the last sync) and replace the cached diff. */
+export function useRefreshDiff(id: string) {
+  const qc = useQueryClient();
+  return useMutation({ mutationFn: () => refreshDiff(qc, id) });
+}
+
+/** The viewer's `loadFile`: file contents at a commit, cached per (repo, ref, path); null when unavailable. */
+export function useLoadFile(repo: string) {
+  const qc = useQueryClient();
+  return useCallback(
+    (ref: string, path: string) => qc.fetchQuery({
+      queryKey: qk.blob(repo, ref, path),
+      queryFn: () => api.blob(repo, ref, path),
+      staleTime: Infinity,
+      retry: (count, err) => count < 1 && !isClientError(err),
+    }),
+    [qc, repo],
+  );
+}
+
+export function useDiffCacheStats() {
+  return useQuery({ queryKey: qk.diffCache, queryFn: api.diffCache, staleTime: 0 });
+}
+
+export function useClearDiffCache() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.clearDiffCache,
+    onSuccess: (stats) => {
+      qc.setQueryData(qk.diffCache, stats);
+      // Diffs not on screen are fetched again next time, like the server now will.
+      qc.removeQueries({ queryKey: ['diff'], type: 'inactive' });
+      qc.removeQueries({ queryKey: ['blob'], type: 'inactive' });
+    },
+  });
+}
+
 // ---------------------------------------------------------------- mutations
 
 export function usePatchRepo() {
@@ -230,8 +331,8 @@ export function usePatchSettings() {
     mutationFn: api.patchSettings,
     onSuccess: (s: Settings) => {
       qc.setQueryData(qk.settings, s);
-      // "me" and default scope can change (myEmails, includeForks)
-      qc.invalidateQueries({ predicate: (q) => q.queryKey[0] !== 'sync-status' && q.queryKey[0] !== 'settings' });
+      // "me" and default scope can change (myEmails, includeForks); the diff cache cap (diffCacheMb)
+      qc.invalidateQueries({ predicate: (q) => refetchAfterSync(q) && q.queryKey[0] !== 'settings' });
     },
   });
 }

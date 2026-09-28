@@ -142,3 +142,12 @@ export function dayName(d: Date, now = new Date()): string {
 export const nf = new Intl.NumberFormat(LOCALE);
 export const fmtNum = (n: number) => nf.format(n);
 export const plural = (n: number, one: string, many = `${one}s`) => (n === 1 ? one : many);
+
+/** Sizes in binary units, as the diff cache cap counts them: "840 KB", "3.4 MB", "1.2 GB". */
+export function fmtBytes(n: number): string {
+  if (n < 1024) return `${fmtNum(n)} ${plural(n, 'byte')}`;
+  const units = ['KB', 'MB', 'GB'];
+  let v = n / 1024, i = 0;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+  return `${v < 10 ? v.toFixed(1) : fmtNum(Math.round(v))} ${units[i]}`;
+}

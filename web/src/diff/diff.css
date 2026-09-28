@@ -1,0 +1,123 @@
+/* Diff viewer (lazy chunk). Pierre renders each file in a shadow root: only inherited custom
+   properties reach inside, so this file sets --diffs-* (Pierre's knobs) and --dvr-* (the syntax theme,
+   theme.ts) from the app's tokens. What variables can't reach lives in pierre.css. */
+
+.diff-viewer {
+  /* Type: the app's mono at its numeric size for code, Inter for headers and separators. */
+  --diffs-font-family: var(--mono);
+  --diffs-header-font-family: var(--font);
+  --diffs-font-size: 12px;
+  --diffs-line-height: 18px;
+  --diffs-tab-size: 4;
+  --diffs-font-features: "calt" 0, "liga" 0; /* JetBrains Mono's ligatures hide what was typed */
+  --diffs-gap-block: 4px;
+  --diffs-min-number-column-width: 3ch;
+
+  /* Syntax: mostly the text greys, strings and constants in two muted accents. */
+  --dvr-foreground: var(--text);
+  --dvr-background: var(--surface);
+  --dvr-token-comment: var(--muted);
+  --dvr-token-keyword: var(--text-2);
+  --dvr-token-punctuation: var(--text-2);
+  --dvr-token-function: var(--text);
+  --dvr-token-parameter: var(--text);
+  --dvr-token-constant: color-mix(in srgb, var(--star) 55%, var(--text));
+  --dvr-token-string: color-mix(in srgb, var(--accent-text) 78%, var(--text));
+  --dvr-token-string-expression: var(--dvr-token-string);
+  --dvr-token-link: var(--accent-text);
+  --dvr-token-inserted: var(--add);
+  --dvr-token-deleted: var(--del);
+  --dvr-token-changed: var(--accent-text);
+
+  /* Change colors: the app's --add/--del, diluted before Pierre mixes them into the line
+     backgrounds (at 12% light / 20% dark), so a changed line is a tint rather than a band. */
+  --dvr-add-tint: color-mix(in srgb, var(--add) 55%, var(--surface));
+  --dvr-del-tint: color-mix(in srgb, var(--del) 50%, var(--surface));
+  --diffs-bg-addition-override: var(--dvr-add-tint);
+  --diffs-bg-deletion-override: var(--dvr-del-tint);
+  --diffs-bg-addition-number-override: var(--dvr-add-tint);
+  --diffs-bg-deletion-number-override: var(--dvr-del-tint);
+  --diffs-bg-addition-emphasis-override: color-mix(in srgb, var(--add) 15%, transparent);
+  --diffs-bg-deletion-emphasis-override: color-mix(in srgb, var(--del) 13%, transparent);
+  --diffs-fg-number-override: var(--muted);
+  --diffs-fg-number-addition-override: color-mix(in srgb, var(--add) 60%, var(--muted));
+  --diffs-fg-number-deletion-override: color-mix(in srgb, var(--del) 60%, var(--muted));
+  --diffs-bg-separator-override: var(--surface-2);
+  --diffs-bg-buffer-override: var(--surface-2);
+  --diffs-bg-context-override: var(--surface-2);
+
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--page);
+  color: var(--text);
+}
+[data-theme="dark"] .diff-viewer {
+  --dvr-token-constant: color-mix(in srgb, var(--star) 55%, var(--text-2));
+  --dvr-add-tint: color-mix(in srgb, var(--add) 50%, var(--surface));
+  --dvr-del-tint: color-mix(in srgb, var(--del) 48%, var(--surface));
+  --diffs-bg-addition-emphasis-override: color-mix(in srgb, var(--add) 22%, transparent);
+  --diffs-bg-deletion-emphasis-override: color-mix(in srgb, var(--del) 20%, transparent);
+}
+
+/* ---------- toolbar */
+.dvr-bar { display: flex; align-items: center; gap: 10px; min-height: 42px; padding: 6px 16px 6px 10px; background: var(--surface); border-bottom: 1px solid var(--border); font-size: 12.5px; color: var(--text-2); white-space: nowrap; }
+.dvr-bar .btn.icon { width: 28px; height: 28px; }
+.dvr-bar .dvr-list-btn.on { color: var(--text); background: var(--surface-2); }
+.dvr-bar .dvr-list-btn.on svg { color: var(--text); }
+.dvr-pos { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.dvr-pos b { color: var(--text-2); font-weight: 600; }
+
+.dvr-main { position: relative; flex: 1; display: flex; min-height: 0; }
+.dvr-scroll { flex: 1; min-width: 0; height: 100%; overflow: auto; padding: 0 16px; outline: none; }
+.dvr-empty { display: grid; place-items: center; color: var(--muted); font-size: 13px; }
+
+/* ---------- file list */
+.dvr-files { flex: none; width: clamp(200px, 26%, 272px); display: flex; flex-direction: column; min-height: 0; background: var(--page); border-right: 1px solid var(--border); }
+.dvf-list { position: relative; flex: 1; overflow: auto; padding: 8px 8px 16px; }
+.dvf-dir { margin: 10px 8px 2px; font: 11px/16px var(--mono); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+.dvf-list > .dvf-dir:first-child { margin-top: 2px; }
+.dvf-row { content-visibility: auto; contain-intrinsic-size: auto 26px; display: flex; align-items: center; gap: 7px; width: 100%; height: 26px; padding: 0 8px; border-radius: 6px; font-size: 12.5px; color: var(--text-2); text-align: left; }
+.dvf-row:hover { background: var(--surface-2); color: var(--text); }
+.dvf-row:focus-visible { outline-offset: -2px; }
+.dvf-row.on { background: var(--accent-weak); color: var(--accent-text); }
+.dvf-mark { flex: none; width: 10px; font: 500 10.5px/1 var(--mono); color: var(--muted); text-align: center; }
+.dvf-row.st-added .dvf-mark { color: color-mix(in srgb, var(--add) 75%, var(--muted)); }
+.dvf-row.st-removed .dvf-mark { color: color-mix(in srgb, var(--del) 75%, var(--muted)); }
+.dvf-row.st-removed .dvf-name { color: var(--muted); }
+.dvf-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dvf-row .diffstat { flex: none; font-size: 10.5px; opacity: .85; }
+.dvr-hints { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 9px 16px 10px; border-top: 1px solid var(--border); font-size: 11.5px; color: var(--muted); }
+.dvr-hints kbd { margin-right: 1px; }
+
+/* Compact: the list overlays the diffs instead of taking a column; files run edge to edge. Controls
+   are 40px touch targets like the shell's: --dvr-touch sizes Pierre's separators too (pierre.css),
+   and headers and separators match the compact itemMetrics in DiffViewer.tsx. */
+.diff-viewer.compact { --dvr-touch: 40px; }
+.diff-viewer.compact .dvr-files { position: absolute; inset: 0 auto 0 0; z-index: 5; width: min(320px, 86%); box-shadow: var(--shadow); }
+.dvr-scrim { position: absolute; inset: 0; z-index: 4; background: var(--scrim); }
+.diff-viewer.compact .dvr-scroll { padding: 0; }
+.diff-viewer.compact .dvr-scroll diffs-container { border-radius: 0; }
+.diff-viewer.compact .dvr-bar { min-height: 40px; padding: 0 12px 0 0; gap: 6px; }
+.diff-viewer.compact .dvr-bar .btn.icon { width: 40px; height: 40px; }
+.diff-viewer.compact .dvh { height: 40px; padding-left: 0; }
+.diff-viewer.compact .dvh-fold { width: 40px; height: 40px; }
+.diff-viewer.compact .dvh-note.link, .diff-viewer.compact a.dvh-note { min-height: 40px; }
+.diff-viewer.compact .dvh-why { display: none; }
+.diff-viewer.compact .dvf-row { height: 40px; font-size: 13.5px; contain-intrinsic-size: auto 40px; }
+
+/* ---------- file header (slotted into Pierre's sticky header) */
+.dvr-scroll diffs-container { border-radius: 8px; box-shadow: 0 0 0 1px var(--border); overflow: clip; }
+.dvh { display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 12px 0 6px; background: var(--surface); border-bottom: 1px solid var(--border); font-size: 12.5px; color: var(--text); white-space: nowrap; }
+.dvh-fold { flex: none; display: grid; place-items: center; width: 22px; height: 22px; border-radius: 5px; color: var(--muted); }
+.dvh-fold:hover { background: var(--surface-2); color: var(--text); }
+.dvh-fold svg { width: 14px; height: 14px; }
+.dvh-path { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left; font-weight: 550; }
+.dvh-path .dir { color: var(--text-2); font-weight: 450; }
+.dvh .diffstat { flex: none; }
+.dvh-note { flex: none; display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); }
+.dvh-note svg { width: 12px; height: 12px; }
+a.dvh-note:hover, .dvh-note.link:hover { color: var(--accent-text); }
+.dvh.st-removed .dvh-path { color: var(--text-2); }
+.dvh.flat { border-bottom-color: transparent; }

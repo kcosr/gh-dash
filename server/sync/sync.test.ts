@@ -191,6 +191,19 @@ describe('runSync', () => {
     expect(gh.calls.some((c) => c.op === 'RecheckItems')).toBe(false);
   });
 
+  it('stores PR head commits and follows a PR whose head moves', async () => {
+    const heads = () => db.all('SELECT number, substr(head_oid, 1, 4) AS head FROM pull_requests ORDER BY number');
+    expect(heads()).toEqual([{ number: 1, head: 'aaaa' }, { number: 2, head: 'bbbb' }]);
+    // PR 1 as synced before head_oid existed: it stays NULL (no backfill) until GitHub reports it updated.
+    db.run('UPDATE pull_requests SET head_oid = NULL WHERE number = 1');
+    // A push to PR 2 bumps its updatedAt, so the updatedAt pass re-reads it.
+    Object.assign(gh.fx.detail.repository.pullRequests.nodes[0]!, { headRefOid: 'c'.repeat(40), updatedAt: '2026-09-27T09:00:00Z' });
+    gh.fx.probes.nodes[0]!.latestPr.nodes[0]!.updatedAt = '2026-09-27T09:00:00Z';
+
+    await sync(NOW + HOUR);
+    expect(heads()).toEqual([{ number: 1, head: null }, { number: 2, head: 'cccc' }]);
+  });
+
   it('re-reads stored-open items GitHub no longer lists as open, deleting ones that are gone', async () => {
     // Nothing bumped updatedAt (e.g. the issue was deleted), but GitHub now reports no open items.
     gh.fx.openPrs = [];
@@ -198,13 +211,13 @@ describe('runSync', () => {
     gh.fx.probes.nodes[0]!.openPrs.totalCount = 0;
     gh.fx.probes.nodes[0]!.openIssues.totalCount = 0;
     const pr2 = gh.fx.detail.repository.pullRequests.nodes[0]!;
-    gh.fx.recheck.pr2 = { ...(pr2 as GqlPullRequest), state: 'MERGED', mergedAt: '2026-09-27T09:00:00Z', closedAt: '2026-09-27T09:00:00Z', repository: { nameWithOwner: 'alice/app' } };
+    gh.fx.recheck.pr2 = { ...(pr2 as GqlPullRequest), state: 'MERGED', mergedAt: '2026-09-27T09:00:00Z', closedAt: '2026-09-27T09:00:00Z', headRefOid: 'd'.repeat(40), repository: { nameWithOwner: 'alice/app' } };
 
     expect(await sync(NOW + HOUR)).toMatchObject({ newItems: 0, errors: [] });
     expect(gh.calls.map((c) => c.op)).toEqual(['ViewerRepos', 'RepoProbes', 'RepoDetail', 'RecheckItems']);
     expect(state('pull_requests', 2)).toBe('merged');
     expect(state('issues', 11)).toBeNull();
-    expect(db.get('SELECT activity_at FROM pull_requests WHERE number = 2')).toEqual({ activity_at: '2026-09-27T09:00:00Z' });
+    expect(db.get('SELECT activity_at, head_oid FROM pull_requests WHERE number = 2')).toEqual({ activity_at: '2026-09-27T09:00:00Z', head_oid: 'd'.repeat(40) });
   });
 
   describe('commit history', () => {

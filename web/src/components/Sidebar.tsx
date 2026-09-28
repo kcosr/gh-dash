@@ -12,7 +12,7 @@ import {
   useViews,
 } from '../api/hooks';
 import { DAY } from '../lib/time';
-import { canonicalQuery, encodeParams, useUrlState } from '../lib/urlState';
+import { OVERLAY_KEYS, canonicalQuery, encodeParams, useUrlState } from '../lib/urlState';
 import { cx } from '../lib/util';
 import { Icon } from './Icon';
 import { Seg } from './Seg';
@@ -89,7 +89,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
     });
   };
   const saveView = () => {
-    const query = encodeParams([...new URLSearchParams(location.search)].filter(([k]) => k !== 'pr'));
+    const query = encodeParams([...new URLSearchParams(location.search)].filter(([k]) => !OVERLAY_KEYS.includes(k)));
     openPrompt({
       title: 'Save view',
       label: 'Name',
@@ -127,7 +127,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
           aria-label={`Filter to ${r.name}`}
           aria-describedby={describedBy}
           title={`Filter to ${r.name}${r.description ? ` · ${r.description}` : ''}`}
-          onClick={() => { set({ repos: [r.name], ...(onNavigate ? { pr: null } : {}) }); onNavigate?.(); }}
+          onClick={() => { set({ repos: [r.name], ...(onNavigate ? { pr: null, diff: null } : {}) }); onNavigate?.(); }}
         >
           <span className="repo-name">
             <span className="rname">{r.name}</span>

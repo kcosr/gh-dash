@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
+import { gunzipSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
 import type { Diff } from '../../shared/api';
 import { HttpError } from '../api/http';
@@ -378,6 +379,38 @@ describe('PR diffs', () => {
     // Until the reset, nothing more is sent.
     const after = await spent(() => status(svc.prDiff('app', 2, true)));
     expect(after).toEqual({ out: 429, requests: [] });
+  });
+
+  it('serves the cached copy, marked stale, when GitHub cannot be asked whether it is still current', async () => {
+    const { svc, db, cache, gh, synced, clock, logs } = setup();
+    pr2(gh.routes, A, [restFile(1)]);
+    synced(2, { head_oid: A });
+    const fresh = await diffOf(svc.prDiff('app', 2));
+    expect(fresh.stale).toBeUndefined();
+    clock.t += OPEN_PR_TTL_MS + 1;
+
+    // A restart without a token (say after `gh auth logout`), same cache.
+    const noToken = new DiffService({ db, cache, resolveToken: () => ({ token: null, source: 'none' }), log: () => {}, now: () => clock.t });
+    const stale = await noToken.prDiff('app', 2);
+    expect(await diffOf(stale)).toEqual({ ...fresh, stale: true });
+    expect(JSON.parse(gunzipSync(stale.gz).toString())).toEqual({ ...fresh, stale: true });
+    expect(await status(noToken.prDiff('app', 2, true))).toBe(503);
+
+    // GitHub failing, or rate limited; a PR GitHub no longer has is an answer, not a failure.
+    gh.routes[PULL] = { status: 500 };
+    expect(await diffOf(svc.prDiff('app', 2))).toEqual({ ...fresh, stale: true });
+    expect(logs.at(-1)).toBe('[diff] app#2: serving the cached copy (GitHub returned 500 for /repos/alice/app/pulls/2)');
+    gh.routes[PULL] = { status: 404, body: { message: 'Not Found' } };
+    expect(await status(svc.prDiff('app', 2))).toBe(404);
+    gh.routes[PULL] = { status: 403, body: { message: 'API rate limit exceeded' }, headers: { 'x-ratelimit-remaining': '0' } };
+    expect(await diffOf(svc.prDiff('app', 2))).toMatchObject({ headOid: A, stale: true });
+    expect(await status(svc.prDiff('app', 2, true))).toBe(429);
+
+    // The last sync saw a push or a retarget: the cached copy is known to be out of date.
+    synced(2, { head_oid: B });
+    expect(await status(noToken.prDiff('app', 2))).toBe(503);
+    synced(2, { head_oid: A, base_ref: 'develop' });
+    expect(await status(noToken.prDiff('app', 2))).toBe(503);
   });
 
   it('serves what GitHub returned when the cache cannot be written or read', async () => {

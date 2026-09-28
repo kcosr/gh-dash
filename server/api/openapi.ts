@@ -150,7 +150,12 @@ const schemas: Record<string, Schema> = {
     deletions: int(),
     fetchedAt: { ...dateTime, description: 'When the diff was fetched from GitHub (earlier than the request when cached)' },
     url: str('The PR\'s "Files changed" tab or the commit page on GitHub'),
-  }),
+    stale: {
+      ...bool,
+      const: true,
+      description: "Present on a cached PR diff served because GitHub couldn't be asked whether it is still current (no token, rate limit, outage); never with refresh=1",
+    },
+  }, ['stale']),
   DiffCacheStats: obj({
     entries: int(),
     bytes: int('Bytes used by cached diffs and file contents (compressed)'),
@@ -280,6 +285,8 @@ export const ENDPOINTS: EndpointDoc[] = [
     description:
       'Fetched from GitHub on first view and cached. While the last sync shows the same head and base branch and no update since, ' +
       'it is served without a GitHub request (open PRs are re-checked hourly, as the merge base can move). ' +
+      "When that re-check fails with 503, 429 or 502, a cached copy that matches the last sync's head and base branch is served " +
+      'instead, with `stale: true` (not with refresh=1). ' +
       'Errors: 404 unknown repo or PR, 503 no GitHub token, 429 GitHub rate limit (details.resetAt), 502 other GitHub failures, ' +
       '403 for cross-site browser requests.',
     params: [

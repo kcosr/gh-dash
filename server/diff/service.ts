@@ -315,7 +315,7 @@ export class DiffService {
       if (hit) return hit;
     }
 
-    return this.once(`pr/${repo.name}/${number}/${refresh}`, () =>
+    const fetched = this.once(`pr/${repo.name}/${number}/${refresh}`, () =>
       this.fetching(`${repo.name}#${number}`, async (rest, signal) => {
         const base = `/repos/${enc(repo.owner)}/${enc(repo.name)}`;
         if (current && (await rest.sha(`${base}/commits/pull/${number}/head`, current.oid, { signal })) === current.oid) {
@@ -385,6 +385,24 @@ export class DiffService {
         }
       }),
     );
+    // When GitHub can't be asked, a cached copy that agrees with the last sync (same head and base branch) beats an
+    // error. refresh=1 wants GitHub's answer, so it fails instead.
+    if (refresh || !entry || entry.oid !== pr.head_oid || entry.baseRef !== pr.base_ref) return fetched;
+    return fetched.catch((err: unknown) => this.staleCopy(err, entry.key, `${repo.name}#${number}`));
+  }
+
+  /**
+   * The cached payload under `key` marked `stale: true`, for a fetch that failed with `err` because GitHub couldn't
+   * answer: no token (503), rate limited (429) or failing (502). Any other error, or a cache miss, rethrows `err`.
+   */
+  private async staleCopy(err: unknown, key: string, label: string): Promise<Payload> {
+    if (!(err instanceof HttpError) || ![429, 502, 503].includes(err.status)) throw err;
+    const hit = this.cached(key);
+    if (!hit) throw err;
+    this.log(`[diff] ${label}: serving the cached copy (${err.message})`);
+    // A diff can be megabytes of JSON: patch the flag in before the closing brace rather than parse and re-serialize.
+    const text = `${(await payloadText(hit)).slice(0, -1)},"stale":true}`;
+    return { gz: await gzip(text), text };
   }
 
   /** Whether a cached PR diff still matches the PR as of the last sync (head aside: see prDiff). */

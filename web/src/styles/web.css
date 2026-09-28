@@ -35,6 +35,7 @@
 @media (max-width: 1180px) { .top-search span { display: none; } .top-search { flex: none; width: auto; } }
 .sync .dot.off { background: var(--muted); }
 .sync .dot.warn { background: var(--star); }
+.sync .dot.err { background: var(--del); }
 .btn.icon.ghost.on { background: var(--surface-2); }
 a.btn { text-decoration: none; }
 .btn.on-accent { color: var(--accent-text); background: var(--accent-weak); border-color: transparent; }
@@ -352,11 +353,22 @@ ul.links { margin: 0; padding-left: 18px; font-size: 13px; color: var(--text-2);
 .mobile-sidebar .side-quick button, .mobile-sidebar .seg button, .mobile-sidebar .side-more { min-height: 40px; }
 .mobile-sidebar input { font-size: 16px; }
 .mobile-sidebar .mini { min-width: 40px; min-height: 40px; }
+.mobile-sidebar .set-item .del { display: grid; width: 40px; height: 40px; flex: none; }
 @media (max-width: 900px) {
   .app { height: 100dvh; grid-template-rows: auto minmax(0, 1fr); }
+  /* Details replace the list here; a desktop drawer column would squeeze it to zero. */
+  .app.no-side.has-drawer { grid-template-columns: minmax(0, 1fr); }
+  .app.has-drawer > .main { grid-area: 2 / 1; visibility: hidden; }
+  .app.has-drawer > .drawer { grid-area: 2 / 1; min-width: 0; border-left: 0; box-shadow: none; }
+  .drawer .dr-top > .btn { flex: none; min-width: 40px; min-height: 40px; }
+  .drawer .dr-top > .repo-chip { min-width: 0; }
+  .drawer .kv { grid-template-columns: 80px minmax(0, 1fr); }
+  .drawer .kv dd { min-width: 0; overflow-wrap: anywhere; }
   .topbar { flex-wrap: wrap; gap: 8px; padding: 8px; }
   .topbar .brand { margin-right: 0; }
-  .topbar .brand-name, .topbar > .sync, .topbar .top-search kbd, .topbar .sync-label { display: none; }
+  .topbar .brand-name, .topbar .top-search kbd, .topbar .sync-label { display: none; }
+  .topbar > .sync { position: relative; }
+  .topbar .sync-text { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   .topbar .nav { order: 1; flex: 0 0 100%; min-width: 0; overflow-x: auto; }
   .topbar .nav a { flex: none; min-height: 40px; }
   .topbar .btn, .topbar .top-search { min-width: 40px; height: 40px; justify-content: center; }

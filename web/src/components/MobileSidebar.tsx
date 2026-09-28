@@ -17,21 +17,22 @@ export function useCompactSidebar() {
 }
 
 /** Full-screen repository controls, with nested prompts still above this layer. */
-export function MobileSidebar({ onClose }: { onClose: () => void }) {
+export function MobileSidebar({ onClose, focusSearch }: { onClose: () => void; focusSearch: boolean }) {
   const box = useRef<HTMLDivElement>(null);
   const close = useRef<HTMLButtonElement>(null);
   const [opener] = useState(() => document.activeElement as HTMLElement | null);
   const ui = useUI();
   useLayer(true, onClose);
   useEffect(() => {
-    close.current?.focus();
+    const target = focusSearch ? box.current?.querySelector<HTMLInputElement>('#repoQ') : close.current;
+    target?.focus();
     const overflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     return () => {
       document.body.style.overflow = overflow;
       if (opener?.isConnected && opener.offsetParent !== null) opener.focus({ preventScroll: true });
     };
-  }, [opener]);
+  }, [opener, focusSearch]);
 
   return createPortal(
     <div ref={box} id="mobile-sidebar" className="mobile-sidebar" role="dialog" aria-modal="true"

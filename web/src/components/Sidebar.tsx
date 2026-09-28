@@ -102,6 +102,13 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
 
   const item = (r: Repo) => {
     const on = selected.has(r.name);
+    const description = [
+      r.visibility === 'private' ? 'Private' : '', r.isArchived ? 'Archived' : '',
+      r.hidden ? 'Hidden' : '', r.isFork ? 'Fork' : '',
+      r.stats.openPrs > 0 ? `${r.stats.openPrs} open pull requests` : '',
+      r.stats.openIssues > 0 ? `${r.stats.openIssues} open issues` : '',
+    ].filter(Boolean).join('. ');
+    const describedBy = description ? `repo-info-${r.name}` : undefined;
     return (
       <div key={r.name} className={cx('repo-item', on && 'on')}>
         <label className="repo-check-hit" title={`Include ${r.name} in selection`}>
@@ -110,7 +117,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
             className="repo-check"
             checked={on}
             aria-label={`Include ${r.name}`}
-            aria-describedby={`repo-info-${r.name}`}
+            aria-describedby={describedBy}
             onChange={() => toggle(r.name)}
           />
         </label>
@@ -118,29 +125,27 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
           type="button"
           className="repo-select"
           aria-label={`Filter to ${r.name}`}
-          aria-describedby={`repo-info-${r.name}`}
+          aria-describedby={describedBy}
           title={`Filter to ${r.name}${r.description ? ` · ${r.description}` : ''}`}
-          onClick={() => { set({ repos: [r.name] }); onNavigate?.(); }}
+          onClick={() => { set({ repos: [r.name], ...(onNavigate ? { pr: null } : {}) }); onNavigate?.(); }}
         >
-          <span className="rname">{r.name}</span>
-          {r.visibility === 'private' && <span className="lk" title="Private"><Icon name="lock" /></span>}
+          <span className="repo-name">
+            <span className="rname">{r.name}</span>
+            {r.visibility === 'private' && <span className="lk" title="Private"><Icon name="lock" /></span>}
+          </span>
           {r.isArchived && <span className="arch">archived</span>}
           {!r.isArchived && r.hidden && <span className="arch">hidden</span>}
           {!r.isArchived && !r.hidden && r.isFork && <span className="arch">fork</span>}
-          <span className="repo-counts" aria-hidden="true">
-            <span title={`${r.stats.openPrs} open pull requests`}>
+          {(r.stats.openPrs > 0 || r.stats.openIssues > 0) && <span className="repo-counts" aria-hidden="true">
+            {r.stats.openPrs > 0 && <span title={`${r.stats.openPrs} open pull requests`}>
               <Icon name="prOpen" />{r.stats.openPrs.toLocaleString()}
-            </span>
-            <span title={`${r.stats.openIssues} open issues`}>
+            </span>}
+            {r.stats.openIssues > 0 && <span title={`${r.stats.openIssues} open issues`}>
               <Icon name="issue" />{r.stats.openIssues.toLocaleString()}
-            </span>
-          </span>
+            </span>}
+          </span>}
         </button>
-        <span className="sr-only" id={`repo-info-${r.name}`}>
-          {r.visibility === 'private' ? 'Private. ' : ''}{r.isArchived ? 'Archived. ' : ''}
-          {r.hidden ? 'Hidden. ' : ''}{r.isFork ? 'Fork. ' : ''}
-          {r.stats.openPrs} open pull requests, {r.stats.openIssues} open issues.
-        </span>
+        {description && <span className="sr-only" id={describedBy}>{description}</span>}
       </div>
     );
   };

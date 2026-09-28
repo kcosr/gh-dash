@@ -1,4 +1,4 @@
-import { type Context, Hono } from 'hono';
+import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import type { Config } from '../config';
 import type { Db } from '../db/db';
@@ -7,9 +7,11 @@ import type { SyncManager } from '../sync/manager';
 import type { TokenProvider } from '../token';
 import { installAuth, sameOriginWrites } from './auth';
 import { docsPage } from './docs';
-import { HttpError } from './http';
+import { HttpError, origin } from './http';
 import { openApiDocument } from './openapi';
+import { accountRoutes } from './routes/account';
 import { diffRoutes } from './routes/diffs';
+import { instanceRoutes } from './routes/instance';
 import { listRoutes } from './routes/lists';
 import { repoRoutes } from './routes/repos';
 import { statsRoutes } from './routes/stats';
@@ -29,17 +31,11 @@ export interface AppDeps {
    * DESKTOP_SECRET_HEADER with this secret, and password/API-key auth doesn't apply (there is one local user).
    */
   transport?: AppTransport;
+  /** Desktop transport: the Local API's URL while its TCP listener runs, else null (GET /instance apiUrl). */
+  localApiUrl?: () => string | null;
 }
 
 export type AppTransport = { kind: 'tcp' } | { kind: 'desktop'; secret: string };
-
-/** Public origin of the request, honouring a reverse proxy's forwarded headers. */
-function origin(c: Context): string {
-  const url = new URL(c.req.url);
-  const proto = c.req.header('x-forwarded-proto') ?? url.protocol.replace(':', '');
-  const host = c.req.header('x-forwarded-host') ?? c.req.header('host') ?? url.host;
-  return `${proto}://${host}`;
-}
 
 export function createApp(deps: AppDeps): Hono {
   const { config } = deps;
@@ -64,6 +60,8 @@ export function createApp(deps: AppDeps): Hono {
   app.route('/api/v1', listRoutes(deps));
   app.route('/api/v1', statsRoutes(deps));
   app.route('/api/v1', diffRoutes(deps));
+  app.route('/api/v1', accountRoutes(deps));
+  app.route('/api/v1', instanceRoutes(deps));
   app.get('/api/v1/openapi.json', (c) => c.json(openApiDocument(config.version)));
   app.get('/api/docs', (c) =>
     c.html(

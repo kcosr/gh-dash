@@ -1,14 +1,15 @@
 import { gunzipSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
 import { type Config, loadConfig } from '../config';
+import { getMeta, setMeta } from '../db/meta';
 import { upsertCommit } from '../db/write';
 import { DiffCache } from '../diff/cache';
 import { DiffService } from '../diff/service';
 import { SyncManager } from '../sync/manager';
-import { testTokens } from '../test/tokens';
 import { fakeGitHub, type Reply, restFile, sha } from '../test/github';
 import { seedDb } from '../test/seed';
-import { createApp } from './app';
+import { testTokens } from '../test/tokens';
+import { type AppDeps, createApp } from './app';
 import { acceptsGzip } from './routes/diffs';
 
 function makeApp(over: Partial<Config> = {}, db = seedDb()) {
@@ -309,5 +310,85 @@ describe('diffs', () => {
     const patch = await app.request('/api/v1/settings', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: '{"diffCacheMb":10}' });
     expect(await patch.json()).toMatchObject({ diffCacheMb: 10 });
     expect(await stats()).toEqual({ entries: 1, bytes: 6 * 1024 * 1024, maxBytes: 10 * 1024 * 1024 });
+  });
+});
+
+describe('account and instance', () => {
+  function accountApp(tokens = testTokens(), over: Partial<Config> = {}, deps: Partial<AppDeps> = {}, db = seedDb()) {
+    const config = { ...loadConfig({}), webDir: '/nonexistent', ...over };
+    const sync = new SyncManager({ db, schedule: false, tokens, log: () => {} });
+    const diffs = new DiffService({ db, cache: new DiffCache(':memory:'), tokens, log: () => {} });
+    return createApp({ db, config, sync, diffs, tokens, ...deps });
+  }
+  const viewer = (login: string, headers: Record<string, string> = {}): Reply => ({
+    body: { data: { viewer: { id: `U_${login}`, login, name: null, avatarUrl: null, repos: { totalCount: 5 }, privateRepos: { totalCount: 2 } } } },
+    headers,
+  });
+
+  it('reports the account behind the token, validating it once, and re-checks on request', async () => {
+    const db = seedDb();
+    const gh = fakeGitHub({ '/graphql': viewer('alice', { 'x-oauth-scopes': 'repo' }) });
+    const app = accountApp(testTokens('ghp_x', { fetchImpl: gh.fetchImpl, viewer: () => getMeta(db, 'viewer') }), {}, {}, db);
+    const account = async (method = 'GET', path = '/api/v1/account') => (await app.request(path, { method })).json();
+    expect(await account()).toMatchObject({
+      source: 'env', locked: true, login: 'alice', dbLogin: 'Alice', mismatch: false, kind: 'classic', scopes: ['repo'],
+      repos: { total: 5, private: 2 }, error: null,
+    });
+    await account();
+    expect(gh.requests).toEqual(['/graphql']);
+    gh.routes['/graphql'] = viewer('mallory');
+    expect(await account('POST', '/api/v1/account/check')).toMatchObject({ login: 'mallory', dbLogin: 'Alice', mismatch: true });
+    expect(gh.requests).toHaveLength(2);
+    setMeta(db, 'viewer', { login: 'mallory', name: null, avatarUrl: null });
+    expect(await account()).toMatchObject({ mismatch: false });
+
+    const none = await (await accountApp().request('/api/v1/account')).json();
+    expect(none).toMatchObject({ source: 'none', choice: null, locked: false, login: null, kind: null, error: null, checkedAt: null });
+  });
+
+  it('answers POST /sync without a token with 503 and the reason', async () => {
+    const res = await accountApp(testTokens(null, { choice: 'file' })).request('/api/v1/sync', { method: 'POST' });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'No GitHub token: No token file is configured (GITHUB_TOKEN_FILE)' });
+  });
+
+  it('describes the instance: settings with their sources, never secrets', async () => {
+    const config = loadConfig({ PORT: '4790', GH_DASH_API_KEY: 'k3y-secret', GH_DASH_ALLOWED_HOSTS: 'dash.example.com' });
+    const app = accountApp(testTokens(), config);
+    const res = await app.request('http://127.0.0.1:4790/api/v1/instance', { headers: { authorization: 'Bearer k3y-secret' } });
+    const text = await res.text();
+    expect(text).not.toContain('k3y-secret');
+    expect(JSON.parse(text)).toEqual({
+      version: config.version,
+      desktop: false,
+      apiUrl: 'http://127.0.0.1:4790',
+      auth: { password: false, apiKey: true },
+      configPath: null,
+      settings: {
+        host: { value: '127.0.0.1', source: 'default' },
+        port: { value: 4790, source: 'env' },
+        dbPath: { value: config.dbPath, source: 'default' },
+        cacheDbPath: { value: config.cacheDbPath, source: 'default' },
+        sync: { value: true, source: 'default' },
+        allowedHosts: { value: ['dash.example.com'], source: 'env' },
+        tokenFile: { value: null, source: 'default' },
+        defaultTz: { value: config.defaultTz, source: 'default' },
+      },
+    });
+    // Behind a reverse proxy: the public origin.
+    const proxied = await app.request('http://127.0.0.1:4790/api/v1/instance', {
+      headers: { authorization: 'Bearer k3y-secret', 'x-forwarded-proto': 'https', 'x-forwarded-host': 'dash.example.com' },
+    });
+    expect((await proxied.json()).apiUrl).toBe('https://dash.example.com');
+  });
+
+  it("gives the desktop app the Local API's address, or null while it's off", async () => {
+    let local: string | null = null;
+    const secret = 'a'.repeat(64);
+    const app = accountApp(testTokens(), { desktop: true }, { transport: { kind: 'desktop', secret }, localApiUrl: () => local });
+    const apiUrl = async () => (await (await app.request('http://gh-dash/api/v1/instance', { headers: { 'x-gh-dash-desktop': secret } })).json()).apiUrl;
+    expect(await apiUrl()).toBeNull();
+    local = 'http://127.0.0.1:4780';
+    expect(await apiUrl()).toBe('http://127.0.0.1:4780');
   });
 });

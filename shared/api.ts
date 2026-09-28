@@ -545,7 +545,7 @@ export interface DiffCacheStats {
 // GET    /api/v1/stars          ScopeQuery&PageQuery -> ListResponse<Star>
 // GET    /api/v1/stats          StatsQuery     -> StatsResponse
 // GET    /api/v1/sync/status                   -> SyncStatus
-// POST   /api/v1/sync           {repo?: string, full?: boolean} -> 202 SyncStatus (409 if already running)
+// POST   /api/v1/sync           {repo?: string, full?: boolean} -> 202 SyncStatus (409 if already running, 503 no token)
 // GET    /api/v1/prs/:repo/:number/diff  {refresh?: '1'} -> Diff
 // GET    /api/v1/commits/:repo/:oid/diff {refresh?: '1'} -> Diff     (oid: 7-40 hex chars; need not be synced)
 //          Diff errors: 404 unknown repo/PR/commit, 503 no GitHub token, 429 GitHub rate limit, 502 other GitHub failure.
@@ -556,6 +556,8 @@ export interface DiffCacheStats {
 // DELETE /api/v1/diff-cache                    -> DiffCacheStats (after clearing)
 // GET    /api/v1/account                       -> AccountStatus
 // POST   /api/v1/account/check                 -> AccountStatus (re-resolve and re-validate the token now)
+//          GET /account validates a token it hasn't checked yet (1 GraphQL point); apiUrl in InstanceInfo is the
+//          request's origin on a network listener, the Local API's URL (or null) on the desktop socket.
 // GET    /api/v1/instance                      -> InstanceInfo
 // GET    /api/v1/settings                      -> Settings
 // PATCH  /api/v1/settings       Partial<Settings> -> Settings

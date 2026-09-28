@@ -74,7 +74,7 @@
 .dvr-empty { display: grid; place-items: center; color: var(--muted); font-size: 13px; }
 
 /* ---------- file list */
-.dvr-files { flex: none; width: 272px; display: flex; flex-direction: column; min-height: 0; background: var(--page); border-right: 1px solid var(--border); }
+.dvr-files { flex: none; width: clamp(200px, 26%, 272px); display: flex; flex-direction: column; min-height: 0; background: var(--page); border-right: 1px solid var(--border); }
 .dvf-list { position: relative; flex: 1; overflow: auto; padding: 8px 8px 16px; }
 .dvf-dir { margin: 10px 8px 2px; font: 11px/16px var(--mono); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
 .dvf-list > .dvf-dir:first-child { margin-top: 2px; }

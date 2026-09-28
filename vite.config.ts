@@ -17,8 +17,9 @@ export default defineConfig(({ command }) => {
     build: {
       outDir: '../dist/web',
       emptyOutDir: true,
-      // The diffs chunk (~600 kB, 170 kB gzipped) is lazy and long-cached; don't warn about it.
-      chunkSizeWarningLimit: 700,
+      // Lazy and long-cached: the diffs chunk (~630 kB, 175 kB gzipped) and Shiki's biggest grammars
+      // (cpp, emacs-lisp: ~790 kB), fetched only when a diff shows such a file. Don't warn about them.
+      chunkSizeWarningLimit: 800,
       rolldownOptions: {
         output: {
           // Views are split with React.lazy (web/src/App.tsx). On top of that, keep third-party code

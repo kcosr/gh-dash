@@ -1,0 +1,47 @@
+# systemd unit for gh-dash.
+#
+# Install:
+#   sudo install -m 644 deploy/gh-dash.service /etc/systemd/system/gh-dash.service
+#   sudo install -d -m 750 /etc/gh-dash && sudo install -m 600 /dev/null /etc/gh-dash/env   # then edit, see below
+#   sudo systemctl daemon-reload && sudo systemctl enable --now gh-dash
+#   journalctl -u gh-dash -f
+#
+# Build the web app once before starting (and after updates): npm ci && npm run build
+#
+# /etc/gh-dash/env (KEY=value lines; keep it mode 600, it holds secrets):
+#   GITHUB_TOKEN=github_pat_...      # fine-grained, read-only: Metadata, Contents, Pull requests, Issues
+#                                    # (without it the service falls back to `gh auth token` for User=)
+#   PORT=4780
+#   HOST=127.0.0.1                   # keep on localhost behind nginx
+#   GH_DASH_DB=/opt/gh-dash/data/gh-dash.db
+#   TZ=UTC                 # default bucketing timezone when clients send no tz
+#   GH_DASH_PASSWORD=...             # optional UI login when exposed beyond localhost
+#   GH_DASH_API_KEY=...              # optional; API clients send Authorization: Bearer <key> or X-API-Key
+#   GH_DASH_MY_EMAILS=me@laptop.example,me@work.example   # optional; commit emails that count as "you"
+#
+# Use an existing service account for User=, and adjust WorkingDirectory= and PATH.
+# Ensure that account can write the database directory.
+
+[Unit]
+Description=gh-dash - GitHub activity dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=gh-dash
+WorkingDirectory=/opt/gh-dash
+EnvironmentFile=/etc/gh-dash/env
+Environment=PATH=/opt/node/bin:/usr/local/bin:/usr/bin:/bin
+Environment=NPM_CONFIG_UPDATE_NOTIFIER=false
+ExecStart=/usr/bin/env npm start
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

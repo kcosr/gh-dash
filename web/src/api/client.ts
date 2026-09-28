@@ -1,0 +1,149 @@
+/** Typed client for the gh-dash API (contract: shared/api.ts). */
+import type {
+  ActivityQuery,
+  ActivityResponse,
+  Commit,
+  Issue,
+  IssueQuery,
+  ListResponse,
+  Me,
+  PageQuery,
+  PrListResponse,
+  PrQuery,
+  PullRequestDetail,
+  Release,
+  Repo,
+  RepoSet,
+  SavedView,
+  ScopeQuery,
+  Settings,
+  Star,
+  StatsQuery,
+  StatsResponse,
+  SyncStatus,
+} from '../../../shared/api';
+
+export class ApiError extends Error {
+  status: number;
+  details?: unknown;
+  constructor(status: number, message: string, details?: unknown) {
+    super(message);
+    this.status = status;
+    this.details = details;
+  }
+}
+
+type Params = Record<string, string | number | boolean | null | undefined>;
+
+/**
+ * A proxy in front of the server (Vite in dev, nginx in production) answers 502/503/504 without a
+ * JSON body when the Node process is down: report that the same way as a refused connection.
+ */
+const UNREACHABLE = 'Cannot reach the gh-dash server';
+const gatewayDown = (status: number) => status === 502 || status === 503 || status === 504;
+
+/**
+ * Build a query string. `undefined`/`null` are omitted; empty strings are kept
+ * (`repos=` means "no repos"). Commas stay readable.
+ */
+export function toQueryString(params: Params = {}): string {
+  const parts: string[] = [];
+  for (const [k, v] of Object.entries(params)) {
+    if (v === undefined || v === null) continue;
+    parts.push(`${encodeURIComponent(k)}=${encodeURIComponent(String(v)).replace(/%2C/gi, ',')}`);
+  }
+  return parts.join('&');
+}
+
+export type Endpoint = 'prs' | 'activity' | 'stats' | 'releases' | 'repos' | 'commits' | 'issues' | 'stars' | 'settings' | 'sync/status';
+
+/** "/api/v1/prs?repos=a,b&who=me…" */
+export function apiUrl(endpoint: Endpoint | string, params?: Params): string {
+  const qs = toQueryString(params);
+  return `/api/v1/${endpoint}${qs ? `?${qs}` : ''}`;
+}
+
+async function request<T>(method: string, url: string, body?: unknown): Promise<T> {
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method,
+      credentials: 'same-origin',
+      headers: body !== undefined ? { 'Content-Type': 'application/json', Accept: 'application/json' } : { Accept: 'application/json' },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+  } catch (e) {
+    throw new ApiError(0, UNREACHABLE, e);
+  }
+  if (!res.ok) {
+    let message = gatewayDown(res.status) ? `${UNREACHABLE} (HTTP ${res.status})` : `${res.status} ${res.statusText}`;
+    let details: unknown;
+    try {
+      const j = (await res.json()) as { error?: string; details?: unknown };
+      if (j?.error) message = j.error;
+      details = j?.details;
+    } catch { /* not JSON */ }
+    throw new ApiError(res.status, message, details);
+  }
+  if (res.status === 204) return undefined as T;
+  const ct = res.headers.get('content-type') ?? '';
+  if (!ct.includes('json')) return (await res.text()) as T;
+  return (await res.json()) as T;
+}
+
+const get = <T>(url: string) => request<T>('GET', url);
+const enc = encodeURIComponent;
+
+async function getText(url: string): Promise<string> {
+  let res: Response;
+  try {
+    res = await fetch(url, { credentials: 'same-origin' });
+  } catch (e) {
+    throw new ApiError(0, UNREACHABLE, e);
+  }
+  const text = await res.text();
+  if (!res.ok) {
+    let message = gatewayDown(res.status) ? `${UNREACHABLE} (HTTP ${res.status})` : `${res.status} ${res.statusText}`;
+    try { message = (JSON.parse(text) as { error?: string }).error ?? message; } catch { /* plain text */ }
+    throw new ApiError(res.status, message);
+  }
+  return text;
+}
+
+export const api = {
+  health: () => get<{ ok: true; version: string }>('/api/health'),
+  me: () => get<Me>('/api/v1/me'),
+
+  repos: () => get<{ items: Repo[] }>('/api/v1/repos'),
+  repo: (name: string) => get<Repo>(`/api/v1/repos/${enc(name)}`),
+  patchRepo: (name: string, body: { pinned?: boolean; hidden?: boolean }) => request<Repo>('PATCH', `/api/v1/repos/${enc(name)}`, body),
+
+  sets: () => get<{ items: RepoSet[] }>('/api/v1/sets'),
+  createSet: (body: { name: string; repos: string[] }) => request<RepoSet>('POST', '/api/v1/sets', body),
+  updateSet: (id: number, body: { name?: string; repos?: string[] }) => request<RepoSet>('PATCH', `/api/v1/sets/${id}`, body),
+  deleteSet: (id: number) => request<void>('DELETE', `/api/v1/sets/${id}`),
+
+  views: () => get<{ items: SavedView[] }>('/api/v1/views'),
+  createView: (body: { name: string; path: string; query: string }) => request<SavedView>('POST', '/api/v1/views', body),
+  deleteView: (id: number) => request<void>('DELETE', `/api/v1/views/${id}`),
+
+  prs: (q: PrQuery) => get<PrListResponse>(apiUrl('prs', { ...q })),
+  pr: (repo: string, number: number) => get<PullRequestDetail>(`/api/v1/prs/${enc(repo)}/${number}`),
+  activity: (q: ActivityQuery) => get<ActivityResponse>(apiUrl('activity', { ...q })),
+  commits: (q: ScopeQuery & PageQuery) => get<ListResponse<Commit>>(apiUrl('commits', { ...q })),
+  issues: (q: IssueQuery) => get<ListResponse<Issue>>(apiUrl('issues', { ...q })),
+  releases: (q: ScopeQuery & PageQuery) => get<ListResponse<Release>>(apiUrl('releases', { ...q })),
+  stars: (q: ScopeQuery & PageQuery) => get<ListResponse<Star>>(apiUrl('stars', { ...q })),
+  stats: (q: StatsQuery) => get<StatsResponse>(apiUrl('stats', { ...q })),
+
+  syncStatus: () => get<SyncStatus>('/api/v1/sync/status'),
+  sync: (body: { repo?: string; full?: boolean } = {}) => request<SyncStatus>('POST', '/api/v1/sync', body),
+
+  settings: () => get<Settings>('/api/v1/settings'),
+  patchSettings: (body: Partial<Settings>) => request<Settings>('PATCH', '/api/v1/settings', body),
+
+  /** Raw GET returning text (for format=md / csv exports). */
+  text: getText,
+  /** Raw GET returning parsed JSON (export samples). */
+  json: <T = unknown>(url: string) => get<T>(url),
+};

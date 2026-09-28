@@ -1,0 +1,23 @@
+{
+  "nodes": [
+    {
+      "id": "R_app",
+      "openPrs": { "totalCount": 1 },
+      "openIssues": { "totalCount": 1 },
+      "latestPr": { "nodes": [{ "updatedAt": "2026-09-22T09:00:00Z" }] },
+      "latestIssue": { "nodes": [{ "updatedAt": "2026-09-26T00:00:00Z" }] },
+      "latestReleases": { "nodes": [{ "tagName": "v1.1.0", "isDraft": true }, { "tagName": "v1.0.0", "isDraft": false }] },
+      "latestStar": { "edges": [{ "starredAt": "2026-09-25T06:00:00Z" }] }
+    },
+    {
+      "id": "R_corp",
+      "openPrs": { "totalCount": 0 },
+      "openIssues": { "totalCount": 0 },
+      "latestPr": { "nodes": [] },
+      "latestIssue": { "nodes": [] },
+      "latestReleases": { "nodes": [] },
+      "latestStar": { "edges": [] }
+    }
+  ],
+  "rateLimit": { "limit": 5000, "remaining": 4998, "resetAt": "2026-09-27T13:00:00Z", "cost": 1 }
+}

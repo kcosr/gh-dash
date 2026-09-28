@@ -1,0 +1,49 @@
+{
+  "viewer": {
+    "login": "alice",
+    "name": "Alice A",
+    "avatarUrl": "https://avatars.example/alice",
+    "repositories": {
+      "pageInfo": { "hasNextPage": false, "endCursor": "Y3Vyc29yOjE=" },
+      "nodes": [
+        {
+          "id": "R_app",
+          "name": "app",
+          "nameWithOwner": "alice/app",
+          "owner": { "login": "alice" },
+          "description": "",
+          "url": "https://github.com/alice/app",
+          "visibility": "PUBLIC",
+          "isArchived": false,
+          "isFork": false,
+          "primaryLanguage": { "name": "TypeScript", "color": "#3178c6" },
+          "repositoryTopics": { "nodes": [{ "topic": { "name": "dashboard" } }] },
+          "defaultBranchRef": { "name": "main" },
+          "stargazerCount": 2,
+          "forkCount": 1,
+          "createdAt": "2025-01-01T00:00:00Z",
+          "pushedAt": "2026-09-25T12:00:00Z"
+        },
+        {
+          "id": "R_corp",
+          "name": "corp",
+          "nameWithOwner": "alice/corp",
+          "owner": { "login": "alice" },
+          "description": "Internal",
+          "url": "https://github.com/alice/corp",
+          "visibility": "INTERNAL",
+          "isArchived": true,
+          "isFork": false,
+          "primaryLanguage": null,
+          "repositoryTopics": { "nodes": [] },
+          "defaultBranchRef": null,
+          "stargazerCount": 0,
+          "forkCount": 0,
+          "createdAt": "2024-01-01T00:00:00Z",
+          "pushedAt": null
+        }
+      ]
+    }
+  },
+  "rateLimit": { "limit": 5000, "remaining": 4999, "resetAt": "2026-09-27T13:00:00Z", "cost": 1 }
+}

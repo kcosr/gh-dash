@@ -1,0 +1,157 @@
+{
+  "repository": {
+    "nameWithOwner": "alice/app",
+    "defaultBranchRef": {
+      "name": "main",
+      "target": {
+        "history": {
+          "pageInfo": { "hasNextPage": false, "endCursor": "c 2" },
+          "nodes": [
+            {
+              "oid": "1111111111111111111111111111111111111111",
+              "messageHeadline": "Merge pull request #1 from alice/fix",
+              "messageBody": "Fix login flow",
+              "committedDate": "2026-09-21T10:00:00Z",
+              "url": "https://github.com/alice/app/commit/1111111111111111111111111111111111111111",
+              "additions": 12,
+              "deletions": 3,
+              "author": { "name": "Alice A", "email": "alice@example.com", "avatarUrl": "https://avatars.example/alice", "user": { "login": "alice", "name": "Alice A" } },
+              "associatedPullRequests": { "nodes": [{ "number": 1, "repository": { "nameWithOwner": "alice/app" } }] }
+            },
+            {
+              "oid": "2222222222222222222222222222222222222222",
+              "messageHeadline": "Tweak config",
+              "messageBody": "",
+              "committedDate": "2026-09-22T23:30:00Z",
+              "url": "https://github.com/alice/app/commit/2222222222222222222222222222222222222222",
+              "additions": 1,
+              "deletions": 1,
+              "author": { "name": "Alice (laptop)", "email": "Alice@Work.Example", "avatarUrl": null, "user": null },
+              "associatedPullRequests": { "nodes": [] }
+            },
+            {
+              "oid": "3333333333333333333333333333333333333333",
+              "messageHeadline": "Upstream change",
+              "messageBody": "",
+              "committedDate": "2026-09-20T08:00:00Z",
+              "url": "https://github.com/alice/app/commit/3333333333333333333333333333333333333333",
+              "additions": 5,
+              "deletions": 0,
+              "author": { "name": "Up Stream", "email": "up@example.com", "avatarUrl": null, "user": { "login": "upstream-dev", "name": null } },
+              "associatedPullRequests": { "nodes": [{ "number": 99, "repository": { "nameWithOwner": "upstream/app" } }] }
+            }
+          ]
+        }
+      }
+    },
+    "pullRequests": {
+      "pageInfo": { "hasNextPage": false, "endCursor": "p 1" },
+      "nodes": [
+        {
+          "number": 2,
+          "title": "Add parser",
+          "body": "Adds a parser.",
+          "state": "OPEN",
+          "isDraft": true,
+          "url": "https://github.com/alice/app/pull/2",
+          "createdAt": "2026-09-22T09:00:00Z",
+          "updatedAt": "2026-09-22T09:00:00Z",
+          "mergedAt": null,
+          "closedAt": null,
+          "additions": 40,
+          "deletions": 0,
+          "changedFiles": 2,
+          "headRefName": "parser",
+          "baseRefName": "main",
+          "author": { "login": "bob", "avatarUrl": "https://avatars.example/bob", "name": "Bob B" },
+          "mergedBy": null,
+          "labels": { "nodes": [] },
+          "closingIssuesReferences": { "nodes": [] },
+          "commits": { "totalCount": 0, "nodes": [] }
+        },
+        {
+          "number": 1,
+          "title": "Fix login flow",
+          "body": "## Summary\n\nFixes login.",
+          "state": "MERGED",
+          "isDraft": false,
+          "url": "https://github.com/alice/app/pull/1",
+          "createdAt": "2026-09-20T10:00:00Z",
+          "updatedAt": "2026-09-21T10:00:05Z",
+          "mergedAt": "2026-09-21T10:00:00Z",
+          "closedAt": "2026-09-21T10:00:00Z",
+          "additions": 12,
+          "deletions": 3,
+          "changedFiles": 1,
+          "headRefName": "fix",
+          "baseRefName": "main",
+          "author": { "login": "alice", "avatarUrl": "https://avatars.example/alice", "name": "Alice A" },
+          "mergedBy": { "login": "alice" },
+          "labels": { "nodes": [{ "name": "bug", "color": "d73a4a" }] },
+          "closingIssuesReferences": { "nodes": [{ "number": 10, "title": "Login broken", "state": "CLOSED", "url": "https://github.com/alice/app/issues/10" }] },
+          "commits": {
+            "totalCount": 1,
+            "nodes": [
+              {
+                "commit": {
+                  "oid": "aaaa000000000000000000000000000000000000",
+                  "messageHeadline": "fix login",
+                  "committedDate": "2026-09-20T09:00:00Z",
+                  "url": "https://github.com/alice/app/commit/aaaa000000000000000000000000000000000000",
+                  "author": { "name": "Alice A", "email": "alice@example.com", "avatarUrl": null, "user": { "login": "alice", "name": "Alice A" } }
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "issues": {
+      "pageInfo": { "hasNextPage": false, "endCursor": "i 1" },
+      "nodes": [
+        {
+          "number": 11,
+          "title": "Dark mode",
+          "body": "Please",
+          "state": "OPEN",
+          "url": "https://github.com/alice/app/issues/11",
+          "createdAt": "2026-09-26T00:00:00Z",
+          "updatedAt": "2026-09-26T00:00:00Z",
+          "closedAt": null,
+          "author": { "login": "alice", "avatarUrl": null, "name": "Alice A" },
+          "labels": { "nodes": [{ "name": "enhancement", "color": "a2eeef" }] },
+          "timelineItems": { "nodes": [] }
+        },
+        {
+          "number": 10,
+          "title": "Login broken",
+          "body": "",
+          "state": "CLOSED",
+          "url": "https://github.com/alice/app/issues/10",
+          "createdAt": "2026-09-05T00:00:00Z",
+          "updatedAt": "2026-09-22T12:00:00Z",
+          "closedAt": "2026-09-22T12:00:00Z",
+          "author": { "login": "bob", "avatarUrl": null, "name": "Bob B" },
+          "labels": { "nodes": [] },
+          "timelineItems": { "nodes": [{ "actor": { "login": "alice", "avatarUrl": null, "name": "Alice A" } }] }
+        }
+      ]
+    },
+    "releases": {
+      "pageInfo": { "hasNextPage": false, "endCursor": "r 1" },
+      "nodes": [
+        { "tagName": "v1.1.0", "name": null, "description": null, "isDraft": true, "isPrerelease": false, "publishedAt": null, "createdAt": "2026-09-26T00:00:00Z", "url": "https://github.com/alice/app/releases/tag/untagged", "author": { "login": "alice", "name": "Alice A", "avatarUrl": null } },
+        { "tagName": "v1.0.0", "name": "First", "description": "First release", "isDraft": false, "isPrerelease": true, "publishedAt": "2026-09-23T15:00:00Z", "createdAt": "2026-09-23T14:00:00Z", "url": "https://github.com/alice/app/releases/tag/v1.0.0", "author": { "login": "alice", "name": "Alice A", "avatarUrl": null } }
+      ]
+    },
+    "stargazers": {
+      "totalCount": 2,
+      "pageInfo": { "hasNextPage": false, "endCursor": "s 1" },
+      "edges": [
+        { "starredAt": "2026-09-25T06:00:00Z", "node": { "login": "dave", "name": null, "avatarUrl": "https://avatars.example/dave" } },
+        { "starredAt": "2026-09-20T00:00:00Z", "node": { "login": "carol", "name": "Carol C", "avatarUrl": "https://avatars.example/carol" } }
+      ]
+    }
+  },
+  "rateLimit": { "limit": 5000, "remaining": 4995, "resetAt": "2026-09-27T13:00:00Z", "cost": 3 }
+}

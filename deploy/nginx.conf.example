@@ -1,0 +1,59 @@
+# nginx reverse proxy for gh-dash (listening on 127.0.0.1:4780).
+#
+# Copy to /etc/nginx/conf.d/gh-dash.conf (or sites-available), set server_name and certificates,
+# then: sudo nginx -t && sudo systemctl reload nginx
+#
+# Protection options when exposing beyond localhost (pick one or both):
+#  - GH_DASH_PASSWORD in /etc/gh-dash/env: built-in login page with a signed HttpOnly cookie.
+#  - nginx basic auth (below). Note: basic auth occupies the Authorization header, so API clients
+#    must then send the gh-dash API key as `X-API-Key: <key>` (and `curl -u user:pass`).
+
+upstream gh_dash {
+    server 127.0.0.1:4780;
+    keepalive 8;
+}
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name dash.example.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name dash.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/dash.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/dash.example.com/privkey.pem;
+
+    # Optional basic auth. Create the file with: sudo htpasswd -c /etc/nginx/gh-dash.htpasswd dashboard-user
+    # auth_basic           "gh-dash";
+    # auth_basic_user_file /etc/nginx/gh-dash.htpasswd;
+
+    add_header X-Content-Type-Options nosniff always;
+    add_header Referrer-Policy same-origin always;
+
+    location / {
+        proxy_pass http://gh_dash;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        # gh-dash compares Origin with Host to reject cross-site writes, and uses these for cookie
+        # security and the example URLs on /api/docs. $http_host keeps a non-default port (e.g. :8443),
+        # which $host would drop, making every write fail the Origin check.
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_read_timeout 60s;
+        gzip on;
+        gzip_types application/json text/markdown text/csv text/css application/javascript image/svg+xml;
+    }
+
+    # Health checks stay reachable without credentials.
+    location = /api/health {
+        auth_basic off;
+        proxy_pass http://gh_dash;
+    }
+}

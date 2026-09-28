@@ -13,7 +13,13 @@
 [data-separator="line-info-basic"] [data-expand-button] { border: 0; background: none; color: var(--diffs-fg-number); }
 [data-separator="line-info-basic"] [data-expand-button]:hover { color: var(--diffs-fg); background-color: color-mix(in srgb, var(--diffs-fg) 7%, transparent); }
 [data-expand-button] [data-icon] { width: 12px; height: 12px; }
+/* Focusable and named in DiffViewer.tsx (Pierre renders them as bare divs); the ring stays inside the band. */
+[data-expand-button]:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 4px; }
 [data-unmodified-lines] { font-size: 11.5px; }
+/* The separator after the last hunk ends every file with "More unchanged context may be available"
+   (the count is unknown until the file is loaded, then "N unmodified lines"): the chevron alone
+   says it, like GitHub's bare expander. */
+[data-separator="line-info-basic"][data-separator-last] [data-separator-content] { display: none; }
 
 /* Split: a hairline between the sides (Pierre draws it in the background color). App tokens like
    --border inherit into the shadow root. */

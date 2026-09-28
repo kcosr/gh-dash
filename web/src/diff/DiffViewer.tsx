@@ -3,10 +3,10 @@
  * virtualized CodeView for every file (smooth on PRs with thousands of files) beside a hand-rolled
  * file list, with headers, colors and type in the app's own visual language (diff.css, pierre.css).
  */
-import type { CodeView as CodeViewClass, CodeViewItem, CodeViewOptions, FileDiffLoadedFiles, FileDiffMetadata } from '@pierre/diffs';
+import type { CodeView as CodeViewClass, CodeViewItem, CodeViewOptions, FileDiffLoadedFiles, FileDiffMetadata, PostRenderPhase } from '@pierre/diffs';
 import { CodeView, WorkerPoolContextProvider, type CodeViewHandle } from '@pierre/diffs/react';
 import HighlightWorker from '@pierre/diffs/worker/worker.js?worker';
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from 'react';
 import type { Diff } from '../../../shared/api';
 import { Icon } from '../components/Icon';
 import { Seg } from '../components/Seg';
@@ -63,6 +63,71 @@ function subscribeTheme(onChange: () => void) {
   const mo = new MutationObserver(onChange);
   mo.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
   return () => mo.disconnect();
+}
+
+const isExpandControl = (el: EventTarget | undefined): el is HTMLElement => el instanceof HTMLElement && el.hasAttribute('data-expand-button');
+
+/** An expand control as a re-render can find it again: its file, its separator and its direction. */
+interface ExpandControl { host: Element; index: string | null; kind: string | undefined }
+const EXPAND_KINDS = ['data-expand-up', 'data-expand-down', 'data-expand-both', 'data-expand-all-button'];
+const expandControl = (el: HTMLElement): ExpandControl => ({
+  host: (el.getRootNode() as ShadowRoot).host,
+  index: el.closest('[data-expand-index]')?.getAttribute('data-expand-index') ?? null,
+  kind: EXPAND_KINDS.find((k) => el.hasAttribute(k)),
+});
+
+/**
+ * Pierre's expand controls are divs with role="button" and just an icon: no name, and out of the
+ * tab order. Name them like GitHub's (after the way the chevron points: Pierre's "up" shows the
+ * lines below the hunk above) and make them focusable; Enter and Space click them. A click
+ * re-renders the file and replaces the control, which drops focus to the page, so the file's next
+ * render puts focus back on the control in its place, or on the scroller once the gap is gone.
+ */
+function useExpandControls(scroller: RefObject<HTMLDivElement | null>) {
+  const focused = useRef<ExpandControl | null>(null);
+  const track = useCallback((e: Event) => {
+    // A pointer lands on the control's icon.
+    const el = e.composedPath().find(isExpandControl);
+    focused.current = el ? expandControl(el) : null;
+  }, []);
+  // pointerdown too: a click that focuses nothing (focus falls to the page) must not bring it back here.
+  useEffect(() => {
+    document.addEventListener('focusin', track);
+    document.addEventListener('pointerdown', track);
+    return () => {
+      document.removeEventListener('focusin', track);
+      document.removeEventListener('pointerdown', track);
+    };
+  }, [track]);
+  // Focus moving within one file's shadow root doesn't reach the document: each root reports it too.
+  const roots = useRef(new WeakSet<ShadowRoot>());
+  const onPostRender = useCallback((node: HTMLElement, _instance: unknown, phase: PostRenderPhase) => {
+    const root = node.shadowRoot;
+    if (phase === 'unmount' || !root) return;
+    if (!roots.current.has(root)) {
+      roots.current.add(root);
+      root.addEventListener('focusin', track);
+    }
+    for (const el of root.querySelectorAll<HTMLElement>('[data-expand-button]:not([tabindex])')) {
+      const label = el.hasAttribute('data-expand-up') ? 'Expand down' : el.hasAttribute('data-expand-down') ? 'Expand up' : 'Expand all';
+      el.tabIndex = 0;
+      el.title = label;
+      el.setAttribute('aria-label', label);
+    }
+    const f = focused.current;
+    if (f?.host !== node || document.activeElement !== document.body) return;
+    // Split view renders each separator in both gutters, one of them hidden.
+    const controls = [...root.querySelectorAll<HTMLElement>(`[data-expand-index="${f.index}"] [data-expand-button]`)].filter((el) => el.checkVisibility());
+    (controls.find((el) => f.kind != null && el.hasAttribute(f.kind)) ?? controls[0] ?? scroller.current)?.focus({ preventScroll: true });
+  }, [scroller, track]);
+  const onKeyDown = useCallback((e: ReactKeyboardEvent) => {
+    const el = e.nativeEvent.composedPath()[0];
+    if ((e.key === 'Enter' || e.key === ' ') && isExpandControl(el)) {
+      e.preventDefault();
+      el.click();
+    }
+  }, []);
+  return { onPostRender, onKeyDown };
 }
 
 /** "3 of 21": where j/k are in the list. The shell's header has the totals. */
@@ -138,6 +203,9 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
     return { oldFile: { name: oldPath, contents: texts[0] }, newFile: { name: f.path, contents: texts[1] } };
   }, [byId, rev, diff.baseOid, diff.headOid, loadFile]);
 
+  const scroller = useRef<HTMLDivElement>(null);
+  const expandControls = useExpandControls(scroller);
+
   const options = useMemo((): CodeViewOptions<undefined, undefined> => ({
     theme: THEMES,
     themeType: theme,
@@ -153,13 +221,13 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
     itemMetrics: { lineHeight: LINE_HEIGHT, diffHeaderHeight: HEADER_HEIGHT, hunkSeparatorHeight: SEPARATOR_HEIGHT, spacing: 0, paddingTop: 0, paddingBottom: 0 },
     layout: { paddingTop: GAP, paddingBottom: 2 * GAP, gap: GAP },
     unsafeCSS,
-  }), [theme, split, prefs.wrap, diff.baseOid, loadDiffFiles]);
+    onPostRender: expandControls.onPostRender,
+  }), [theme, split, prefs.wrap, diff.baseOid, loadDiffFiles, expandControls.onPostRender]);
 
   // The file in view: the last file whose top has scrolled past the top edge. After a jump to a
   // file that can't reach the top (the end of the diff), that file stays current until the user
   // scrolls. Kept outside React state: a change re-renders two file list rows, not the viewer.
   const view = useRef<CodeViewHandle<undefined, undefined>>(null);
-  const scroller = useRef<HTMLDivElement>(null);
   // Starts on the first file without reporting it: nothing to put in the URL until the reader moves.
   const [current] = useState(() => createCurrentFile(files[0]?.id ?? null));
   const pinned = useRef<string | null>(null);
@@ -277,7 +345,7 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
   )), [compact]);
 
   return (
-    <div className={cx('diff-viewer', compact && 'compact')} ref={root}>
+    <div className={cx('diff-viewer', compact && 'compact')} ref={root} onKeyDown={expandControls.onKeyDown}>
       <div className="dvr-bar">
         <button type="button" className={cx('btn icon ghost dvr-list-btn', showList && 'on')} onClick={toggleList} aria-pressed={showList} title={showList ? 'Hide file list' : 'Show file list'} aria-label="File list">
           <Icon name="list" />

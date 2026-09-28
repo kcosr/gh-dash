@@ -7,6 +7,8 @@ const DIFFS = /node_modules[\\/](@pierre|shiki|@shikijs|oniguruma-to-es|onigurum
 // Loaded on demand, one chunk each: Shiki's grammars and themes (fetched per language in view),
 // Pierre's own themes and Shiki's WASM engine (neither used here).
 const LAZY_DATA = /node_modules[\\/](@shikijs[\\/](langs|themes)|@pierre[\\/]theme|shiki[\\/]dist[\\/](langs|themes|wasm)|@shikijs[\\/]engine-oniguruma[\\/]dist[\\/]wasm)/;
+// Shiki's grammars, named "lang-<language>" (one chunk each, or shared by the grammars embedding it).
+const GRAMMAR = /node_modules[\\/](@shikijs[\\/]langs|shiki[\\/]dist[\\/]langs)[\\/]/;
 
 export default defineConfig(({ command }) => {
   // Production builds do not need deployment config or credentials.
@@ -22,18 +24,23 @@ export default defineConfig(({ command }) => {
       chunkSizeWarningLimit: 800,
       rolldownOptions: {
         output: {
+          // Otherwise Shiki's Markdown grammar would be a second "markdown-*.js" beside the markdown stack.
+          chunkFileNames: (chunk) => `assets/${chunk.moduleIds.length && chunk.moduleIds.every((id) => GRAMMAR.test(id)) ? 'lang-' : ''}[name]-[hash].js`,
           // Views are split with React.lazy (web/src/App.tsx). On top of that, keep third-party code
           // in its own long-cached chunks: the React/router/query runtime (needed at startup), the diff
           // renderer (web/src/diff, loaded when a diff first opens) and the markdown stack (only
           // reachable from the lazily loaded MarkdownRenderer).
           codeSplitting: {
             groups: [
-              { name: 'vendor', test: /node_modules[\\/](react|react-dom|scheduler|react-router|@tanstack)[\\/]/, priority: 3 },
+              { name: 'vendor', test: /node_modules[\\/](react|react-dom|scheduler|react-router|@tanstack)[\\/]/, priority: 4 },
+              // What both lazy stacks use (the hast utilities: property-information, ccount, ...), so
+              // opening a diff doesn't fetch the markdown stack, nor a PR description the diff renderer.
+              { name: 'shared', test: (id) => /node_modules[\\/]/.test(id) && !/@fontsource|\.css$/.test(id) && !LAZY_DATA.test(id), minShareCount: 2, priority: 3 },
+              // Groups take their dependencies along: outranking the markdown group keeps a Pierre
+              // dependency missing from DIFFS with Pierre.
+              { name: 'diffs', test: (id) => DIFFS.test(id) && !LAZY_DATA.test(id), priority: 2 },
               // Everything else from node_modules is the markdown stack (fonts are CSS, left to Vite).
-              // It outranks the diffs group so the packages both use (groups take their dependencies
-              // along) stay here: the diffs chunk imports them from this one, never the other way round.
-              { name: 'markdown', test: (id) => /node_modules[\\/]/.test(id) && !/@fontsource|\.css$/.test(id) && !DIFFS.test(id) && !LAZY_DATA.test(id), priority: 2 },
-              { name: 'diffs', test: (id) => DIFFS.test(id) && !LAZY_DATA.test(id), priority: 1 },
+              { name: 'markdown', test: (id) => /node_modules[\\/]/.test(id) && !/@fontsource|\.css$/.test(id) && !DIFFS.test(id) && !LAZY_DATA.test(id), priority: 1 },
             ],
           },
         },

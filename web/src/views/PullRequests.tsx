@@ -5,6 +5,7 @@ import { Ctl, MOD_K } from '../components/bits';
 import { DateRangeButton } from '../components/DateRange';
 import { EmptyState, ErrorNote, ProgressBar } from '../components/EmptyState';
 import { FilterInput } from '../components/FilterInput';
+import { FilterToolbar } from '../components/FilterToolbar';
 import { Icon } from '../components/Icon';
 import { PrRow, ReleaseRow } from '../components/PrRow';
 import { RepoChip } from '../components/RepoChip';
@@ -92,7 +93,7 @@ export function PullRequestsView() {
 
   return (
     <main className="main">
-      <div className="toolbar">
+      <FilterToolbar summary={[s.state === 'all' ? 'All PRs' : s.state[0].toUpperCase() + s.state.slice(1), s.who === 'me' ? 'By you' : s.who === 'others' ? 'By others' : 'Everyone', range.text, s.q && `“${s.q}”`].filter(Boolean).join(' · ')}>
         <div className="row">
           <Seg
             value={s.state}
@@ -147,7 +148,7 @@ export function PullRequestsView() {
             ]} />
           </Ctl>
         </div>
-      </div>
+      </FilterToolbar>
 
       <div className="scroll" id="scroll">
         <ProgressBar active={fetching} />

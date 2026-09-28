@@ -8,6 +8,7 @@ import { Sparkline } from '../charts';
 import { Ctl } from '../components/bits';
 import { EmptyState, ErrorNote, ProgressBar } from '../components/EmptyState';
 import { FilterInput } from '../components/FilterInput';
+import { FilterToolbar } from '../components/FilterToolbar';
 import { Icon } from '../components/Icon';
 import { Seg } from '../components/Seg';
 import { useToast } from '../components/Toasts';
@@ -55,7 +56,7 @@ export function RepositoriesView() {
 
   return (
     <main className="main tint">
-      <div className="toolbar">
+      <FilterToolbar summary={[`${list.length} repositories`, s.q && `“${s.q}”`, s.archived && 'Including archived', s.forks && 'Including forks'].filter(Boolean).join(' · ')}>
         <div className="row">
           <FilterInput value={s.q} onChange={(v) => set({ q: v }, { replace: true })} placeholder="Search repositories" />
           <Seg value={s.vis} onChange={(vis) => set({ vis })} ariaLabel="Visibility" options={[
@@ -79,7 +80,7 @@ export function RepositoriesView() {
             { value: 'grid', label: <Icon name="grid" title="Cards" /> }, { value: 'list', label: <Icon name="list" title="Table" /> },
           ]} />
         </div>
-      </div>
+      </FilterToolbar>
       <div className="scroll" id="scroll">
         <ProgressBar active={repos.isFetching && !!repos.data} />
         {repos.isError && !repos.data ? (

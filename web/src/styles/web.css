@@ -344,6 +344,8 @@ ul.links { margin: 0; padding-left: 18px; font-size: 13px; color: var(--text-2);
 .btn-group { display: inline-flex; gap: 8px; margin-left: auto; }
 
 /* Repository controls occupy the full screen on phones instead of squeezing the list. */
+.filter-controls { display: contents; }
+.filter-toggle { display: none; }
 .mobile-sidebar { position: fixed; inset: 0; z-index: 50; display: flex; flex-direction: column; height: 100dvh; background: var(--page); }
 .mobile-sidebar-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: max(12px, env(safe-area-inset-top)) 16px 12px; border-bottom: 1px solid var(--border); }
 .mobile-sidebar-head h2 { margin: 0; font-size: 17px; }
@@ -356,6 +358,17 @@ ul.links { margin: 0; padding-left: 18px; font-size: 13px; color: var(--text-2);
 .mobile-sidebar .set-item .del { display: grid; width: 40px; height: 40px; flex: none; }
 @media (max-width: 900px) {
   .app { height: 100dvh; grid-template-rows: auto minmax(0, 1fr); }
+  .filter-toolbar { flex: none; padding: 4px 12px; gap: 0; max-height: 60dvh; overflow-y: auto; }
+  .filter-toggle { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 44px; text-align: left; font-weight: 600; }
+  .filter-toggle > svg { flex: none; }
+  .filter-summary { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 400; color: var(--text-2); }
+  .filter-toolbar.expanded .filter-chevron { transform: rotate(180deg); }
+  .filter-controls { display: none; }
+  .filter-toolbar.expanded .filter-controls { display: flex; flex-direction: column; gap: 10px; padding: 8px 0; }
+  .filter-toolbar .ctl, .filter-toolbar .seg { flex-wrap: wrap; max-width: 100%; }
+  .filter-toolbar .summary { white-space: normal; }
+  .filter-toolbar .field { flex: 1 1 100%; min-width: 0; }
+  .filter-toolbar input { font-size: 16px; }
   /* Details replace the list here; a desktop drawer column would squeeze it to zero. */
   .app.no-side.has-drawer { grid-template-columns: minmax(0, 1fr); }
   .app.has-drawer > .main { grid-area: 2 / 1; visibility: hidden; }

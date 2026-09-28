@@ -8,6 +8,7 @@ import { Avatar, AvatarStack } from '../components/Avatar';
 import { prIconName } from '../components/bits';
 import { DateRangeButton } from '../components/DateRange';
 import { EmptyState, ErrorNote, ProgressBar } from '../components/EmptyState';
+import { FilterToolbar } from '../components/FilterToolbar';
 import { Icon } from '../components/Icon';
 import type { IconName } from '../components/Icon';
 import { RepoChip } from '../components/RepoChip';
@@ -160,7 +161,7 @@ export function ActivityView() {
 
   return (
     <main className="main">
-      <div className="toolbar">
+      <FilterToolbar summary={[range.text, s.who === 'me' ? 'By you' : s.who === 'others' ? 'By others' : 'Everyone', s.types.length === TYPES.length ? 'All events' : `${s.types.length} event types`].join(' · ')}>
         <div className="row">
           <DateRangeButton />
           <Seg value={s.who} onChange={(who) => set({ who })} options={WHO_OPTIONS} ariaLabel="Author" />
@@ -178,7 +179,7 @@ export function ActivityView() {
           <span className="spacer" />
           <button type="button" className="btn" onClick={() => openExport('api')} title="Export as Markdown or get the API URL"><Icon name="braces" />API</button>
         </div>
-      </div>
+      </FilterToolbar>
 
       <div className="scroll" id="scroll" ref={scroller}>
         <ProgressBar active={fetching} />

@@ -44,6 +44,7 @@ divider and use arrow keys, or double-click it to reset the width.
 On narrow screens, the sidebar starts closed. Use the sidebar button to open it
 full screen, then choose a repository or tap Close to return to the list. PR details
 also use the full content area on narrow screens; close them to return to the list.
+Mobile filter bars start as a single summary row; tap Filters to expand or collapse the controls.
 
 ## Configuration and deployment
 

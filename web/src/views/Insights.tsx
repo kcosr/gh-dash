@@ -3,6 +3,7 @@ import { defaultScope, useRepos, useSettings, useStats, useSyncStatus } from '..
 import { CalendarHeatmap, ChartCard, HBars, LineChart, StackedColumns, StatTile } from '../charts';
 import { DateRangeButton } from '../components/DateRange';
 import { ErrorNote, ProgressBar } from '../components/EmptyState';
+import { FilterToolbar } from '../components/FilterToolbar';
 import { Icon } from '../components/Icon';
 import { Seg, WHO_OPTIONS } from '../components/Seg';
 import { useUI } from '../components/ui';
@@ -63,7 +64,7 @@ export function InsightsView() {
 
   return (
     <main className="main tint">
-      <div className="toolbar">
+      <FilterToolbar summary={[range.text, s.who === 'me' ? 'By you' : s.who === 'others' ? 'By others' : 'Everyone'].join(' · ')}>
         <div className="row">
           <DateRangeButton />
           <Seg value={s.who} onChange={(who) => set({ who })} options={WHO_OPTIONS} ariaLabel="Author" />
@@ -71,7 +72,7 @@ export function InsightsView() {
           <span className="spacer" />
           <button type="button" className="btn" onClick={() => openExport('api')}><Icon name="braces" />API</button>
         </div>
-      </div>
+      </FilterToolbar>
       <div className="scroll" id="scroll">
         <ProgressBar active={stats.isFetching && !!st} />
         {stats.isError && !st ? (

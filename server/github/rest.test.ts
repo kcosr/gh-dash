@@ -35,9 +35,9 @@ describe('GitHubRestClient', () => {
       () => new Response('text', { headers: { 'content-type': 'application/vnd.github.raw+json' } }),
     ]);
     await c.json('/repos/o/r/pulls/1');
-    await c.paginate<number[], number>('/repos/o/r/items', { per_page: 100 }, (p) => p, 10);
+    await c.paginate<number[], number>('/repos/o/r/items', (p) => p, 10, { query: { per_page: 100 } });
     await c.sha('/repos/o/r/commits/pull/1/head');
-    await c.raw('/repos/o/r/contents/a%20b.txt', { ref: 'abc1234' }, 100);
+    await c.raw('/repos/o/r/contents/a%20b.txt', 100, { query: { ref: 'abc1234' } });
     expect(calls.map((x) => x.url)).toEqual([
       `${API}/repos/o/r/pulls/1`,
       `${API}/repos/o/r/items?per_page=100`,
@@ -61,7 +61,7 @@ describe('GitHubRestClient', () => {
 
   it('refuses to follow a pagination link off GitHub (the token would go with it)', async () => {
     const { c, calls } = client([() => json([1], { link: '<https://evil.example/steal?page=2>; rel="next"' })]);
-    await expect(c.paginate<number[], number>('/repos/o/r/items', {}, (p) => p, 10)).rejects.toThrow(/Refusing/);
+    await expect(c.paginate<number[], number>('/repos/o/r/items', (p) => p, 10)).rejects.toThrow(/Refusing/);
     expect(calls).toHaveLength(1);
   });
 
@@ -69,11 +69,28 @@ describe('GitHubRestClient', () => {
     const page = (n: number, next: boolean) => () =>
       json([n * 10 + 1, n * 10 + 2], next ? { link: `<${API}/x?page=${n + 1}>; rel="next", <${API}/x?page=9>; rel="last"` } : {});
     const all = client([page(1, true), page(2, true), page(3, false)]);
-    expect((await all.c.paginate<number[], number>('/x', {}, (p) => p, 100)).items).toEqual([11, 12, 21, 22, 31, 32]);
+    expect((await all.c.paginate<number[], number>('/x', (p) => p, 100)).items).toEqual([11, 12, 21, 22, 31, 32]);
     const capped = client([page(1, true), page(2, true), page(3, false)]);
-    const res = await capped.c.paginate<number[], number>('/x', {}, (p) => p, 3);
+    const res = await capped.c.paginate<number[], number>('/x', (p) => p, 3);
     expect(res).toEqual({ first: [11, 12], items: [11, 12, 21] });
     expect(capped.calls).toHaveLength(2);
+    // A Link chain that never ends stops at a hard page cap.
+    const endless = client([() => json([1], { link: `<${API}/x?page=next>; rel="next"` })]);
+    expect((await endless.c.paginate<number[], number>('/x', (p) => p, 10_000)).items).toHaveLength(40);
+    expect(endless.calls).toHaveLength(40);
+  });
+
+  it('stops retrying once the caller gives up', async () => {
+    const ctrl = new AbortController();
+    const { c, calls } = client([
+      () => {
+        ctrl.abort();
+        return new Response('', { status: 502 });
+      },
+    ]);
+    const err = await c.json('/a', { signal: ctrl.signal }).catch((e: GitHubError) => e);
+    expect(err).toMatchObject({ kind: 'transient', message: expect.stringContaining('Gave up') });
+    expect(calls).toHaveLength(1);
   });
 
   it('tracks the REST rate limit from headers and keeps headroom', async () => {
@@ -91,6 +108,10 @@ describe('GitHubRestClient', () => {
       expect(err).toMatchObject({ kind: 'rate-limit', status, resetAt: '2099-01-01T00:00:00.000Z' });
       expect(sleeps).toEqual([]);
     }
+    // A bare 429 (no rate-limit headers) is still a rate limit, not a server failure.
+    const bare = await client([() => new Response('', { status: 429 })]).c.json('/a').catch((e: GitHubError) => e);
+    expect(bare).toMatchObject({ kind: 'rate-limit', status: 429 });
+    expect(Date.parse((bare as GitHubError).resetAt!)).toBeGreaterThan(Date.now());
   });
 
   it('retries short secondary limits and gives up on long ones', async () => {
@@ -140,17 +161,17 @@ describe('GitHubRestClient', () => {
   it('reads raw contents up to a size limit and recognises non-file answers', async () => {
     const raw = (body: string, headers: Record<string, string> = {}) => () =>
       new Response(body, { headers: { 'content-type': 'application/vnd.github.raw+json', ...headers } });
-    const ok = await client([raw('hello')]).c.raw('/f', {}, 10);
+    const ok = await client([raw('hello')]).c.raw('/f', 10);
     expect({ ...ok, bytes: Buffer.from(ok.bytes).toString() }).toEqual({ bytes: 'hello', tooLarge: false, isFile: true });
-    expect(await client([raw('x', { 'content-length': '11' })]).c.raw('/f', {}, 10)).toMatchObject({ tooLarge: true });
+    expect(await client([raw('x', { 'content-length': '11' })]).c.raw('/f', 10)).toMatchObject({ tooLarge: true });
     // No Content-Length: the stream is cut off once it passes the limit.
     const stream = new ReadableStream({
       pull(ctrl) {
         ctrl.enqueue(new Uint8Array(6));
       },
     });
-    expect(await client([() => new Response(stream)]).c.raw('/f', {}, 10)).toMatchObject({ tooLarge: true });
-    expect(await client([() => json([{ name: 'dir' }])]).c.raw('/f', {}, 1000)).toMatchObject({ isFile: false });
+    expect(await client([() => new Response(stream)]).c.raw('/f', 10)).toMatchObject({ tooLarge: true });
+    expect(await client([() => json([{ name: 'dir' }])]).c.raw('/f', 1000)).toMatchObject({ isFile: false });
   });
 
   it('never puts the token in an error message', async () => {

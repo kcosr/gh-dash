@@ -71,6 +71,17 @@ describe('GitHubClient', () => {
     expect(sleeps).toEqual([7000]);
   });
 
+  it('waits out long secondary limits during sync, but not with maxRetryWaitMs', async () => {
+    const secondary = () => new Response('You have exceeded a secondary rate limit', { status: 403 });
+    const sync = client([secondary, () => ok()]);
+    await sync.c.query('query { x }');
+    expect(sync.sleeps).toEqual([60_000]);
+    const sleeps: number[] = [];
+    const interactive = new GitHubClient({ token: 't', maxRetryWaitMs: 10_000, fetchImpl: async () => secondary(), sleep: async (ms) => void sleeps.push(ms) });
+    await expect(interactive.query('query { x }')).rejects.toMatchObject({ kind: 'rate-limit' });
+    expect(sleeps).toEqual([]);
+  });
+
   it('gives up after maxAttempts', async () => {
     const { c, calls } = client([() => new Response('', { status: 503 })]);
     await expect(c.query('query { x }')).rejects.toMatchObject({ kind: 'transient' });

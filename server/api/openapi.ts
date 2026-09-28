@@ -278,11 +278,13 @@ export const ENDPOINTS: EndpointDoc[] = [
   {
     method: 'get', path: '/api/v1/prs/{repo}/{number}/diff', tag: 'Diffs', summary: "A pull request's changes against its merge base",
     description:
-      'Fetched from GitHub on first view and cached by head commit, so an unchanged PR is served without a GitHub request. ' +
-      'Errors: 404 unknown repo or PR, 503 no GitHub token, 429 GitHub rate limit (details.resetAt), 502 other GitHub failures.',
+      'Fetched from GitHub on first view and cached. While the last sync shows the same head and base branch and no update since, ' +
+      'it is served without a GitHub request (open PRs are re-checked hourly, as the merge base can move). ' +
+      'Errors: 404 unknown repo or PR, 503 no GitHub token, 429 GitHub rate limit (details.resetAt), 502 other GitHub failures, ' +
+      '403 for cross-site browser requests.',
     params: [
       p('repo', 'Repo name'), p('number', 'PR number', int()),
-      q('refresh', "'1' re-checks GitHub for the PR's current head instead of trusting the last sync (free when unchanged).", enumOf('1')),
+      q('refresh', "'1' re-checks the PR on GitHub (head, merge base, title) instead of trusting the last sync; files are fetched again only if the head or merge base changed.", enumOf('1')),
     ],
     response: { status: 200, schema: ref('Diff') },
   },

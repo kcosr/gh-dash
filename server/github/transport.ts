@@ -51,7 +51,8 @@ export function resetAt(res: Response): string | null {
 
 /**
  * Classifies a 403/429: secondary limits (Retry-After or GitHub's wording) are retryable, an exhausted
- * primary limit fails fast. null when it is neither (a plain permission error).
+ * primary limit fails fast, and so does any other 429 (GitHub asks for at least a minute's wait then).
+ * null for a 403 that is neither (a plain permission error).
  */
 export function limitError(res: Response, text: string, api: string): Error | null {
   const retryAfter = Number(res.headers.get('retry-after'));
@@ -61,6 +62,10 @@ export function limitError(res: Response, text: string, api: string): Error | nu
   if (res.headers.get('x-ratelimit-remaining') === '0') {
     const reset = resetAt(res);
     return new GitHubError('rate-limit', `${api} rate limit exhausted (resets ${reset ?? 'unknown'})`, { status: res.status, resetAt: reset });
+  }
+  if (res.status === 429) {
+    const resume = new Date(Date.now() + 60_000).toISOString();
+    return new GitHubError('rate-limit', `${api} rate limited (429); retry after ${resume}`, { status: 429, resetAt: resume });
   }
   return null;
 }

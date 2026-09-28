@@ -8,6 +8,7 @@ import { SyncManager } from '../sync/manager';
 import { fakeGitHub, type Reply, restFile, sha } from '../test/github';
 import { seedDb } from '../test/seed';
 import { createApp } from './app';
+import { acceptsGzip } from './routes/diffs';
 
 function makeApp(over: Partial<Config> = {}, db = seedDb()) {
   const config = { ...loadConfig({}), webDir: '/nonexistent', ...over };
@@ -250,12 +251,45 @@ describe('diffs', () => {
     expect(refused.headers.get('content-encoding')).toBeNull();
   });
 
+  it('reads Accept-Encoding per RFC 9110: an explicit gzip entry beats *', () => {
+    expect(acceptsGzip(undefined)).toBe(false);
+    expect(acceptsGzip('')).toBe(false);
+    expect(acceptsGzip('br, deflate')).toBe(false);
+    expect(acceptsGzip('gzip, deflate, br, zstd')).toBe(true);
+    expect(acceptsGzip('*')).toBe(true);
+    expect(acceptsGzip('GZIP;q=0.5')).toBe(true);
+    expect(acceptsGzip('*, gzip;q=0')).toBe(false);
+    expect(acceptsGzip('gzip ; q = 0 , *')).toBe(false);
+    expect(acceptsGzip('gzip;q=0.000, br')).toBe(false);
+    expect(acceptsGzip('*;q=0')).toBe(false);
+    expect(acceptsGzip('x-gzip')).toBe(true);
+  });
+
+  it("refuses cross-site requests that would spend the owner's GitHub quota", async () => {
+    const { app, gh } = diffApp({ ...commitRoute, [`/repos/alice/app/contents/a.txt?ref=${C}`]: { text: 'a' } });
+    const paths = [`/api/v1/commits/app/${C}/diff`, `/api/v1/blob/app?ref=${C}&path=a.txt`, '/api/v1/prs/app/1/diff'];
+    for (const path of paths) {
+      const res = await app.request(path, { headers: { 'sec-fetch-site': 'cross-site' } });
+      expect(res.status, path).toBe(403);
+      expect(await res.json()).toEqual({ error: 'Cross-site request rejected' });
+    }
+    expect(gh.requests).toEqual([]);
+    for (const site of ['same-origin', 'same-site', 'none', null]) {
+      const headers: Record<string, string> = site ? { 'sec-fetch-site': site } : {};
+      expect((await app.request(paths[0]!, { headers })).status, String(site)).toBe(200);
+      expect((await app.request(paths[1]!, { headers })).status, String(site)).toBe(200);
+    }
+    // Cache stats read nothing from GitHub.
+    expect((await app.request('/api/v1/diff-cache', { headers: { 'sec-fetch-site': 'cross-site' } })).status).toBe(200);
+  });
+
   it('serves file contents as text, immutable at a full SHA', async () => {
     const { app } = diffApp({ [`/repos/alice/app/contents/src/a.ts?ref=${C}`]: { text: 'export {};\n' } });
     const res = await app.request(`/api/v1/blob/app?ref=${C}&path=src/a.ts`);
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toBe('text/plain; charset=utf-8');
     expect(res.headers.get('cache-control')).toContain('immutable');
+    expect(res.headers.get('x-content-type-options')).toBe('nosniff');
     expect(await res.text()).toBe('export {};\n');
   });
 
@@ -268,7 +302,7 @@ describe('diffs', () => {
     expect(await stats({ method: 'DELETE' })).toEqual({ entries: 0, bytes: 0, maxBytes: 200 * 1024 * 1024 });
 
     // Lowering the cap evicts right away.
-    for (const k of ['a', 'b', 'c']) cache.put({ key: k, kind: 'blob', repo: 'app', oid: C, data: Buffer.alloc(6 * 1024 * 1024) });
+    for (const k of ['a', 'b', 'c']) cache.put({ key: k, kind: 'blob', repo: 'app', oid: C, fetchedAt: 1, data: Buffer.alloc(6 * 1024 * 1024) });
     const patch = await app.request('/api/v1/settings', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: '{"diffCacheMb":10}' });
     expect(await patch.json()).toMatchObject({ diffCacheMb: 10 });
     expect(await stats()).toEqual({ entries: 1, bytes: 6 * 1024 * 1024, maxBytes: 10 * 1024 * 1024 });

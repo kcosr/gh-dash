@@ -13,6 +13,8 @@ export interface ClientOptions {
   maxAttempts?: number;
   /** Refuse to spend below this many remaining points (keeps headroom for the UI and other tools). */
   minRemaining?: number;
+  /** Secondary limits asking for a longer wait fail as 'rate-limit' instead of sleeping (default: always wait). */
+  maxRetryWaitMs?: number;
   onRateLimit?: (rl: GqlRateLimit) => void;
 }
 
@@ -33,6 +35,7 @@ export class GitHubClient {
       sleep: defaultSleep,
       maxAttempts: 5,
       minRemaining: 100,
+      maxRetryWaitMs: Infinity,
       ...opts,
     };
   }

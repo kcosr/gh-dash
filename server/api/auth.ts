@@ -73,6 +73,16 @@ export const sameOriginWrites: MiddlewareHandler = async (c, next) => {
   await next();
 };
 
+/**
+ * For GETs that spend the owner's GitHub quota or churn the diff cache: rejects requests a browser marks as
+ * cross-site (e.g. `<img src="http://127.0.0.1:4780/api/v1/blob/...">` on another site). Same-origin and same-site
+ * requests, direct navigation (`none`) and clients that send no Sec-Fetch-Site header (curl, scripts) pass.
+ */
+export const noCrossSiteReads: MiddlewareHandler = async (c, next) => {
+  if (c.req.header('sec-fetch-site')?.trim().toLowerCase() === 'cross-site') return c.json({ error: 'Cross-site request rejected' }, 403);
+  await next();
+};
+
 const escapeHtml = (s: string) => s.replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
 
 function loginPage(next: string, failed: boolean): string {

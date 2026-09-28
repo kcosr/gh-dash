@@ -5,6 +5,8 @@ const API = 'https://api.github.com';
 const API_VERSION = '2026-03-10';
 const JSON_TYPE = 'application/vnd.github+json';
 const SHA_TYPE = 'application/vnd.github.sha';
+/** Safety net against a runaway Link chain (GitHub's 3000-file lists need at most 30 pages). */
+const MAX_PAGES = 40;
 
 export interface RestRateLimit {
   limit: number;
@@ -26,6 +28,12 @@ export interface RestClientOptions {
 }
 
 type Query = Record<string, string | number>;
+
+export interface CallOptions {
+  query?: Query;
+  /** Aborts the call, including its retries (e.g. an overall deadline for building one diff). */
+  signal?: AbortSignal;
+}
 
 interface Fetched<T> {
   /** null for a 304 Not Modified. */
@@ -63,17 +71,17 @@ export class GitHubRestClient {
     };
   }
 
-  async json<T>(path: string, query: Query = {}): Promise<T> {
-    return (await this.get(url(path, query), JSON_TYPE, readJson<T>)).body!;
+  async json<T>(path: string, opts: CallOptions = {}): Promise<T> {
+    return (await this.get(url(path, opts.query), JSON_TYPE, readJson<T>, opts)).body!;
   }
 
-  /** Follows Link rel="next" until there is none or `limit` items were collected. */
-  async paginate<P, I>(path: string, query: Query, items: (page: P) => I[], limit: number): Promise<{ first: P; items: I[] }> {
-    let next: string | null = url(path, query);
+  /** Follows Link rel="next" until there is none or `limit` items were collected (serially, as GitHub asks). */
+  async paginate<P, I>(path: string, items: (page: P) => I[], limit: number, opts: CallOptions = {}): Promise<{ first: P; items: I[] }> {
+    let next: string | null = url(path, opts.query);
     let first: P | undefined;
     const out: I[] = [];
-    while (next && out.length < limit) {
-      const page: Fetched<P> = await this.get(next, JSON_TYPE, readJson<P>);
+    for (let pages = 0; next && out.length < limit && pages < MAX_PAGES; pages++) {
+      const page: Fetched<P> = await this.get(next, JSON_TYPE, readJson<P>, opts);
       first ??= page.body!;
       out.push(...items(page.body!));
       next = page.next;
@@ -85,30 +93,40 @@ export class GitHubRestClient {
    * The commit a ref points to. With `known` (the SHA we expect) the request is conditional: an unchanged ref
    * answers 304, which doesn't count against the rate limit.
    */
-  async sha(path: string, known?: string): Promise<string> {
-    const { body } = await this.get(url(path), SHA_TYPE, readText, known);
+  async sha(path: string, known?: string, opts: CallOptions = {}): Promise<string> {
+    const { body } = await this.get(url(path), SHA_TYPE, readText, opts, known);
     return body === null ? known! : body.trim();
   }
 
   /** Raw file contents, reading at most `maxBytes` of the body. */
-  async raw(path: string, query: Query, maxBytes: number): Promise<RawFile> {
-    return (await this.get(url(path, query), 'application/vnd.github.raw+json', (res) => readLimited(res, maxBytes))).body!;
+  async raw(path: string, maxBytes: number, opts: CallOptions = {}): Promise<RawFile> {
+    return (await this.get(url(path, opts.query), 'application/vnd.github.raw+json', (res) => readLimited(res, maxBytes), opts)).body!;
   }
 
-  private async get<T>(target: string, accept: string, read: (res: Response) => Promise<T>, etag?: string): Promise<Fetched<T>> {
+  private async get<T>(target: string, accept: string, read: (res: Response) => Promise<T>, opts: CallOptions, etag?: string): Promise<Fetched<T>> {
     if (!target.startsWith(`${API}/`)) throw new GitHubError('http', `Refusing to send the GitHub token outside ${API}: ${target.slice(0, 100)}`);
     checkToken(this.opts.token);
     const rl = this.rateLimit;
     if (rl && rl.remaining < this.opts.minRemaining && Date.parse(rl.resetAt) > Date.now()) {
       throw new GitHubError('rate-limit', `GitHub REST rate limit nearly exhausted (${rl.remaining} left, resets ${rl.resetAt})`, { resetAt: rl.resetAt });
     }
-    return withRetries(this.opts, () => this.attempt(target, accept, read, etag));
+    return withRetries(this.opts, () => {
+      if (opts.signal?.aborted) throw new GitHubError('transient', `Gave up waiting for GitHub (${new URL(target).pathname})`);
+      return this.attempt(target, accept, read, etag, opts.signal);
+    });
   }
 
-  private async attempt<T>(target: string, accept: string, read: (res: Response) => Promise<T>, etag?: string): Promise<Fetched<T>> {
+  private async attempt<T>(
+    target: string,
+    accept: string,
+    read: (res: Response) => Promise<T>,
+    etag: string | undefined,
+    signal: AbortSignal | undefined,
+  ): Promise<Fetched<T>> {
     this.requests++;
     let res: Response;
     try {
+      const timeout = AbortSignal.timeout(this.opts.timeoutMs);
       res = await this.opts.fetchImpl(target, {
         method: 'GET',
         headers: {
@@ -118,7 +136,7 @@ export class GitHubRestClient {
           'X-GitHub-Api-Version': API_VERSION,
           ...(etag ? { 'If-None-Match': `"${etag}"` } : {}),
         },
-        signal: AbortSignal.timeout(this.opts.timeoutMs),
+        signal: signal ? AbortSignal.any([timeout, signal]) : timeout,
       });
     } catch (err) {
       throw new RetryableError(`network error: ${(err as Error).message}`, null);

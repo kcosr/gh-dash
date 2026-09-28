@@ -1,7 +1,7 @@
 // In-memory stand-in for api.github.com, for tests that must never touch the network.
 
 export type Reply = { status?: number; body?: unknown; text?: string | Uint8Array<ArrayBuffer>; headers?: Record<string, string> };
-type Handler = Reply | ((req: { url: URL; headers: Record<string, string>; body: unknown }) => Reply);
+export type Handler = Reply | ((req: { url: URL; headers: Record<string, string>; body: unknown }) => Reply);
 
 export const API = 'https://api.github.com';
 const RATE = { 'x-ratelimit-limit': '5000', 'x-ratelimit-remaining': '4999', 'x-ratelimit-reset': '4070908800' };

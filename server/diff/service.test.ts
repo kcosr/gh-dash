@@ -2,29 +2,40 @@ import { randomBytes } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import type { Diff } from '../../shared/api';
 import { HttpError } from '../api/http';
+import type { Db } from '../db/db';
 import { patchSettings } from '../db/settings';
-import { fakeGitHub, page, type Reply, restFile, sha } from '../test/github';
+import { fakeGitHub, type Handler as Route, page, type Reply, restFile, sha } from '../test/github';
 import { seedDb } from '../test/seed';
 import { DiffCache } from './cache';
-import { DiffService, MAX_BLOB_BYTES, type Payload, payloadText } from './service';
+import { DiffService, MAX_BLOB_BYTES, OPEN_PR_TTL_MS, type Payload, payloadText } from './service';
 
 const BASE = sha('0');
 const MERGE_BASE = sha('9');
 const A = sha('a');
 const B = sha('b');
+const HOUR = 3_600_000;
 
-function setup(routes: Record<string, Reply | ((req: { headers: Record<string, string> }) => Reply)> = {}) {
+function setup(routes: Record<string, Route> = {}, opts: { fetchImpl?: (inner: typeof fetch) => typeof fetch; buildTimeoutMs?: number } = {}) {
   const db = seedDb();
   const gh = fakeGitHub(routes);
-  const token = { value: 'tok' as string | null };
+  const token = { value: 'tok' as string | null, resolved: 0 };
   const logs: string[] = [];
+  const clock = { t: Date.parse('2026-09-28T00:00:00Z') };
+  let tick = 0;
+  // The cache's clock only orders accesses (LRU); it must advance between them.
+  const cache = new DiffCache(':memory:', () => clock.t + tick++);
   const svc = new DiffService({
     db,
-    cache: new DiffCache(':memory:'),
-    resolveToken: () => ({ token: token.value, source: token.value ? 'env' : 'none' }),
-    fetchImpl: gh.fetchImpl,
+    cache,
+    resolveToken: () => {
+      token.resolved++;
+      return { token: token.value, source: token.value ? 'env' : 'none' };
+    },
+    fetchImpl: opts.fetchImpl ? opts.fetchImpl(gh.fetchImpl) : gh.fetchImpl,
     sleep: async () => {},
     log: (line) => logs.push(line),
+    now: () => clock.t,
+    buildTimeoutMs: opts.buildTimeoutMs,
   });
   /** Requests made by `fn`. */
   const spent = async <T>(fn: () => Promise<T>) => {
@@ -32,40 +43,53 @@ function setup(routes: Record<string, Reply | ((req: { headers: Record<string, s
     const out = await fn();
     return { out, requests: [...gh.requests] };
   };
-  const setHead = (number: number, head: string | null) =>
-    db.run("UPDATE pull_requests SET head_oid = ? WHERE number = ? AND repo_id = (SELECT id FROM repos WHERE name = 'app')", [head, number]);
-  return { db, gh, svc, token, logs, spent, setHead };
+  /** What the last sync recorded for app#number. */
+  const synced = (number: number, fields: { head_oid?: string | null; base_ref?: string; updated_at?: string; state?: string }) => {
+    for (const [col, value] of Object.entries(fields)) {
+      db.run(`UPDATE pull_requests SET ${col} = ? WHERE number = ? AND repo_id = (SELECT id FROM repos WHERE name = 'app')`, [value, number]);
+    }
+  };
+  const iso = (t: number) => new Date(t).toISOString();
+  return { db, gh, svc, cache, token, logs, clock, spent, synced, iso };
 }
 
 const diffOf = async (p: Payload | Promise<Payload>) => JSON.parse(await payloadText(await p)) as Diff;
 const status = (p: Promise<unknown>) => p.then(() => 200, (e: unknown) => (e instanceof HttpError ? e.status : e));
 
-/** GitHub serving app#2 at `head`, with `files` over pages of 100. */
-function pr2(routes: Record<string, unknown>, head: string, files: object[], over: Record<string, unknown> = {}) {
+/** GitHub serving app#2 at `head` against `mergeBase`, with `files` over pages of 100. */
+function pr2(routes: Record<string, Route>, head: string, files: object[], over: { mergeBase?: string; baseRef?: string; title?: string; changed_files?: number } = {}) {
+  const { mergeBase = MERGE_BASE, baseRef = 'main', ...pull } = over;
   routes['/repos/alice/app/pulls/2'] = {
-    body: { title: 'Add parser', html_url: 'https://github.com/alice/app/pull/2', changed_files: files.length, additions: 12, deletions: 3, head: { sha: head }, base: { sha: BASE }, ...over },
+    body: {
+      title: 'Add parser', html_url: 'https://github.com/alice/app/pull/2', changed_files: files.length, additions: 12, deletions: 3,
+      head: { sha: head }, base: { sha: BASE, ref: baseRef }, ...pull,
+    },
   };
-  routes[`/repos/alice/app/compare/${BASE}...${head}?per_page=1&page=2`] = { body: { merge_base_commit: { sha: MERGE_BASE }, commits: [] } };
+  routes[`/repos/alice/app/compare/${BASE}...${head}?per_page=1&page=2`] = { body: { merge_base_commit: { sha: mergeBase }, commits: [] } };
   const path = '/repos/alice/app/pulls/2/files';
   for (let i = 0; i * 100 < Math.max(files.length, 1); i++) {
     const next = (i + 1) * 100 < files.length ? `${path}?per_page=100&page=${i + 2}` : null;
     routes[i ? `${path}?per_page=100&page=${i + 1}` : `${path}?per_page=100`] = page(files.slice(i * 100, (i + 1) * 100), next);
   }
-  routes['/repos/alice/app/commits/pull/2/head'] = ({ headers }: { headers: Record<string, string> }) =>
-    headers['If-None-Match'] === `"${head}"` ? { status: 304 } : { text: head };
+  routes['/repos/alice/app/commits/pull/2/head'] = ({ headers }) => (headers['If-None-Match'] === `"${head}"` ? { status: 304 } : { text: head });
 }
 
-const PR_FILES_PATH = ['/repos/alice/app/pulls/2', `/repos/alice/app/compare/${BASE}...${A}?per_page=1&page=2`, '/repos/alice/app/pulls/2/files?per_page=100'];
+const PULL = '/repos/alice/app/pulls/2';
+const COMPARE = (head: string) => `/repos/alice/app/compare/${BASE}...${head}?per_page=1&page=2`;
+const FILES = '/repos/alice/app/pulls/2/files?per_page=100';
+const HEAD = '/repos/alice/app/commits/pull/2/head';
+/** A full fetch: the PR, its merge base, the files, then a (free) check that the head didn't move meanwhile. */
+const FULL = (head: string) => [PULL, COMPARE(head), FILES, HEAD];
 
 describe('PR diffs', () => {
-  it('fetches a PR diff against its merge base once, then serves it by head with no request', async () => {
+  it('fetches a PR diff against its merge base once, then serves it with no request while the sync agrees', async () => {
     const files = [restFile(1), restFile(2, { status: 'added', patch: undefined }), restFile(3, { status: 'renamed', previous_filename: 'old/f3.ts' })];
-    const { svc, spent, setHead, gh } = setup();
+    const { svc, spent, synced, gh, clock } = setup();
     pr2(gh.routes, A, files);
-    setHead(2, A);
+    synced(2, { head_oid: A });
 
     const miss = await spent(() => diffOf(svc.prDiff('app', 2)));
-    expect(miss.requests).toEqual(PR_FILES_PATH);
+    expect(miss.requests).toEqual(FULL(A));
     expect(miss.out).toEqual({
       kind: 'pr', repo: 'app', number: 2, title: 'Add parser', baseOid: MERGE_BASE, headOid: A,
       files: [
@@ -73,98 +97,185 @@ describe('PR diffs', () => {
         { path: 'src/f2.ts', previousPath: null, status: 'added', additions: 1, deletions: 1, patch: null },
         { path: 'src/f3.ts', previousPath: 'old/f3.ts', status: 'renamed', additions: 1, deletions: 1, patch: '@@ -1 +1 @@\n-a3\n+b3' },
       ],
-      totalFiles: 3, additions: 12, deletions: 3, fetchedAt: expect.any(String), url: 'https://github.com/alice/app/pull/2/files',
+      totalFiles: 3, additions: 12, deletions: 3, fetchedAt: new Date(clock.t).toISOString(), url: 'https://github.com/alice/app/pull/2/files',
     });
 
+    clock.t += 10 * 60_000;
     const hit = await spent(() => diffOf(svc.prDiff('app', 2)));
     expect(hit.requests).toEqual([]);
     expect(hit.out).toEqual(miss.out);
   });
 
-  it('without a synced head, revalidates a cached diff with a conditional request (free when unchanged)', async () => {
-    const { svc, spent, setHead, gh } = setup();
+  it('confirms a head the sync has not recorded with a conditional request (free when unchanged)', async () => {
+    const { svc, spent, synced, gh } = setup();
     pr2(gh.routes, A, [restFile(1)]);
-    setHead(2, null);
-    expect((await spent(() => svc.prDiff('app', 2))).requests).toEqual(PR_FILES_PATH);
+    synced(2, { head_oid: null });
+    expect((await spent(() => svc.prDiff('app', 2))).requests).toEqual(FULL(A));
     const again = await spent(() => diffOf(svc.prDiff('app', 2)));
-    expect(again.requests).toEqual(['/repos/alice/app/commits/pull/2/head']);
+    expect(again.requests).toEqual([HEAD]);
     expect(again.out.headOid).toBe(A);
   });
 
-  it('refresh=1 picks up a pushed head and the new diff supersedes the old one', async () => {
-    const { svc, spent, setHead, gh } = setup();
+  it('refresh=1 always re-checks the PR and merge base, but refetches files only when they changed', async () => {
+    const { svc, spent, synced, gh, clock } = setup();
     pr2(gh.routes, A, [restFile(1)]);
-    setHead(2, A);
+    synced(2, { head_oid: A });
     await svc.prDiff('app', 2);
-    pr2(gh.routes, B, [restFile(1), restFile(2)]);
 
-    // Not refreshed: the synced head is trusted.
-    expect((await spent(() => diffOf(svc.prDiff('app', 2)))).out.headOid).toBe(A);
-    const refreshed = await spent(() => diffOf(svc.prDiff('app', 2, true)));
-    expect(refreshed.requests).toEqual([
-      '/repos/alice/app/commits/pull/2/head',
-      '/repos/alice/app/pulls/2',
-      `/repos/alice/app/compare/${BASE}...${B}?per_page=1&page=2`,
-      '/repos/alice/app/pulls/2/files?per_page=100',
-    ]);
-    expect(refreshed.out).toMatchObject({ headOid: B, totalFiles: 2 });
+    // Only the title changed on GitHub.
+    clock.t += 60_000;
+    pr2(gh.routes, A, [restFile(1)], { title: 'Add a faster parser' });
+    const retitled = await spent(() => diffOf(svc.prDiff('app', 2, true)));
+    expect(retitled.requests).toEqual([PULL, COMPARE(A)]);
+    expect(retitled.out).toMatchObject({ title: 'Add a faster parser', headOid: A, fetchedAt: new Date(clock.t).toISOString() });
+    expect(retitled.out.files).toHaveLength(1);
+
+    // A push: the new head's diff replaces the old one.
+    pr2(gh.routes, B, [restFile(1), restFile(2)]);
+    const pushed = await spent(() => diffOf(svc.prDiff('app', 2, true)));
+    expect(pushed.requests).toEqual(FULL(B));
+    expect(pushed.out).toMatchObject({ headOid: B, totalFiles: 2 });
     expect(svc.stats().entries).toBe(1);
 
-    // The sync still says A (stale): one request finds B, which is cached.
+    // The sync still says A: the newer cached head is confirmed for free.
     const stale = await spent(() => diffOf(svc.prDiff('app', 2)));
-    expect(stale.requests).toEqual(['/repos/alice/app/pulls/2']);
+    expect(stale.requests).toEqual([HEAD]);
     expect(stale.out.headOid).toBe(B);
     // Once the sync catches up, no requests at all.
-    setHead(2, B);
+    synced(2, { head_oid: B, updated_at: new Date(clock.t - 1000).toISOString() });
     expect((await spent(() => svc.prDiff('app', 2))).requests).toEqual([]);
   });
 
-  it('replaces the cached diff when the sync reports a new head', async () => {
-    const { svc, spent, setHead, gh } = setup();
+  it('revalidates when the sync reports the PR updated since the diff was fetched', async () => {
+    const { svc, spent, synced, gh, clock, iso } = setup();
     pr2(gh.routes, A, [restFile(1)]);
-    setHead(2, A);
+    synced(2, { head_oid: A });
     await svc.prDiff('app', 2);
+
+    // A title edit (or a comment): the PR's own fields are refreshed, the files kept.
+    clock.t += 60_000;
+    synced(2, { updated_at: iso(clock.t - 1000) });
+    pr2(gh.routes, A, [restFile(1)], { title: 'Renamed' });
+    const edited = await spent(() => diffOf(svc.prDiff('app', 2)));
+    expect(edited.requests).toEqual([PULL, COMPARE(A)]);
+    expect(edited.out.title).toBe('Renamed');
+    expect((await spent(() => svc.prDiff('app', 2))).requests).toEqual([]);
+
+    // A push the sync has seen.
+    clock.t += 60_000;
+    synced(2, { head_oid: B, updated_at: iso(clock.t - 1000) });
     pr2(gh.routes, B, [restFile(2)]);
-    setHead(2, B);
     const moved = await spent(() => diffOf(svc.prDiff('app', 2)));
-    expect(moved.requests).toHaveLength(3);
+    expect(moved.requests).toEqual(FULL(B));
     expect(moved.out.files.map((f) => f.path)).toEqual(['src/f2.ts']);
     expect(svc.stats().entries).toBe(1);
   });
 
+  it('recomputes the diff when a PR is retargeted, even with the same head', async () => {
+    const { svc, spent, synced, gh } = setup();
+    pr2(gh.routes, A, [restFile(1), restFile(2)], { baseRef: 'feature-a' });
+    synced(2, { head_oid: A, base_ref: 'feature-a' });
+    await svc.prDiff('app', 2);
+
+    // Stacked PR retargeted to main after its parent merged: a new merge base and fewer files. The sync recorded the
+    // new base branch (without relying on updatedAt here).
+    synced(2, { base_ref: 'main' });
+    pr2(gh.routes, A, [restFile(2)], { baseRef: 'main', mergeBase: sha('8') });
+    const retargeted = await spent(() => diffOf(svc.prDiff('app', 2)));
+    expect(retargeted.requests).toEqual(FULL(A));
+    expect(retargeted.out).toMatchObject({ baseOid: sha('8'), headOid: A, totalFiles: 1 });
+    expect(svc.stats().entries).toBe(1);
+    expect((await spent(() => svc.prDiff('app', 2))).requests).toEqual([]);
+  });
+
+  it("re-checks an open PR's merge base after an hour; merged PRs are final", async () => {
+    const { svc, spent, synced, gh, clock } = setup();
+    pr2(gh.routes, A, [restFile(1), restFile(2)]);
+    synced(2, { head_oid: A });
+    await svc.prDiff('app', 2);
+
+    // The base branch absorbed one of the PR's commits: the merge base moved, the PR itself didn't change.
+    pr2(gh.routes, A, [restFile(2)], { mergeBase: sha('8') });
+    clock.t += OPEN_PR_TTL_MS - 1;
+    expect((await spent(() => svc.prDiff('app', 2))).requests).toEqual([]);
+    clock.t += 2;
+    const rechecked = await spent(() => diffOf(svc.prDiff('app', 2)));
+    expect(rechecked.requests).toEqual(FULL(A));
+    expect(rechecked.out).toMatchObject({ baseOid: sha('8'), totalFiles: 1 });
+
+    // Unchanged after another hour: two cheap requests, no files.
+    clock.t += OPEN_PR_TTL_MS;
+    expect((await spent(() => svc.prDiff('app', 2))).requests).toEqual([PULL, COMPARE(A)]);
+
+    synced(2, { state: 'merged' });
+    clock.t += 100 * HOUR;
+    expect((await spent(() => svc.prDiff('app', 2))).requests).toEqual([]);
+  });
+
+  it('does not cache a diff whose head moved while its files were fetched', async () => {
+    const { svc, spent, synced, gh, logs } = setup();
+    pr2(gh.routes, A, [restFile(1)]);
+    gh.routes[HEAD] = { text: B }; // pushed during pagination
+    synced(2, { head_oid: A });
+    const racy = await spent(() => diffOf(svc.prDiff('app', 2)));
+    expect(racy.out.headOid).toBe(A);
+    expect(svc.stats().entries).toBe(0);
+    expect(logs.some((l) => l.includes('not caching'))).toBe(true);
+  });
+
   it("lists at most GitHub's 3000 files but reports the PR's full count", async () => {
-    const { svc, spent, setHead, gh } = setup();
+    const { svc, spent, synced, gh } = setup();
     pr2(gh.routes, A, Array.from({ length: 3100 }, (_, i) => restFile(i)), { changed_files: 3500 });
-    setHead(2, A);
+    synced(2, { head_oid: A });
     const { out, requests } = await spent(() => diffOf(svc.prDiff('app', 2)));
     expect(out.files).toHaveLength(3000);
     expect(out.totalFiles).toBe(3500);
-    expect(requests).toHaveLength(2 + 30);
+    expect(requests).toHaveLength(2 + 30 + 1);
   });
 
   it('shares one fetch between identical concurrent requests', async () => {
-    const { svc, spent, setHead, gh } = setup();
+    const { svc, spent, synced, gh } = setup();
     pr2(gh.routes, A, [restFile(1)]);
-    setHead(2, A);
+    synced(2, { head_oid: A });
     const { out, requests } = await spent(() => Promise.all([svc.prDiff('app', 2), svc.prDiff('app', 2)]));
-    expect(requests).toHaveLength(3);
+    expect(requests).toEqual(FULL(A));
     expect(out[0]).toBe(out[1]);
   });
 
+  it('gives up on a build that outlives its deadline', async () => {
+    const { svc, synced, gh } = setup({}, {
+      buildTimeoutMs: 50,
+      // The files never arrive (until the request is aborted).
+      fetchImpl: (inner) => async (input, init) =>
+        String(input).includes('/files')
+          ? new Promise<Response>((_, reject) => init!.signal!.addEventListener('abort', () => reject(new Error('aborted'))))
+          : inner(input, init),
+    });
+    pr2(gh.routes, A, [restFile(1)]);
+    synced(2, { head_oid: A });
+    const err = await svc.prDiff('app', 2).catch((e: HttpError) => e);
+    expect(err).toMatchObject({ status: 502, message: expect.stringContaining('Gave up') });
+  });
+
   it('maps missing things, missing tokens and GitHub failures to API errors', async () => {
-    const { svc, spent, setHead, gh, token } = setup();
-    setHead(2, A);
+    const { svc, spent, synced, gh, token, clock } = setup();
+    synced(2, { head_oid: A });
     expect(await status(svc.prDiff('nope', 1))).toBe(404);
     const unknown = await spent(() => status(svc.prDiff('app', 99)));
     expect(unknown).toEqual({ out: 404, requests: [] });
 
+    // No token: `gh auth token` isn't run again for a while (it blocks the event loop).
     token.value = null;
     expect(await status(svc.prDiff('app', 2))).toBe(503);
+    expect(await status(svc.prDiff('app', 2))).toBe(503);
+    expect(token.resolved).toBe(1);
     token.value = 'tok';
+    clock.t += 30_000;
     // GitHub no longer has it.
     expect(await status(svc.prDiff('app', 2))).toBe(404);
+    expect(token.resolved).toBe(2);
 
-    gh.routes['/repos/alice/app/pulls/2'] = { status: 500 };
+    gh.routes[PULL] = { status: 500 };
     expect(await status(svc.prDiff('app', 2))).toBe(502);
 
     // A cached diff needs no token.
@@ -180,6 +291,20 @@ describe('PR diffs', () => {
     // Until the reset, nothing more is sent.
     const after = await spent(() => status(svc.prDiff('app', 2, true)));
     expect(after).toEqual({ out: 429, requests: [] });
+  });
+
+  it('serves what GitHub returned when the cache cannot be written or read', async () => {
+    const { svc, spent, synced, gh, cache, logs } = setup();
+    pr2(gh.routes, A, [restFile(1)]);
+    synced(2, { head_oid: A });
+    (cache as unknown as { db: Db }).db.exec('PRAGMA query_only = ON'); // as on a full disk
+    expect((await diffOf(svc.prDiff('app', 2))).headOid).toBe(A);
+    expect(logs.some((l) => l.startsWith('[diff] cache write failed'))).toBe(true);
+
+    cache.close(); // every cache call now throws
+    const unreadable = await spent(() => diffOf(svc.prDiff('app', 2)));
+    expect(unreadable.out.headOid).toBe(A);
+    expect(unreadable.requests).toEqual(FULL(A));
   });
 });
 
@@ -211,11 +336,12 @@ describe('commit diffs', () => {
     const unsynced = 'def4567'.padEnd(40, '1');
     const { svc, spent } = setup({
       [`/repos/alice/app/commits/${synced}`]: { body: commit(synced, [sha('p')], [restFile(1)], 'Merge pull request #1') },
-      '/repos/alice/app/commits/def4567': { body: commit(unsynced, [sha('p')], [restFile(1)]) },
+      '/repos/alice/app/commits/def4567': { body: commit(unsynced, [sha('p')], [restFile(1)], 'Fix CRLF\r\n\r\nBody') },
     });
     expect((await diffOf(svc.commitDiff('app', 'C100000'))).baseOid).toBe(sha('p'));
     expect((await spent(() => svc.commitDiff('app', synced))).requests).toEqual([]);
-    expect((await diffOf(svc.commitDiff('app', 'def4567'))).headOid).toBe(unsynced);
+    const crlf = await diffOf(svc.commitDiff('app', 'def4567'));
+    expect(crlf).toMatchObject({ headOid: unsynced, title: 'Fix CRLF' });
     expect((await spent(() => svc.commitDiff('app', 'def4567'))).requests).toEqual([]);
     expect((await spent(() => svc.commitDiff('app', unsynced))).requests).toEqual([]);
   });
@@ -251,10 +377,17 @@ describe('file contents', () => {
   const REF = sha('a');
   const contents = (path: string) => `/repos/alice/app/contents/${path}?ref=${REF}`;
 
-  it('serves text at a commit and caches it', async () => {
-    const { svc, spent } = setup({ [contents('docs/a%20b.md')]: { text: '﻿hello\nworld\n' } });
+  it('serves text at a commit and caches it when the commit is fully named', async () => {
+    const { svc, spent } = setup({
+      [contents('docs/a%20b.md')]: { text: '﻿hello\nworld\n' },
+      '/repos/alice/app/contents/a.txt?ref=abcdef1': { text: 'short' },
+    });
     expect(await payloadText(await svc.blob('app', REF, 'docs/a b.md'))).toBe('﻿hello\nworld\n');
     expect((await spent(() => svc.blob('app', REF, 'docs/a b.md'))).requests).toEqual([]);
+    // A short ref that no synced or cached commit expands is fetched each time.
+    expect(await payloadText(await svc.blob('app', 'abcdef1', 'a.txt'))).toBe('short');
+    expect((await spent(() => svc.blob('app', 'abcdef1', 'a.txt'))).requests).toHaveLength(1);
+    expect(svc.stats().entries).toBe(1);
   });
 
   it('refuses binary, oversized, missing and non-file paths, and bad input', async () => {
@@ -273,10 +406,12 @@ describe('file contents', () => {
     const bad = await spent(async () => {
       const codes = [];
       for (const ref of ['main', 'abc', `${REF}0`]) codes.push(await status(svc.blob('app', ref, 'a.txt')));
-      for (const path of ['', '/etc/passwd', 'a//b', '../x', 'a/./b', 'a/..']) codes.push(await status(svc.blob('app', REF, path)));
+      for (const path of ['', '/etc/passwd', 'a//b', '../x', 'a/./b', 'a/..', 'a\r\n[diff] forged', 'a\tb', 'a\x7f']) {
+        codes.push(await status(svc.blob('app', REF, path)));
+      }
       return codes;
     });
-    expect(bad.out).toEqual(Array(9).fill(400));
+    expect(bad.out).toEqual(Array(12).fill(400));
     expect(bad.requests).toEqual([]);
   });
 

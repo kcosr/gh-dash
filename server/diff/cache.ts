@@ -14,8 +14,22 @@ export interface CacheEntry {
   number?: number | null;
   /** PR head, commit, or the commit a blob was read at. */
   oid: string;
+  /** For PRs: the base branch and merge base the diff was computed against (either can move under a fixed head). */
+  baseRef?: string | null;
+  baseOid?: string | null;
+  /** When the data was fetched from GitHub, or last confirmed unchanged there (ms). */
+  fetchedAt: number;
   /** gzip-compressed diff JSON or file text. */
-  data: Buffer;
+  data: Uint8Array;
+}
+
+/** A cached PR diff's identity, for deciding whether it still matches the PR. */
+export interface PrEntry {
+  key: string;
+  oid: string;
+  baseRef: string | null;
+  baseOid: string | null;
+  fetchedAt: number;
 }
 
 // Evicting stops at this fraction of the cap, so a full cache doesn't evict on every insert.
@@ -23,7 +37,7 @@ const LOW_WATER = 0.9;
 
 // Bump to change the schema: the cache is disposable, so an old one is simply dropped and recreated.
 // `data` comes last so size and LRU scans never touch the blob pages.
-const VERSION = 1;
+const VERSION = 2;
 const SCHEMA = `
 CREATE TABLE entries (
   key TEXT PRIMARY KEY,
@@ -31,8 +45,10 @@ CREATE TABLE entries (
   repo TEXT NOT NULL,
   number INTEGER,
   oid TEXT NOT NULL,
+  base_ref TEXT,
+  base_oid TEXT,
   bytes INTEGER NOT NULL,
-  created_at INTEGER NOT NULL,
+  fetched_at INTEGER NOT NULL,
   accessed_at INTEGER NOT NULL,
   data BLOB NOT NULL
 );
@@ -54,13 +70,19 @@ export class DiffCache {
     this.path = path;
     this.now = now;
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    // `timeout` is SQLite's busy timeout: wait up to 5 s for another instance's write lock.
     const sqlite = new DatabaseSync(path, { timeout: 5000 });
-    // auto_vacuum only takes effect before the first table exists; set it first.
-    sqlite.exec('PRAGMA auto_vacuum = FULL');
-    if (path !== ':memory:') sqlite.exec('PRAGMA journal_mode = WAL; PRAGMA journal_size_limit = 8388608');
-    sqlite.exec('PRAGMA synchronous = NORMAL');
     this.db = new Db(sqlite);
-    this.migrate();
+    try {
+      // auto_vacuum only takes effect before the first table exists; set it first.
+      sqlite.exec('PRAGMA auto_vacuum = FULL');
+      if (path !== ':memory:') sqlite.exec('PRAGMA journal_mode = WAL; PRAGMA journal_size_limit = 8388608');
+      sqlite.exec('PRAGMA synchronous = NORMAL');
+      this.migrate();
+    } catch (err) {
+      sqlite.close();
+      throw err;
+    }
   }
 
   private migrate(): void {
@@ -77,33 +99,41 @@ export class DiffCache {
   }
 
   /** The stored data, marking the entry as recently used. */
-  get(key: string): Buffer | null {
+  get(key: string): Uint8Array | null {
     const row = this.db.get<{ data: Uint8Array }>('SELECT data FROM entries WHERE key = ?', [key]);
     if (!row) return null;
-    this.db.run('UPDATE entries SET accessed_at = ? WHERE key = ?', [this.now(), key]);
-    return Buffer.from(row.data);
+    try {
+      this.db.run('UPDATE entries SET accessed_at = ? WHERE key = ?', [this.now(), key]);
+    } catch {
+      // Recency only guides eviction; a busy or full database mustn't fail a read.
+    }
+    return row.data;
   }
 
   put(e: CacheEntry): void {
-    const now = this.now();
     this.db.run(
-      `INSERT INTO entries (key, kind, repo, number, oid, bytes, created_at, accessed_at, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(key) DO UPDATE SET bytes = excluded.bytes, created_at = excluded.created_at, accessed_at = excluded.accessed_at, data = excluded.data`,
-      [e.key, e.kind, e.repo, e.number ?? null, e.oid, e.data.byteLength, now, now, e.data],
+      `INSERT INTO entries (key, kind, repo, number, oid, base_ref, base_oid, bytes, fetched_at, accessed_at, data)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(key) DO UPDATE SET oid = excluded.oid, base_ref = excluded.base_ref, base_oid = excluded.base_oid, bytes = excluded.bytes,
+         fetched_at = excluded.fetched_at, accessed_at = excluded.accessed_at, data = excluded.data`,
+      [e.key, e.kind, e.repo, e.number ?? null, e.oid, e.baseRef ?? null, e.baseOid ?? null, e.data.byteLength, e.fetchedAt, this.now(), e.data],
     );
   }
 
-  /** Head of the most recently used cached diff for a PR (normally the only one). */
-  prHead(repo: string, number: number): string | null {
+  /** The most recently used cached diff of a PR (normally its only one). */
+  prEntry(repo: string, number: number): PrEntry | null {
     return (
-      this.db.get<{ oid: string }>("SELECT oid FROM entries WHERE repo = ? AND kind = 'pr' AND number = ? ORDER BY accessed_at DESC LIMIT 1", [repo, number])
-        ?.oid ?? null
+      this.db.get<PrEntry>(
+        `SELECT key, oid, base_ref AS baseRef, base_oid AS baseOid, fetched_at AS fetchedAt FROM entries
+         WHERE repo = ? AND kind = 'pr' AND number = ? ORDER BY accessed_at DESC LIMIT 1`,
+        [repo, number],
+      ) ?? null
     );
   }
 
-  /** Drops a PR's diffs for heads other than `head` (superseded by a push). */
-  dropOtherHeads(repo: string, number: number, head: string): void {
-    this.db.run("DELETE FROM entries WHERE repo = ? AND kind = 'pr' AND number = ? AND oid <> ?", [repo, number, head]);
+  /** Drops a PR's other diffs once `key` supersedes them (a push, retarget or moved merge base). */
+  dropOthers(repo: string, number: number, key: string): void {
+    this.db.run("DELETE FROM entries WHERE repo = ? AND kind = 'pr' AND number = ? AND key <> ?", [repo, number, key]);
   }
 
   /** Full SHA of a cached commit diff starting with `prefix`, when exactly one matches. */

@@ -47,6 +47,8 @@ const SLICE_PARSE_MS = 12;
 const EXPAND_LINES = 20;
 /** Space between files; a file whose top is within it of the top edge is the one in view. */
 const GAP = 12;
+/** Quiet time after a jump's last scroll event before the scroll position picks the file again. */
+const SETTLE_MS = 150;
 
 registerThemes();
 
@@ -247,7 +249,7 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
     if (!byId.has(current.get() ?? '')) current.set(files[0]?.id ?? null);
   }, [current, byId, files]);
 
-  const onScroll = useCallback((scrollTop: number, cv: CodeViewInstance) => {
+  const follow = useCallback((scrollTop: number, cv: CodeViewInstance) => {
     if (!count) return;
     let lo = 0, hi = count - 1;
     while (lo < hi) {
@@ -262,6 +264,43 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
     else pinned.current = null;
     current.set(id);
   }, [files, count, indexOf, current]);
+  const followRef = useRef(follow);
+  followRef.current = follow;
+
+  // A jump (j/k, the file list, a deep link) scrolls programmatically, and its scroll events arrive a
+  // frame or more later, when a quick next j may already have set another file. So while a jump is
+  // in flight, `current` stays its target (j/k step from it) and scroll events don't move it; the
+  // scroll position takes over once scrolling has been quiet for SETTLE_MS, or at once when the
+  // reader scrolls (wheel, touch, scrollbar).
+  const settling = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const settle = useCallback(() => {
+    clearTimeout(settling.current);
+    settling.current = setTimeout(() => {
+      settling.current = undefined;
+      const cv = view.current?.getInstance();
+      if (cv) followRef.current(cv.getScrollTop(), cv);
+    }, SETTLE_MS);
+  }, []);
+  const onScroll = useCallback((scrollTop: number, cv: CodeViewInstance) => {
+    if (settling.current !== undefined) settle();
+    else follow(scrollTop, cv);
+  }, [follow, settle]);
+  const hasFiles = files.length > 0;
+  useEffect(() => {
+    const el = scroller.current;
+    if (!el) return;
+    const release = (e: Event) => {
+      // A pointer on the scroller itself is on its scrollbar; anything else is a click in the diff.
+      if (e.type === 'pointerdown' && e.target !== el) return;
+      clearTimeout(settling.current);
+      settling.current = undefined;
+    };
+    for (const type of ['wheel', 'touchstart', 'pointerdown']) el.addEventListener(type, release, { passive: true });
+    return () => {
+      for (const type of ['wheel', 'touchstart', 'pointerdown']) el.removeEventListener(type, release);
+      clearTimeout(settling.current);
+    };
+  }, [hasFiles]);
 
   // A jump to a file not parsed yet parses up to it right away and scrolls once the CodeView has it.
   const countRef = useRef(count);
@@ -270,6 +309,7 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
   const goTo = useCallback((id: string) => {
     pinned.current = id;
     current.set(id);
+    settle();
     const i = indexOf.get(id) ?? 0;
     if (i < countRef.current) view.current?.scrollTo({ type: 'item', id, align: 'start' });
     else {
@@ -277,13 +317,14 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
       setParsed((p) => (p.files === files ? { files, count: parseFiles(files, p.count, Infinity, i + 1) } : p));
     }
     if (compact) setListOpen(false);
-  }, [current, compact, files, indexOf]);
+  }, [current, compact, files, indexOf, settle]);
   useEffect(() => {
     const id = jumpTo.current;
     if (id == null || (indexOf.get(id) ?? Infinity) >= count) return;
     jumpTo.current = null;
+    settle();
     view.current?.scrollTo({ type: 'item', id, align: 'start' });
-  }, [count, indexOf]);
+  }, [count, indexOf, settle]);
 
   // Deep link: `file` is the shell's URL as of opening; after that the URL only follows the viewer.
   const goToRef = useRef(goTo);

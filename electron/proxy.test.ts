@@ -142,6 +142,30 @@ describe('app:// proxy', () => {
     p.close();
   });
 
+  it('drops a request cancelled while waiting for the server to start', async () => {
+    let settle!: (status: 'running') => void;
+    const p = proxy({ whenSettled: () => new Promise((r) => (settle = r)) });
+    const abort = new AbortController();
+    let bodyCancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(new TextEncoder().encode('{"pinned":true}'));
+      },
+      cancel() {
+        bodyCancelled = true;
+      },
+    });
+    const before = seen.length;
+    const pending = p.handle(new Request('app://gh-dash/api/v1/repos/x', { method: 'PATCH', body, duplex: 'half', signal: abort.signal } as RequestInit));
+    abort.abort();
+    settle('running');
+    expect((await pending).status).toBe(499);
+    await vi.waitFor(() => expect(bodyCancelled).toBe(true));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(seen.length).toBe(before);
+    p.close();
+  });
+
   it('keeps multiple set-cookie headers and replaces a server CSP with ours', async () => {
     const p = proxy();
     const res = await p.handle(new Request('app://gh-dash/cookies'));

@@ -170,22 +170,33 @@ describe('desktop token answers', () => {
     return { qc, stale };
   };
 
-  it('caches the account of an accepted token and refetches what depends on it', () => {
+  it('caches the account of an accepted token and refetches what depends on it', async () => {
     const { qc, stale } = setup();
     const next = account({ source: 'app', choice: 'app', login: 'other', kind: 'fine-grained' });
-    tokenResult(qc, { ok: true, account: next, remembered: true });
+    await tokenResult(qc, { ok: true, account: next, remembered: true });
     expect(qc.getQueryData(qk.account)).toEqual(next);
     expect(stale(qk.account)).toBe(false);
     expect(stale(qk.me)).toBe(true);
     expect(stale(qk.sync)).toBe(true);
   });
 
-  it('keeps the active account after a rejected token and refetches it from the server', () => {
+  it('keeps the active account after a rejected token and refetches it from the server', async () => {
     const { qc, stale } = setup();
-    tokenResult(qc, { ok: false, account: account({ source: 'app', choice: 'app', error: 'Bad credentials' }), remembered: false });
+    await tokenResult(qc, { ok: false, account: account({ source: 'app', choice: 'app', error: 'Bad credentials' }), remembered: false });
     expect(qc.getQueryData(qk.account)).toEqual(active);
     expect(stale(qk.account)).toBe(true);
     expect(stale(qk.me)).toBe(true);
     expect(stale(qk.sync)).toBe(true);
+  });
+
+  it("doesn't let an account poll that was in flight overwrite an accepted token's account", async () => {
+    const { qc } = setup();
+    let answer!: (a: AccountStatus) => void;
+    const poll = qc.fetchQuery({ queryKey: qk.account, queryFn: () => new Promise<AccountStatus>((r) => (answer = r)) }).catch(() => null);
+    const next = account({ source: 'app', choice: 'app', login: 'other', kind: 'fine-grained' });
+    await tokenResult(qc, { ok: true, account: next, remembered: true });
+    answer(active); // the poll's snapshot from before the change
+    await poll;
+    expect(qc.getQueryData(qk.account)).toEqual(next);
   });
 });

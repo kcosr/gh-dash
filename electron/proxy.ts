@@ -48,8 +48,15 @@ export function createProxy(opts: ProxyOptions) {
     if (url.host !== DESKTOP_HOST) return new Response('Not found', { status: 404 });
     if (url.pathname.startsWith(ACTION_PREFIX)) return action(req, url.pathname.slice(ACTION_PREFIX.length) as ErrorPageAction);
     const status = await opts.whenSettled();
+    // Abandoned while the server (re)started: never forward it, a write or a costly diff build nobody waits for.
+    if (req.signal?.aborted) return cancelled(req);
     if (status !== 'running') return unavailable(req, opts.failure());
     return forward(req, url);
+  }
+
+  function cancelled(req: Request): Response {
+    req.body?.cancel().catch(() => {});
+    return Response.json({ error: 'Request cancelled' }, { status: 499, headers: { 'content-security-policy': opts.csp } });
   }
 
   async function action(req: Request, name: ErrorPageAction): Promise<Response> {
@@ -63,6 +70,8 @@ export function createProxy(opts: ProxyOptions) {
   }
 
   function forward(req: Request, url: URL, retried = false): Promise<Response> {
+    // The abort listener below only sees future aborts.
+    if (req.signal?.aborted) return Promise.resolve(cancelled(req));
     const headers: Record<string, string> = {};
     for (const [name, value] of req.headers) if (!DROP_REQUEST.has(name)) headers[name] = value;
     headers.host = DESKTOP_HOST;

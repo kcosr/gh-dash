@@ -32,11 +32,16 @@ export function useDesktop(): { bridge: DesktopBridge | null; state: DesktopStat
 
 /**
  * After the token changed: the account from the answer, then everything that depends on it. With null the
- * account is refetched from the server instead (see tokenResult).
+ * account is refetched from the server instead (see tokenResult). A poll already in flight is cancelled first:
+ * it would otherwise land after the answer and put back the account from before the change.
  */
-function tokenChanged(qc: QueryClient, account: AccountStatus | null) {
-  if (account) qc.setQueryData(qk.account, account);
-  else void qc.invalidateQueries({ queryKey: qk.account });
+async function tokenChanged(qc: QueryClient, account: AccountStatus | null) {
+  if (account) {
+    await qc.cancelQueries({ queryKey: qk.account });
+    qc.setQueryData(qk.account, account);
+  } else {
+    void qc.invalidateQueries({ queryKey: qk.account });
+  }
   invalidateAccountData(qc);
   void qc.invalidateQueries({ queryKey: qk.instance });
   void qc.invalidateQueries({ queryKey: qk.desktop });
@@ -47,8 +52,8 @@ function tokenChanged(qc: QueryClient, account: AccountStatus | null) {
  * previous token back, and `r.account` describes the rejected attempt: the form that made it shows its error,
  * while the cache keeps the active account and everything is refetched (a poll may have caught the attempt).
  */
-export function tokenResult(qc: QueryClient, r: DesktopTokenResult) {
-  tokenChanged(qc, r.ok ? r.account : null);
+export function tokenResult(qc: QueryClient, r: DesktopTokenResult): Promise<void> {
+  return tokenChanged(qc, r.ok ? r.account : null);
 }
 
 /** Token and instance actions of the desktop app. Each rejects outside the app. */

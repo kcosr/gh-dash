@@ -129,6 +129,33 @@ const schemas: Record<string, Schema> = {
     byRepo: arr(obj({ repo: str(), commits: int(), prsMerged: int(), issues: int(), releases: int(), stars: int(), total: int() })),
     contributors: arr(obj({ actor: ref('Actor'), commits: int(), prsMerged: int(), total: int() })),
   }),
+  DiffFile: obj({
+    path: str('Path on the new side (for a removed file, the path it had)'),
+    previousPath: nullable(str('Old path of a renamed or copied file')),
+    status: enumOf('added', 'removed', 'modified', 'renamed', 'copied', 'changed', 'unchanged'),
+    additions: int(),
+    deletions: int(),
+    patch: nullable(str('Unified-diff hunks as GitHub returns them, starting at the first "@@" line (no diff/---/+++ headers). null for binary files and diffs too large for the API.')),
+  }),
+  Diff: obj({
+    kind: enumOf('pr', 'commit'),
+    repo: str(),
+    number: nullable(int('PR number; null for commits')),
+    title: str('PR title or commit headline'),
+    baseOid: nullable(str('Old side of every file: the merge base for a PR, the first parent for a commit (null for a root commit)')),
+    headOid: str('New side of every file: the PR head, or the commit itself'),
+    files: { ...arr(ref('DiffFile')), description: "In GitHub's order; at most 3000" },
+    totalFiles: int('Files GitHub reports as changed; exceeds files.length when GitHub caps the list'),
+    additions: int(),
+    deletions: int(),
+    fetchedAt: { ...dateTime, description: 'When the diff was fetched from GitHub (earlier than the request when cached)' },
+    url: str('The PR\'s "Files changed" tab or the commit page on GitHub'),
+  }),
+  DiffCacheStats: obj({
+    entries: int(),
+    bytes: int('Bytes used by cached diffs and file contents (compressed)'),
+    maxBytes: int('Current cap (settings.diffCacheMb in bytes)'),
+  }),
 };
 
 const list = (item: Schema, withFacets = false): Schema =>
@@ -171,7 +198,8 @@ export interface EndpointDoc {
   description?: string;
   params?: ParamDoc[];
   body?: { schema: Schema; example: unknown; optional?: boolean };
-  response: { status: number; schema?: Schema; description?: string };
+  /** `type`: the response content type when it isn't JSON. */
+  response: { status: number; schema?: Schema; description?: string; type?: string };
   textFormats?: boolean;
   example?: string;
 }
@@ -247,6 +275,32 @@ export const ENDPOINTS: EndpointDoc[] = [
     response: { status: 200, schema: ref('SavedView') },
   },
   { method: 'delete', path: '/api/v1/views/{id}', tag: 'Sets & views', summary: 'Delete a saved view', params: [p('id', 'View id', int())], response: { status: 204, description: 'Deleted' } },
+  {
+    method: 'get', path: '/api/v1/prs/{repo}/{number}/diff', tag: 'Diffs', summary: "A pull request's changes against its merge base",
+    description:
+      'Fetched from GitHub on first view and cached by head commit, so an unchanged PR is served without a GitHub request. ' +
+      'Errors: 404 unknown repo or PR, 503 no GitHub token, 429 GitHub rate limit (details.resetAt), 502 other GitHub failures.',
+    params: [
+      p('repo', 'Repo name'), p('number', 'PR number', int()),
+      q('refresh', "'1' re-checks GitHub for the PR's current head instead of trusting the last sync (free when unchanged).", enumOf('1')),
+    ],
+    response: { status: 200, schema: ref('Diff') },
+  },
+  {
+    method: 'get', path: '/api/v1/commits/{repo}/{oid}/diff', tag: 'Diffs', summary: "A commit's changes against its first parent",
+    description: 'The commit need not be synced (e.g. PR branch commits), but the repo must be. Errors as for PR diffs.',
+    params: [p('repo', 'Repo name'), p('oid', 'Commit SHA, 7-40 hex characters'), q('refresh', "'1' fetches it again instead of using the cache.", enumOf('1'))],
+    response: { status: 200, schema: ref('Diff') },
+  },
+  {
+    method: 'get', path: '/api/v1/blob/{repo}', tag: 'Diffs', summary: 'File contents at a commit (for expanding diff context)',
+    description: 'Errors: 400 invalid ref or path, 404 no such file, 413 larger than 5 MB, 415 binary file.',
+    params: [p('repo', 'Repo name'), { ...q('ref', 'Commit SHA, 7-40 hex characters'), required: true }, { ...q('path', 'File path in the repo'), required: true }],
+    response: { status: 200, schema: str(), type: 'text/plain' },
+    example: 'ref=0123abc&path=README.md',
+  },
+  { method: 'get', path: '/api/v1/diff-cache', tag: 'Diffs', summary: 'Diff cache size', response: { status: 200, schema: ref('DiffCacheStats') } },
+  { method: 'delete', path: '/api/v1/diff-cache', tag: 'Diffs', summary: 'Empty the diff cache and release its disk space', response: { status: 200, schema: ref('DiffCacheStats') } },
   { method: 'get', path: '/api/v1/sync/status', tag: 'Sync', summary: 'Sync progress, last result, next run and rate limit', response: { status: 200, schema: ref('SyncStatus') } },
   {
     method: 'post', path: '/api/v1/sync', tag: 'Sync', summary: 'Start a sync now (409 if one is running)',
@@ -272,7 +326,7 @@ export function openApiDocument(version: string): Schema {
         ? {
             description: 'OK',
             content: {
-              'application/json': { schema: e.response.schema },
+              [e.response.type ?? 'application/json']: { schema: e.response.schema },
               ...(e.textFormats ? { 'text/markdown': { schema: str() }, 'text/csv': { schema: str() } } : {}),
             },
           }

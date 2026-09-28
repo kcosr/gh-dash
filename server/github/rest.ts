@@ -1,0 +1,209 @@
+import { checkToken, defaultSleep, GitHubError, limitError, resetAt, RetryableError, withRetries } from './transport';
+
+const API = 'https://api.github.com';
+// Newest version as of 2026-09 (GET /versions); its breaking changes don't touch the endpoints used here.
+const API_VERSION = '2026-03-10';
+const JSON_TYPE = 'application/vnd.github+json';
+const SHA_TYPE = 'application/vnd.github.sha';
+
+export interface RestRateLimit {
+  limit: number;
+  remaining: number;
+  resetAt: string;
+}
+
+export interface RestClientOptions {
+  token: string;
+  fetchImpl?: typeof fetch;
+  sleep?: (ms: number) => Promise<void>;
+  /** Fewer than the sync client: a person is waiting for the response. */
+  maxAttempts?: number;
+  /** Refuse to spend below this many remaining requests (REST has its own hourly bucket, separate from GraphQL points). */
+  minRemaining?: number;
+  /** Secondary limits asking for a longer wait fail as 'rate-limit' rather than holding the request open. */
+  maxRetryWaitMs?: number;
+  timeoutMs?: number;
+}
+
+type Query = Record<string, string | number>;
+
+interface Fetched<T> {
+  /** null for a 304 Not Modified. */
+  body: T | null;
+  /** Link rel="next", for paginated resources. */
+  next: string | null;
+}
+
+export interface RawFile {
+  bytes: Uint8Array;
+  /** The body exceeded maxBytes; `bytes` holds only the first part. */
+  tooLarge: boolean;
+  /** Directories, submodules and symlinks outside the repo come back as JSON descriptions, not content. */
+  isFile: boolean;
+}
+
+/**
+ * Read-only GitHub REST client. Every request is a GET to api.github.com: there is deliberately no way to pass
+ * a method or body, and pagination links pointing anywhere else are refused so the token never leaves GitHub.
+ */
+export class GitHubRestClient {
+  requests = 0;
+  rateLimit: RestRateLimit | null = null;
+  private readonly opts: Required<RestClientOptions>;
+
+  constructor(opts: RestClientOptions) {
+    this.opts = {
+      fetchImpl: fetch,
+      sleep: defaultSleep,
+      maxAttempts: 3,
+      minRemaining: 100,
+      maxRetryWaitMs: 10_000,
+      timeoutMs: 30_000,
+      ...opts,
+    };
+  }
+
+  async json<T>(path: string, query: Query = {}): Promise<T> {
+    return (await this.get(url(path, query), JSON_TYPE, readJson<T>)).body!;
+  }
+
+  /** Follows Link rel="next" until there is none or `limit` items were collected. */
+  async paginate<P, I>(path: string, query: Query, items: (page: P) => I[], limit: number): Promise<{ first: P; items: I[] }> {
+    let next: string | null = url(path, query);
+    let first: P | undefined;
+    const out: I[] = [];
+    while (next && out.length < limit) {
+      const page: Fetched<P> = await this.get(next, JSON_TYPE, readJson<P>);
+      first ??= page.body!;
+      out.push(...items(page.body!));
+      next = page.next;
+    }
+    return { first: first!, items: out.slice(0, limit) };
+  }
+
+  /**
+   * The commit a ref points to. With `known` (the SHA we expect) the request is conditional: an unchanged ref
+   * answers 304, which doesn't count against the rate limit.
+   */
+  async sha(path: string, known?: string): Promise<string> {
+    const { body } = await this.get(url(path), SHA_TYPE, readText, known);
+    return body === null ? known! : body.trim();
+  }
+
+  /** Raw file contents, reading at most `maxBytes` of the body. */
+  async raw(path: string, query: Query, maxBytes: number): Promise<RawFile> {
+    return (await this.get(url(path, query), 'application/vnd.github.raw+json', (res) => readLimited(res, maxBytes))).body!;
+  }
+
+  private async get<T>(target: string, accept: string, read: (res: Response) => Promise<T>, etag?: string): Promise<Fetched<T>> {
+    if (!target.startsWith(`${API}/`)) throw new GitHubError('http', `Refusing to send the GitHub token outside ${API}: ${target.slice(0, 100)}`);
+    checkToken(this.opts.token);
+    const rl = this.rateLimit;
+    if (rl && rl.remaining < this.opts.minRemaining && Date.parse(rl.resetAt) > Date.now()) {
+      throw new GitHubError('rate-limit', `GitHub REST rate limit nearly exhausted (${rl.remaining} left, resets ${rl.resetAt})`, { resetAt: rl.resetAt });
+    }
+    return withRetries(this.opts, () => this.attempt(target, accept, read, etag));
+  }
+
+  private async attempt<T>(target: string, accept: string, read: (res: Response) => Promise<T>, etag?: string): Promise<Fetched<T>> {
+    this.requests++;
+    let res: Response;
+    try {
+      res = await this.opts.fetchImpl(target, {
+        method: 'GET',
+        headers: {
+          Accept: accept,
+          Authorization: `Bearer ${this.opts.token}`,
+          'User-Agent': 'gh-dash',
+          'X-GitHub-Api-Version': API_VERSION,
+          ...(etag ? { 'If-None-Match': `"${etag}"` } : {}),
+        },
+        signal: AbortSignal.timeout(this.opts.timeoutMs),
+      });
+    } catch (err) {
+      throw new RetryableError(`network error: ${(err as Error).message}`, null);
+    }
+    const path = new URL(target).pathname;
+    // A 304's rate-limit headers don't reflect the bucket (and it costs nothing).
+    if (res.status === 304) return { body: null, next: null };
+    this.trackRateLimit(res);
+    if (res.status === 401) throw new GitHubError('auth', 'GitHub rejected the token (401)', { status: 401 });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      if (res.status === 403 || res.status === 429) {
+        throw limitError(res, text, 'GitHub REST') ?? new GitHubError('http', `GitHub returned ${res.status} for ${path}: ${message(text)}`, { status: res.status });
+      }
+      if (res.status >= 500) throw new RetryableError(`GitHub returned ${res.status} for ${path}`, null);
+      const kind = res.status === 404 ? 'not-found' : 'http';
+      throw new GitHubError(kind, `GitHub returned ${res.status} for ${path}: ${message(text)}`, { status: res.status });
+    }
+    let body: T;
+    try {
+      body = await read(res);
+    } catch (err) {
+      if (err instanceof GitHubError || err instanceof RetryableError) throw err;
+      throw new RetryableError(`reading the response for ${path} failed: ${(err as Error).message}`, null);
+    }
+    return { body, next: nextLink(res.headers.get('link')) };
+  }
+
+  private trackRateLimit(res: Response): void {
+    const limit = Number(res.headers.get('x-ratelimit-limit'));
+    const remaining = res.headers.get('x-ratelimit-remaining');
+    const reset = resetAt(res);
+    if (limit && remaining !== null && reset) this.rateLimit = { limit, remaining: Number(remaining), resetAt: reset };
+  }
+}
+
+function url(path: string, query: Query = {}): string {
+  if (!path.startsWith('/')) throw new Error(`GitHub API path must start with /: ${path}`);
+  const qs = new URLSearchParams(Object.entries(query).map(([k, v]) => [k, String(v)])).toString();
+  return `${API}${path}${qs ? `?${qs}` : ''}`;
+}
+
+function nextLink(link: string | null): string | null {
+  return link?.match(/<([^>]+)>\s*;\s*rel="next"/)?.[1] ?? null;
+}
+
+/** GitHub's JSON error `message`, else the start of the body. */
+function message(text: string): string {
+  try {
+    return String((JSON.parse(text) as { message?: unknown }).message ?? text).slice(0, 200);
+  } catch {
+    return text.slice(0, 200);
+  }
+}
+
+async function readJson<T>(res: Response): Promise<T> {
+  const text = await res.text();
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw new RetryableError('invalid JSON from GitHub', null);
+  }
+}
+
+const readText = (res: Response) => res.text();
+
+async function readLimited(res: Response, maxBytes: number): Promise<RawFile> {
+  const isFile = !/^application\/json\b/i.test(res.headers.get('content-type') ?? '');
+  if (Number(res.headers.get('content-length')) > maxBytes) {
+    await res.body?.cancel();
+    return { bytes: new Uint8Array(), tooLarge: true, isFile };
+  }
+  if (!res.body) return { bytes: new Uint8Array(), tooLarge: false, isFile };
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  const reader = res.body.getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    size += value.byteLength;
+    if (size > maxBytes) {
+      await reader.cancel();
+      return { bytes: new Uint8Array(), tooLarge: true, isFile };
+    }
+  }
+  return { bytes: Buffer.concat(chunks), tooLarge: false, isFile };
+}

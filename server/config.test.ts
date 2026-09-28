@@ -43,6 +43,16 @@ describe('XDG config and state', () => {
     expect(loadConfig({ GH_DASH_DB: 'custom.db' }).dbPath).toBe(resolve(dirname(fileURLToPath(import.meta.url)), '..', 'custom.db'));
   });
 
+  it('puts the diff cache next to the database unless GH_DASH_CACHE_DB says otherwise', () => {
+    const home = temp();
+    expect(loadConfig({ HOME: home }).cacheDbPath).toBe(join(home, '.local/state/gh-dash/gh-dash-cache.db'));
+    expect(loadConfig({ GH_DASH_DB: '/data/dash.sqlite' }).cacheDbPath).toBe('/data/dash-cache.sqlite');
+    expect(loadConfig({ GH_DASH_DB: '/data/dash' }).cacheDbPath).toBe('/data/dash-cache.db');
+    expect(loadConfig({ GH_DASH_DB: ':memory:' }).cacheDbPath).toBe(':memory:');
+    expect(loadConfig({ GH_DASH_DB: '/data/a.db', GH_DASH_CACHE_DB: '/tmp/c.db' }).cacheDbPath).toBe('/tmp/c.db');
+    expect(() => loadConfig({ GH_DASH_DB: '/data/a.db', GH_DASH_CACHE_DB: '/data/a.db' })).toThrow(/must not be the main database/);
+  });
+
   it('loads a quoted config and gives process variables precedence, including empty strings', () => {
     const home = temp();
     const env = { HOME: home, PORT: '4789', GH_DASH_PASSWORD: '' };

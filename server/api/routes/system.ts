@@ -8,7 +8,7 @@ import { HttpError, jsonBody, parseWith } from '../http';
 
 const syncBody = z.object({ repo: z.string().min(1).optional(), full: z.boolean().optional() }).strict();
 
-export function systemRoutes({ db, sync, config }: AppDeps): Hono {
+export function systemRoutes({ db, sync, config, diffs }: AppDeps): Hono {
   const r = new Hono();
   const withEnv = (s: Settings): Settings => ({ ...s, myEmailsFromEnv: config.myEmails });
 
@@ -40,6 +40,7 @@ export function systemRoutes({ db, sync, config }: AppDeps): Hono {
     const before = getSettings(db);
     const after = patchSettings(db, patch);
     if (after.syncIntervalMinutes !== before.syncIntervalMinutes) sync.reschedule();
+    if (after.diffCacheMb < before.diffCacheMb) diffs.evict();
     return c.json(withEnv(after));
   });
 

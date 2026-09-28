@@ -45,8 +45,10 @@ export function useSyncNow() {
   };
 }
 
-export function TopBar({ theme, onToggleTheme, onOpenSidebar, sidebarOpen = false }: {
+export function TopBar({ theme, onToggleTheme, onOpenSidebar, sidebarOpen = false, onToggleSidebar, sidebarHidden = false }: {
   theme: Theme; onToggleTheme: () => void; onOpenSidebar?: () => void; sidebarOpen?: boolean;
+  /** Desktop: show or hide the sidebar pane. */
+  onToggleSidebar?: () => void; sidebarHidden?: boolean;
 }) {
   const location = useLocation();
   const view = viewFromPath(location.pathname);
@@ -70,6 +72,11 @@ export function TopBar({ theme, onToggleTheme, onOpenSidebar, sidebarOpen = fals
     <header className="topbar">
       {onOpenSidebar && <button type="button" className="btn icon" onClick={onOpenSidebar}
         aria-label="Open sidebar" aria-haspopup="dialog" aria-controls="mobile-sidebar" aria-expanded={sidebarOpen}>
+        <Icon name="list" />
+      </button>}
+      {onToggleSidebar && <button id="sidebar-toggle" type="button" className="btn icon ghost" onClick={onToggleSidebar}
+        title={`${sidebarHidden ? 'Show' : 'Hide'} sidebar ([)`} aria-label={sidebarHidden ? 'Show sidebar' : 'Hide sidebar'}
+        aria-controls={sidebarHidden ? undefined : 'sidebar'} aria-expanded={!sidebarHidden}>
         <Icon name="list" />
       </button>}
       <Link to={`/prs${carry}`} className="brand" aria-label="gh-dash home">

@@ -61,7 +61,9 @@ Repositories, and Insights, and carries across tabs. Expand **Show inactive** to
 archived, hidden, or forked repositories explicitly. Sidebar badges show nonzero open PR and issue counts as of the last sync.
 Click repository names in lists and activity to filter to them. Drag the sidebar's
 divider to resize it; its width is saved in your browser. You can also focus the
-divider and use arrow keys, or double-click it to reset the width.
+divider and use arrow keys, or double-click it to reset the width. To make more room,
+hide the sidebar with the sidebar button at the top left or `[`; your browser remembers
+whether it's shown.
 On narrow screens, the sidebar starts closed. Use the sidebar button to open it
 full screen, then choose a repository or tap Close to return to the list. PR details
 and diffs also use the full content area on narrow screens; close them to return to the list.

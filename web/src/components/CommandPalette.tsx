@@ -27,7 +27,11 @@ function Highlight({ text, q }: { text: string; q: string }) {
 
 const ic = (name: IconName) => <Icon name={name} />;
 
-export function CommandPalette({ onClose, onRun, onSync, onToggleTheme }: { onClose: () => void; onRun: () => void; onSync: () => void; onToggleTheme: () => void }) {
+export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggleSidebar, sidebarHidden }: {
+  onClose: () => void; onRun: () => void; onSync: () => void; onToggleTheme: () => void;
+  /** Desktop views with a sidebar. */
+  onToggleSidebar?: () => void; sidebarHidden?: boolean;
+}) {
   const { s, view, location, navigate, set } = useUrlState();
   const repoParam = repoFromPath(location.pathname);
   const toast = useToast();
@@ -128,12 +132,13 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme }: { onCl
     const acts: Item[] = [
       { key: 'do:sync', icon: ic('sync'), label: 'Sync now', run: onSync },
       { key: 'do:theme', icon: ic('moon'), label: 'Toggle dark mode', run: onToggleTheme },
+      ...(onToggleSidebar ? [{ key: 'do:sidebar', icon: ic('list'), label: sidebarHidden ? 'Show sidebar' : 'Hide sidebar', run: onToggleSidebar }] : []),
       { key: 'do:copyapi', icon: ic('braces'), label: 'Copy API URL for this view', run: async () => toast((await copyText(window.location.origin + exportUrl(t))) ? 'API URL copied' : 'Copy failed') },
       { key: 'do:docs', icon: ic('doc'), label: 'Open API docs', run: () => window.open('/api/docs', '_blank', 'noopener') },
     ].filter((a) => has(a.label));
     if (acts.length) out.push({ title: 'Actions', items: acts });
     return out;
-  }, [q, repos.data, views.data, prSearch.data, view, s, location.search, location.pathname, repoParam]);
+  }, [q, repos.data, views.data, prSearch.data, view, s, location.search, location.pathname, repoParam, onToggleSidebar, sidebarHidden]);
 
   const flat = sections.flatMap((sec) => sec.items);
   const cur = Math.min(idx, Math.max(0, flat.length - 1));

@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Link, useLocation } from 'react-router';
-import { useStartSync, useSyncStatus } from '../api/hooks';
+import { isUnreachable } from '../api/client';
+import { useAccount, useStartSync, useSyncStatus } from '../api/hooks';
 import { getTheme, setTheme } from '../lib/storage';
 import type { Theme } from '../lib/storage';
 import { fmtNum, fmtTime, relFuture, relLong } from '../lib/time';
@@ -40,7 +41,13 @@ export function useSyncNow() {
     run: (body: { full?: boolean; repo?: string } = {}) =>
       start.mutate(body, {
         onSuccess: () => toast(body.full ? 'Full resync started' : 'Sync started'),
-        onError: (e) => toast((e as { status?: number }).status === 409 ? 'A sync is already running' : `Sync failed: ${(e as Error).message}`, { error: (e as { status?: number }).status !== 409 }),
+        onError: (e) => {
+          const status = (e as { status?: number }).status;
+          if (status === 409) toast('A sync is already running');
+          // No token (or the account doesn't match): the server's message says what to do.
+          else if (status === 503 && !isUnreachable(e)) toast((e as Error).message, { error: true, ms: 6000 });
+          else toast(`Sync failed: ${(e as Error).message}`, { error: true });
+        },
       }),
   };
 }
@@ -111,12 +118,15 @@ export function TopBar({ theme, onToggleTheme, onOpenSidebar, sidebarOpen = fals
   );
 }
 
-function SyncStatus({ label, title, children }: { label: string; title?: string; children: ReactNode }) {
-  return <div className="sync" title={[label, title].filter(Boolean).join(' · ')}>{children}<span className="sync-text">{label}</span></div>;
+function SyncStatus({ label, title, to, children }: { label: string; title?: string; to?: string; children: ReactNode }) {
+  const tip = [label, title].filter(Boolean).join(' · ');
+  if (to) return <Link to={to} className="sync" title={tip}>{children}<span className="sync-text">{label}</span></Link>;
+  return <div className="sync" title={tip}>{children}<span className="sync-text">{label}</span></div>;
 }
 
 function SyncIndicator() {
   const { data: st, isError } = useSyncStatus();
+  const { data: account } = useAccount();
   const now = useNow(20_000);
   if (isError) {
     return <SyncStatus label="Server unreachable" title="The gh-dash server is not responding"><span className="dot err" /></SyncStatus>;
@@ -137,8 +147,12 @@ function SyncIndicator() {
       </SyncStatus>
     );
   }
+  if (account?.mismatch) {
+    const title = `The GitHub token is for ${account.login ?? 'another account'}, but this database belongs to ${account.dbLogin ?? 'another account'}. Syncing is paused: see Settings.`;
+    return <SyncStatus label="Account mismatch" title={title} to="/settings"><span className="dot warn" /></SyncStatus>;
+  }
   if (st.tokenSource === 'none') {
-    return <SyncStatus label="No token" title="No GitHub token found. See Settings."><span className="dot warn" /></SyncStatus>;
+    return <SyncStatus label="No token" title="No GitHub token. Connect an account in Settings." to="/settings"><span className="dot warn" /></SyncStatus>;
   }
   return (
     <SyncStatus label={st.lastSyncAt ? `Synced ${relLong(st.lastSyncAt, now)}` : 'Never synced'} title={tip.join(' · ')}>
@@ -150,7 +164,8 @@ function SyncIndicator() {
 function SyncButton() {
   const { data: st } = useSyncStatus();
   const sync = useSyncNow();
-  const disabled = !!st?.running || sync.pending || st?.tokenSource === 'none';
+  // Enabled without a token too: the server resolves one afresh, or answers why it can't sync.
+  const disabled = !!st?.running || sync.pending;
   return (
     <button
       type="button"
@@ -158,7 +173,7 @@ function SyncButton() {
       aria-label="Sync now"
       disabled={disabled}
       onClick={() => sync.run()}
-      title={st?.tokenSource === 'none' ? 'Set GITHUB_TOKEN or run `gh auth login` first' : 'Fetch what changed on GitHub'}
+      title={st?.tokenSource === 'none' ? 'No GitHub token yet: connect an account in Settings' : 'Fetch what changed on GitHub'}
     >
       <Icon name="sync" />
       <span className="sync-label">Sync now</span>

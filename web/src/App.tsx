@@ -171,12 +171,20 @@ function Shell() {
   const mobileOpen = hasSide && compact && sidebarOpen;
   const canHideSide = hasSide && !compact;
   const desktopSide = canHideSide && !sideHidden;
+  const hidOnRequest = useRef(false);
   const toggleSide = () => {
-    // Hiding the pane with focus inside would drop focus to the page: keep it on the toggle.
-    if (!sideHidden && document.activeElement?.closest('#sidebar')) document.querySelector<HTMLElement>('[aria-controls="sidebar"]')?.focus();
+    hidOnRequest.current = !sideHidden;
     setSideHidden(!sideHidden);
     setSidebarHidden(!sideHidden);
   };
+  // Hiding the pane with focus inside it (or from the palette opened there, which can't return focus
+  // to a removed control) drops focus to the page: put it on the toggle instead.
+  useEffect(() => {
+    if (!hidOnRequest.current) return;
+    hidOnRequest.current = false;
+    const el = document.activeElement;
+    if (!el || el === document.body) document.getElementById('sidebar-toggle')?.focus();
+  }, [sideHidden]);
   // "/" with no filter in view searches repositories: show the hidden pane, then focus its search.
   useEffect(() => {
     if (!searchSide || !desktopSide) return;

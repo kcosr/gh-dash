@@ -74,9 +74,9 @@ export function TopBar({ theme, onToggleTheme, onOpenSidebar, sidebarOpen = fals
         aria-label="Open sidebar" aria-haspopup="dialog" aria-controls="mobile-sidebar" aria-expanded={sidebarOpen}>
         <Icon name="list" />
       </button>}
-      {onToggleSidebar && <button type="button" className="btn icon ghost" onClick={onToggleSidebar}
+      {onToggleSidebar && <button id="sidebar-toggle" type="button" className="btn icon ghost" onClick={onToggleSidebar}
         title={`${sidebarHidden ? 'Show' : 'Hide'} sidebar ([)`} aria-label={sidebarHidden ? 'Show sidebar' : 'Hide sidebar'}
-        aria-controls="sidebar" aria-expanded={!sidebarHidden}>
+        aria-controls={sidebarHidden ? undefined : 'sidebar'} aria-expanded={!sidebarHidden}>
         <Icon name="list" />
       </button>}
       <Link to={`/prs${carry}`} className="brand" aria-label="gh-dash home">

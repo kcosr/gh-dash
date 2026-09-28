@@ -210,13 +210,21 @@ function fetchDiff(id: string, refresh: boolean): Promise<Diff> {
   return t.kind === 'pr' ? api.prDiff(t.repo, t.number, refresh) : api.commitDiff(t.repo, t.oid, refresh);
 }
 
+/**
+ * Re-check GitHub and replace the cached diff. A plain fetch still in flight (the revalidation when
+ * a PR diff reopens) is cancelled first: it may answer later with the older head and overwrite this.
+ */
+export async function refreshDiff(qc: QueryClient, id: string, fetch = fetchDiff): Promise<Diff> {
+  await qc.cancelQueries({ queryKey: qk.diff(id) });
+  const d = await fetch(id, true);
+  qc.setQueryData(qk.diff(id), d);
+  return d;
+}
+
 /** Re-check GitHub (a PR may have new commits since the last sync) and replace the cached diff. */
 export function useRefreshDiff(id: string) {
   const qc = useQueryClient();
-  return useMutation({
-    mutationFn: () => fetchDiff(id, true),
-    onSuccess: (d) => qc.setQueryData(qk.diff(id), d),
-  });
+  return useMutation({ mutationFn: () => refreshDiff(qc, id) });
 }
 
 /** The viewer's `loadFile`: file contents at a commit, cached per (repo, ref, path); null when unavailable. */

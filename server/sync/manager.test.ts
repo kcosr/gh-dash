@@ -1,12 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { openDb } from '../db/db';
 import { getMeta, setMeta } from '../db/meta';
+import { supplyOf, testTokens } from '../test/tokens';
+import type { TokenSupply } from '../token';
 import { SyncManager } from './manager';
 
 const db = openDb(':memory:');
 const managers: SyncManager[] = [];
-function manager(schedule: boolean, token: string | null) {
-  const m = new SyncManager({ db, schedule, resolveToken: () => ({ token, source: token ? 'env' : 'none' }), log: () => {} });
+function manager(schedule: boolean, token: string | null, tokens: TokenSupply = testTokens(token)) {
+  const m = new SyncManager({ db, schedule, tokens, log: () => {} });
   managers.push(m);
   return m;
 }
@@ -25,11 +27,15 @@ const lock = (heartbeatAgoMs: number) =>
   });
 
 describe('SyncManager', () => {
-  it('reports a sync running in another process from the shared lock and refuses to start a second one', () => {
+  it('reports a sync running in another process from the shared lock and refuses to start a second one', async () => {
     lock(1000);
-    const m = manager(false, 'token');
+    let resolved = 0;
+    const m = manager(false, 'token', supplyOf(() => (resolved++, 'token')));
     expect(m.status()).toMatchObject({ running: true, trigger: 'scheduled', progress: { done: 3, total: 87, current: 'app' }, tokenSource: 'env' });
-    expect(m.start('manual')).toEqual({ ok: false, reason: 'running' });
+    resolved = 0;
+    // Refused before the token is resolved (that may run gh).
+    expect(await m.start('manual')).toEqual({ ok: false, reason: 'running' });
+    expect(resolved).toBe(0);
   });
 
   it('ignores a stale lock left by a dead process', () => {
@@ -37,8 +43,42 @@ describe('SyncManager', () => {
     expect(manager(false, null).status()).toMatchObject({ running: false, trigger: null, progress: null });
   });
 
-  it('needs a token to start', () => {
-    expect(manager(false, null).start('manual')).toEqual({ ok: false, reason: 'no-token' });
+  it('needs a token to start', async () => {
+    expect(await manager(false, null).start('manual')).toEqual({ ok: false, reason: 'no-token' });
+  });
+
+  it('backs off a minute after finding no token, and drops the backoff when the token changes', async () => {
+    db.run("DELETE FROM meta WHERE key IN ('syncLock', 'lastSync', 'nextSyncAt')");
+    const tokens = testTokens(null, { choice: 'app' });
+    const m = manager(true, null, tokens);
+    m.startScheduler();
+    const next = () => Date.parse(getMeta(db, 'nextSyncAt')!) - Date.now();
+    await vi.waitFor(() => {
+      m.reschedule();
+      expect(next()).toBeGreaterThan(50_000);
+    });
+    expect(next()).toBeLessThanOrEqual(60_000);
+    // Due in 30 s by the interval: the backoff still holds it back until the token changes.
+    setMeta(db, 'lastSync', { at: new Date(Date.now() - 29.5 * 60_000).toISOString(), durationMs: 1, trigger: 'manual', newItems: 0, errors: [], pointsUsed: 1 });
+    m.reschedule();
+    expect(next()).toBeGreaterThan(50_000);
+    tokens.setAppToken('github_pat_new');
+    await tokens.get();
+    m.reschedule();
+    expect(next()).toBeLessThanOrEqual(30_000);
+    expect(m.status().tokenSource).toBe('app');
+  });
+
+  it('forgets the token when GitHub rejects it', async () => {
+    db.run("DELETE FROM meta WHERE key = 'viewer'");
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{"message":"Bad credentials"}', { status: 401 })));
+    try {
+      const tokens = supplyOf(() => 'revoked');
+      await expect(manager(false, null, tokens).ensureViewer()).rejects.toThrow(/401/);
+      expect(tokens.invalidated).toBe(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('schedules from the last sync time and clears nextSyncAt on shutdown', async () => {
@@ -74,7 +114,7 @@ describe('ensureViewer', () => {
   it('adds the id to a viewer stored by login only, and just warns about a token for another account', async () => {
     const own = openDb(':memory:');
     const logs: string[] = [];
-    const m = new SyncManager({ db: own, schedule: false, resolveToken: () => ({ token: 't', source: 'env' }), log: (line) => logs.push(line) });
+    const m = new SyncManager({ db: own, schedule: false, tokens: testTokens('t'), log: (line) => logs.push(line) });
     setMeta(own, 'viewer', { login: 'Alice', name: 'Alice A', avatarUrl: null });
 
     answerAs('U_mallory', 'mallory');

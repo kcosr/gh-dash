@@ -20,6 +20,10 @@ const obj = (properties: Record<string, Schema>, optional: string[] = []): Schem
   required: Object.keys(properties).filter((k) => !optional.includes(k)),
 });
 
+const TOKEN_SOURCE = enumOf('env', 'file', 'gh-cli', 'app', 'none');
+/** An instance setting with where it came from. */
+const setting = (value: Schema): Schema => obj({ value, source: enumOf('default', 'file', 'env') });
+
 const schemas: Record<string, Schema> = {
   Error: obj({ error: str(), details: {} }, ['details']),
   Actor: obj({ login: nullable(str()), name: nullable(str()), avatarUrl: nullable(str()), isMe: bool }),
@@ -110,6 +114,41 @@ const schemas: Record<string, Schema> = {
     rateLimit: nullable(obj({ limit: int(), remaining: int(), resetAt: dateTime })),
     tokenSource: enumOf('env', 'file', 'gh-cli', 'app', 'none'),
     viewer: nullable(str()),
+  }),
+  AccountStatus: obj({
+    source: { ...TOKEN_SOURCE, description: 'Where the token comes from right now' },
+    choice: nullable(enumOf('auto', 'gh', 'file', 'app')),
+    locked: { ...bool, description: "GITHUB_TOKEN is set in the environment: the source can't be changed from the app" },
+    login: nullable(str('Account the token belongs to (from the last validation)')),
+    name: nullable(str()),
+    avatarUrl: nullable(str()),
+    dbLogin: nullable(str('Account this database was synced for')),
+    mismatch: { ...bool, description: 'The token is for another account than the database; syncs are refused' },
+    kind: nullable(enumOf('fine-grained', 'classic', 'oauth', 'app', 'unknown')),
+    expiresAt: nullable({ ...dateTime, description: "When the token expires; null if it doesn't or it's unknown" }),
+    scopes: nullable({ ...arr(str()), description: 'Classic and OAuth tokens only' }),
+    repos: nullable(obj({ total: int(), private: int() })),
+    error: nullable(str('Why there is no usable token, or why validation failed')),
+    gh: obj({ available: bool, path: nullable(str()), login: nullable(str("gh's active github.com login (from its hosts.yml)")) }),
+    tokenFile: nullable(str('Configured token file (never its contents)')),
+    checkedAt: nullable(dateTime),
+  }),
+  InstanceInfo: obj({
+    version: str(),
+    desktop: { ...bool, description: 'Running inside the desktop app' },
+    apiUrl: nullable(str('Base URL other clients can use for this API; null when nothing listens on the network')),
+    auth: obj({ password: bool, apiKey: bool }),
+    configPath: nullable(str('config.json path, whether or not it exists')),
+    settings: obj({
+      host: setting(str()),
+      port: setting(int()),
+      dbPath: setting(str()),
+      cacheDbPath: setting(str()),
+      sync: setting(bool),
+      allowedHosts: setting(arr(str())),
+      tokenFile: setting(nullable(str())),
+      defaultTz: setting(str()),
+    }),
   }),
   Tile: obj({ value: nullable(num), previous: nullable(num), spark: { ...arr(num), description: '12 equal slices of the range' } }),
   StatsBucket: obj({
@@ -213,6 +252,20 @@ export const ENDPOINTS: EndpointDoc[] = [
   { method: 'get', path: '/api/health', tag: 'System', summary: 'Liveness check (never requires auth)', response: { status: 200, schema: obj({ ok: bool, version: str() }) } },
   { method: 'get', path: '/api/v1/me', tag: 'System', summary: 'Authenticated GitHub user and token source', response: { status: 200, schema: ref('Me') } },
   {
+    method: 'get', path: '/api/v1/account', tag: 'System', summary: 'The GitHub account behind the token (never the token)',
+    description: 'Never calls GitHub: a new token is validated in the background (1 GraphQL point) and shown once that is done.',
+    response: { status: 200, schema: ref('AccountStatus') },
+  },
+  {
+    method: 'post', path: '/api/v1/account/check', tag: 'System', summary: 'Resolve the token again and re-validate it against GitHub',
+    response: { status: 200, schema: ref('AccountStatus') },
+  },
+  {
+    method: 'get', path: '/api/v1/instance', tag: 'System', summary: 'Version, API address and instance settings with their sources',
+    description: 'Secrets are never included, only whether a password and API key are set.',
+    response: { status: 200, schema: ref('InstanceInfo') },
+  },
+  {
     method: 'get', path: '/api/v1/prs', tag: 'Lists', summary: 'Pull requests',
     description: 'Filtered and sorted on activityAt desc (tie-break repo, number). facets.byRepo ignores the repos filter.',
     params: [
@@ -313,7 +366,9 @@ export const ENDPOINTS: EndpointDoc[] = [
   { method: 'get', path: '/api/v1/sync/status', tag: 'Sync', summary: 'Sync progress, last result, next run and rate limit', response: { status: 200, schema: ref('SyncStatus') } },
   {
     method: 'post', path: '/api/v1/sync', tag: 'Sync', summary: 'Start a sync now (409 if one is running)',
-    description: '`repo` limits the sync to one repo; `full` ignores high-water marks, re-fetches the backfill window and re-diffs stars.',
+    description:
+      '`repo` limits the sync to one repo; `full` ignores high-water marks, re-fetches the backfill window and re-diffs stars. ' +
+      'The token is resolved afresh; without one the answer is 503 with the reason.',
     body: { schema: obj({ repo: str(), full: bool }, ['repo', 'full']), example: { full: true }, optional: true },
     response: { status: 202, schema: ref('SyncStatus') },
   },

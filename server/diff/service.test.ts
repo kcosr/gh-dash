@@ -7,6 +7,7 @@ import type { Db } from '../db/db';
 import { patchSettings } from '../db/settings';
 import { fakeGitHub, type Handler as Route, page, type Reply, restFile, sha } from '../test/github';
 import { seedDb } from '../test/seed';
+import { supplyOf } from '../test/tokens';
 import { DiffCache } from './cache';
 import { DiffService, MAX_BLOB_BYTES, OPEN_PR_TTL_MS, type Payload, payloadText } from './service';
 
@@ -25,13 +26,14 @@ function setup(routes: Record<string, Route> = {}, opts: { fetchImpl?: (inner: t
   let tick = 0;
   // The cache's clock only orders accesses (LRU); it must advance between them.
   const cache = new DiffCache(':memory:', () => clock.t + tick++);
+  const tokens = supplyOf(() => {
+    token.resolved++;
+    return token.value;
+  });
   const svc = new DiffService({
     db,
     cache,
-    resolveToken: () => {
-      token.resolved++;
-      return { token: token.value, source: token.value ? 'env' : 'none' };
-    },
+    tokens,
     fetchImpl: opts.fetchImpl ? opts.fetchImpl(gh.fetchImpl) : gh.fetchImpl,
     sleep: async () => {},
     log: (line) => logs.push(line),
@@ -51,7 +53,7 @@ function setup(routes: Record<string, Route> = {}, opts: { fetchImpl?: (inner: t
     }
   };
   const iso = (t: number) => new Date(t).toISOString();
-  return { db, gh, svc, cache, token, logs, clock, spent, synced, iso };
+  return { db, gh, svc, cache, token, tokens, logs, clock, spent, synced, iso };
 }
 
 const diffOf = async (p: Payload | Promise<Payload>) => JSON.parse(await payloadText(await p)) as Diff;
@@ -346,22 +348,18 @@ describe('PR diffs', () => {
   });
 
   it('maps missing things, missing tokens and GitHub failures to API errors', async () => {
-    const { svc, spent, synced, gh, token, clock } = setup();
+    const { svc, spent, synced, gh, token } = setup();
     synced(2, { head_oid: A });
     expect(await status(svc.prDiff('nope', 1))).toBe(404);
     const unknown = await spent(() => status(svc.prDiff('app', 99)));
     expect(unknown).toEqual({ out: 404, requests: [] });
 
-    // No token: `gh auth token` isn't run again for a while (it blocks the event loop).
+    // No token: 503 with the provider's reason.
     token.value = null;
-    expect(await status(svc.prDiff('app', 2))).toBe(503);
-    expect(await status(svc.prDiff('app', 2))).toBe(503);
-    expect(token.resolved).toBe(1);
+    expect(await svc.prDiff('app', 2).catch((e: HttpError) => e)).toMatchObject({ status: 503, message: 'No GitHub token: none for this test' });
     token.value = 'tok';
-    clock.t += 30_000;
     // GitHub no longer has it.
     expect(await status(svc.prDiff('app', 2))).toBe(404);
-    expect(token.resolved).toBe(2);
 
     gh.routes[PULL] = { status: 500 };
     expect(await status(svc.prDiff('app', 2))).toBe(502);
@@ -390,7 +388,7 @@ describe('PR diffs', () => {
     clock.t += OPEN_PR_TTL_MS + 1;
 
     // A restart without a token (say after `gh auth logout`), same cache.
-    const noToken = new DiffService({ db, cache, resolveToken: () => ({ token: null, source: 'none' }), log: () => {}, now: () => clock.t });
+    const noToken = new DiffService({ db, cache, tokens: supplyOf(() => null), log: () => {}, now: () => clock.t });
     const stale = await noToken.prDiff('app', 2);
     expect(await diffOf(stale)).toEqual({ ...fresh, stale: true });
     expect(JSON.parse(gunzipSync(stale.gz).toString())).toEqual({ ...fresh, stale: true });
@@ -425,6 +423,30 @@ describe('PR diffs', () => {
     const unreadable = await spent(() => diffOf(svc.prDiff('app', 2)));
     expect(unreadable.out.headOid).toBe(A);
     expect(unreadable.requests).toEqual(FULL(A));
+  });
+});
+
+describe('tokens', () => {
+  it('asks the provider on every fetch, uses a new token at once and drops a rejected one', async () => {
+    const C = sha('c');
+    const seen: string[] = [];
+    const { svc, token, tokens } = setup({
+      [`/repos/alice/app/commits/${C}`]: ({ headers }) => {
+        seen.push(headers.Authorization!);
+        return headers.Authorization === 'Bearer revoked'
+          ? { status: 401, body: { message: 'Bad credentials' } }
+          : { body: { sha: C, html_url: 'u', commit: { message: 'm' }, parents: [], files: [] } };
+      },
+    });
+    await svc.commitDiff('app', C, true);
+    token.value = 'switched';
+    await svc.commitDiff('app', C, true);
+    expect(seen).toEqual(['Bearer tok', 'Bearer switched']);
+    expect(token.resolved).toBe(2);
+
+    token.value = 'revoked';
+    expect(await svc.commitDiff('app', C, true).catch((e: HttpError) => e)).toMatchObject({ status: 503 });
+    expect(tokens.invalidated).toBe(1);
   });
 });
 

@@ -3,12 +3,13 @@ import { z } from 'zod';
 import type { Me, Settings } from '../../../shared/api';
 import { getMeta } from '../../db/meta';
 import { getSettings, patchSettings, settingsPatchSchema } from '../../db/settings';
+import { noTokenMessage } from '../../token';
 import type { AppDeps } from '../app';
 import { HttpError, jsonBody, parseWith } from '../http';
 
 const syncBody = z.object({ repo: z.string().min(1).optional(), full: z.boolean().optional() }).strict();
 
-export function systemRoutes({ db, sync, config, diffs }: AppDeps): Hono {
+export function systemRoutes({ db, sync, config, diffs, tokens }: AppDeps): Hono {
   const r = new Hono();
   const withEnv = (s: Settings): Settings => ({ ...s, myEmailsFromEnv: config.myEmails });
 
@@ -27,9 +28,10 @@ export function systemRoutes({ db, sync, config, diffs }: AppDeps): Hono {
 
   r.post('/sync', async (c) => {
     const body = parseWith(syncBody, await jsonBody(c));
-    const res = sync.start('manual', body);
+    // Resolves the token afresh, so "Sync now" works right after `gh auth login` or a new token file.
+    const res = await sync.start('manual', body);
     if (!res.ok && res.reason === 'running') return c.json({ error: 'A sync is already running', details: sync.status() }, 409);
-    if (!res.ok) throw new HttpError(503, 'No GitHub token: set GITHUB_TOKEN or run `gh auth login`');
+    if (!res.ok) throw new HttpError(503, noTokenMessage(tokens.peek()));
     return c.json(sync.status(), 202);
   });
 

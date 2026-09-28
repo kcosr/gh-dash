@@ -71,14 +71,33 @@ Mobile filter bars start as a single summary row; tap Filters to expand or colla
 
 ## Configuration and deployment
 
-Optional config is read from `$XDG_CONFIG_HOME/gh-dash/env` (default
-`~/.config/gh-dash/env`), using `KEY=value` lines. Process environment variables
-override the file. Restart after edits; keep the file private (`chmod 600`) if it
-contains credentials. Shell expansion is not performed; use absolute paths in it.
+Settings come from environment variables, which can also be set in
+`$XDG_CONFIG_HOME/gh-dash/env` (default `~/.config/gh-dash/env`) as `KEY=value` lines.
+Shell expansion is not performed there; use absolute paths.
+
+They can also live in a JSON file, `$XDG_CONFIG_HOME/gh-dash/config.json` (or the path in
+`GH_DASH_CONFIG`). Its keys mirror the variables: `host`, `port`, `allowedHosts`, `db`,
+`cacheDb`, `sync`, `password`, `apiKey`, `myEmails`, `timezone` (`TZ`), `tokenSource`,
+`tokenFile` and `ghPath`. Lists are arrays and `sync` is a boolean; `null` clears
+`password`, `apiKey`, `tokenFile` and `ghPath`:
+
+```json
+{ "port": 4780, "db": "/srv/gh-dash/gh-dash.db", "allowedHosts": ["dash.example.com"], "tokenFile": "/etc/gh-dash/github-token" }
+```
+
+Precedence, lowest first: defaults, `config.json`, the env file, then process environment
+variables. A variable that is set wins even when empty. Unknown keys are logged and ignored;
+invalid values stop the server with a message naming the file. `GET /api/v1/instance` shows
+each effective setting and where it came from. Restart after edits, and keep files that
+contain credentials private (`chmod 600`); gh-dash warns about a readable `config.json`
+that holds a password or API key.
 
 | Environment variable | Default | Purpose |
 | --- | --- | --- |
-| `GITHUB_TOKEN` | GitHub CLI credentials | Read-only GitHub access |
+| `GITHUB_TOKEN` | Unset | Read-only GitHub access; wins over every other token source |
+| `GITHUB_TOKEN_FILE` | Unset | A file holding just the token, re-read on use, so replacing it needs no restart |
+| `GH_DASH_TOKEN_SOURCE` | `auto` | Without `GITHUB_TOKEN`: `auto` uses the token file if one is set, else the GitHub CLI; `file` or `gh` use only that |
+| `GH_DASH_GH_PATH` | `PATH`, then standard install locations | The GitHub CLI (`gh`) executable |
 | `HOST` / `PORT` | `127.0.0.1` / `4780` | Listen address |
 | `GH_DASH_ALLOWED_HOSTS` | Unset | Host names the server answers to besides `localhost` and IP addresses, comma-separated |
 | `GH_DASH_DB` | `$XDG_STATE_HOME/gh-dash/gh-dash.db` | Database location |
@@ -88,6 +107,7 @@ contains credentials. Shell expansion is not performed; use absolute paths in it
 | `GH_DASH_API_KEY` | Unset | Key API clients send as Bearer or `X-API-Key`; not access control without a password (see below) |
 | `GH_DASH_MY_EMAILS` | Unset | Additional commit emails, comma-separated |
 | `TZ` | System timezone | Default timezone for API date grouping |
+| `GH_DASH_CONFIG` | `$XDG_CONFIG_HOME/gh-dash/config.json` | JSON config file (see above) |
 
 Without `XDG_STATE_HOME`, the database defaults to `~/.local/state/gh-dash/gh-dash.db`.
 Empty or relative XDG paths use the home defaults. UI settings remain in the database.

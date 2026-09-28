@@ -21,6 +21,7 @@ import type {
   SyncStatus,
 } from '../../../shared/api';
 import { api, isClientError, isUnreachable } from './client';
+import { resolveApiBase } from '../lib/account';
 import { defaultRepoScope } from '../../../shared/repos';
 import { parseDiffId } from '../lib/urlState';
 
@@ -31,6 +32,10 @@ export const qk = {
   settings: ['settings'] as const,
   me: ['me'] as const,
   sync: ['sync-status'] as const,
+  account: ['account'] as const,
+  instance: ['instance'] as const,
+  /** DesktopState from the desktop app's bridge (not an HTTP query). */
+  desktop: ['desktop-state'] as const,
   prs: (q: PrQuery) => ['prs', q] as const,
   issues: (q: IssueQuery) => ['issues', q] as const,
   pr: (repo: string, n: number) => ['pr', repo, n] as const,
@@ -47,7 +52,7 @@ export const qk = {
  * from GitHub on demand, so a sync doesn't swap an open diff under the reader (the diff view has a
  * refresh); a PR diff is revalidated when it's next opened (useDiff).
  */
-export const refetchAfterSync = (q: Query) => !['sync-status', 'diff', 'blob'].includes(q.queryKey[0] as string);
+export const refetchAfterSync = (q: Query) => !['sync-status', 'diff', 'blob', 'instance', 'desktop-state'].includes(q.queryKey[0] as string);
 
 // ---------------------------------------------------------------- reference data
 
@@ -66,6 +71,59 @@ export function useSettings() {
 
 export function useMe() {
   return useQuery({ queryKey: qk.me, queryFn: api.me, staleTime: 5 * 60_000, retry: false });
+}
+
+/**
+ * The GitHub account behind the server's token. Refetched when the window regains focus (e.g. after
+ * `gh auth login` in a terminal) and, while there is no token, every 15 s so a new one shows up by itself.
+ * A finished sync or a change of token source refetches it too (useSyncWatcher).
+ */
+export function useAccount() {
+  return useQuery({
+    queryKey: qk.account,
+    queryFn: api.account,
+    staleTime: 30_000,
+    refetchOnWindowFocus: true,
+    refetchInterval: (q) => (q.state.data?.source === 'none' ? 15_000 : false),
+    refetchIntervalInBackground: false,
+    retry: (count, err) => count < 1 && !isClientError(err),
+  });
+}
+
+/** Re-resolve the token and validate it with GitHub (POST /account/check). */
+export function useCheckAccount() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.checkAccount,
+    onSuccess: (a) => {
+      qc.setQueryData(qk.account, a);
+      invalidateAccountData(qc);
+    },
+  });
+}
+
+/** What depends on the token besides the account itself: "me" and the sync status (token source, viewer). */
+export function invalidateAccountData(qc: QueryClient) {
+  for (const queryKey of [qk.me, qk.sync]) void qc.invalidateQueries({ queryKey });
+}
+
+/** How this server runs. Changes only when it restarts (the desktop app invalidates it then). */
+export function useInstance() {
+  return useQuery({
+    queryKey: qk.instance,
+    queryFn: api.instance,
+    staleTime: 5 * 60_000,
+    retry: (count, err) => count < 1 && !isClientError(err),
+  });
+}
+
+/**
+ * Base URL for links to this API from outside the app (docs, curl, copied URLs); null when nothing listens
+ * on the network (the desktop app with the Local API off). See resolveApiBase.
+ */
+export function useApiBase(): string | null {
+  const { data } = useInstance();
+  return resolveApiBase(data, !!window.ghDashDesktop, window.location.origin);
 }
 
 export function useSets() {

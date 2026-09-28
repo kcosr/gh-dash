@@ -1,7 +1,10 @@
 import { useQuery } from '@tanstack/react-query';
 import { useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { Link } from 'react-router';
 import { api } from '../api/client';
+import { useApiBase } from '../api/hooks';
+import { API_OFF_HINT, apiLink } from '../lib/account';
 import { exportTarget, exportUrl } from '../lib/apiQuery';
 import { useFocusTrap, useLayer } from '../lib/layers';
 import { repoFromPath, useUrlState } from '../lib/urlState';
@@ -33,7 +36,9 @@ export function ExportModal({ initialTab, onClose }: { initialTab: ExportTab; on
   const url = exportUrl(target);
   const mdUrl = exportUrl(target, { format: 'md' });
   const sampleUrl = target.endpoint === 'stats' || target.endpoint === 'repos' || target.endpoint === 'settings' ? url : exportUrl(target, { limit: 1 });
-  const origin = window.location.origin;
+  // Where other clients reach this API; null in the desktop app with the Local API off.
+  const base = useApiBase();
+  const docsUrl = apiLink(base, '/api/docs');
   const box = useRef<HTMLDivElement>(null);
   useLayer(true, onClose);
   useFocusTrap(box);
@@ -41,9 +46,10 @@ export function ExportModal({ initialTab, onClose }: { initialTab: ExportTab; on
   const md = useQuery({ queryKey: ['export-md', mdUrl], queryFn: () => api.text(mdUrl), enabled: tab === 'md' && target.md, staleTime: 30_000 });
   const sample = useQuery({ queryKey: ['export-sample', sampleUrl], queryFn: () => api.json(sampleUrl), enabled: tab === 'api', staleTime: 30_000 });
 
-  const curl = `curl -s '${origin}${target.md ? mdUrl : url}'`;
+  const curl = base && `curl -s '${apiLink(base, target.md ? mdUrl : url)}'`;
   const copy = async () => {
-    const text = tab === 'md' ? md.data ?? '' : origin + url;
+    const text = tab === 'md' ? md.data ?? '' : apiLink(base, url);
+    if (text === null) return;
     toast((await copyText(text)) ? (tab === 'md' ? 'Markdown copied' : 'API URL copied') : 'Copy failed');
   };
 
@@ -78,7 +84,9 @@ export function ExportModal({ initialTab, onClose }: { initialTab: ExportTab; on
               <div className="api-l">Same view, as an API call</div>
               <pre className="code"><span className="k">GET</span> {url}</pre>
               <div className="api-l">curl</div>
-              <pre className="code">{curl}</pre>
+              {curl ? <pre className="code">{curl}</pre> : (
+                <p className="api-off">Turn on the Local API in <Link to="/settings#instance" onClick={onClose}>Settings</Link> to call it from curl or scripts.</p>
+              )}
               <div className="api-l">JSON response{target.endpoint === 'stats' || target.endpoint === 'repos' ? ' (trimmed)' : ' (first item)'}</div>
               <pre className="code">
                 {sample.isError ? (sample.error as Error).message : sample.data !== undefined ? JSON.stringify(trimSample(sample.data), null, 2) : 'Loading…'}
@@ -90,10 +98,11 @@ export function ExportModal({ initialTab, onClose }: { initialTab: ExportTab; on
           <span className="muted">
             {tab === 'md'
               ? <>Same output as <code>?format=md</code> on the API. Paste into notes or a status update.</>
-              : <>Every filter in the UI maps to a query parameter. Formats: JSON{target.md && <>, <code>md</code>, <code>csv</code></>}. <a href="/api/docs" target="_blank" rel="noopener noreferrer">API docs</a></>}
+              : <>Every filter in the UI maps to a query parameter. Formats: JSON{target.md && <>, <code>md</code>, <code>csv</code></>}.{docsUrl && <> <a href={docsUrl} target="_blank" rel="noopener noreferrer">API docs</a></>}</>}
           </span>
           <span className="spacer" />
-          <button type="button" className="btn primary" onClick={copy} disabled={tab === 'md' && md.data === undefined}>
+          <button type="button" className="btn primary" onClick={copy} disabled={tab === 'md' ? md.data === undefined : !base}
+            title={tab === 'api' && !base ? API_OFF_HINT : undefined}>
             <Icon name="copy" />Copy
           </button>
         </div>

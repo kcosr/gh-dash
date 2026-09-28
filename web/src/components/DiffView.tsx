@@ -11,7 +11,7 @@ import { Link } from 'react-router';
 import { isUnreachable, rateLimitResetAt } from '../api/client';
 import { findCachedCommit, findCachedPr, useDiff, useLoadFile, usePrDetail, useRefreshDiff, useRepoMap } from '../api/hooks';
 import { useLayer } from '../lib/layers';
-import { fmtTime, plural, rel, relFuture } from '../lib/time';
+import { fmtDateTime, fmtTime, plural, rel, relFuture, relLong } from '../lib/time';
 import { parseDiffId, useUrlState } from '../lib/urlState';
 import type { DiffTarget } from '../lib/urlState';
 import { isChunkLoadError } from '../lib/util';
@@ -137,6 +137,11 @@ export function DiffView({ id, compact }: { id: string; compact: boolean }) {
           <button type="button" className="btn icon ghost" onClick={close} title="Close (Esc)" aria-label="Close diff"><Icon name="x" /></button>
         </span>
       </header>
+      {d?.stale && (
+        <div className="list-note dv-note dv-stale" title={`Fetched ${fmtDateTime(d.fetchedAt)}`}>
+          Couldn't check GitHub for changes; showing the copy fetched {relLong(d.fetchedAt)}.
+        </div>
+      )}
       {d && d.totalFiles > d.files.length && (
         <div className="list-note dv-note">
           Showing {d.files.length.toLocaleString()} of {d.totalFiles.toLocaleString()} files: GitHub lists at most 3,000.{' '}
@@ -185,9 +190,8 @@ function DiffError({ error, t, ghUrl, onRetry }: { error: unknown; t: DiffTarget
   }
   if (status === 503) {
     return (
-      <EmptyState icon="key" title="A GitHub token is needed to view diffs" action={<Link className="btn" to="/settings">How to set a token</Link>}>
-        Diffs are fetched from GitHub when you open them, and the server has no token. Set <code>GITHUB_TOKEN</code> in
-        its environment or sign in with <code>gh auth login</code>, then restart gh-dash.
+      <EmptyState icon="key" title="A GitHub token is needed to view diffs" action={<div className="empty-actions"><Link className="btn" to="/settings">Settings</Link>{retry}</div>}>
+        No GitHub token. Connect an account in Settings, then try again.
       </EmptyState>
     );
   }
@@ -196,7 +200,7 @@ function DiffError({ error, t, ghUrl, onRetry }: { error: unknown; t: DiffTarget
     return (
       <EmptyState icon="alert" title="GitHub's rate limit is used up" action={<div className="empty-actions">{retry}{gh}</div>}>
         {at ? <>It resets at {fmtTime(at)} ({relFuture(at)}). </> : 'Try again in a while. '}
-        Diffs you've opened before still load from the cache.
+        Diffs already in the cache still open; this one has to come from GitHub.
       </EmptyState>
     );
   }

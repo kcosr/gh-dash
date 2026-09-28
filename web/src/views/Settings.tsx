@@ -1,21 +1,24 @@
 import { useEffect, useState } from 'react';
-import type { KeyboardEvent } from 'react';
+import { Link, useLocation } from 'react-router';
 import type { Settings } from '../../../shared/api';
-import { useClearDiffCache, useDiffCacheStats, useMe, usePatchSettings, useSettings, useSyncStatus } from '../api/hooks';
+import { useApiBase, useClearDiffCache, useDiffCacheStats, usePatchSettings, useSettings, useSyncStatus } from '../api/hooks';
 import { useSyncNow } from '../components/TopBar';
+import { ChipsInput } from '../components/ChipsInput';
 import { Icon } from '../components/Icon';
+import type { IconName } from '../components/Icon';
 import { ErrorNote } from '../components/EmptyState';
 import { useToast } from '../components/Toasts';
+import { apiLink } from '../lib/account';
 import { dur, fmtBytes, fmtDateTime, fmtNum, fmtTime, plural, relFuture, relLong } from '../lib/time';
 import { cx } from '../lib/util';
+import { AccountSection } from './SettingsAccount';
+import { InstanceSection } from './SettingsInstance';
 
-const TOKEN_TEXT = {
-  env: 'GITHUB_TOKEN (environment or config file)',
-  file: 'Token file',
-  'gh-cli': 'GitHub CLI (gh auth token)',
-  app: 'Token entered in the app',
-  none: 'No token found',
-} as const;
+/** A link to this API from outside the app; disabled with a hint while the Local API is off. */
+function ApiButton({ href, icon, children }: { href: string | null; icon: IconName; children: string }) {
+  if (href) return <a className="btn" href={href} target="_blank" rel="noopener noreferrer"><Icon name={icon} />{children}</a>;
+  return <button type="button" className="btn" disabled title="Turn on the Local API below (Instance)"><Icon name={icon} />{children}</button>;
+}
 
 /** The editable part of Settings: what the form holds and what PATCH sends (never myEmailsFromEnv). */
 type SettingsForm = Pick<Settings, 'syncIntervalMinutes' | 'backfillDays' | 'myEmails' | 'includeForks'>;
@@ -40,38 +43,7 @@ function EnvEmails({ emails }: { emails: string[] }) {
   );
 }
 
-function EmailChips({ value, onChange }: { value: string[]; onChange: (v: string[]) => void }) {
-  const [draft, setDraft] = useState('');
-  const add = () => {
-    const parts = draft.split(/[\s,;]+/).map((x) => x.trim()).filter(Boolean);
-    if (!parts.length) return;
-    onChange([...new Set([...value, ...parts])]);
-    setDraft('');
-  };
-  const onKey = (e: KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter' || e.key === ',' || e.key === ' ') { e.preventDefault(); add(); }
-    else if (e.key === 'Backspace' && !draft && value.length) onChange(value.slice(0, -1));
-  };
-  return (
-    <div className="chips-input" onClick={(e) => (e.currentTarget.querySelector('input') as HTMLInputElement | null)?.focus()}>
-      {value.map((em) => (
-        <span key={em} className="chip">
-          {em}
-          <button type="button" aria-label={`Remove ${em}`} onClick={() => onChange(value.filter((x) => x !== em))}><Icon name="x" /></button>
-        </span>
-      ))}
-      <input
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        onKeyDown={onKey}
-        onBlur={add}
-        placeholder={value.length ? '' : 'you@example.com'}
-        aria-label="Add commit email"
-        type="email"
-      />
-    </div>
-  );
-}
+const splitEmails = (text: string) => text.split(/[\s,;]+/).map((x) => x.trim()).filter(Boolean);
 
 /** Diffs fetched from GitHub and kept on the server: usage, the size cap, and clearing it. */
 function DiffCacheSection() {
@@ -130,9 +102,30 @@ function DiffCacheSection() {
   );
 }
 
+/**
+ * "/settings#instance" (from the export dialog and the API section): scroll to that card and keep it there
+ * while the cards above it load and grow, until the reader scrolls or after a moment.
+ */
+function usePinnedHash() {
+  const { hash } = useLocation();
+  useEffect(() => {
+    const el = hash ? document.getElementById(decodeURIComponent(hash.slice(1))) : null;
+    const box = el?.closest('.scroll');
+    if (!el || !box?.firstElementChild) return;
+    const pin = () => el.scrollIntoView({ block: 'start' });
+    const ro = new ResizeObserver(pin);
+    ro.observe(box.firstElementChild);
+    pin();
+    const stop = () => ro.disconnect();
+    const t = window.setTimeout(stop, 2000);
+    const events = ['wheel', 'touchstart', 'pointerdown', 'keydown'] as const;
+    for (const e of events) window.addEventListener(e, stop, { once: true, passive: true });
+    return () => { stop(); clearTimeout(t); for (const e of events) window.removeEventListener(e, stop); };
+  }, [hash]);
+}
+
 export function SettingsView() {
   const settings = useSettings();
-  const me = useMe();
   const status = useSyncStatus();
   const save = usePatchSettings();
   const sync = useSyncNow();
@@ -140,10 +133,12 @@ export function SettingsView() {
   const [form, setForm] = useState<SettingsForm | null>(null);
 
   useEffect(() => { if (settings.data && !form) setForm(editable(settings.data)); }, [settings.data, form]);
+  usePinnedHash();
 
   const st = status.data;
-  // null = unknown (server unreachable): don't claim "No token found" / "Never synced".
-  const tokenSource = me.data?.tokenSource ?? st?.tokenSource ?? null;
+  const apiBase = useApiBase();
+  const docsUrl = apiLink(apiBase, '/api/docs');
+  const openapiUrl = apiLink(apiBase, '/api/v1/openapi.json');
   const unreachable = !st && status.isError;
   const envEmails = settings.data?.myEmailsFromEnv ?? [];
   const dirty = !!form && !!settings.data && JSON.stringify(form) !== JSON.stringify(editable(settings.data));
@@ -164,38 +159,18 @@ export function SettingsView() {
         <div className="row">
           <h1 className="page-title">Settings</h1>
           <span className="spacer" />
-          <a className="btn" href="/api/docs" target="_blank" rel="noopener noreferrer"><Icon name="doc" />API docs</a>
-          <a className="btn" href="/api/v1/openapi.json" target="_blank" rel="noopener noreferrer"><Icon name="braces" />OpenAPI</a>
+          <ApiButton href={docsUrl} icon="doc">API docs</ApiButton>
+          <ApiButton href={openapiUrl} icon="braces">OpenAPI</ApiButton>
         </div>
       </div>
       <div className="scroll">
         <div className="settings">
           {unreachable && (
             <section className="card set-sec">
-              <ErrorNote error={status.error} onRetry={() => { void status.refetch(); void settings.refetch(); void me.refetch(); }} />
+              <ErrorNote error={status.error} onRetry={() => { void status.refetch(); void settings.refetch(); }} />
             </section>
           )}
-          <section className="card set-sec">
-            <h2>GitHub connection</h2>
-            <dl className="kv">
-              <dt>Token source</dt>
-              <dd>{tokenSource ? <span className={cx('dot-lbl', tokenSource === 'none' && 'warn')}>{TOKEN_TEXT[tokenSource]}</span> : <span className="muted">unknown</span>}</dd>
-              <dt>Signed in as</dt>
-              <dd>{me.data?.login ? <><b>{me.data.login}</b>{me.data.name ? <span className="muted"> · {me.data.name}</span> : null}</> : st?.viewer ?? <span className="muted">—</span>}</dd>
-              <dt>Rate limit</dt>
-              <dd>{st?.rateLimit ? <>{fmtNum(st.rateLimit.remaining)} / {fmtNum(st.rateLimit.limit)} remaining · resets {fmtTime(st.rateLimit.resetAt)}</> : <span className="muted">unknown</span>}</dd>
-            </dl>
-            <details className="help" open={tokenSource === 'none'}>
-              <summary>How to set a token</summary>
-              <p>
-                gh-dash uses <code>GITHUB_TOKEN</code> from the server's environment or XDG config file, else the output of <code>gh auth token</code>.
-                For a dedicated token, create a <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener noreferrer">fine-grained personal access token</a> with
-                access to <b>All repositories</b> and these repository permissions set to <b>Read-only</b>: <b>Metadata</b>, <b>Contents</b>, <b>Pull requests</b>, <b>Issues</b>.
-              </p>
-              <pre className="code">GITHUB_TOKEN=github_pat_… npm start</pre>
-              <p className="muted">The token is only read from the environment; it is never stored in the database or shown here.</p>
-            </details>
-          </section>
+          <AccountSection rateLimit={st?.rateLimit} />
 
           <section className="card set-sec">
             <h2>Sync</h2>
@@ -215,11 +190,11 @@ export function SettingsView() {
             </dl>
             {!!st?.lastResult?.errors.length && <pre className="code err">{st.lastResult.errors.slice(0, 10).join('\n')}</pre>}
             <div className="set-actions">
-              <button type="button" className="btn" disabled={!st || st.running || tokenSource === 'none'} onClick={() => sync.run()}><Icon name="sync" />Sync now</button>
+              <button type="button" className="btn" disabled={!st || st.running} onClick={() => sync.run()}><Icon name="sync" />Sync now</button>
               <button
                 type="button"
                 className="btn"
-                disabled={!st || st.running || tokenSource === 'none'}
+                disabled={!st || st.running}
                 onClick={() => { if (window.confirm('Re-fetch everything in the backfill window and re-check stars? This uses more API quota.')) sync.run({ full: true }); }}
               >
                 <Icon name="sync" />Full resync
@@ -248,7 +223,8 @@ export function SettingsView() {
                 <div className="set-row">
                   <span className="set-l">My commit emails<small>Commits with these author emails count as “me”, even without a linked GitHub account.</small></span>
                   <span className="set-c grow stack">
-                    <EmailChips value={form.myEmails} onChange={(myEmails) => setForm({ ...form, myEmails })} />
+                    <ChipsInput value={form.myEmails} onChange={(myEmails) => setForm({ ...form, myEmails })} parse={splitEmails}
+                      placeholder="you@example.com" label="Add commit email" type="email" />
                     {envEmails.length > 0 && <EnvEmails emails={envEmails} />}
                   </span>
                 </div>
@@ -266,13 +242,19 @@ export function SettingsView() {
 
           <DiffCacheSection />
 
+          <InstanceSection />
+
           <section className="card set-sec">
             <h2>API</h2>
             <p>Everything in the UI is available as JSON with the same filters. Lists also export as Markdown (<code>format=md</code>) and CSV (<code>format=csv</code>).</p>
-            <ul className="links">
-              <li><a href="/api/docs" target="_blank" rel="noopener noreferrer">/api/docs</a> · endpoint reference with curl examples</li>
-              <li><a href="/api/v1/openapi.json" target="_blank" rel="noopener noreferrer">/api/v1/openapi.json</a> · OpenAPI 3.1 document</li>
-            </ul>
+            {docsUrl && openapiUrl ? (
+              <ul className="links">
+                <li><a href={docsUrl} target="_blank" rel="noopener noreferrer">{docsUrl}</a> · endpoint reference with curl examples</li>
+                <li><a href={openapiUrl} target="_blank" rel="noopener noreferrer">{openapiUrl}</a> · OpenAPI 3.1 document</li>
+              </ul>
+            ) : (
+              <p className="muted">The Local API is off, so browsers, curl and scripts can't reach it. Turn it on under <Link to={{ hash: 'instance' }}>Instance</Link>.</p>
+            )}
           </section>
         </div>
       </div>

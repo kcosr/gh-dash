@@ -40,6 +40,8 @@ type CodeViewInstance = CodeViewClass<undefined, undefined>;
 /** Row metrics shared by the CSS (pierre.css, diff.css) and the virtualizer's height estimates. */
 const LINE_HEIGHT = 18;
 const SEPARATOR_HEIGHT = 24;
+/** Compact: headers and separators hold 40px touch targets, like the shell's (--dvr-touch in diff.css). */
+const TOUCH = 40;
 /** Parse budgets for big PRs: before the first render, then per background slice. */
 const FIRST_PARSE_MS = 40;
 const SLICE_PARSE_MS = 12;
@@ -159,6 +161,8 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
   const updatePrefs = useCallback((patch: Partial<DiffPrefs>) => setPrefs((p) => ({ ...p, ...patch })), []);
   useEffect(() => setDiffPrefs(prefs), [prefs]);
   const split = prefs.split && !compact;
+  // Compact always wraps (code would run off a phone's screen); the saved preference is the desktop's.
+  const wrap = prefs.wrap || compact;
   // The file list is a column on desktop (a saved preference) and an overlay toggled per visit on compact.
   const [listOpen, setListOpen] = useState(false);
   const showList = compact ? listOpen : prefs.files;
@@ -212,7 +216,7 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
     theme: THEMES,
     themeType: theme,
     diffStyle: split ? 'split' : 'unified',
-    overflow: prefs.wrap ? 'wrap' : 'scroll',
+    overflow: wrap ? 'wrap' : 'scroll',
     diffIndicators: 'classic',
     lineDiffType: 'word-alt',
     hunkSeparators: 'line-info-basic',
@@ -220,11 +224,19 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
     stickyHeaders: true,
     // Root commits have no old side (and only added files).
     loadDiffFiles: diff.baseOid ? loadDiffFiles : undefined,
-    itemMetrics: { lineHeight: LINE_HEIGHT, diffHeaderHeight: HEADER_HEIGHT, hunkSeparatorHeight: SEPARATOR_HEIGHT, spacing: 0, paddingTop: 0, paddingBottom: 0 },
-    layout: { paddingTop: GAP, paddingBottom: 2 * GAP, gap: GAP },
+    itemMetrics: {
+      lineHeight: LINE_HEIGHT,
+      diffHeaderHeight: compact ? TOUCH : HEADER_HEIGHT,
+      hunkSeparatorHeight: compact ? TOUCH : SEPARATOR_HEIGHT,
+      spacing: 0,
+      paddingTop: 0,
+      paddingBottom: 0,
+    },
+    // Compact files run edge to edge from the toolbar down.
+    layout: { paddingTop: compact ? 0 : GAP, paddingBottom: 2 * GAP, gap: GAP },
     unsafeCSS,
     onPostRender: expandControls.onPostRender,
-  }), [theme, split, prefs.wrap, diff.baseOid, loadDiffFiles, expandControls.onPostRender]);
+  }), [theme, split, wrap, compact, diff.baseOid, loadDiffFiles, expandControls.onPostRender]);
 
   // The file in view: the last file whose top has scrolled past the top edge. After a jump to a
   // file that can't reach the top (the end of the diff), that file stays current until the user
@@ -339,7 +351,7 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
     if (!a || a === document.body || (a !== root.current && a.contains(root.current))) scroller.current?.focus({ preventScroll: true });
   }, []);
 
-  // j/k: next/previous file; s: split/unified; w: wrap long lines.
+  // j/k: next/previous file; s: split/unified; w: wrap long lines (desktop only for both).
   const keyState = useRef({ files, prefs, compact });
   keyState.current = { files, prefs, compact };
   useEffect(() => {
@@ -353,7 +365,7 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
       } else if (e.key === 's' && !s.compact) {
         e.preventDefault();
         updatePrefs({ split: !s.prefs.split });
-      } else if (e.key === 'w') {
+      } else if (e.key === 'w' && !s.compact) {
         e.preventDefault();
         updatePrefs({ wrap: !s.prefs.wrap });
       }
@@ -394,15 +406,17 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
         <Position current={current} indexOf={indexOf} total={files.length} />
         <span className="spacer" />
         {!compact && (
-          <Seg
-            className="sm"
-            ariaLabel="Layout"
-            value={split ? 'split' : 'unified'}
-            onChange={(v) => updatePrefs({ split: v === 'split' })}
-            options={[{ value: 'unified', label: 'Unified', title: 'Unified (s)' }, { value: 'split', label: 'Split', title: 'Split (s)' }]}
-          />
+          <>
+            <Seg
+              className="sm"
+              ariaLabel="Layout"
+              value={split ? 'split' : 'unified'}
+              onChange={(v) => updatePrefs({ split: v === 'split' })}
+              options={[{ value: 'unified', label: 'Unified', title: 'Unified (s)' }, { value: 'split', label: 'Split', title: 'Split (s)' }]}
+            />
+            <button type="button" className={cx('tbl-btn', prefs.wrap && 'on')} aria-pressed={prefs.wrap} onClick={() => updatePrefs({ wrap: !prefs.wrap })} title="Wrap long lines (w)">Wrap</button>
+          </>
         )}
-        <button type="button" className={cx('tbl-btn', prefs.wrap && 'on')} aria-pressed={prefs.wrap} onClick={() => updatePrefs({ wrap: !prefs.wrap })} title="Wrap long lines (w)">Wrap</button>
       </div>
       <div className="dvr-main">
         {showList && <FileList files={files} current={current} onPick={goTo} footer={hints} />}

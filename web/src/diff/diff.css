@@ -91,14 +91,21 @@
 .dvr-hints { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 9px 16px 10px; border-top: 1px solid var(--border); font-size: 11.5px; color: var(--muted); }
 .dvr-hints kbd { margin-right: 1px; }
 
-/* Compact: the list overlays the diffs instead of taking a column; files run edge to edge. */
+/* Compact: the list overlays the diffs instead of taking a column; files run edge to edge. Controls
+   are 40px touch targets like the shell's: --dvr-touch sizes Pierre's separators too (pierre.css),
+   and headers and separators match the compact itemMetrics in DiffViewer.tsx. */
+.diff-viewer.compact { --dvr-touch: 40px; }
 .diff-viewer.compact .dvr-files { position: absolute; inset: 0 auto 0 0; z-index: 5; width: min(320px, 86%); box-shadow: var(--shadow); }
 .dvr-scrim { position: absolute; inset: 0; z-index: 4; background: var(--scrim); }
 .diff-viewer.compact .dvr-scroll { padding: 0; }
 .diff-viewer.compact .dvr-scroll diffs-container { border-radius: 0; }
-.diff-viewer.compact .dvr-bar { padding-left: 6px; padding-right: 10px; }
+.diff-viewer.compact .dvr-bar { min-height: 40px; padding: 0 12px 0 0; gap: 6px; }
+.diff-viewer.compact .dvr-bar .btn.icon { width: 40px; height: 40px; }
+.diff-viewer.compact .dvh { height: 40px; padding-left: 0; }
+.diff-viewer.compact .dvh-fold { width: 40px; height: 40px; }
+.diff-viewer.compact .dvh-note.link, .diff-viewer.compact a.dvh-note { min-height: 40px; }
 .diff-viewer.compact .dvh-why { display: none; }
-.diff-viewer.compact .dvf-row { height: 34px; font-size: 13.5px; contain-intrinsic-size: auto 34px; }
+.diff-viewer.compact .dvf-row { height: 40px; font-size: 13.5px; contain-intrinsic-size: auto 40px; }
 
 /* ---------- file header (slotted into Pierre's sticky header) */
 .dvr-scroll diffs-container { border-radius: 8px; box-shadow: 0 0 0 1px var(--border); overflow: clip; }

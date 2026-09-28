@@ -1,6 +1,8 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { isIP } from 'node:net';
 import type { Context, Hono, MiddlewareHandler } from 'hono';
 import { deleteCookie, getSignedCookie, setSignedCookie } from 'hono/cookie';
+import { DESKTOP_HOST, DESKTOP_SECRET_HEADER } from '../../shared/desktop';
 import type { Config } from '../config';
 import type { Db } from '../db/db';
 import { getMeta, setMeta } from '../db/meta';
@@ -51,6 +53,52 @@ function hasApiKey(c: Context, apiKey: string): boolean {
 
 const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]']);
 const isLoopback = (host: string) => LOOPBACK.has(host.replace(/:\d+$/, '').toLowerCase());
+
+/** A Host header's name: lower-cased, without the port, IPv6 brackets or a trailing dot. */
+export function hostName(host: string): string {
+  const h = host.trim().toLowerCase();
+  const bracketed = /^\[([^\]]+)\](?::\d*)?$/.exec(h)?.[1];
+  // Several colons without brackets can only be a (malformed) IPv6 literal, never a name with a port.
+  const name = bracketed ?? (h.indexOf(':') === h.lastIndexOf(':') ? h.replace(/:[^:]*$/, '') : h);
+  return name.replace(/\.$/, '');
+}
+
+/** Without a Host header (HTTP/2, in-process requests) the URL's host is the authority the client asked for. */
+const requestHost = (c: Context) => hostName(c.req.header('host') ?? new URL(c.req.url).host);
+
+/** Names a DNS rebinding attack can't produce: localhost, *.localhost and IP literals, plus the configured ones. */
+export function isAllowedHost(name: string, allowedHosts: readonly string[]): boolean {
+  return name === 'localhost' || name.endsWith('.localhost') || isIP(name) !== 0 || allowedHosts.includes(name);
+}
+
+/**
+ * DNS rebinding protection for network listeners, installed first. A page on an attacker's domain that resolves to
+ * this machine is same-origin with the server as far as the browser knows, so CORS, sameOriginWrites and
+ * noCrossSiteReads all let it through; only the Host header still names the attacker's domain. The raw Host is
+ * checked (a page can set X-Forwarded-Host itself); no path is exempt, /api/health included.
+ */
+export function hostAllowlist(allowedHosts: readonly string[]): MiddlewareHandler {
+  return async (c, next) => {
+    const name = requestHost(c);
+    if (!isAllowedHost(name, allowedHosts)) {
+      return c.json({ error: `Host "${name.slice(0, 253)}" is not allowed; add it to GH_DASH_ALLOWED_HOSTS to serve it` }, 421);
+    }
+    await next();
+  };
+}
+
+/**
+ * The desktop app's socket: every request must come through the Electron main process, which adds the per-launch
+ * secret (other local processes can open the socket or pipe too) and addresses the server as DESKTOP_HOST.
+ */
+export function desktopOnly(secret: string): MiddlewareHandler {
+  return async (c, next) => {
+    const sent = c.req.header(DESKTOP_SECRET_HEADER);
+    if (!sent || !safeEqual(sent, secret)) return c.json({ error: 'Forbidden' }, 403);
+    if (requestHost(c) !== DESKTOP_HOST) return c.json({ error: `Host must be ${DESKTOP_HOST}` }, 421);
+    await next();
+  };
+}
 
 /**
  * Rejects state-changing requests sent by a browser from another origin (CSRF, including against

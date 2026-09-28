@@ -7,16 +7,16 @@ trends over time. Filter by repository, date, visibility or contributor.
 gh-dash syncs to a local database for fast browsing. It reads from GitHub without
 changing your repositories.
 
-![Pull requests view with the detail drawer open](docs/images/pull-requests.png)
+![Activity timeline](docs/images/activity.png)
 
 <table>
   <tr>
-    <td><a href="docs/images/activity.png"><img src="docs/images/activity.png" alt="Activity timeline"></a></td>
+    <td><a href="docs/images/pull-requests.png"><img src="docs/images/pull-requests.png" alt="Pull requests view with the detail drawer open"></a></td>
     <td><a href="docs/images/repositories.png"><img src="docs/images/repositories.png" alt="Repositories grid"></a></td>
     <td><a href="docs/images/insights.png"><img src="docs/images/insights.png" alt="Insights charts"></a></td>
   </tr>
   <tr>
-    <td align="center">Activity</td>
+    <td align="center">Pull requests</td>
     <td align="center">Repositories</td>
     <td align="center">Insights</td>
   </tr>

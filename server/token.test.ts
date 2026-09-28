@@ -297,18 +297,30 @@ describe('TokenProvider validation', () => {
     expect(api.requests).toHaveLength(2);
   });
 
-  it('validates a new token lazily in account(), and drops the validation on invalidate()', async () => {
+  it('validates each new token once in the background; account() never calls GitHub', async () => {
     let token = 'github_pat_one';
-    const { tokens, api } = setup({ reply: () => token, github: { '/graphql': viewerReply({}, { 'x-oauth-scopes': '' }) } });
-    expect(await tokens.account()).toMatchObject({ source: 'gh-cli', kind: 'fine-grained', login: 'alice', scopes: null, expiresAt: null });
+    const { tokens, api, clock } = setup({ reply: () => token, github: { '/graphql': viewerReply({}, { 'x-oauth-scopes': '' }) } });
+    // The first call waits for the token (not for GitHub).
+    expect(await tokens.account()).toMatchObject({ source: 'gh-cli', kind: 'fine-grained' });
+    await vi.waitFor(async () => expect(await tokens.account()).toMatchObject({ login: 'alice', scopes: null, expiresAt: null, checkedAt: expect.any(String) }));
     await tokens.account();
     expect(api.requests).toHaveLength(1);
+
+    // `gh auth switch`: a poll after the cache expires notices, and the new token is validated.
     token = 'gho_two';
-    await tokens.get({ fresh: true });
-    expect(await tokens.account()).toMatchObject({ kind: 'oauth', scopes: [] });
+    clock.now += TOKEN_CACHE_MS;
+    expect(await tokens.account()).toMatchObject({ kind: 'fine-grained' });
+    await vi.waitFor(async () => expect(await tokens.account()).toMatchObject({ kind: 'oauth', scopes: [], login: 'alice' }));
     expect(api.requests).toHaveLength(2);
-    tokens.invalidate();
-    await tokens.account();
+
+    // GitHub answered 401 somewhere: shown as rejected, without asking GitHub again.
+    tokens.invalidate('gho_stale');
+    expect(await tokens.account()).toMatchObject({ login: 'alice', error: null });
+    tokens.invalidate('gho_two');
+    expect(await tokens.account()).toMatchObject({ source: 'gh-cli', login: null, error: 'Bad credentials' });
+    await tokens.get();
+    expect(api.requests).toHaveLength(2);
+    expect((await tokens.check()).login).toBe('alice');
     expect(api.requests).toHaveLength(3);
   });
 

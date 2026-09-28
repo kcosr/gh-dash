@@ -5,7 +5,7 @@ import type { AppDeps } from '../app';
 export function accountRoutes({ tokens }: AppDeps): Hono {
   const r = new Hono();
 
-  // Validates a token it hasn't seen yet (1 GraphQL point), so it can take a moment after a change.
+  // Polled by the web app: never calls GitHub (a new token is validated in the background when it turns up).
   r.get('/account', async (c) => c.json(await tokens.account()));
 
   // "Retry": resolve the token again (gh, token file) and re-validate it now.

@@ -82,6 +82,16 @@ describe('startServer', () => {
     await expect(fetch(`${server.apiUrl}/api/health`)).rejects.toThrow();
   });
 
+  it('reports the desktop app on both of its listeners', async () => {
+    const socket = join(temp(), 's');
+    const secret = 'd'.repeat(64);
+    const { server } = await start({ desktop: true, listen: true }, { socket: { path: socket, secret } });
+    const viaSocket = JSON.parse((await socketGet(socket, '/api/v1/instance', { host: 'gh-dash', [DESKTOP_SECRET_HEADER]: secret })).body);
+    const viaTcp = await (await fetch(`${server.apiUrl}/api/v1/instance`)).json();
+    expect(viaSocket).toMatchObject({ desktop: true, apiUrl: server.apiUrl });
+    expect(viaTcp).toMatchObject({ desktop: true, apiUrl: server.apiUrl });
+  });
+
   it('listens on the socket alone unless the Local API is on', async () => {
     const socket = join(temp(), 's');
     const { server } = await start({ listen: false }, { socket: { path: socket, secret: 'x'.repeat(64) } });

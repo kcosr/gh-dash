@@ -20,8 +20,11 @@ export interface TokenSupply {
   get(opts?: { fresh?: boolean }): Promise<ResolvedToken>;
   /** The last resolved token without waiting; starts a background re-resolve when it's stale. */
   peek(): ResolvedToken;
-  /** Forgets the cached token and its validation (e.g. after GitHub answered 401). */
-  invalidate(): void;
+  /**
+   * GitHub rejected `token` (401): resolve again before the next use. The current token, if it is that one (or no
+   * token is named), is reported as rejected until it changes or is checked again.
+   */
+  invalidate(token?: string): void;
   /** Called when the token or its source changes. Returns an unsubscribe function. */
   onChange(listener: (token: ResolvedToken) => void): () => void;
 }
@@ -240,9 +243,12 @@ export class TokenProvider implements TokenSupply {
     return this.current ?? NONE;
   }
 
-  invalidate(): void {
+  invalidate(token?: string): void {
     this.invalidated = true;
-    this.validation = null;
+    const current = this.current?.token;
+    if (current && (token === undefined || token === current)) {
+      this.validation = { ...this.unchecked(current), error: 'Bad credentials' };
+    }
   }
 
   onChange(listener: (token: ResolvedToken) => void): () => void {
@@ -279,14 +285,18 @@ export class TokenProvider implements TokenSupply {
   // Account status and validation
   // ---------------------------------------------------------------------------
 
-  /** The account behind the current token, validating it first if that hasn't happened for this token. */
+  /**
+   * The account behind the current token as last resolved and validated. Never calls GitHub, so it can be polled:
+   * only the first resolution is waited for; after that a stale token is re-resolved in the background (at most every
+   * 30 s), and a new token is validated in the background when it turns up.
+   */
   async account(): Promise<AccountStatus> {
-    const r = await this.resolution();
-    if (r.token && this.validation?.token !== r.token) await this.validate(r.token, false);
-    return this.status(r);
+    if (!this.current) await this.resolution();
+    this.peek();
+    return this.status(this.current!);
   }
 
-  /** Re-resolves the token now and validates it against GitHub (1 GraphQL point). */
+  /** Re-resolves the token now and validates it against GitHub (1 GraphQL point): startup, Retry and set-token. */
   async check(): Promise<AccountStatus> {
     const r = await this.resolution(true);
     if (r.token) await this.validate(r.token, true);
@@ -312,11 +322,15 @@ export class TokenProvider implements TokenSupply {
     return promise;
   }
 
-  private async fetchViewer(token: string): Promise<Validation> {
-    const base: Validation = {
+  private unchecked(token: string): Validation {
+    return {
       token, ok: false, id: null, login: null, name: null, avatarUrl: null, expiresAt: null, scopes: null, repos: null, error: null,
       checkedAt: new Date(this.now()).toISOString(),
     };
+  }
+
+  private async fetchViewer(token: string): Promise<Validation> {
+    const base = this.unchecked(token);
     const fail = (error: string): Validation => ({ ...base, error: redact(token, error) });
     let res: Response;
     let text: string;
@@ -418,6 +432,8 @@ export class TokenProvider implements TokenSupply {
     if (prev.token === r.token && prev.source === r.source && prev.error === r.error) return;
     this.log(r.token ? `[token] using ${r.source}` : `[token] no token${r.error ? `: ${r.error}` : ''}`);
     if (prev.token === r.token && prev.source === r.source) return;
+    // A token not seen before is checked in the background (1 GraphQL point), so account() never has to.
+    if (r.token && r.token !== prev.token) void this.validate(r.token, false);
     for (const listener of this.listeners) {
       try {
         listener(r);

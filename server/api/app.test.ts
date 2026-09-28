@@ -1,5 +1,5 @@
 import { gunzipSync } from 'node:zlib';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { type Config, loadConfig } from '../config';
 import { getMeta, setMeta } from '../db/meta';
 import { upsertCommit } from '../db/write';
@@ -330,10 +330,14 @@ describe('account and instance', () => {
     const gh = fakeGitHub({ '/graphql': viewer('alice', { 'x-oauth-scopes': 'repo' }) });
     const app = accountApp(testTokens('ghp_x', { fetchImpl: gh.fetchImpl, viewer: () => getMeta(db, 'viewer') }), {}, {}, db);
     const account = async (method = 'GET', path = '/api/v1/account') => (await app.request(path, { method })).json();
-    expect(await account()).toMatchObject({
-      source: 'env', locked: true, login: 'alice', dbLogin: 'Alice', mismatch: false, kind: 'classic', scopes: ['repo'],
-      repos: { total: 5, private: 2 }, error: null,
-    });
+    // GET never waits for GitHub: the new token is validated in the background.
+    expect(await account()).toMatchObject({ source: 'env', locked: true, kind: 'classic' });
+    await vi.waitFor(async () =>
+      expect(await account()).toMatchObject({
+        source: 'env', locked: true, login: 'alice', dbLogin: 'Alice', mismatch: false, kind: 'classic', scopes: ['repo'],
+        repos: { total: 5, private: 2 }, error: null,
+      }),
+    );
     await account();
     expect(gh.requests).toEqual(['/graphql']);
     gh.routes['/graphql'] = viewer('mallory');

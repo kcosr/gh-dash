@@ -248,7 +248,7 @@ export const ENDPOINTS: EndpointDoc[] = [
   { method: 'get', path: '/api/v1/me', tag: 'System', summary: 'Authenticated GitHub user and token source', response: { status: 200, schema: ref('Me') } },
   {
     method: 'get', path: '/api/v1/account', tag: 'System', summary: 'The GitHub account behind the token (never the token)',
-    description: 'A token not validated yet is checked against GitHub first (1 GraphQL point).',
+    description: 'Never calls GitHub: a new token is validated in the background (1 GraphQL point) and shown once that is done.',
     response: { status: 200, schema: ref('AccountStatus') },
   },
   {

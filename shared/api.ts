@@ -556,7 +556,7 @@ export interface DiffCacheStats {
 // DELETE /api/v1/diff-cache                    -> DiffCacheStats (after clearing)
 // GET    /api/v1/account                       -> AccountStatus
 // POST   /api/v1/account/check                 -> AccountStatus (re-resolve and re-validate the token now)
-//          GET /account validates a token it hasn't checked yet (1 GraphQL point); apiUrl in InstanceInfo is the
+//          GET /account never calls GitHub (a new token is validated in the background); InstanceInfo.apiUrl is the
 //          request's origin on a network listener, the Local API's URL (or null) on the desktop socket.
 // GET    /api/v1/instance                      -> InstanceInfo
 // GET    /api/v1/settings                      -> Settings

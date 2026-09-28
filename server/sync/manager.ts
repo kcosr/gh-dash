@@ -102,7 +102,7 @@ export class SyncManager {
       // A 401 means the token was revoked or replaced: resolve it again before the next use.
       fetchImpl: async (input, init) => {
         const res = await fetch(input, init);
-        if (res.status === 401) this.tokens.invalidate();
+        if (res.status === 401) this.tokens.invalidate(token);
         return res;
       },
       onRateLimit: (rl) => setMeta(this.db, 'rateLimit', { limit: rl.limit, remaining: rl.remaining, resetAt: rl.resetAt }),

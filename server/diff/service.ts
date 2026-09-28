@@ -282,7 +282,7 @@ export class DiffService {
       if (err.kind === 'auth') {
         // Revoked or replaced: resolve the token again next time.
         if (this.clients === gh) this.clients = null;
-        this.opts.tokens.invalidate();
+        this.opts.tokens.invalidate(gh.token);
       }
       throw httpError(err);
     }

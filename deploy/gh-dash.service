@@ -13,6 +13,7 @@
 #                                    # (without it the service falls back to `gh auth token` for User=)
 #   PORT=4780
 #   HOST=127.0.0.1                   # keep on localhost behind nginx
+#   GH_DASH_ALLOWED_HOSTS=dash.example.com   # the public name nginx passes on as Host (else 421)
 #   TZ=UTC                          # default bucketing timezone when clients send no tz
 #   GH_DASH_PASSWORD=...             # optional UI login when exposed beyond localhost
 #   GH_DASH_API_KEY=...              # optional; API clients send Authorization: Bearer <key> or X-API-Key

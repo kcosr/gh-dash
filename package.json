@@ -21,7 +21,7 @@
     "dev:server": "tsx watch --clear-screen=false server/index.ts",
     "dev:web": "vite",
     "build": "vite build && node scripts/build.mjs",
-    "start": "NODE_ENV=production node dist/server/index.mjs",
+    "start": "node dist/server/index.mjs",
     "desktop": "npm run build && electron .",
     "dist:desktop": "npm run build && electron-builder --publish never",
     "typecheck": "tsc -p tsconfig.json && tsc -p web/tsconfig.json",

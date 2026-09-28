@@ -5,6 +5,12 @@
   "private": true,
   "type": "module",
   "description": "Personal dashboard for GitHub repository activity",
+  "homepage": "https://github.com/kcosr/gh-dash",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kcosr/gh-dash.git"
+  },
+  "main": "dist/electron/main.mjs",
   "engines": {
     "node": ">=22.13"
   },
@@ -12,8 +18,10 @@
     "dev": "concurrently -k -n server,web -c blue,magenta \"npm:dev:server\" \"npm:dev:web\"",
     "dev:server": "tsx watch --clear-screen=false server/index.ts",
     "dev:web": "vite",
-    "build": "vite build",
-    "start": "NODE_ENV=production tsx server/index.ts",
+    "build": "vite build && node scripts/build.mjs",
+    "start": "NODE_ENV=production node dist/server/index.mjs",
+    "desktop": "npm run build && electron .",
+    "dist:desktop": "npm run build && electron-builder --publish never",
     "typecheck": "tsc -p tsconfig.json && tsc -p web/tsconfig.json",
     "test": "vitest run"
   },

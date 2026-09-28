@@ -137,7 +137,9 @@ describe('desktop instance form', () => {
     // The port doesn't matter while the Local API is off.
     expect(instanceProblems(cfg, { ...f, listen: false, port: 0 })).toEqual({});
     expect(instanceProblems(cfg, { ...f, network: true }).network).toMatch(/password/);
-    expect(instanceProblems(cfg, { ...f, network: true, password: 'pw' })).toEqual({});
+    expect(instanceProblems(cfg, { ...f, network: true, password: 'long enough' })).toEqual({});
+    expect(instanceProblems(cfg, { ...f, network: true, password: 'pw' }).password).toBeTruthy();
+    expect(instanceProblems(cfg, { ...f, password: ' padded pass ' }).password).toBeTruthy();
     const withPw = { ...cfg, passwordSet: true };
     expect(instanceProblems(withPw, { ...f, network: true })).toEqual({});
     expect(instanceProblems(withPw, { ...f, network: true, password: null }).network).toBeTruthy();

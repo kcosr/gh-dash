@@ -156,9 +156,11 @@ function DesktopInstance({ state, apiUrl }: { state: DesktopState; apiUrl: strin
             <div className="set-row">
               <span className="set-l">Password<small>Browsers ask for it before showing the dashboard.</small></span>
               <span className="set-c grow wrap">
-                <input className="input set-secret" type="password" autoComplete="new-password" aria-label={cfg.passwordSet ? 'New password' : 'Password'}
+                <input className={cx('input set-secret', problems.password && 'bad')} type="password" autoComplete="new-password" aria-label={cfg.passwordSet ? 'New password' : 'Password'}
                   placeholder={form.password === null ? 'Removed when you save' : cfg.passwordSet ? 'Set · type to replace' : 'Not set'} value={form.password ?? ''}
-                  onChange={(e) => set({ password: e.target.value || undefined })} disabled={form.password === null} />
+                  onChange={(e) => set({ password: e.target.value || undefined })} disabled={form.password === null}
+                  aria-invalid={problems.password ? true : undefined} aria-describedby={problems.password ? 'pw-err' : undefined} />
+                {problems.password && <span id="pw-err" className="form-err">{problems.password}</span>}
                 {form.password === null && <button type="button" className="btn" onClick={() => set({ password: undefined })}>Undo</button>}
                 {cfg.passwordSet && form.password === undefined && (
                   <button type="button" className="btn" onClick={() => set({ password: null })}>Remove</button>

@@ -146,12 +146,23 @@ export function instancePatch(c: DesktopConfig, f: InstanceForm): DesktopConfigP
 /** Whether a password will be set after saving. */
 export const willHavePassword = (c: DesktopConfig, f: InstanceForm) => (f.password === undefined ? c.passwordSet : !!f.password);
 
+/** Same limits the desktop app's main process enforces (electron/config.ts). */
+const PASSWORD_MIN = 8;
+const PASSWORD_MAX = 256;
+
 /** What's wrong with the form, per field; empty when it can be saved. */
-export function instanceProblems(c: DesktopConfig, f: InstanceForm): { port?: string; network?: string; dataDir?: string } {
-  const out: { port?: string; network?: string; dataDir?: string } = {};
+export function instanceProblems(
+  c: DesktopConfig,
+  f: InstanceForm,
+): { port?: string; network?: string; dataDir?: string; password?: string } {
+  const out: { port?: string; network?: string; dataDir?: string; password?: string } = {};
   if (!f.dataDir.trim()) out.dataDir = 'Choose a data folder.';
   if (f.listen && (!Number.isInteger(f.port) || f.port < 1 || f.port > 65535)) out.port = 'A port from 1 to 65535.';
   if (f.listen && f.network && !willHavePassword(c, f)) out.network = 'Set a password to allow other devices.';
+  if (typeof f.password === 'string') {
+    if (f.password.length < PASSWORD_MIN || f.password.length > PASSWORD_MAX) out.password = `${PASSWORD_MIN} to ${PASSWORD_MAX} characters.`;
+    else if (f.password.trim() !== f.password) out.password = 'No spaces at the start or end.';
+  }
   return out;
 }
 

@@ -1,5 +1,8 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { gunzipSync } from 'node:zlib';
-import { describe, expect, it, vi } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 import { type Config, loadConfig } from '../config';
 import { upsertCommit } from '../db/write';
 import { DiffCache } from '../diff/cache';
@@ -111,6 +114,30 @@ describe('HTTP API', () => {
     }
     expect(await (await app.request('/api/docs')).text()).toContain('/api/v1/activity');
     expect(await (await app.request('/prs')).text()).toContain('npm run build');
+  });
+});
+
+describe('web app', () => {
+  const webDir = mkdtempSync(join(tmpdir(), 'gh-dash-web-'));
+  mkdirSync(join(webDir, 'assets'));
+  writeFileSync(join(webDir, 'index.html'), '<!doctype html><title>gh-dash</title>');
+  writeFileSync(join(webDir, 'assets', 'app-1234.js'), 'export {};');
+  writeFileSync(join(webDir, 'favicon.svg'), '<svg/>');
+  const app = makeApp({ webDir });
+  afterAll(() => rmSync(webDir, { recursive: true, force: true }));
+
+  it('serves index.html for client-side routes, dotted repository names included', async () => {
+    for (const path of ['/', '/prs', '/repos/user.github.io', '/repos/foo.nvim', '/repos/x.js', '/repos/app?tab=files']) {
+      const res = await app.request(path);
+      expect(res.status, path).toBe(200);
+      expect(await res.text(), path).toContain('<title>gh-dash</title>');
+    }
+  });
+
+  it('serves built files and 404s missing assets and top-level files', async () => {
+    expect(await (await app.request('/assets/app-1234.js')).text()).toBe('export {};');
+    expect((await app.request('/favicon.svg')).status).toBe(200);
+    for (const path of ['/assets/missing.js', '/assets/sub/x', '/missing.png', '/robots.txt']) expect((await app.request(path)).status, path).toBe(404);
   });
 });
 

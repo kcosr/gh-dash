@@ -27,7 +27,9 @@ export function installStatic(app: Hono, webDir: string): void {
 
   app.get('*', (c) => {
     if (!existsSync(indexPath)) return c.html(NOT_BUILT);
-    if (/\.[a-z0-9]+$/i.test(c.req.path)) return c.text('Not found', 404);
+    // Missing build assets and top-level files (favicon, robots.txt) are 404s. Any other path is a client-side
+    // route, dots included: /repos/user.github.io.
+    if (/^\/(assets\/|[^/]+\.[a-z0-9]+$)/i.test(c.req.path)) return c.text('Not found', 404);
     c.header('Cache-Control', 'no-cache');
     return c.html(readFileSync(indexPath, 'utf8'));
   });

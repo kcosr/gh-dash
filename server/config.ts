@@ -5,7 +5,8 @@ import { basename, dirname, extname, isAbsolute, join, resolve } from 'node:path
 import { fileURLToPath } from 'node:url';
 import { parseEnv } from 'node:util';
 
-export type TokenSource = 'env' | 'gh-cli' | 'none';
+export type { TokenSource } from '../shared/api';
+import type { TokenSource } from '../shared/api';
 
 export interface Config {
   port: number;
@@ -20,6 +21,11 @@ export interface Config {
   myEmails: string[];
   /** IANA zone used when the client sends no `tz`. */
   defaultTz: string;
+  /**
+   * GH_DASH_ALLOWED_HOSTS: host names (lower-case, no port) accepted in the Host header besides `localhost`,
+   * `*.localhost` and IP literals. Requests with any other Host are refused (DNS rebinding protection).
+   */
+  allowedHosts: string[];
   webDir: string;
   version: string;
 }
@@ -83,6 +89,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = loadEnvironment()): Config {
     password: optionalEnv(env, 'GH_DASH_PASSWORD'),
     myEmails: parseEmailList(env.GH_DASH_MY_EMAILS),
     defaultTz: defaultTimezone(env.TZ),
+    allowedHosts: parseHostList(env.GH_DASH_ALLOWED_HOSTS),
     webDir: resolve(ROOT_DIR, 'dist/web'),
     version: (JSON.parse(readFileSync(resolve(ROOT_DIR, 'package.json'), 'utf8')) as { version: string }).version,
   };
@@ -91,6 +98,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = loadEnvironment()): Config {
 /** Comma-separated list → trimmed, lower-cased, de-duplicated, empties dropped. */
 export function parseEmailList(value: string | undefined): string[] {
   return [...new Set((value ?? '').split(',').map((e) => e.trim().toLowerCase()).filter(Boolean))];
+}
+
+/** Comma-separated host names → lower-cased, ports and trailing dots dropped, de-duplicated. */
+export function parseHostList(value: string | undefined): string[] {
+  const hosts = (value ?? '').split(',').map((h) => h.trim().toLowerCase().replace(/:\d+$/, '').replace(/\.$/, '')).filter(Boolean);
+  return [...new Set(hosts)];
 }
 
 function optionalEnv(env: NodeJS.ProcessEnv, name: string): string | null {

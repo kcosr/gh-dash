@@ -9,7 +9,13 @@ import { useToast } from '../components/Toasts';
 import { dur, fmtBytes, fmtDateTime, fmtNum, fmtTime, plural, relFuture, relLong } from '../lib/time';
 import { cx } from '../lib/util';
 
-const TOKEN_TEXT = { env: 'GITHUB_TOKEN (environment or config file)', 'gh-cli': 'GitHub CLI (gh auth token)', none: 'No token found' } as const;
+const TOKEN_TEXT = {
+  env: 'GITHUB_TOKEN (environment or config file)',
+  file: 'Token file',
+  'gh-cli': 'GitHub CLI (gh auth token)',
+  app: 'Token entered in the app',
+  none: 'No token found',
+} as const;
 
 /** The editable part of Settings: what the form holds and what PATCH sends (never myEmailsFromEnv). */
 type SettingsForm = Pick<Settings, 'syncIntervalMinutes' | 'backfillDays' | 'myEmails' | 'includeForks'>;

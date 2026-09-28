@@ -98,7 +98,7 @@ const schemas: Record<string, Schema> = {
     includeForks: bool,
     diffCacheMb: { ...int(), minimum: 10, maximum: 10000, description: 'Diff cache size cap in MB' },
   }, ['myEmailsFromEnv']),
-  Me: obj({ login: str(), name: nullable(str()), avatarUrl: nullable(str()), tokenSource: enumOf('env', 'gh-cli', 'none') }),
+  Me: obj({ login: str(), name: nullable(str()), avatarUrl: nullable(str()), tokenSource: enumOf('env', 'file', 'gh-cli', 'app', 'none') }),
   SyncStatus: obj({
     running: bool,
     trigger: nullable(enumOf('manual', 'scheduled', 'startup')),
@@ -108,7 +108,7 @@ const schemas: Record<string, Schema> = {
     lastResult: nullable(obj({ newItems: int(), errors: arr(str()) })),
     nextSyncAt: nullable(dateTime),
     rateLimit: nullable(obj({ limit: int(), remaining: int(), resetAt: dateTime })),
-    tokenSource: enumOf('env', 'gh-cli', 'none'),
+    tokenSource: enumOf('env', 'file', 'gh-cli', 'app', 'none'),
     viewer: nullable(str()),
   }),
   Tile: obj({ value: nullable(num), previous: nullable(num), spark: { ...arr(num), description: '12 equal slices of the range' } }),

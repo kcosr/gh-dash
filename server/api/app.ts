@@ -20,7 +20,15 @@ export interface AppDeps {
   config: Config;
   sync: SyncManager;
   diffs: DiffService;
+  /**
+   * How requests reach this app instance. `tcp` (default): a network listener, guarded by the Host allowlist and
+   * the optional password/API key. `desktop`: the desktop app's local socket; every request must carry
+   * DESKTOP_SECRET_HEADER with this secret, and password/API-key auth doesn't apply (there is one local user).
+   */
+  transport?: AppTransport;
 }
+
+export type AppTransport = { kind: 'tcp' } | { kind: 'desktop'; secret: string };
 
 /** Public origin of the request, honouring a reverse proxy's forwarded headers. */
 function origin(c: Context): string {

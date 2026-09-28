@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { cleanupStaleSocketDirs, createSocketLocation, MAX_SOCKET_BYTES } from './socket';
+import { cleanupStaleSocketDirs, createSocketLocation, MAX_SOCKET_BYTES, socketBases } from './socket';
 
 const made: string[] = [];
 afterEach(() => {
@@ -16,6 +16,9 @@ describe('createSocketLocation', () => {
     expect(a.path).toMatch(/^\\\\\.\\pipe\\gh-dash-[0-9a-f]{24}$/);
     expect(a.path).not.toBe(b.path);
     expect(a.dir).toBeNull();
+    // Nothing to clean up after a crash.
+    expect(socketBases('win32')).toEqual([]);
+    expect(socketBases('darwin')).toEqual([tmpdir(), '/tmp']);
   });
 
   const posix = process.platform !== 'win32';

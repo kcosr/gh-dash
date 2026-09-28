@@ -199,6 +199,21 @@ describe('TokenProvider resolution', () => {
     expect((await xdg.tokens.account()).gh.login).toBe('carol');
   });
 
+  it("uses gh's Windows locations and has no file modes to warn about there", async () => {
+    const { tokens, logs } = setup({
+      platform: 'win32',
+      tokenFile: 'C:\\Users\\u\\token.txt',
+      env: { Path: '', ProgramFiles: 'C:\\Program Files', APPDATA: 'C:\\Users\\u\\AppData\\Roaming', USERPROFILE: 'C:\\Users\\u' },
+      files: {
+        'C:\\Program Files\\GitHub CLI\\gh.exe': {},
+        'C:\\Users\\u\\AppData\\Roaming\\GitHub CLI\\hosts.yml': { text: 'github.com:\n  user: dana\n' },
+        'C:\\Users\\u\\token.txt': { text: 'ghp_x', mode: 0o100666 },
+      },
+    });
+    expect(await tokens.account()).toMatchObject({ source: 'file', gh: { available: true, path: 'C:\\Program Files\\GitHub CLI\\gh.exe', login: 'dana' } });
+    expect(logs.filter((l) => l.includes('readable by other users'))).toEqual([]);
+  });
+
   it('caches for about 30 s; fresh, invalidate() and concurrent callers', async () => {
     const { tokens, gh, clock } = setup();
     await Promise.all([tokens.get(), tokens.get(), tokens.get()]);

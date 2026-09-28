@@ -8,6 +8,7 @@ import { readConfigFile, writeConfigFile, type ConfigFile } from './config-file'
 import { openDb } from './db/db';
 import { testTokens } from './test/tokens';
 
+const posix = process.platform !== 'win32';
 const dirs: string[] = [];
 function temp() { const dir = mkdtempSync(join(tmpdir(), 'gh-dash-config-')); dirs.push(dir); return dir; }
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -48,8 +49,9 @@ describe('XDG config and state', () => {
   it('puts the diff cache next to the database unless GH_DASH_CACHE_DB says otherwise', () => {
     const home = temp();
     expect(loadConfig({ HOME: home }).cacheDbPath).toBe(join(home, '.local/state/gh-dash/gh-dash-cache.db'));
-    expect(loadConfig({ GH_DASH_DB: '/data/dash.sqlite' }).cacheDbPath).toBe('/data/dash-cache.sqlite');
-    expect(loadConfig({ GH_DASH_DB: '/data/dash' }).cacheDbPath).toBe('/data/dash-cache.db');
+    // Derived paths are native: \data\dash-cache.sqlite on Windows.
+    expect(loadConfig({ GH_DASH_DB: '/data/dash.sqlite' }).cacheDbPath).toBe(join('/data', 'dash-cache.sqlite'));
+    expect(loadConfig({ GH_DASH_DB: '/data/dash' }).cacheDbPath).toBe(join('/data', 'dash-cache.db'));
     expect(loadConfig({ GH_DASH_DB: ':memory:' }).cacheDbPath).toBe(':memory:');
     expect(loadConfig({ GH_DASH_DB: '/data/a.db', GH_DASH_CACHE_DB: '/tmp/c.db' }).cacheDbPath).toBe('/tmp/c.db');
     expect(() => loadConfig({ GH_DASH_DB: '/data/a.db', GH_DASH_CACHE_DB: '/data/a.db' })).toThrow(/must not be the main database/);
@@ -97,7 +99,8 @@ describe('XDG config and state', () => {
     const path = loadConfig({ HOME: home }).dbPath;
     const db = openDb(path);
     db.close();
-    expect(statSync(dirname(path)).mode & 0o777).toBe(0o700);
+    // Windows has no file modes (only a read-only bit): nothing to check there.
+    if (posix) expect(statSync(dirname(path)).mode & 0o777).toBe(0o700);
     const existing = join(home, 'existing');
     mkdirSync(existing, { mode: 0o750 });
     const mode = statSync(existing).mode;
@@ -119,7 +122,7 @@ describe('config.json layering', () => {
     const file = json({ host: '0.0.0.0', port: 4790, sync: false, db: '/data/a.db', myEmails: ['A@x.com'], allowedHosts: ['Dash.Example.com.'], timezone: 'Europe/Berlin', password: 'pw' });
     const config = loadConfig({ PORT: '4791', GH_DASH_API_KEY: 'key' }, file);
     expect(config).toMatchObject({
-      host: '0.0.0.0', port: 4791, syncEnabled: false, dbPath: '/data/a.db', cacheDbPath: '/data/a-cache.db', myEmails: ['a@x.com'],
+      host: '0.0.0.0', port: 4791, syncEnabled: false, dbPath: '/data/a.db', cacheDbPath: join('/data', 'a-cache.db'), myEmails: ['a@x.com'],
       allowedHosts: ['dash.example.com'], defaultTz: 'Europe/Berlin', password: 'pw', apiKey: 'key', configPath: file.path, warnings: [],
     });
     expect(config.sources).toMatchObject({ host: 'file', port: 'env', sync: 'file', db: 'file', cacheDb: 'default', apiKey: 'env', password: 'file', tokenFile: 'default' });
@@ -131,7 +134,7 @@ describe('config.json layering', () => {
   it('lets a set but empty variable override config.json, as it does over the env file', () => {
     const file = json({ password: 'pw', apiKey: 'k', host: '0.0.0.0', db: '/data/a.db' });
     const config = loadConfig({ GH_DASH_PASSWORD: '', GH_DASH_API_KEY: ' ', HOST: '', GH_DASH_DB: '', HOME: '/home/u' }, file);
-    expect(config).toMatchObject({ password: null, apiKey: null, host: '127.0.0.1', dbPath: '/home/u/.local/state/gh-dash/gh-dash.db' });
+    expect(config).toMatchObject({ password: null, apiKey: null, host: '127.0.0.1', dbPath: join('/home/u', '.local/state/gh-dash/gh-dash.db') });
     expect(config.sources).toMatchObject({ password: 'env', apiKey: 'env', host: 'env', db: 'env' });
   });
 
@@ -171,12 +174,13 @@ describe('config.json layering', () => {
     expect(env.GITHUB_TOKEN).toBe('from-env-file');
     expect(() => loadServerConfig({ HOME: home, GH_DASH_CONFIG: join(home, 'missing.json') })).not.toThrow();
     writeFileSync(path, '{ nope');
-    expect(() => loadServerConfig({ HOME: home })).toThrow(new RegExp(`${path}: invalid JSON`));
+    expect(() => loadServerConfig({ HOME: home })).toThrow(`${path}: invalid JSON`);
     writeFileSync(path, '{"port": "4790"}');
     expect(() => loadServerConfig({ HOME: home })).toThrow(/port: /);
   });
 
-  it('warns when a config.json holding secrets is readable by others', () => {
+  // Unix file modes; the check is skipped on Windows.
+  it.runIf(posix)('warns when a config.json holding secrets is readable by others', () => {
     const home = temp();
     const path = configJsonPath({ HOME: home });
     writeConfigFile(path, { password: 'pw' });

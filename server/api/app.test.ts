@@ -138,8 +138,12 @@ describe('web app', () => {
   });
 
   it('serves built files and 404s missing assets and top-level files', async () => {
-    expect(await (await app.request('/assets/app-1234.js')).text()).toBe('export {};');
-    expect((await app.request('/favicon.svg')).status).toBe(200);
+    const asset = await app.request('/assets/app-1234.js');
+    expect(await asset.text()).toBe('export {};');
+    expect(asset.headers.get('cache-control')).toBe('public, max-age=31536000, immutable');
+    const favicon = await app.request('/favicon.svg');
+    expect(favicon.status).toBe(200);
+    expect(favicon.headers.get('cache-control')).toBe('no-cache');
     for (const path of ['/assets/missing.js', '/assets/sub/x', '/missing.png', '/robots.txt']) expect((await app.request(path)).status, path).toBe(404);
   });
 });

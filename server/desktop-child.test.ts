@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -81,7 +82,8 @@ describe('runDesktopChild', () => {
       [DESKTOP_ENV.desktop]: '1',
       [DESKTOP_ENV.config]: join(dir, 'config.json'),
       [DESKTOP_ENV.dataDir]: join(dir, 'data'),
-      [DESKTOP_ENV.socket]: join(dir, 's'),
+      // What main passes: a unix socket path, or a named pipe on Windows.
+      [DESKTOP_ENV.socket]: process.platform === 'win32' ? `\\\\.\\pipe\\ghd-test-${randomBytes(8).toString('hex')}` : join(dir, 's'),
       [DESKTOP_ENV.secret]: 'e'.repeat(64),
     };
   }

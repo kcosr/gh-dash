@@ -47,11 +47,14 @@ export const pidAlive = (pid: number): boolean => {
   }
 };
 
+/** Where createSocketLocation makes its folders: none on Windows, whose named pipes go away with their process. */
+export const socketBases = (platform: NodeJS.Platform = process.platform): string[] => (platform === 'win32' ? [] : [tmpdir(), '/tmp']);
+
 /**
  * Removes socket folders left by launches that crashed or were killed (a clean quit removes its own). Only our
  * own folders, by name and owner, whose process is gone. Returns the removed paths.
  */
-export function cleanupStaleSocketDirs(bases: string[] = [tmpdir(), '/tmp'], isAlive = pidAlive, uid = process.getuid?.()): string[] {
+export function cleanupStaleSocketDirs(bases: string[] = socketBases(), isAlive = pidAlive, uid = process.getuid?.()): string[] {
   const removed: string[] = [];
   for (const base of new Set(bases)) {
     let names: string[];

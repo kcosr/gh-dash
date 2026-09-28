@@ -16,13 +16,12 @@ export function installStatic(app: Hono, webDir: string): void {
 
   app.use('*', async (c, next) => {
     if (c.req.path.startsWith('/api/') || !existsSync(indexPath)) return next();
-    files ??= serveStatic({
-      root: webDir,
-      onFound: (path, ctx) => {
-        ctx.header('Cache-Control', path.includes('/assets/') ? 'public, max-age=31536000, immutable' : 'no-cache');
-      },
-    });
-    return files(c, next);
+    files ??= serveStatic({ root: webDir });
+    // A Response means a file was found (onFound runs after serveStatic built it, too late for headers). Decided by
+    // URL: the file path is native (backslashes on Windows) and includes webDir itself.
+    const res = await files(c, next);
+    if (res instanceof Response) res.headers.set('Cache-Control', c.req.path.startsWith('/assets/') ? 'public, max-age=31536000, immutable' : 'no-cache');
+    return res;
   });
 
   app.get('*', (c) => {

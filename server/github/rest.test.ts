@@ -158,6 +158,18 @@ describe('GitHubRestClient', () => {
     expect(await moved.c.sha('/repos/o/r/commits/pull/1/head', sha)).toBe('c'.repeat(40));
   });
 
+  it('returns ETags and sends them back verbatim, treating 304 as unchanged', async () => {
+    const etag = 'W/"46be1d56"';
+    const first = client([() => json({ n: 1 }, { etag })]);
+    expect(await first.c.versioned('/repos/o/r/pulls/1')).toEqual({ body: { n: 1 }, etag });
+    expect((first.calls[0]!.init.headers as Record<string, string>)['If-None-Match']).toBeUndefined();
+    const same = client([() => new Response(null, { status: 304, headers: { etag } })]);
+    expect(await same.c.versioned('/repos/o/r/pulls/1', etag)).toBeNull();
+    expect((same.calls[0]!.init.headers as Record<string, string>)['If-None-Match']).toBe(etag);
+    const changed = client([() => json({ n: 2 }, { etag: 'W/"other"' })]);
+    expect(await changed.c.versioned('/repos/o/r/pulls/1', etag)).toEqual({ body: { n: 2 }, etag: 'W/"other"' });
+  });
+
   it('reads raw contents up to a size limit and recognises non-file answers', async () => {
     const raw = (body: string, headers: Record<string, string> = {}) => () =>
       new Response(body, { headers: { 'content-type': 'application/vnd.github.raw+json', ...headers } });

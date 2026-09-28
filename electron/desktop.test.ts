@@ -26,7 +26,12 @@ const validate = async (choice: TokenChoice | null, token?: string | null) => {
   return { ok, account: account({ choice, source: ok ? (choice === 'gh' ? 'gh-cli' : 'app') : 'none', error: ok ? null : 'Bad credentials' }) };
 };
 
-const fakeChild = () => ({ status: 'running', apiUrl: null as string | null, lastError: null as string | null, setToken: vi.fn(validate), sendSetToken: vi.fn(validate) });
+const fakeChild = () => {
+  /** Every set-token the child got, in order (setToken and sendSetToken both send one). */
+  const sent: [TokenChoice | null, string | null | undefined][] = [];
+  const send = (choice: TokenChoice | null, token?: string | null) => (sent.push([choice, token]), validate(choice, token));
+  return { status: 'running', apiUrl: null as string | null, lastError: null as string | null, sent, setToken: vi.fn(send), sendSetToken: vi.fn(send) };
+};
 function fakeTokens() {
   let stored: string | null = null;
   return {
@@ -108,6 +113,47 @@ describe('tokens', () => {
     expect(child.sendSetToken).toHaveBeenCalledWith('app', 'ghp_saved');
     next.onChildReady();
     expect(child.sendSetToken).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not let a slow keychain undo a sign-out or a new token made meanwhile', async () => {
+    await desktop.setToken('ghp_saved', true);
+    const launch = () => new Desktop({ child: child as unknown as ServerChild, tokens: tokens as unknown as TokenStore, configPath, dataDir: dir, version: '1', restart, log: () => {} });
+    const slowLoad = () => {
+      let decrypted!: () => void;
+      tokens.load.mockImplementationOnce(() => new Promise((r) => (decrypted = () => r('ghp_saved'))));
+      return async () => {
+        await vi.waitFor(() => expect(tokens.load).toHaveBeenCalled());
+        decrypted();
+      };
+    };
+
+    // Sign out while the remembered token is still being decrypted.
+    let next = launch();
+    let decrypt = slowLoad();
+    const restored = next.restoreToken();
+    const signedOut = next.signOut();
+    await decrypt();
+    await Promise.all([restored, signedOut]);
+    expect(child.sent.at(-1)).toEqual([null, null]);
+    expect(readConfig().tokenSource).toBeNull();
+    expect(tokens.has()).toBe(false);
+    child.sent.length = 0;
+    next.onChildReady();
+    expect(child.sent).toEqual([]);
+
+    // Paste another token while it's being decrypted.
+    await desktop.setToken('ghp_saved', true);
+    tokens.load.mockClear();
+    next = launch();
+    decrypt = slowLoad();
+    const restoredAgain = next.restoreToken();
+    const pasted = next.setToken('ghp_new', false);
+    await decrypt();
+    await Promise.all([restoredAgain, pasted]);
+    expect(child.sent.at(-1)).toEqual(['app', 'ghp_new']);
+    child.sent.length = 0;
+    next.onChildReady();
+    expect(child.sent).toEqual([['app', 'ghp_new']]);
   });
 
   it('keeps an unremembered token for the session only', async () => {

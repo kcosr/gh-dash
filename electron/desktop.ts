@@ -75,13 +75,19 @@ export class Desktop {
   // Tokens
   // -------------------------------------------------------------------------
 
-  /** At launch: decrypt the remembered token when the saved choice is 'app', and hand it to the child. */
-  async restoreToken(): Promise<void> {
-    if (this.configOrEmpty().tokenSource !== 'app' || !this.d.tokens.has()) return;
-    this.appToken = await this.d.tokens.load();
-    this.d.log(`[token] remembered token ${this.appToken ? 'restored' : 'dropped'}`);
-    // If the child is already up, onChildReady ran without the token.
-    if (this.appToken && this.d.child.status === 'running') this.pushToken();
+  /**
+   * At launch: decrypt the remembered token when the saved choice is 'app', and hand it to the child. Queued like a
+   * mutation: a sign-out or switch made while the keychain is still answering runs after it, instead of being
+   * overwritten by the restored token (or having its keychain file re-encrypted or dropped by load()).
+   */
+  restoreToken(): Promise<void> {
+    return this.exclusive(async () => {
+      if (this.configOrEmpty().tokenSource !== 'app' || !this.d.tokens.has()) return;
+      this.appToken = await this.d.tokens.load();
+      this.d.log(`[token] remembered token ${this.appToken ? 'restored' : 'dropped'}`);
+      // If the child is already up, onChildReady ran without the token.
+      if (this.appToken && this.d.child.status === 'running') this.pushToken();
+    });
   }
 
   /** ServerChild.onReady: runs before requests are let through, so the first page load already has the token. */

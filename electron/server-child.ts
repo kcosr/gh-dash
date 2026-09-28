@@ -33,7 +33,7 @@ const TOKEN_TIMEOUT_MS = 90_000;
 
 type Outcome = { kind: 'ready'; apiUrl: string | null } | { kind: 'fatal'; message: string } | { kind: 'exit'; message: string };
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const STOPPED: StartResult = { ok: false, message: 'stopped' };
 
 export class ServerChild {
   status: ChildStatus = 'idle';
@@ -42,12 +42,19 @@ export class ServerChild {
   lastError: string | null = null;
   private proc: UtilityProcess | null = null;
   private exited: Promise<number> | null = null;
+  /** The start in progress, crash recovery included (its backoff too), so stop() can wait it out. */
   private starting: Promise<StartResult> | null = null;
-  private stopRequested = false;
+  /**
+   * Bumped by every launch and by stop(). A callback from an earlier launch (its exit, a late ready/fatal, a backoff
+   * ending) sees a newer generation and leaves the replacement alone.
+   */
+  private generation = 0;
+  /** Ends the current backoff early (stop()). */
+  private cancelBackoff: (() => void) | null = null;
   private crashes: number[] = [];
   private waiters: (() => void)[] = [];
   private nextId = 1;
-  private pending = new Map<number, { resolve: (r: TokenResult) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }>();
+  private pending = new Map<number, { resolve: (r: TokenResult) => void; reject: (e: Error) => void; timer: NodeJS.Timeout; proc: UtilityProcess | null }>();
 
   constructor(private readonly opts: ServerChildOptions) {}
 
@@ -63,9 +70,7 @@ export class ServerChild {
 
   start(): Promise<StartResult> {
     if (this.status === 'running') return Promise.resolve({ ok: true, apiUrl: this.apiUrl });
-    this.stopRequested = false;
-    this.starting ??= this.startLoop().finally(() => (this.starting = null));
-    return this.starting;
+    return this.launch(0);
   }
 
   async restart(): Promise<StartResult> {
@@ -75,7 +80,9 @@ export class ServerChild {
 
   /** `shutdown` message, then wait for the exit; kill after the timeout. */
   async stop(timeoutMs = 5_000): Promise<void> {
-    this.stopRequested = true;
+    // Nothing from the current launch may start another child after this: not its exit, not a pending crash recovery.
+    this.generation++;
+    this.cancelBackoff?.();
     const proc = this.proc;
     const exited = this.exited;
     if (proc && exited) {
@@ -116,7 +123,7 @@ export class ServerChild {
         this.pending.delete(id);
         reject(new Error('The gh-dash server did not answer in time.'));
       }, TOKEN_TIMEOUT_MS);
-      this.pending.set(id, { resolve, reject, timer });
+      this.pending.set(id, { resolve, reject, timer, proc: this.proc });
       try {
         this.send(token === undefined ? { type: 'set-token', id, choice } : { type: 'set-token', id, choice, token });
       } catch (error) {
@@ -138,11 +145,23 @@ export class ServerChild {
     for (const wake of this.waiters.splice(0)) wake();
   }
 
-  private async startLoop(): Promise<StartResult> {
+  /** One start at a time; `delayMs` is the crash-recovery backoff before the first attempt. */
+  private launch(delayMs: number): Promise<StartResult> {
+    this.starting ??= this.startLoop(delayMs).finally(() => (this.starting = null));
+    return this.starting;
+  }
+
+  private async startLoop(delayMs: number): Promise<StartResult> {
+    let gen = this.generation;
+    this.setStatus('starting');
     for (;;) {
-      this.setStatus('starting');
-      const outcome = await this.spawnOnce();
-      if (this.stopRequested) return { ok: false, message: 'stopped' };
+      if (delayMs > 0) {
+        await this.backoff(delayMs);
+        if (gen !== this.generation) return STOPPED;
+      }
+      gen = ++this.generation;
+      const outcome = await this.spawnOnce(gen);
+      if (gen !== this.generation) return STOPPED;
       if (outcome.kind === 'ready') {
         this.apiUrl = outcome.apiUrl;
         this.lastError = null;
@@ -157,10 +176,8 @@ export class ServerChild {
         this.setStatus('failed');
         return { ok: false, message: outcome.message };
       }
-      const delay = BACKOFF_MS[Math.min(this.crashes.length, BACKOFF_MS.length) - 1]!;
-      this.opts.log(`[server] ${outcome.message}; retrying in ${delay} ms`);
-      await sleep(delay);
-      if (this.stopRequested) return { ok: false, message: 'stopped' };
+      delayMs = this.backoffMs();
+      this.opts.log(`[server] ${outcome.message}; retrying in ${delayMs} ms`);
     }
   }
 
@@ -171,7 +188,24 @@ export class ServerChild {
     return this.crashes.length <= MAX_CRASHES;
   }
 
-  private spawnOnce(): Promise<Outcome> {
+  private backoffMs(): number {
+    return BACKOFF_MS[Math.min(this.crashes.length, BACKOFF_MS.length) - 1]!;
+  }
+
+  /** Waits before a restart; stop() ends it early (and the caller then sees a newer generation). */
+  private backoff(ms: number): Promise<void> {
+    return new Promise<void>((resolve) => {
+      const end = () => {
+        clearTimeout(timer);
+        this.cancelBackoff = null;
+        resolve();
+      };
+      const timer = setTimeout(end, ms);
+      this.cancelBackoff = end;
+    });
+  }
+
+  private spawnOnce(gen: number): Promise<Outcome> {
     const t0 = Date.now();
     const proc = utilityProcess.fork(this.opts.script, [], { serviceName: 'gh-dash-server', stdio: 'pipe', env: this.opts.env() });
     this.proc = proc;
@@ -218,24 +252,19 @@ export class ServerChild {
       proc.once('exit', (code) => {
         if (this.proc === proc) this.proc = null;
         for (const [id, entry] of this.pending) {
+          if (entry.proc !== proc) continue;
           clearTimeout(entry.timer);
           entry.reject(new Error('The gh-dash server stopped before answering.'));
           this.pending.delete(id);
         }
         if (!settled) {
           done(fatal ? { kind: 'fatal', message: fatal } : { kind: 'exit', message: `The server exited during startup (code ${code})` });
-        } else if (this.status === 'running' && !this.stopRequested) {
+        } else if (gen === this.generation && this.status === 'running') {
           this.opts.log(`[server] exited unexpectedly (code ${code})`);
           this.apiUrl = null;
           if (this.crashBudget()) {
-            this.setStatus('starting');
-            const delay = BACKOFF_MS[Math.min(this.crashes.length, BACKOFF_MS.length) - 1]!;
-            // Requests wait (whenSettled) while the replacement starts.
-            void sleep(delay).then(() => {
-              if (this.stopRequested) return;
-              this.status = 'idle';
-              void this.start();
-            });
+            // Requests wait (whenSettled) while the replacement starts; a stop() or restart() meanwhile cancels it.
+            void this.launch(this.backoffMs());
           } else {
             this.lastError = `The server stopped unexpectedly (exit code ${code}) and kept failing.`;
             this.setStatus('failed');

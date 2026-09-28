@@ -4,7 +4,7 @@
  * and returns a web Response, so it runs under plain Node in tests.
  */
 import http from 'node:http';
-import { Readable } from 'node:stream';
+import { pipeline, Readable } from 'node:stream';
 import { DESKTOP_HOST, DESKTOP_SECRET_HEADER } from '../shared/desktop';
 import { ERROR_PAGE_CSP } from './csp';
 import { ACTION_PREFIX, type ErrorPageAction } from './error-page';
@@ -84,10 +84,14 @@ export function createProxy(opts: ProxyOptions) {
         if (empty) res.resume();
         resolve(new Response(empty ? null : (Readable.toWeb(res) as ReadableStream), { status, statusText: res.statusMessage, headers: out }));
       });
+      // The upload and the upstream request fail together (pipeline below); whichever fails first answers.
+      let failed = false;
       upstream.on('error', (error: NodeJS.ErrnoException) => {
-        if (responded) return; // mid-body failures surface on the response stream
+        if (responded || failed) return; // mid-body failures surface on the response stream
+        failed = true;
         // A kept-alive connection the (restarted) server already closed: safe to retry an idempotent request once.
-        if (!retried && upstream.reusedSocket && error.code === 'ECONNRESET' && (req.method === 'GET' || req.method === 'HEAD')) {
+        const idempotent = req.method === 'GET' || req.method === 'HEAD';
+        if (!retried && upstream.reusedSocket && error.code === 'ECONNRESET' && idempotent && !req.signal?.aborted) {
           resolve(forward(req, url, true));
           return;
         }
@@ -96,7 +100,17 @@ export function createProxy(opts: ProxyOptions) {
       });
       req.signal?.addEventListener('abort', () => upstream.destroy(), { once: true });
       if (req.body && req.method !== 'GET' && req.method !== 'HEAD') {
-        Readable.fromWeb(req.body as import('node:stream/web').ReadableStream).pipe(upstream);
+        const body = Readable.fromWeb(req.body as import('node:stream/web').ReadableStream);
+        // Answered here: pipeline aborts the upstream request, which then may not emit an error at all.
+        body.once('error', (error) => {
+          if (responded || failed) return;
+          failed = true;
+          opts.log(`[proxy] ${req.method} ${path}: the request body failed: ${error.message}`);
+          resolve(Response.json({ error: `The request body failed: ${error.message}` }, { status: 400, headers: { 'content-security-policy': opts.csp } }));
+        });
+        // Not pipe(): a failed or cancelled upload must abort the upstream request, and a failed upstream request
+        // cancel the upload, rather than throw in the main process. The listeners above report the error.
+        pipeline(body, upstream, () => {});
       } else {
         upstream.end();
       }

@@ -13,11 +13,18 @@ let dir: string;
 let socketPath: string;
 let server: http.Server;
 const seen: { method: string; url: string; headers: http.IncomingHttpHeaders; body: string }[] = [];
+/** Requests to /upload: never answered; the tests end them from the app side. */
+const uploads: http.IncomingMessage[] = [];
 
 beforeAll(async () => {
   dir = mkdtempSync(join(tmpdir(), 'ghd-proxy-test-'));
   socketPath = process.platform === 'win32' ? `\\\\.\\pipe\\ghd-proxy-test-${process.pid}` : join(dir, 's');
   server = http.createServer((req, res) => {
+    if (req.url === '/upload') {
+      req.on('error', () => {});
+      uploads.push(req);
+      return;
+    }
     let body = '';
     req.on('data', (c) => (body += c));
     req.on('end', () => {
@@ -89,6 +96,49 @@ describe('app:// proxy', () => {
     expect(res.headers.get('content-security-policy')).toBe(CSP);
     expect(res.headers.get('x-content-type-options')).toBe('nosniff');
     expect(res.headers.get('connection')).toBeNull();
+    p.close();
+  });
+
+  it('answers when the upload fails midway, and aborts the upstream request', async () => {
+    const p = proxy();
+    let fail!: (error: Error) => void;
+    const body = new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(new TextEncoder().encode('partial'));
+        fail = (error) => c.error(error);
+      },
+    });
+    uploads.length = 0;
+    const pending = p.handle(new Request('app://gh-dash/upload', { method: 'POST', body, duplex: 'half' } as RequestInit));
+    await vi.waitFor(() => expect(uploads).toHaveLength(1));
+    fail(new DOMException('The operation was aborted.', 'AbortError'));
+    const res = await pending;
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/request body failed: The operation was aborted/);
+    await vi.waitFor(() => expect(uploads[0]!.destroyed).toBe(true));
+    expect(uploads[0]!.complete).toBe(false);
+    p.close();
+  });
+
+  it('cancels the upload and the upstream request when the request is aborted', async () => {
+    const p = proxy();
+    const abort = new AbortController();
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(new TextEncoder().encode('partial'));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    uploads.length = 0;
+    const pending = p.handle(new Request('app://gh-dash/upload', { method: 'POST', body, duplex: 'half', signal: abort.signal } as RequestInit));
+    await vi.waitFor(() => expect(uploads).toHaveLength(1));
+    abort.abort();
+    expect((await pending).status).toBe(503);
+    await vi.waitFor(() => expect(cancelled).toBe(true));
+    await vi.waitFor(() => expect(uploads[0]!.destroyed).toBe(true));
     p.close();
   });
 

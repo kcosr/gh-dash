@@ -24,7 +24,7 @@ const ACTIVE_DAYS = 180;
 const byActivity = (a: Repo, b: Repo) =>
   (b.lastActivityAt ?? b.pushedAt ?? '').localeCompare(a.lastActivityAt ?? a.pushedAt ?? '') || a.name.localeCompare(b.name);
 
-export function Sidebar() {
+export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const { s, set, location, navigate } = useUrlState();
   const repos = useRepos();
   const settings = useSettings();
@@ -120,7 +120,7 @@ export function Sidebar() {
           aria-label={`Filter to ${r.name}`}
           aria-describedby={`repo-info-${r.name}`}
           title={`Filter to ${r.name}${r.description ? ` · ${r.description}` : ''}`}
-          onClick={() => set({ repos: [r.name] })}
+          onClick={() => { set({ repos: [r.name] }); onNavigate?.(); }}
         >
           <span className="rname">{r.name}</span>
           {r.visibility === 'private' && <span className="lk" title="Private"><Icon name="lock" /></span>}
@@ -233,7 +233,7 @@ export function Sidebar() {
       </div>
       {(views.data ?? []).map((v) => {
         const on = v.path === location.pathname && canonicalQuery(v.query) === curQuery;
-        const go = () => navigate(`${v.path}${v.query ? `?${v.query}` : ''}`);
+        const go = () => { navigate(`${v.path}${v.query ? `?${v.query}` : ''}`); onNavigate?.(); };
         return (
           <div
             key={v.id}

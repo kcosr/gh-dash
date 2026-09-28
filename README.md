@@ -41,6 +41,8 @@ from your selection. Sidebar counts show all open PRs and issues as of the last 
 Click repository names in lists and activity to filter to them. Drag the sidebar's
 divider to resize it; its width is saved in your browser. You can also focus the
 divider and use arrow keys, or double-click it to reset the width.
+On narrow screens, the sidebar starts closed. Use the sidebar button to open it
+full screen, then choose a repository or tap Close to return to the list.
 
 ## Configuration and deployment
 

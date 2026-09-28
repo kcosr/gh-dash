@@ -341,3 +341,24 @@ ul.links { margin: 0; padding-left: 18px; font-size: 13px; color: var(--text-2);
 .repo-grid { grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); }
 .rcard .rc-foot { margin-top: auto; }
 .btn-group { display: inline-flex; gap: 8px; margin-left: auto; }
+
+/* Repository controls occupy the full screen on phones instead of squeezing the list. */
+.mobile-sidebar { position: fixed; inset: 0; z-index: 50; display: flex; flex-direction: column; height: 100dvh; background: var(--page); }
+.mobile-sidebar-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: max(12px, env(safe-area-inset-top)) 16px 12px; border-bottom: 1px solid var(--border); }
+.mobile-sidebar-head h2 { margin: 0; font-size: 17px; }
+.mobile-sidebar-head .btn { min-height: 44px; }
+.mobile-sidebar .sidebar { flex: 1; border-right: 0; overscroll-behavior: contain; padding-bottom: max(24px, env(safe-area-inset-bottom)); }
+.mobile-sidebar .repo-item, .mobile-sidebar .set-item { height: 44px; }
+.mobile-sidebar .side-quick button, .mobile-sidebar .seg button, .mobile-sidebar .side-more { min-height: 40px; }
+.mobile-sidebar input { font-size: 16px; }
+.mobile-sidebar .mini { min-width: 40px; min-height: 40px; }
+@media (max-width: 900px) {
+  .app { height: 100dvh; grid-template-rows: auto minmax(0, 1fr); }
+  .topbar { flex-wrap: wrap; gap: 8px; padding: 8px; }
+  .topbar .brand { margin-right: 0; }
+  .topbar .brand-name, .topbar > .sync, .topbar .top-search kbd, .topbar .sync-label { display: none; }
+  .topbar .nav { order: 1; flex: 0 0 100%; min-width: 0; overflow-x: auto; }
+  .topbar .nav a { flex: none; min-height: 40px; }
+  .topbar .btn, .topbar .top-search { min-width: 40px; height: 40px; justify-content: center; }
+  .topbar .top-search { padding: 0; }
+}

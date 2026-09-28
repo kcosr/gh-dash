@@ -43,7 +43,9 @@ export function useSyncNow() {
   };
 }
 
-export function TopBar({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () => void }) {
+export function TopBar({ theme, onToggleTheme, onOpenSidebar, sidebarOpen = false }: {
+  theme: Theme; onToggleTheme: () => void; onOpenSidebar?: () => void; sidebarOpen?: boolean;
+}) {
   const location = useLocation();
   const view = viewFromPath(location.pathname);
   const { openPalette } = useUI();
@@ -51,8 +53,12 @@ export function TopBar({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: 
 
   return (
     <header className="topbar">
+      {onOpenSidebar && <button type="button" className="btn icon" onClick={onOpenSidebar}
+        aria-label="Open sidebar" aria-haspopup="dialog" aria-controls="mobile-sidebar" aria-expanded={sidebarOpen}>
+        <Icon name="list" />
+      </button>}
       <Link to={`/prs${carry}`} className="brand" aria-label="gh-dash home">
-        <span className="mark"><Icon name="pulse" /></span>gh-dash
+        <span className="mark"><Icon name="pulse" /></span><span className="brand-name">gh-dash</span>
       </Link>
       <nav className="nav" aria-label="Main">
         {NAV.map((n) => {
@@ -66,7 +72,7 @@ export function TopBar({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: 
         })}
       </nav>
       <span className="spacer" />
-      <button type="button" className="top-search" onClick={openPalette}>
+      <button type="button" className="top-search" onClick={openPalette} aria-label="Search repositories, pull requests, and views">
         <Icon name="search" />
         <span>Search repos, PRs, views…</span>
         <kbd>{MOD_K}</kbd>
@@ -124,13 +130,14 @@ function SyncButton() {
   return (
     <button
       type="button"
-      className="btn"
+      className="btn sync-trigger"
+      aria-label="Sync now"
       disabled={disabled}
       onClick={() => sync.run()}
       title={st?.tokenSource === 'none' ? 'Set GITHUB_TOKEN or run `gh auth login` first' : 'Fetch what changed on GitHub'}
     >
       <Icon name="sync" />
-      Sync now
+      <span className="sync-label">Sync now</span>
     </button>
   );
 }

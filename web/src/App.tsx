@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider, useIsFetching, useQueryClient } from '@tanstack/react-query';
-import { Suspense, lazy, useEffect, useRef } from 'react';
+import { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import { Navigate, Outlet, RouterProvider, createBrowserRouter, useLocation, useRouteError } from 'react-router';
 import { useRepos, useSyncStatus } from './api/hooks';
 import { CommandPalette } from './components/CommandPalette';
@@ -9,6 +9,7 @@ import { PromptDialog } from './components/PromptDialog';
 import { FirstSyncCard, NoTokenCard } from './components/Setup';
 import { Sidebar } from './components/Sidebar';
 import { useSidebarResize } from './components/SidebarResize';
+import { MobileSidebar, useCompactSidebar } from './components/MobileSidebar';
 import { ToastProvider, useToast } from './components/Toasts';
 import { TopBar, useSyncNow, useTheme } from './components/TopBar';
 import { UIProvider, useUI } from './components/ui';
@@ -143,13 +144,19 @@ function Shell() {
     : null;
   const hasSide = !setup && view !== 'repos' && view !== 'repo' && view !== 'settings';
   const drawer = !setup && s.pr ? s.pr : null;
-  const sidebar = useSidebarResize(hasSide, !!drawer);
+  const compact = useCompactSidebar();
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  useEffect(() => setSidebarOpen(false), [compact, view]);
+  const mobileOpen = hasSide && compact && sidebarOpen;
+  const desktopSide = hasSide && !compact;
+  const sidebar = useSidebarResize(desktopSide, !!drawer);
 
   return (
     <>
-      <div ref={sidebar.frame} style={sidebar.style} className={cx('app', !hasSide && 'no-side', drawer && 'has-drawer', sidebar.dragging && 'resizing-sidebar')}>
-        <TopBar theme={theme} onToggleTheme={toggleTheme} />
-        {hasSide && <div className="sidebar-pane"><Sidebar />{sidebar.separator}</div>}
+      <div ref={sidebar.frame} style={sidebar.style} inert={mobileOpen} className={cx('app', !desktopSide && 'no-side', drawer && 'has-drawer', sidebar.dragging && 'resizing-sidebar')}>
+        <TopBar theme={theme} onToggleTheme={toggleTheme} sidebarOpen={mobileOpen}
+          onOpenSidebar={hasSide && compact ? () => setSidebarOpen(true) : undefined} />
+        {desktopSide && <div className="sidebar-pane"><Sidebar />{sidebar.separator}</div>}
         {setup ? (
           <main className="main tint">
             <div className="scroll">
@@ -165,6 +172,7 @@ function Shell() {
         )}
         {drawer && <PrDrawer key={drawer} id={drawer} />}
       </div>
+      {mobileOpen && <MobileSidebar onClose={() => setSidebarOpen(false)} />}
       {ui.paletteOpen && <CommandPalette onClose={ui.closePalette} onSync={() => sync.run()} onToggleTheme={toggleTheme} />}
       {ui.exportTab && <ExportModal initialTab={ui.exportTab} onClose={ui.closeExport} />}
       {ui.prompt && <PromptDialog req={ui.prompt} onClose={ui.closePrompt} />}

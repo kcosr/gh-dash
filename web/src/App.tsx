@@ -15,6 +15,7 @@ import { ToastProvider, useToast } from './components/Toasts';
 import { TopBar, useSyncNow, useTheme } from './components/TopBar';
 import { UIProvider, useUI } from './components/ui';
 import { hasBlockingLayer, isTypingTarget, topLayer } from './lib/layers';
+import { getSidebarHidden, setSidebarHidden } from './lib/storage';
 import { plural } from './lib/time';
 import { repoFromPath, useUrlState } from './lib/urlState';
 import { cx, isChunkLoadError } from './lib/util';
@@ -98,7 +99,7 @@ function useSyncWatcher() {
   }, [st, qc, toast]);
 }
 
-function useGlobalKeys(openSidebarSearch?: () => void) {
+function useGlobalKeys(openSidebarSearch?: () => void, toggleSidebar?: () => void) {
   const ui = useUI();
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -114,7 +115,14 @@ function useGlobalKeys(openSidebarSearch?: () => void) {
         if (el && el !== document.body) el.blur();
         return;
       }
-      if (hasBlockingLayer() || isTypingTarget(document.activeElement) || e.metaKey || e.ctrlKey || e.altKey) return;
+      if (isTypingTarget(document.activeElement) || e.metaKey || e.ctrlKey || e.altKey) return;
+      // Also while the diff view is open (it's where the room helps most), but not behind a dialog.
+      if (e.key === '[' && toggleSidebar && !ui.paletteOpen && !ui.prompt && !ui.exportTab) {
+        e.preventDefault();
+        toggleSidebar();
+        return;
+      }
+      if (hasBlockingLayer()) return;
       if (e.key === '/') {
         const el = ['q', 'repoQ'].map((id) => document.getElementById(id)).find((el) => el && el.getClientRects().length > 0 && getComputedStyle(el).visibility === 'visible');
         if (el) { e.preventDefault(); (el as HTMLInputElement).focus(); (el as HTMLInputElement).select(); }
@@ -123,7 +131,7 @@ function useGlobalKeys(openSidebarSearch?: () => void) {
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [ui, openSidebarSearch]);
+  }, [ui, openSidebarSearch, toggleSidebar]);
 }
 
 function Shell() {
@@ -149,7 +157,10 @@ function Shell() {
   const drawer = !setup && s.pr ? s.pr : null;
   const diff = !setup && s.diff ? s.diff : null;
   const compact = useCompactSidebar();
+  // Narrow screens open the sidebar as a full-screen panel; on desktop it can be hidden (saved in the browser).
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sideHidden, setSideHidden] = useState(getSidebarHidden);
+  const [searchSide, setSearchSide] = useState(false);
   const [sidebarSearch, setSidebarSearch] = useState(false);
   useEffect(() => setSidebarOpen(false), [compact, view, drawer]);
   useEffect(() => {
@@ -157,17 +168,35 @@ function Shell() {
     window.addEventListener('popstate', close);
     return () => window.removeEventListener('popstate', close);
   }, []);
-  useGlobalKeys(hasSide && compact ? () => { setSidebarSearch(true); setSidebarOpen(true); } : undefined);
   const mobileOpen = hasSide && compact && sidebarOpen;
-  const desktopSide = hasSide && !compact;
+  const canHideSide = hasSide && !compact;
+  const desktopSide = canHideSide && !sideHidden;
+  const toggleSide = () => {
+    // Hiding the pane with focus inside would drop focus to the page: keep it on the toggle.
+    if (!sideHidden && document.activeElement?.closest('#sidebar')) document.querySelector<HTMLElement>('[aria-controls="sidebar"]')?.focus();
+    setSideHidden(!sideHidden);
+    setSidebarHidden(!sideHidden);
+  };
+  // "/" with no filter in view searches repositories: show the hidden pane, then focus its search.
+  useEffect(() => {
+    if (!searchSide || !desktopSide) return;
+    document.getElementById('repoQ')?.focus();
+    setSearchSide(false);
+  }, [searchSide, desktopSide]);
+  useGlobalKeys(
+    hasSide && compact ? () => { setSidebarSearch(true); setSidebarOpen(true); }
+      : canHideSide && sideHidden ? () => { setSearchSide(true); toggleSide(); } : undefined,
+    canHideSide ? toggleSide : undefined,
+  );
   const sidebar = useSidebarResize(desktopSide, !!drawer);
 
   return (
     <>
       <div ref={sidebar.frame} style={sidebar.style} inert={mobileOpen} className={cx('app', !desktopSide && 'no-side', drawer && 'has-drawer', diff && 'has-diff', sidebar.dragging && 'resizing-sidebar')}>
         <TopBar theme={theme} onToggleTheme={toggleTheme} sidebarOpen={mobileOpen}
-          onOpenSidebar={hasSide && compact ? () => { setSidebarSearch(false); setSidebarOpen(true); } : undefined} />
-        {desktopSide && <div className="sidebar-pane"><Sidebar />{sidebar.separator}</div>}
+          onOpenSidebar={hasSide && compact ? () => { setSidebarSearch(false); setSidebarOpen(true); } : undefined}
+          onToggleSidebar={canHideSide ? toggleSide : undefined} sidebarHidden={sideHidden} />
+        {desktopSide && <div id="sidebar" className="sidebar-pane"><Sidebar />{sidebar.separator}</div>}
         {setup ? (
           <main className="main tint">
             <div className="scroll">
@@ -186,7 +215,8 @@ function Shell() {
         {diff && <DiffView key={`diff:${diff}`} id={diff} compact={compact} />}
       </div>
       {mobileOpen && <MobileSidebar focusSearch={sidebarSearch} onClose={() => setSidebarOpen(false)} />}
-      {ui.paletteOpen && <CommandPalette onClose={ui.closePalette} onRun={() => setSidebarOpen(false)} onSync={() => sync.run()} onToggleTheme={toggleTheme} />}
+      {ui.paletteOpen && <CommandPalette onClose={ui.closePalette} onRun={() => setSidebarOpen(false)} onSync={() => sync.run()} onToggleTheme={toggleTheme}
+        onToggleSidebar={canHideSide ? toggleSide : undefined} sidebarHidden={sideHidden} />}
       {ui.exportTab && <ExportModal initialTab={ui.exportTab} onClose={ui.closeExport} />}
       {ui.prompt && <PromptDialog req={ui.prompt} onClose={ui.closePrompt} />}
     </>

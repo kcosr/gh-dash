@@ -3,6 +3,7 @@
 const THEME_KEY = 'gh-dash:theme';
 const VISIT_KEY = 'gh-dash:lastVisit';
 const SIDEBAR_KEY = 'gh-dash:sidebarWidth';
+const SIDEBAR_HIDDEN_KEY = 'gh-dash:sidebarHidden';
 const DIFF_KEY = 'gh-dash:diffView';
 export const SIDEBAR_MIN = 220;
 export const SIDEBAR_MAX = 480;
@@ -24,6 +25,15 @@ export function getSidebarWidth(): number {
 
 export function setSidebarWidth(value: number) {
   write(SIDEBAR_KEY, String(value));
+}
+
+/** Desktop only: narrow screens always start with the sidebar closed. */
+export function getSidebarHidden(): boolean {
+  return read(SIDEBAR_HIDDEN_KEY) === '1';
+}
+
+export function setSidebarHidden(hidden: boolean) {
+  write(SIDEBAR_HIDDEN_KEY, hidden ? '1' : '0');
 }
 
 export function getTheme(): Theme {

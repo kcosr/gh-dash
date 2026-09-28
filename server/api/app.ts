@@ -4,6 +4,7 @@ import type { Config } from '../config';
 import type { Db } from '../db/db';
 import type { DiffService } from '../diff/service';
 import type { SyncManager } from '../sync/manager';
+import type { TokenProvider } from '../token';
 import { installAuth, sameOriginWrites } from './auth';
 import { docsPage } from './docs';
 import { HttpError } from './http';
@@ -20,6 +21,8 @@ export interface AppDeps {
   config: Config;
   sync: SyncManager;
   diffs: DiffService;
+  /** The GitHub token, shared with sync and diffs: account routes, and the reason in "no token" errors. */
+  tokens: TokenProvider;
   /**
    * How requests reach this app instance. `tcp` (default): a network listener, guarded by the Host allowlist and
    * the optional password/API key. `desktop`: the desktop app's local socket; every request must carry

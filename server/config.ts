@@ -1,4 +1,3 @@
-import { execFileSync } from 'node:child_process';
 import { readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, extname, isAbsolute, join, resolve } from 'node:path';
@@ -9,7 +8,6 @@ import { DESKTOP_ENV } from '../shared/desktop';
 import { CONFIG_ENV, type ConfigFile, type LoadedConfigFile, readConfigFile } from './config-file';
 
 export type { TokenSource } from '../shared/api';
-import type { TokenSource } from '../shared/api';
 
 export type ConfigKey = keyof ConfigFile;
 
@@ -279,22 +277,4 @@ export function parseEmailList(value: string | undefined): string[] {
 export function parseHostList(value: string | undefined): string[] {
   const hosts = (value ?? '').split(',').map((h) => h.trim().toLowerCase().replace(/:\d+$/, '').replace(/\.$/, '')).filter(Boolean);
   return [...new Set(hosts)];
-}
-
-export interface ResolvedToken {
-  token: string | null;
-  source: TokenSource;
-}
-
-/** GITHUB_TOKEN env, else `gh auth token`, else none. The token is only ever held in memory. */
-export function resolveToken(env: NodeJS.ProcessEnv = process.env): ResolvedToken {
-  const fromEnv = env.GITHUB_TOKEN?.trim();
-  if (fromEnv) return { token: fromEnv, source: 'env' };
-  try {
-    const out = execFileSync('gh', ['auth', 'token'], { env, encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-    if (out) return { token: out, source: 'gh-cli' };
-  } catch {
-    // gh not installed or not logged in
-  }
-  return { token: null, source: 'none' };
 }

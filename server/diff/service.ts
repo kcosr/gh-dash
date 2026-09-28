@@ -2,13 +2,13 @@ import { promisify } from 'node:util';
 import { gunzip as gunzipCb, gzip as gzipCb } from 'node:zlib';
 import type { DiffCacheStats, Diff, DiffFile, DiffFileStatus } from '../../shared/api';
 import { HttpError } from '../api/http';
-import type { ResolvedToken } from '../config';
 import type { Db } from '../db/db';
 import { getSettings } from '../db/settings';
 import { GitHubClient } from '../github/client';
 import { GitHubRestClient } from '../github/rest';
 import { defaultSleep, GitHubError } from '../github/transport';
 import type { GqlRateLimit } from '../github/types';
+import { noTokenMessage, type TokenSupply } from '../token';
 import type { CacheEntry, DiffCache, PrEntry } from './cache';
 
 const gzip = promisify(gzipCb);
@@ -27,8 +27,6 @@ export const OPEN_PR_TTL_MS = 60 * 60_000;
 const BUILD_TIMEOUT_MS = 120_000;
 /** Full fetches of a PR diff before giving up on a PR that keeps changing underneath (each costs 3+ requests). */
 const PR_SNAPSHOT_ATTEMPTS = 2;
-/** After finding no token, don't run `gh auth token` (a blocking subprocess) again for this long. */
-const NO_TOKEN_RETRY_MS = 30_000;
 const MB = 1024 * 1024;
 
 // GitHub REST shapes (only the fields used here).
@@ -98,7 +96,8 @@ interface PrRow {
 export interface DiffServiceOptions {
   db: Db;
   cache: DiffCache;
-  resolveToken: () => ResolvedToken;
+  /** Where the GitHub token comes from (shared with the sync). */
+  tokens: TokenSupply;
   fetchImpl?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
   log?: (line: string) => void;
@@ -107,6 +106,7 @@ export interface DiffServiceOptions {
 }
 
 type Fetcher = (rest: GitHubRestClient, signal: AbortSignal) => Promise<Payload>;
+type Clients = { token: string; rest: GitHubRestClient; graphql: GitHubClient };
 
 const toFile = (f: RestFile): DiffFile => ({
   path: f.filename,
@@ -131,8 +131,6 @@ function checkPath(value: string): void {
   }
 }
 
-const noToken = () => new HttpError(503, 'No GitHub token: set GITHUB_TOKEN or run `gh auth login`');
-
 /**
  * Diffs and file contents fetched from GitHub's REST API on demand (never during sync) and kept in the diff
  * cache. Commits and file contents at a full SHA never change; PR diffs are revalidated as described at prDiff.
@@ -143,8 +141,7 @@ export class DiffService {
   private readonly opts: DiffServiceOptions;
   private readonly log: (line: string) => void;
   private readonly now: () => number;
-  private clients: { rest: GitHubRestClient; graphql: GitHubClient } | null = null;
-  private noTokenUntil = 0;
+  private clients: Clients | null = null;
   /** Identical requests in flight share one fetch (a double click doesn't spend twice). */
   private readonly inflight = new Map<string, Promise<Payload>>();
 
@@ -232,20 +229,25 @@ export class DiffService {
     return rows.length ? null : this.safely('lookup', () => this.cache.findCommit(repo.name, oid), null);
   }
 
-  private github(): { rest: GitHubRestClient; graphql: GitHubClient } {
-    if (this.clients) return this.clients;
-    if (this.now() < this.noTokenUntil) throw noToken();
-    const { token } = this.opts.resolveToken();
-    if (!token) {
-      this.noTokenUntil = this.now() + NO_TOKEN_RETRY_MS;
-      throw noToken();
-    }
+  /** Clients for the current token (which the provider caches): a new token, e.g. after `gh auth switch`, gets new ones. */
+  private async connect(): Promise<Clients> {
+    const resolved = await this.opts.tokens.get();
+    const { token } = resolved;
+    if (!token) throw new HttpError(503, noTokenMessage(resolved));
+    if (this.clients?.token === token) return this.clients;
     // Explicit defaults: an undefined option would override the clients' own.
     const { fetchImpl = fetch, sleep = defaultSleep } = this.opts;
     this.clients = {
+      token,
       rest: new GitHubRestClient({ token, fetchImpl, sleep }),
       graphql: new GitHubClient({ token, fetchImpl, sleep, maxAttempts: 2, maxRetryWaitMs: 10_000 }),
     };
+    return this.clients;
+  }
+
+  /** The clients of the fetch in progress (`fetching` connects first). */
+  private github(): Clients {
+    if (!this.clients) throw new HttpError(503, 'No GitHub token');
     return this.clients;
   }
 
@@ -260,7 +262,7 @@ export class DiffService {
 
   /** Runs a GitHub-backed fetch under the build deadline, mapping failures to API errors and logging what it cost. */
   private async fetching(label: string, fn: Fetcher): Promise<Payload> {
-    const gh = this.github();
+    const gh = await this.connect();
     const started = Date.now();
     const before = gh.rest.requests + gh.graphql.requests;
     try {
@@ -277,7 +279,11 @@ export class DiffService {
     } catch (err) {
       if (!(err instanceof GitHubError)) throw err;
       this.log(`[diff] ${label} failed: ${err.message}`);
-      if (err.kind === 'auth') this.clients = null; // pick up a new token next time
+      if (err.kind === 'auth') {
+        // Revoked or replaced: resolve the token again next time.
+        if (this.clients === gh) this.clients = null;
+        this.opts.tokens.invalidate();
+      }
       throw httpError(err);
     }
   }

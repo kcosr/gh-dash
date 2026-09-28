@@ -1,18 +1,20 @@
 import { randomUUID } from 'node:crypto';
-import type { SyncStatus } from '../../shared/api';
-import { resolveToken, type ResolvedToken, type TokenSource } from '../config';
+import type { SyncStatus, TokenSource } from '../../shared/api';
 import type { Db } from '../db/db';
 import { deleteMeta, getMeta, type SyncLockMeta, setMeta } from '../db/meta';
 import { getSettings } from '../db/settings';
 import { GitHubClient } from '../github/client';
 import { VIEWER } from '../github/queries';
 import type { ViewerData } from '../github/types';
+import type { TokenSupply } from '../token';
 import { runSync, type SyncProgress, type SyncRequest } from './sync';
 
 /** A lock whose heartbeat is older than this belongs to a dead process. */
 const LOCK_STALE_MS = 90_000;
 const HEARTBEAT_MS = 15_000;
 const TICK_MS = 30_000;
+/** After a scheduled attempt finds no token, try again this much later (not a whole interval: `gh auth login` is quick). */
+const NO_TOKEN_RETRY_MS = 60_000;
 
 type Trigger = SyncLockMeta['trigger'];
 
@@ -20,7 +22,8 @@ export interface SyncManagerOptions {
   db: Db;
   /** Whether this process runs the scheduler (GH_DASH_SYNC). */
   schedule: boolean;
-  resolveToken?: () => ResolvedToken;
+  /** Where the GitHub token comes from (shared with the diff service and the account routes). */
+  tokens: TokenSupply;
   log?: (line: string) => void;
 }
 
@@ -33,25 +36,31 @@ export type StartResult = { ok: true } | { ok: false; reason: 'running' | 'no-to
 export class SyncManager {
   private readonly db: Db;
   private readonly scheduleEnabled: boolean;
-  private readonly resolve: () => ResolvedToken;
+  private readonly tokens: TokenSupply;
   private readonly log: (line: string) => void;
   private readonly instance = randomUUID();
-  private tokenSource: TokenSource;
   private timer: NodeJS.Timeout | null = null;
   private current: Promise<void> | null = null;
+  /** A scheduled start is waiting for the token. */
+  private starting = false;
+  private stopped = false;
   /** After a scheduled attempt finds no token, don't retry before this time. */
   private noTokenUntil = 0;
 
   constructor(opts: SyncManagerOptions) {
     this.db = opts.db;
     this.scheduleEnabled = opts.schedule;
-    this.resolve = opts.resolveToken ?? (() => resolveToken());
+    this.tokens = opts.tokens;
     this.log = opts.log ?? ((line) => console.log(line));
-    this.tokenSource = this.resolve().source;
+    // A new token (`gh auth login`, a pasted one) is worth trying at the next tick rather than after the backoff.
+    this.tokens.onChange(() => {
+      this.noTokenUntil = 0;
+    });
   }
 
+  /** The token's source as last resolved; polling this picks up a login or logout within about 30 s. */
   getTokenSource(): TokenSource {
-    return this.tokenSource;
+    return this.tokens.peek().source;
   }
 
   private liveLock(): SyncLockMeta | null {
@@ -72,7 +81,7 @@ export class SyncManager {
       lastResult: last ? { newItems: last.newItems, errors: last.errors } : null,
       nextSyncAt: getMeta(this.db, 'nextSyncAt'),
       rateLimit: rl ? { limit: rl.limit, remaining: rl.remaining, resetAt: rl.resetAt } : null,
-      tokenSource: this.tokenSource,
+      tokenSource: this.getTokenSource(),
       viewer: getMeta(this.db, 'viewer')?.login ?? null,
     };
   }
@@ -80,7 +89,7 @@ export class SyncManager {
   /** Fetches the viewer once if the DB doesn't know it yet (1 API point). */
   async ensureViewer(): Promise<void> {
     if (getMeta(this.db, 'viewer')) return;
-    const { token } = this.resolve();
+    const { token } = await this.tokens.get();
     if (!token) return;
     const client = this.client(token);
     const data = await client.query<ViewerData>(VIEWER);
@@ -90,6 +99,12 @@ export class SyncManager {
   private client(token: string): GitHubClient {
     return new GitHubClient({
       token,
+      // A 401 means the token was revoked or replaced: resolve it again before the next use.
+      fetchImpl: async (input, init) => {
+        const res = await fetch(input, init);
+        if (res.status === 401) this.tokens.invalidate();
+        return res;
+      },
       onRateLimit: (rl) => setMeta(this.db, 'rateLimit', { limit: rl.limit, remaining: rl.remaining, resetAt: rl.resetAt }),
     });
   }
@@ -118,12 +133,14 @@ export class SyncManager {
     setMeta(this.db, 'syncLock', { ...lock, heartbeatAt: new Date().toISOString(), progress });
   }
 
-  start(trigger: Trigger, req: SyncRequest = {}): StartResult {
-    const resolved = this.resolve();
-    this.tokenSource = resolved.source;
-    if (!resolved.token) return { ok: false, reason: 'no-token' };
-    if (this.current || !this.acquire(trigger, req)) return { ok: false, reason: 'running' };
-    this.current = this.execute(trigger, req, resolved.token).finally(() => {
+  /** A manual start asks for the token afresh (the user may just have logged in); others take the cached one. */
+  async start(trigger: Trigger, req: SyncRequest = {}): Promise<StartResult> {
+    // Before resolving the token: a 409 needn't run gh.
+    if (this.current || this.liveLock()) return { ok: false, reason: 'running' };
+    const { token } = await this.tokens.get({ fresh: trigger === 'manual' });
+    if (!token) return { ok: false, reason: 'no-token' };
+    if (this.stopped || this.current || !this.acquire(trigger, req)) return { ok: false, reason: 'running' };
+    this.current = this.execute(trigger, req, token).finally(() => {
       this.current = null;
       this.reschedule();
     });
@@ -202,13 +219,20 @@ export class SyncManager {
     const due = Math.max(last ? Date.parse(last.at) + interval : 0, this.noTokenUntil);
     const next = new Date(Math.max(due, Date.now())).toISOString();
     if (getMeta(this.db, 'nextSyncAt') !== next && !this.current) setMeta(this.db, 'nextSyncAt', next);
-    if (Date.now() < due || this.current || this.liveLock()) return;
-    const res = this.start(trigger);
-    if (!res.ok && res.reason === 'no-token') this.noTokenUntil = Date.now() + interval;
+    if (Date.now() < due || this.current || this.starting || this.liveLock()) return;
+    this.starting = true;
+    void this.start(trigger)
+      .then((res) => {
+        if (!res.ok && res.reason === 'no-token') this.noTokenUntil = Date.now() + NO_TOKEN_RETRY_MS;
+      })
+      .finally(() => {
+        this.starting = false;
+      });
   }
 
   /** Stops the scheduler and waits briefly for a running sync to release its lock. */
   async shutdown(): Promise<void> {
+    this.stopped = true;
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
     if (this.scheduleEnabled) deleteMeta(this.db, 'nextSyncAt');

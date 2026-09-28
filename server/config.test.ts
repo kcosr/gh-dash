@@ -3,9 +3,10 @@ import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writ
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { configFilePath, configJsonPath, findPackageRoot, loadConfig, loadEnvironment, loadServerConfig, resolveToken, rootDir } from './config';
+import { configFilePath, configJsonPath, findPackageRoot, loadConfig, loadEnvironment, loadServerConfig, rootDir } from './config';
 import { readConfigFile, writeConfigFile, type ConfigFile } from './config-file';
 import { openDb } from './db/db';
+import { testTokens } from './test/tokens';
 
 const dirs: string[] = [];
 function temp() { const dir = mkdtempSync(join(tmpdir(), 'gh-dash-config-')); dirs.push(dir); return dir; }
@@ -54,7 +55,7 @@ describe('XDG config and state', () => {
     expect(() => loadConfig({ GH_DASH_DB: '/data/a.db', GH_DASH_CACHE_DB: '/data/a.db' })).toThrow(/must not be the main database/);
   });
 
-  it('loads a quoted config and gives process variables precedence, including empty strings', () => {
+  it('loads a quoted config and gives process variables precedence, including empty strings', async () => {
     const home = temp();
     const env = { HOME: home, PORT: '4789', GH_DASH_PASSWORD: '' };
     const path = file(env, '# config\nPORT=4788\nGH_DASH_PASSWORD="example password"\nGITHUB_TOKEN="synthetic-config-token"\nGH_DASH_SYNC=off\nGH_DASH_MY_EMAILS=Alice@Example.com\nTZ=Pacific/Honolulu\n');
@@ -62,7 +63,7 @@ describe('XDG config and state', () => {
     expect(loaded.PORT).toBe('4789');
     expect(loaded.GH_DASH_PASSWORD).toBe('');
     expect(loadConfig(loaded)).toMatchObject({ port: 4789, password: null, syncEnabled: false, myEmails: ['alice@example.com'], defaultTz: 'Pacific/Honolulu' });
-    expect(resolveToken(loaded)).toEqual({ token: 'synthetic-config-token', source: 'env' });
+    expect(await testTokens(null, { env: loaded }).get()).toMatchObject({ token: 'synthetic-config-token', source: 'env' });
     expect(env).toEqual({ HOME: home, PORT: '4789', GH_DASH_PASSWORD: '' });
     expect(readFileSync(path, 'utf8')).toContain('PORT=4788');
   });

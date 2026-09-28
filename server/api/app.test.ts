@@ -5,6 +5,7 @@ import { upsertCommit } from '../db/write';
 import { DiffCache } from '../diff/cache';
 import { DiffService } from '../diff/service';
 import { SyncManager } from '../sync/manager';
+import { testTokens } from '../test/tokens';
 import { fakeGitHub, type Reply, restFile, sha } from '../test/github';
 import { seedDb } from '../test/seed';
 import { createApp } from './app';
@@ -12,9 +13,10 @@ import { acceptsGzip } from './routes/diffs';
 
 function makeApp(over: Partial<Config> = {}, db = seedDb()) {
   const config = { ...loadConfig({}), webDir: '/nonexistent', ...over };
-  const sync = new SyncManager({ db, schedule: false, resolveToken: () => ({ token: null, source: 'none' }), log: () => {} });
-  const diffs = new DiffService({ db, cache: new DiffCache(':memory:'), resolveToken: () => ({ token: null, source: 'none' }), log: () => {} });
-  return createApp({ db, config, sync, diffs });
+  const tokens = testTokens();
+  const sync = new SyncManager({ db, schedule: false, tokens, log: () => {} });
+  const diffs = new DiffService({ db, cache: new DiffCache(':memory:'), tokens, log: () => {} });
+  return createApp({ db, config, sync, diffs, tokens });
 }
 
 describe('HTTP API', () => {
@@ -205,11 +207,12 @@ describe('diffs', () => {
   function diffApp(routes: Record<string, Reply> = {}, token: string | null = 'tok') {
     const db = seedDb();
     const config = { ...loadConfig({}), webDir: '/nonexistent' };
-    const sync = new SyncManager({ db, schedule: false, resolveToken: () => ({ token: null, source: 'none' }), log: () => {} });
+    const tokens = testTokens(token);
+    const sync = new SyncManager({ db, schedule: false, tokens, log: () => {} });
     const gh = fakeGitHub(routes);
     const cache = new DiffCache(':memory:');
-    const diffs = new DiffService({ db, cache, resolveToken: () => ({ token, source: token ? 'env' : 'none' }), fetchImpl: gh.fetchImpl, sleep: async () => {}, log: () => {} });
-    return { app: createApp({ db, config, sync, diffs }), gh, cache };
+    const diffs = new DiffService({ db, cache, tokens, fetchImpl: gh.fetchImpl, sleep: async () => {}, log: () => {} });
+    return { app: createApp({ db, config, sync, diffs, tokens }), gh, cache };
   }
   const commitRoute = {
     [`/repos/alice/app/commits/${C}`]: {
@@ -229,7 +232,7 @@ describe('diffs', () => {
     expect(await code('/api/v1/prs/app/999/diff')).toBe(404);
     const noToken = await app.request('/api/v1/prs/app/1/diff');
     expect(noToken.status).toBe(503);
-    expect(await noToken.json()).toEqual({ error: 'No GitHub token: set GITHUB_TOKEN or run `gh auth login`' });
+    expect(await noToken.json()).toEqual({ error: 'No GitHub token: connect a GitHub account in Settings' });
 
     const limited = diffApp({ [`/repos/alice/app/commits/${C}`]: { status: 429, headers: { 'x-ratelimit-remaining': '0' } } }).app;
     const res = await limited.request(`/api/v1/commits/app/${C}/diff`);

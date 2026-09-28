@@ -1,18 +1,20 @@
 import { serve } from '@hono/node-server';
 import { createApp } from './api/app';
-import { loadConfig, loadEnvironment, resolveToken } from './config';
+import { loadServerConfig } from './config';
 import { openDb } from './db/db';
 import { getMeta } from './db/meta';
 import { openDiffCache } from './diff/cache';
 import { DiffService } from './diff/service';
 import { SyncManager } from './sync/manager';
+import { TokenProvider } from './token';
 
-const env = loadEnvironment();
-const config = loadConfig(env);
+const { config, env } = loadServerConfig();
 const db = openDb(config.dbPath, { allowDestructiveMigrations: config.syncEnabled });
-const sync = new SyncManager({ db, schedule: config.syncEnabled, resolveToken: () => resolveToken(env) });
+const tokens = new TokenProvider({ env, choice: config.tokenChoice, tokenFile: config.tokenFile, ghPath: config.ghPath, viewer: () => getMeta(db, 'viewer') });
+await tokens.get();
+const sync = new SyncManager({ db, schedule: config.syncEnabled, tokens });
 const cache = openDiffCache(config.cacheDbPath);
-const diffs = new DiffService({ db, cache, resolveToken: () => resolveToken(env) });
+const diffs = new DiffService({ db, cache, tokens });
 diffs.evict();
 
 try {
@@ -21,7 +23,7 @@ try {
   console.warn(`[startup] could not fetch GitHub viewer: ${(err as Error).message}`);
 }
 
-const app = createApp({ db, config, sync, diffs });
+const app = createApp({ db, config, sync, diffs, tokens });
 const server = serve({ fetch: app.fetch, port: config.port, hostname: config.host }, (info) => {
   const viewer = getMeta(db, 'viewer')?.login ?? 'unknown';
   console.log(

@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
+import { gunzipSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
 import type { Diff } from '../../shared/api';
 import { HttpError } from '../api/http';
@@ -380,6 +381,38 @@ describe('PR diffs', () => {
     expect(after).toEqual({ out: 429, requests: [] });
   });
 
+  it('serves the cached copy, marked stale, when GitHub cannot be asked whether it is still current', async () => {
+    const { svc, db, cache, gh, synced, clock, logs } = setup();
+    pr2(gh.routes, A, [restFile(1)]);
+    synced(2, { head_oid: A });
+    const fresh = await diffOf(svc.prDiff('app', 2));
+    expect(fresh.stale).toBeUndefined();
+    clock.t += OPEN_PR_TTL_MS + 1;
+
+    // A restart without a token (say after `gh auth logout`), same cache.
+    const noToken = new DiffService({ db, cache, resolveToken: () => ({ token: null, source: 'none' }), log: () => {}, now: () => clock.t });
+    const stale = await noToken.prDiff('app', 2);
+    expect(await diffOf(stale)).toEqual({ ...fresh, stale: true });
+    expect(JSON.parse(gunzipSync(stale.gz).toString())).toEqual({ ...fresh, stale: true });
+    expect(await status(noToken.prDiff('app', 2, true))).toBe(503);
+
+    // GitHub failing, or rate limited; a PR GitHub no longer has is an answer, not a failure.
+    gh.routes[PULL] = { status: 500 };
+    expect(await diffOf(svc.prDiff('app', 2))).toEqual({ ...fresh, stale: true });
+    expect(logs.at(-1)).toBe('[diff] app#2: serving the cached copy (GitHub returned 500 for /repos/alice/app/pulls/2)');
+    gh.routes[PULL] = { status: 404, body: { message: 'Not Found' } };
+    expect(await status(svc.prDiff('app', 2))).toBe(404);
+    gh.routes[PULL] = { status: 403, body: { message: 'API rate limit exceeded' }, headers: { 'x-ratelimit-remaining': '0' } };
+    expect(await diffOf(svc.prDiff('app', 2))).toMatchObject({ headOid: A, stale: true });
+    expect(await status(svc.prDiff('app', 2, true))).toBe(429);
+
+    // The last sync saw a push or a retarget: the cached copy is known to be out of date.
+    synced(2, { head_oid: B });
+    expect(await status(noToken.prDiff('app', 2))).toBe(503);
+    synced(2, { head_oid: A, base_ref: 'develop' });
+    expect(await status(noToken.prDiff('app', 2))).toBe(503);
+  });
+
   it('serves what GitHub returned when the cache cannot be written or read', async () => {
     const { svc, spent, synced, gh, cache, logs } = setup();
     pr2(gh.routes, A, [restFile(1)]);
@@ -450,6 +483,31 @@ describe('commit diffs', () => {
     expect(out.totalFiles).toBe(5048);
     expect(requests).toHaveLength(10 + 1);
     expect(requests.at(-1)).toBe('/graphql');
+  });
+
+  it('stops waiting for the file count at the build deadline', async () => {
+    const C = sha('c');
+    const routes: Record<string, Reply> = {};
+    for (let p = 1; p <= 10; p++) {
+      routes[p === 1 ? `/repos/alice/app/commits/${C}` : `/repositories/1/commits/${C}?page=${p}`] = page(
+        commit(C, [], Array.from({ length: 300 }, (_, i) => restFile(p * 1000 + i))),
+        `/repositories/1/commits/${C}?page=${p + 1}`,
+      );
+    }
+    let graphql = 0;
+    const { svc, logs } = setup(routes, {
+      buildTimeoutMs: 200,
+      // GraphQL never answers (until the request is aborted); its own timeout is a minute.
+      fetchImpl: (inner) => async (input, init) => {
+        if (!String(input).endsWith('/graphql')) return inner(input, init);
+        graphql++;
+        return new Promise<Response>((_, reject) => init!.signal!.addEventListener('abort', () => reject(new Error('aborted'))));
+      },
+    });
+    const diff = await Promise.race([diffOf(svc.commitDiff('app', C)), new Promise<never>((_, reject) => setTimeout(() => reject(new Error('still waiting')), 2000))]);
+    expect(diff.totalFiles).toBe(3000);
+    expect(graphql).toBe(1);
+    expect(logs.some((l) => l.startsWith('[diff] could not count the files of app@ccccccc: Gave up waiting for GitHub'))).toBe(true);
   });
 
   it('rejects bad SHAs and reports unknown commits as 404', async () => {

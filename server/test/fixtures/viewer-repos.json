@@ -1,5 +1,6 @@
 {
   "viewer": {
+    "id": "U_alice",
     "login": "alice",
     "name": "Alice A",
     "avatarUrl": "https://avatars.example/alice",

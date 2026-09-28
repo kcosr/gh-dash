@@ -1,5 +1,8 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { gunzipSync } from 'node:zlib';
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 import { type Config, loadConfig } from '../config';
 import { upsertCommit } from '../db/write';
 import { DiffCache } from '../diff/cache';
@@ -7,14 +10,15 @@ import { DiffService } from '../diff/service';
 import { SyncManager } from '../sync/manager';
 import { fakeGitHub, type Reply, restFile, sha } from '../test/github';
 import { seedDb } from '../test/seed';
-import { createApp } from './app';
+import { DESKTOP_SECRET_HEADER } from '../../shared/desktop';
+import { type AppTransport, createApp } from './app';
 import { acceptsGzip } from './routes/diffs';
 
-function makeApp(over: Partial<Config> = {}, db = seedDb()) {
+function makeApp(over: Partial<Config> = {}, db = seedDb(), transport?: AppTransport) {
   const config = { ...loadConfig({}), webDir: '/nonexistent', ...over };
   const sync = new SyncManager({ db, schedule: false, resolveToken: () => ({ token: null, source: 'none' }), log: () => {} });
   const diffs = new DiffService({ db, cache: new DiffCache(':memory:'), resolveToken: () => ({ token: null, source: 'none' }), log: () => {} });
-  return createApp({ db, config, sync, diffs });
+  return createApp({ db, config, sync, diffs, transport });
 }
 
 describe('HTTP API', () => {
@@ -113,6 +117,99 @@ describe('HTTP API', () => {
   });
 });
 
+describe('web app', () => {
+  const webDir = mkdtempSync(join(tmpdir(), 'gh-dash-web-'));
+  mkdirSync(join(webDir, 'assets'));
+  writeFileSync(join(webDir, 'index.html'), '<!doctype html><title>gh-dash</title>');
+  writeFileSync(join(webDir, 'assets', 'app-1234.js'), 'export {};');
+  writeFileSync(join(webDir, 'favicon.svg'), '<svg/>');
+  const app = makeApp({ webDir });
+  afterAll(() => rmSync(webDir, { recursive: true, force: true }));
+
+  it('serves index.html for client-side routes, dotted repository names included', async () => {
+    for (const path of ['/', '/prs', '/repos/user.github.io', '/repos/foo.nvim', '/repos/x.js', '/repos/app?tab=files']) {
+      const res = await app.request(path);
+      expect(res.status, path).toBe(200);
+      expect(await res.text(), path).toContain('<title>gh-dash</title>');
+    }
+  });
+
+  it('serves built files and 404s missing assets and top-level files', async () => {
+    expect(await (await app.request('/assets/app-1234.js')).text()).toBe('export {};');
+    expect((await app.request('/favicon.svg')).status).toBe(200);
+    for (const path of ['/assets/missing.js', '/assets/sub/x', '/missing.png', '/robots.txt']) expect((await app.request(path)).status, path).toBe(404);
+  });
+});
+
+describe('Host allowlist (DNS rebinding)', () => {
+  const EVIL = 'rebind.attacker.example:4780';
+  // After rebinding, the attacker's page is same-origin with the server: Origin and Sec-Fetch-Site agree with it.
+  const rebound = (extra: Record<string, string> = {}) => ({ host: EVIL, origin: `http://${EVIL}`, 'sec-fetch-site': 'same-origin', ...extra });
+
+  it('refuses a foreign Host on the API, the UI, the diff routes and health, with 421', async () => {
+    const app = makeApp();
+    for (const path of ['/api/v1/repos', '/api/v1/prs/app/2/diff', '/', '/prs', '/api/health', '/api/docs']) {
+      const res = await app.request(`http://${EVIL}${path}`, { headers: rebound() });
+      expect(res.status, path).toBe(421);
+      expect(await res.json()).toEqual({ error: 'Host "rebind.attacker.example" is not allowed; add it to GH_DASH_ALLOWED_HOSTS to serve it' });
+    }
+    const patch = await app.request(`http://${EVIL}/api/v1/settings`, {
+      method: 'PATCH',
+      headers: rebound({ 'content-type': 'application/json' }),
+      body: '{"syncIntervalMinutes":5}',
+    });
+    expect(patch.status).toBe(421);
+    expect(await (await app.request('/api/v1/settings')).json()).not.toMatchObject({ syncIntervalMinutes: 5 });
+    // X-Forwarded-Host is a header any page can send; only the raw Host counts.
+    expect((await app.request('/api/v1/repos', { headers: { host: EVIL, 'x-forwarded-host': 'localhost' } })).status).toBe(421);
+  });
+
+  it('accepts loopback names, IP literals and listed names, with any port', async () => {
+    const app = makeApp({ allowedHosts: ['dash.example.com'] });
+    const hosts = [
+      'localhost', 'localhost:5173' /* the Vite dev proxy */, 'LocalHost.', 'app.localhost:4780', '127.0.0.1:4780', '192.168.1.20',
+      '[::1]:4780', '[fe80::1]', 'dash.example.com', 'Dash.Example.com:8443',
+    ];
+    for (const host of hosts) expect((await app.request('/api/v1/repos', { headers: { host } })).status, host).toBe(200);
+    for (const host of ['example.com', 'dash.example.com.evil.example', 'localhost.evil.example', '127.0.0.1.nip.io', '']) {
+      expect((await app.request('/api/v1/repos', { headers: { host } })).status, host).toBe(421);
+    }
+  });
+
+  it("keeps a rebinding page from minting API-key-only mode's session cookie", async () => {
+    const app = makeApp({ apiKey: 'k' });
+    const page = await app.request(`http://${EVIL}/`, { headers: rebound() });
+    expect(page.status).toBe(421);
+    expect(page.headers.get('set-cookie')).toBeNull();
+  });
+});
+
+describe('desktop transport', () => {
+  const secret = 'f'.repeat(64);
+  const app = makeApp({ apiKey: 'k3y', password: 'pw' }, seedDb(), { kind: 'desktop', secret });
+  const get = (headers: Record<string, string>, path = '/api/v1/me') => app.request(`http://gh-dash${path}`, { headers });
+
+  it('requires the per-launch secret on every request, and no password or API key', async () => {
+    expect((await get({ [DESKTOP_SECRET_HEADER]: secret })).status).toBe(200);
+    expect((await get({ [DESKTOP_SECRET_HEADER]: secret }, '/prs')).status).toBe(200);
+    for (const headers of [{}, { [DESKTOP_SECRET_HEADER]: '' }, { [DESKTOP_SECRET_HEADER]: 'e'.repeat(64) }, { authorization: 'Bearer k3y' }] as Record<string, string>[]) {
+      const res = await get(headers);
+      expect(res.status, JSON.stringify(headers)).toBe(403);
+      expect(await res.json()).toEqual({ error: 'Forbidden' });
+    }
+    expect((await get({}, '/api/health')).status).toBe(403);
+  });
+
+  it('answers only to the app host', async () => {
+    expect((await get({ [DESKTOP_SECRET_HEADER]: secret, host: 'localhost' })).status).toBe(421);
+    expect((await get({ [DESKTOP_SECRET_HEADER]: secret, host: 'gh-dash' })).status).toBe(200);
+  });
+
+  it('does not mention an API key on the docs page', async () => {
+    expect(await (await get({ [DESKTOP_SECRET_HEADER]: secret }, '/api/docs')).text()).not.toContain('requires an API key');
+  });
+});
+
 describe('auth', () => {
   it('requires the API key for /api/* but not for health; UI visits get a session cookie', async () => {
     const app = makeApp({ apiKey: 'k3y' });
@@ -123,6 +220,30 @@ describe('auth', () => {
     const page = await app.request('/prs');
     const cookie = page.headers.get('set-cookie')!.split(';')[0]!;
     expect((await app.request('/api/v1/me', { headers: { cookie } })).status).toBe(200);
+  });
+
+  it('leaves the API reference open in both modes', async () => {
+    for (const over of [{ apiKey: 'k3y' }, { password: 'pw' }]) {
+      const app = makeApp(over);
+      expect((await app.request('/api/docs')).status).toBe(200);
+      expect((await app.request('/api/v1/openapi.json')).status).toBe(200);
+      expect((await app.request('/api/v1/me')).status).toBe(401);
+    }
+  });
+
+  it('warns once when an API key alone guards a server listening beyond loopback', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      makeApp({ apiKey: 'k3y', host: '127.0.0.1' });
+      makeApp({ apiKey: 'k3y', password: 'pw', host: '0.0.0.0' });
+      expect(warn).not.toHaveBeenCalled();
+      makeApp({ apiKey: 'k3y', host: '0.0.0.0' });
+      makeApp({ apiKey: 'k3y', host: '192.168.1.20' });
+      expect(warn).toHaveBeenCalledOnce();
+      expect(warn.mock.calls[0]![0]).toContain('GH_DASH_API_KEY is set without GH_DASH_PASSWORD while listening on 0.0.0.0');
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('password mode redirects the UI to /login and only a correct password yields a session', async () => {

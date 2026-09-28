@@ -150,7 +150,12 @@ const schemas: Record<string, Schema> = {
     deletions: int(),
     fetchedAt: { ...dateTime, description: 'When the diff was fetched from GitHub (earlier than the request when cached)' },
     url: str('The PR\'s "Files changed" tab or the commit page on GitHub'),
-  }),
+    stale: {
+      ...bool,
+      const: true,
+      description: "Present on a cached PR diff served because GitHub couldn't be asked whether it is still current (no token, rate limit, outage); never with refresh=1",
+    },
+  }, ['stale']),
   DiffCacheStats: obj({
     entries: int(),
     bytes: int('Bytes used by cached diffs and file contents (compressed)'),
@@ -280,6 +285,8 @@ export const ENDPOINTS: EndpointDoc[] = [
     description:
       'Fetched from GitHub on first view and cached. While the last sync shows the same head and base branch and no update since, ' +
       'it is served without a GitHub request (open PRs are re-checked hourly, as the merge base can move). ' +
+      "When that re-check fails with 503, 429 or 502, a cached copy that matches the last sync's head and base branch is served " +
+      'instead, with `stale: true` (not with refresh=1). ' +
       'Errors: 404 unknown repo or PR, 503 no GitHub token, 429 GitHub rate limit (details.resetAt), 502 other GitHub failures, ' +
       '403 for cross-site browser requests.',
     params: [
@@ -316,8 +323,8 @@ export const ENDPOINTS: EndpointDoc[] = [
     body: { schema: { ...ref('Settings') }, example: { syncIntervalMinutes: 60, myEmails: ['me@example.com'] } },
     response: { status: 200, schema: ref('Settings') },
   },
-  { method: 'get', path: '/api/v1/openapi.json', tag: 'System', summary: 'This document', response: { status: 200, description: 'OpenAPI 3.1 JSON' } },
-  { method: 'get', path: '/api/docs', tag: 'System', summary: 'Human-readable API docs', response: { status: 200, description: 'HTML' } },
+  { method: 'get', path: '/api/v1/openapi.json', tag: 'System', summary: 'This document (never requires auth)', response: { status: 200, description: 'OpenAPI 3.1 JSON' } },
+  { method: 'get', path: '/api/docs', tag: 'System', summary: 'Human-readable API docs (never requires auth)', response: { status: 200, description: 'HTML' } },
 ];
 
 export function openApiDocument(version: string): Schema {
@@ -353,7 +360,8 @@ export function openApiDocument(version: string): Schema {
       version,
       description:
         'Read-only dashboard of GitHub activity across your own repositories. Timestamps are ISO-8601 UTC. ' +
-        'When GH_DASH_API_KEY is set, send `Authorization: Bearer <key>` or `X-API-Key: <key>`.',
+        'When GH_DASH_API_KEY is set, send `Authorization: Bearer <key>` or `X-API-Key: <key>`. ' +
+        'The server answers only requests addressed to localhost, an IP address or a name in GH_DASH_ALLOWED_HOSTS (else 421).',
     },
     servers: [{ url: '/' }],
     components: {

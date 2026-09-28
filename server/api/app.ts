@@ -4,7 +4,7 @@ import type { Config } from '../config';
 import type { Db } from '../db/db';
 import type { DiffService } from '../diff/service';
 import type { SyncManager } from '../sync/manager';
-import { installAuth, sameOriginWrites } from './auth';
+import { desktopOnly, hostAllowlist, installAuth, sameOriginWrites } from './auth';
 import { docsPage } from './docs';
 import { HttpError } from './http';
 import { openApiDocument } from './openapi';
@@ -40,6 +40,7 @@ function origin(c: Context): string {
 
 export function createApp(deps: AppDeps): Hono {
   const { config } = deps;
+  const transport: AppTransport = deps.transport ?? { kind: 'tcp' };
   const app = new Hono();
 
   app.onError((err, c) => {
@@ -50,10 +51,14 @@ export function createApp(deps: AppDeps): Hono {
     return c.json({ error: 'Internal server error' }, 500);
   });
 
+  // Before anything else, /api/health included: who may talk to this instance at all.
+  app.use('*', transport.kind === 'desktop' ? desktopOnly(transport.secret) : hostAllowlist(config.allowedHosts));
   // Every body we accept (settings, sets, views, sync, login) is tiny; don't buffer arbitrary uploads.
   app.use('*', bodyLimit({ maxSize: 1024 * 1024, onError: (c) => c.json({ error: 'Request body too large (max 1 MB)' }, 413) }));
+  // Inert on the desktop socket (app:// fetches send no Origin), kept there as defence in depth.
   app.use('*', sameOriginWrites);
-  installAuth(app, deps.db, config);
+  // The desktop app has one local user: the secret is its authentication.
+  if (transport.kind === 'tcp') installAuth(app, deps.db, config);
 
   app.get('/api/health', (c) => c.json({ ok: true, version: config.version }));
   app.route('/api/v1', systemRoutes(deps));
@@ -66,7 +71,7 @@ export function createApp(deps: AppDeps): Hono {
     c.html(
       docsPage(
         origin(c),
-        config.apiKey ? "This server requires an API key: add <code>-H 'Authorization: Bearer &lt;key&gt;'</code> to the examples." : null,
+        transport.kind === 'tcp' && config.apiKey ? "This server requires an API key: add <code>-H 'Authorization: Bearer &lt;key&gt;'</code> to the examples." : null,
       ),
     ),
   );

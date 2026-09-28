@@ -40,11 +40,14 @@ export class GitHubClient {
     };
   }
 
-  /** `allowNotFound`: return partial data when the only errors are NOT_FOUND (e.g. lookups by number). */
+  /**
+   * `allowNotFound`: return partial data when the only errors are NOT_FOUND (e.g. lookups by number).
+   * `signal`: the caller's deadline; it aborts the request in flight and stops further retries.
+   */
   async query<T extends { rateLimit?: GqlRateLimit }>(
     query: string,
     variables: Record<string, unknown> = {},
-    opts: { allowNotFound?: boolean } = {},
+    opts: { allowNotFound?: boolean; signal?: AbortSignal } = {},
   ): Promise<T> {
     if (!/^\s*query\b/.test(query)) throw new Error('Only read-only GraphQL queries are allowed');
     checkToken(this.opts.token);
@@ -52,17 +55,22 @@ export class GitHubClient {
     if (rl && rl.remaining < this.opts.minRemaining && Date.parse(rl.resetAt) > Date.now()) {
       throw new GitHubError('rate-limit', `GraphQL rate limit nearly exhausted (${rl.remaining} left, resets ${rl.resetAt})`, { resetAt: rl.resetAt });
     }
-    return withRetries(this.opts, () => this.attempt<T>(query, variables, !!opts.allowNotFound));
+    return withRetries(this.opts, () => {
+      if (opts.signal?.aborted) throw new GitHubError('transient', 'Gave up waiting for GitHub (GraphQL)');
+      return this.attempt<T>(query, variables, !!opts.allowNotFound, opts.signal);
+    });
   }
 
   private async attempt<T extends { rateLimit?: GqlRateLimit }>(
     query: string,
     variables: Record<string, unknown>,
     allowNotFound: boolean,
+    signal: AbortSignal | undefined,
   ): Promise<T> {
     this.requests++;
     let res: Response;
     try {
+      const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
       res = await this.opts.fetchImpl(ENDPOINT, {
         method: 'POST',
         headers: {
@@ -71,7 +79,7 @@ export class GitHubClient {
           'User-Agent': 'gh-dash',
         },
         body: JSON.stringify({ query, variables }),
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        signal: signal ? AbortSignal.any([timeout, signal]) : timeout,
       });
     } catch (err) {
       throw new RetryableError(`network error: ${(err as Error).message}`, null);

@@ -7,6 +7,11 @@
 #  - GH_DASH_PASSWORD in /etc/gh-dash/env: built-in login page with a signed HttpOnly cookie.
 #  - nginx basic auth (below). Note: basic auth occupies the Authorization header, so API clients
 #    must then send the gh-dash API key as `X-API-Key: <key>` (and `curl -u user:pass`).
+#
+# gh-dash only answers Host names it knows (DNS rebinding protection): localhost, IP addresses and
+# GH_DASH_ALLOWED_HOSTS. This config passes the public name on, so list it in /etc/gh-dash/env:
+#   GH_DASH_ALLOWED_HOSTS=dash.example.com
+# Otherwise every request gets 421 Misdirected Request.
 
 upstream gh_dash {
     server 127.0.0.1:4780;
@@ -40,9 +45,10 @@ server {
         proxy_pass http://gh_dash;
         proxy_http_version 1.1;
         proxy_set_header Connection "";
-        # gh-dash compares Origin with Host to reject cross-site writes, and uses these for cookie
-        # security and the example URLs on /api/docs. $http_host keeps a non-default port (e.g. :8443),
-        # which $host would drop, making every write fail the Origin check.
+        # gh-dash checks Host against GH_DASH_ALLOWED_HOSTS (see the top), compares Origin with it to
+        # reject cross-site writes, and uses these for cookie security and the example URLs on /api/docs.
+        # $http_host keeps a non-default port (e.g. :8443), which $host would drop, making every write
+        # fail the Origin check.
         proxy_set_header Host $http_host;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -55,5 +61,7 @@ server {
     location = /api/health {
         auth_basic off;
         proxy_pass http://gh_dash;
+        # Not inherited from `location /`; without it nginx sends Host: gh_dash, which gh-dash refuses.
+        proxy_set_header Host $http_host;
     }
 }

@@ -80,11 +80,12 @@ contains credentials. Shell expansion is not performed; use absolute paths in it
 | --- | --- | --- |
 | `GITHUB_TOKEN` | GitHub CLI credentials | Read-only GitHub access |
 | `HOST` / `PORT` | `127.0.0.1` / `4780` | Listen address |
+| `GH_DASH_ALLOWED_HOSTS` | Unset | Host names the server answers to besides `localhost` and IP addresses, comma-separated |
 | `GH_DASH_DB` | `$XDG_STATE_HOME/gh-dash/gh-dash.db` | Database location |
 | `GH_DASH_CACHE_DB` | `gh-dash-cache.db` next to the database | Diff cache location |
 | `GH_DASH_SYNC` | `on` | Set to `off` to disable automatic syncs |
 | `GH_DASH_PASSWORD` | Unset | Require a password to access the dashboard |
-| `GH_DASH_API_KEY` | Unset | Authenticate API clients with Bearer or `X-API-Key` |
+| `GH_DASH_API_KEY` | Unset | Key API clients send as Bearer or `X-API-Key`; not access control without a password (see below) |
 | `GH_DASH_MY_EMAILS` | Unset | Additional commit emails, comma-separated |
 | `TZ` | System timezone | Default timezone for API date grouping |
 
@@ -101,7 +102,19 @@ dropped first. The cache can be deleted at any time and left out of backups.
 For a persistent installation, adapt the [systemd unit](deploy/gh-dash.service).
 For remote access, use HTTPS through a reverse proxy such as the supplied
 [nginx example](deploy/nginx.conf.example) and set `GH_DASH_PASSWORD` or proxy authentication.
-An API key alone does **not** protect access to the dashboard.
+
+The server only answers requests addressed to `localhost`, a `*.localhost` name or an IP
+address, on any port; any other `Host` gets `421 Misdirected Request`. This blocks DNS
+rebinding, where a web page on a domain that resolves to your machine uses your browser to
+read and change your data. To reach the server by name, such as a LAN hostname or the public
+name a reverse proxy passes on (`proxy_set_header Host $http_host` in nginx), list the name in
+`GH_DASH_ALLOWED_HOSTS`, e.g. `GH_DASH_ALLOWED_HOSTS=dash.example.com`.
+
+An API key alone is **not** access control. Without `GH_DASH_PASSWORD`, opening any dashboard
+page issues a session cookie that also unlocks the API, so anyone who can reach the server
+can read everything. Set a password, or use proxy authentication, whenever others can reach
+the server; gh-dash logs a warning at startup when it listens beyond loopback with only an
+API key. `/api/health`, `/api/docs` and `/api/v1/openapi.json` never need credentials.
 
 ## API and exports
 

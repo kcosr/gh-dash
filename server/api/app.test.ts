@@ -1,5 +1,5 @@
 import { gunzipSync } from 'node:zlib';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { type Config, loadConfig } from '../config';
 import { upsertCommit } from '../db/write';
 import { DiffCache } from '../diff/cache';
@@ -193,6 +193,30 @@ describe('auth', () => {
     const page = await app.request('/prs');
     const cookie = page.headers.get('set-cookie')!.split(';')[0]!;
     expect((await app.request('/api/v1/me', { headers: { cookie } })).status).toBe(200);
+  });
+
+  it('leaves the API reference open in both modes', async () => {
+    for (const over of [{ apiKey: 'k3y' }, { password: 'pw' }]) {
+      const app = makeApp(over);
+      expect((await app.request('/api/docs')).status).toBe(200);
+      expect((await app.request('/api/v1/openapi.json')).status).toBe(200);
+      expect((await app.request('/api/v1/me')).status).toBe(401);
+    }
+  });
+
+  it('warns once when an API key alone guards a server listening beyond loopback', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      makeApp({ apiKey: 'k3y', host: '127.0.0.1' });
+      makeApp({ apiKey: 'k3y', password: 'pw', host: '0.0.0.0' });
+      expect(warn).not.toHaveBeenCalled();
+      makeApp({ apiKey: 'k3y', host: '0.0.0.0' });
+      makeApp({ apiKey: 'k3y', host: '192.168.1.20' });
+      expect(warn).toHaveBeenCalledOnce();
+      expect(warn.mock.calls[0]![0]).toContain('GH_DASH_API_KEY is set without GH_DASH_PASSWORD while listening on 0.0.0.0');
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('password mode redirects the UI to /login and only a correct password yields a session', async () => {

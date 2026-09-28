@@ -157,17 +157,36 @@ function safeNext(next: unknown): string {
   return new URL(next, base).origin === base ? next : '/';
 }
 
+/** Paths without data: health checks and the API reference work without credentials. */
+const OPEN_PATHS = new Set(['/api/health', '/api/docs', '/api/v1/openapi.json', '/login']);
+
+/** Listen addresses only this machine can reach. */
+function isLoopbackAddress(host: string): boolean {
+  const name = hostName(host);
+  return name === 'localhost' || name === '::1' || /^(::ffff:)?127\./.test(name);
+}
+
+let warnedKeyOnly = false;
+
 /**
  * Optional auth, configured by env:
  *  - GH_DASH_PASSWORD: the UI and API require a session cookie obtained from /login (API key also accepted).
  *  - GH_DASH_API_KEY: /api/* requires the key (Bearer or X-API-Key) or a UI session cookie. Without a
- *    password, loading any UI page issues the session cookie.
- * /api/health is always open.
+ *    password, loading any UI page issues the session cookie, so key-only mode is not access control:
+ *    anyone who can open the dashboard can use the API through it.
+ * /api/health, /api/docs and /api/v1/openapi.json are always open.
  */
 export function installAuth(app: Hono, db: Db, config: Config): void {
   const { apiKey, password } = config;
   if (!apiKey && !password) return;
   const key = sessionKey(db, config);
+  if (apiKey && !password && !isLoopbackAddress(config.host) && !warnedKeyOnly) {
+    warnedKeyOnly = true;
+    console.warn(
+      `[auth] GH_DASH_API_KEY is set without GH_DASH_PASSWORD while listening on ${config.host}: anyone who can reach ` +
+        'the server can open the dashboard, and its session cookie also unlocks the API. Set GH_DASH_PASSWORD to require a login.',
+    );
+  }
 
   if (password) {
     app.get('/login', (c) => c.html(loginPage(safeNext(c.req.query('next')), false)));
@@ -186,7 +205,7 @@ export function installAuth(app: Hono, db: Db, config: Config): void {
 
   app.use('*', async (c, next) => {
     const path = c.req.path;
-    if (path === '/api/health' || path === '/login') return next();
+    if (OPEN_PATHS.has(path)) return next();
     const isApi = path === '/api' || path.startsWith('/api/');
     if (await hasSession(c, key)) return next();
     if (isApi) {

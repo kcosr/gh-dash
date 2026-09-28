@@ -316,8 +316,8 @@ export const ENDPOINTS: EndpointDoc[] = [
     body: { schema: { ...ref('Settings') }, example: { syncIntervalMinutes: 60, myEmails: ['me@example.com'] } },
     response: { status: 200, schema: ref('Settings') },
   },
-  { method: 'get', path: '/api/v1/openapi.json', tag: 'System', summary: 'This document', response: { status: 200, description: 'OpenAPI 3.1 JSON' } },
-  { method: 'get', path: '/api/docs', tag: 'System', summary: 'Human-readable API docs', response: { status: 200, description: 'HTML' } },
+  { method: 'get', path: '/api/v1/openapi.json', tag: 'System', summary: 'This document (never requires auth)', response: { status: 200, description: 'OpenAPI 3.1 JSON' } },
+  { method: 'get', path: '/api/docs', tag: 'System', summary: 'Human-readable API docs (never requires auth)', response: { status: 200, description: 'HTML' } },
 ];
 
 export function openApiDocument(version: string): Schema {
@@ -353,7 +353,8 @@ export function openApiDocument(version: string): Schema {
       version,
       description:
         'Read-only dashboard of GitHub activity across your own repositories. Timestamps are ISO-8601 UTC. ' +
-        'When GH_DASH_API_KEY is set, send `Authorization: Bearer <key>` or `X-API-Key: <key>`.',
+        'When GH_DASH_API_KEY is set, send `Authorization: Bearer <key>` or `X-API-Key: <key>`. ' +
+        'The server answers only requests addressed to localhost, an IP address or a name in GH_DASH_ALLOWED_HOSTS (else 421).',
     },
     servers: [{ url: '/' }],
     components: {

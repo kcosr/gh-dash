@@ -1,0 +1,20 @@
+/* Injected into every Pierre shadow root via the `unsafeCSS` option (imported ?inline by
+   DiffViewer.tsx). It depends on Pierre's internal markup (@pierre/diffs 1.5.x data attributes), so
+   it stays small and in this one file: anything a --diffs-* variable can do lives in diff.css.
+   Heights here must match the itemMetrics in DiffViewer.tsx. */
+
+/* Hunk separators: one 24px band across gutter and code (Pierre: 32px, gutter left white), with
+   the expand arrows small and side by side instead of two 12px rows. */
+[data-separator="line-info-basic"] { height: 24px; }
+[data-separator="line-info-basic"] [data-separator-wrapper] { background-color: var(--diffs-bg-separator); }
+[data-separator="line-info-basic"] [data-separator-wrapper][data-separator-multi-button] { grid-template-rows: 100%; grid-template-columns: 50% 50% auto; }
+[data-separator="line-info-basic"] [data-separator-multi-button] [data-expand-button] { grid-column: auto; }
+[data-separator="line-info-basic"] [data-separator-multi-button] [data-separator-content] { grid-area: 1 / 3; }
+[data-separator="line-info-basic"] [data-expand-button] { border: 0; background: none; color: var(--diffs-fg-number); }
+[data-separator="line-info-basic"] [data-expand-button]:hover { color: var(--diffs-fg); background-color: color-mix(in srgb, var(--diffs-fg) 7%, transparent); }
+[data-expand-button] [data-icon] { width: 12px; height: 12px; }
+[data-unmodified-lines] { font-size: 11.5px; }
+
+/* Split: a hairline between the sides (Pierre draws it in the background color). App tokens like
+   --border inherit into the shadow root. */
+[data-diff-type="split"] [data-deletions] { border-right-color: var(--border); }

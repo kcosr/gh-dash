@@ -3,6 +3,7 @@
 const THEME_KEY = 'gh-dash:theme';
 const VISIT_KEY = 'gh-dash:lastVisit';
 const SIDEBAR_KEY = 'gh-dash:sidebarWidth';
+const DIFF_KEY = 'gh-dash:diffView';
 export const SIDEBAR_MIN = 220;
 export const SIDEBAR_MAX = 480;
 export const SIDEBAR_DEFAULT = 268;
@@ -33,6 +34,29 @@ export function getTheme(): Theme {
 export function setTheme(t: Theme) {
   document.documentElement.dataset.theme = t;
   write(THEME_KEY, t);
+}
+
+/** Diff viewer preferences (desktop; the compact layout is always unified with the file list hidden). */
+export interface DiffPrefs {
+  split: boolean;
+  wrap: boolean;
+  /** File list column shown. */
+  files: boolean;
+}
+const DIFF_DEFAULTS: DiffPrefs = { split: false, wrap: false, files: true };
+
+export function getDiffPrefs(): DiffPrefs {
+  try {
+    const v = JSON.parse(read(DIFF_KEY) ?? '{}') as Partial<Record<keyof DiffPrefs, unknown>>;
+    const pick = (k: keyof DiffPrefs) => { const x = v[k]; return typeof x === 'boolean' ? x : DIFF_DEFAULTS[k]; };
+    return { split: pick('split'), wrap: pick('wrap'), files: pick('files') };
+  } catch {
+    return DIFF_DEFAULTS;
+  }
+}
+
+export function setDiffPrefs(p: DiffPrefs) {
+  write(DIFF_KEY, JSON.stringify(p));
 }
 
 /**

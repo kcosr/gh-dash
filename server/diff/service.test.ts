@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import type { Diff } from '../../shared/api';
 import { HttpError } from '../api/http';
@@ -56,16 +56,21 @@ function setup(routes: Record<string, Route> = {}, opts: { fetchImpl?: (inner: t
 const diffOf = async (p: Payload | Promise<Payload>) => JSON.parse(await payloadText(await p)) as Diff;
 const status = (p: Promise<unknown>) => p.then(() => 200, (e: unknown) => (e instanceof HttpError ? e.status : e));
 
-/** GitHub serving app#2 at `head` against `mergeBase`, with `files` over pages of 100. */
-function pr2(routes: Record<string, Route>, head: string, files: object[], over: { mergeBase?: string; baseRef?: string; title?: string; changed_files?: number } = {}) {
-  const { mergeBase = MERGE_BASE, baseRef = 'main', ...pull } = over;
-  routes['/repos/alice/app/pulls/2'] = {
-    body: {
-      title: 'Add parser', html_url: 'https://github.com/alice/app/pull/2', changed_files: files.length, additions: 12, deletions: 3,
-      head: { sha: head }, base: { sha: BASE, ref: baseRef }, ...pull,
-    },
+type PrState = { mergeBase?: string; baseRef?: string; baseSha?: string; title?: string; changed_files?: number };
+
+/**
+ * GitHub serving app#2 at `head` against `mergeBase`, with `files` over pages of 100. `pulls/2` carries a weak ETag
+ * derived from its body and answers a matching If-None-Match with 304, as GitHub does.
+ */
+function pr2(routes: Record<string, Route>, head: string, files: object[], over: PrState = {}) {
+  const { mergeBase = MERGE_BASE, baseRef = 'main', baseSha = BASE, ...pull } = over;
+  const body = {
+    title: 'Add parser', html_url: 'https://github.com/alice/app/pull/2', changed_files: files.length, additions: 12, deletions: 3,
+    head: { sha: head }, base: { sha: baseSha, ref: baseRef }, ...pull,
   };
-  routes[`/repos/alice/app/compare/${BASE}...${head}?per_page=1&page=2`] = { body: { merge_base_commit: { sha: mergeBase }, commits: [] } };
+  const etag = `W/"${createHash('sha1').update(JSON.stringify(body)).digest('hex')}"`;
+  routes['/repos/alice/app/pulls/2'] = ({ headers }) => (headers['If-None-Match'] === etag ? { status: 304 } : { body, headers: { etag } });
+  routes[`/repos/alice/app/compare/${baseSha}...${head}?per_page=1&page=2`] = { body: { merge_base_commit: { sha: mergeBase }, commits: [] } };
   const path = '/repos/alice/app/pulls/2/files';
   for (let i = 0; i * 100 < Math.max(files.length, 1); i++) {
     const next = (i + 1) * 100 < files.length ? `${path}?per_page=100&page=${i + 2}` : null;
@@ -75,11 +80,25 @@ function pr2(routes: Record<string, Route>, head: string, files: object[], over:
 }
 
 const PULL = '/repos/alice/app/pulls/2';
-const COMPARE = (head: string) => `/repos/alice/app/compare/${BASE}...${head}?per_page=1&page=2`;
+const COMPARE = (head: string, baseSha = BASE) => `/repos/alice/app/compare/${baseSha}...${head}?per_page=1&page=2`;
 const FILES = '/repos/alice/app/pulls/2/files?per_page=100';
 const HEAD = '/repos/alice/app/commits/pull/2/head';
-/** A full fetch: the PR, its merge base, the files, then a (free) check that the head didn't move meanwhile. */
-const FULL = (head: string) => [PULL, COMPARE(head), FILES, HEAD];
+/**
+ * A full fetch of a small PR: the PR, its merge base, one page of files, then a conditional re-read of the PR that
+ * proves nothing changed meanwhile (a 304, which GitHub doesn't count). 3 requests against the rate limit.
+ */
+const FULL = (head: string, baseSha = BASE) => [PULL, COMPARE(head, baseSha), FILES, PULL];
+
+/** Runs `change` right after GitHub serves `path` (e.g. a push landing mid-pagination); `times` = how often. */
+function whenServed(routes: Record<string, Route>, path: string, change: () => void, times = 1) {
+  const inner = routes[path]!;
+  routes[path] = (req) => {
+    const reply = typeof inner === 'function' ? inner(req) : inner;
+    change();
+    if (times > 1) whenServed(routes, path, change, times - 1);
+    return reply;
+  };
+}
 
 describe('PR diffs', () => {
   it('fetches a PR diff against its merge base once, then serves it with no request while the sync agrees', async () => {
@@ -212,15 +231,66 @@ describe('PR diffs', () => {
     expect((await spent(() => svc.prDiff('app', 2))).requests).toEqual([]);
   });
 
-  it('does not cache a diff whose head moved while its files were fetched', async () => {
+  it('starts over when the PR is pushed to while its files are fetched', async () => {
     const { svc, spent, synced, gh, logs } = setup();
-    pr2(gh.routes, A, [restFile(1)]);
-    gh.routes[HEAD] = { text: B }; // pushed during pagination
+    pr2(gh.routes, A, [restFile(1), restFile(2)]);
+    whenServed(gh.routes, FILES, () => pr2(gh.routes, B, [restFile(3)]));
     synced(2, { head_oid: A });
-    const racy = await spent(() => diffOf(svc.prDiff('app', 2)));
-    expect(racy.out.headOid).toBe(A);
+    // Two viewers at once still share one build, retry included.
+    const both = await spent(() => Promise.all([svc.prDiff('app', 2), svc.prDiff('app', 2)]));
+    expect(both.out[0]).toBe(both.out[1]);
+    const { out, requests } = { out: await diffOf(both.out[0]), requests: both.requests };
+    // The re-read shows head B: A's files are dropped and B is fetched from the fresh metadata (no extra pulls/N).
+    expect(requests).toEqual([PULL, COMPARE(A), FILES, PULL, COMPARE(B), FILES, PULL]);
+    expect(out).toMatchObject({ headOid: B, totalFiles: 1 });
+    expect(out.files.map((f) => f.path)).toEqual(['src/f3.ts']);
+    expect(svc.stats().entries).toBe(1);
+    expect(logs.some((l) => l.includes('changed while its files were being fetched (attempt 1 of 2)'))).toBe(true);
+  });
+
+  it('detects a retarget or a moved merge base during pagination, even with the same head', async () => {
+    const retarget = setup();
+    pr2(retarget.gh.routes, A, [restFile(1), restFile(2)]);
+    whenServed(retarget.gh.routes, FILES, () => pr2(retarget.gh.routes, A, [restFile(2)], { baseRef: 'release', baseSha: sha('5'), mergeBase: sha('8') }));
+    const retargeted = await retarget.spent(() => diffOf(retarget.svc.prDiff('app', 2)));
+    expect(retargeted.requests).toEqual([PULL, COMPARE(A), FILES, PULL, COMPARE(A, sha('5')), FILES, PULL]);
+    expect(retargeted.out).toMatchObject({ headOid: A, baseOid: sha('8'), totalFiles: 1 });
+
+    // Same base branch, but it moved and absorbed a head commit: a new merge base.
+    const moved = setup();
+    pr2(moved.gh.routes, A, [restFile(1), restFile(2)]);
+    whenServed(moved.gh.routes, FILES, () => pr2(moved.gh.routes, A, [restFile(2)], { baseSha: sha('5'), mergeBase: sha('8') }));
+    const rebased = await moved.spent(() => diffOf(moved.svc.prDiff('app', 2)));
+    expect(rebased.requests).toEqual([PULL, COMPARE(A), FILES, PULL, COMPARE(A, sha('5')), FILES, PULL]);
+    expect(rebased.out).toMatchObject({ headOid: A, baseOid: sha('8'), files: [{ path: 'src/f2.ts' }] });
+
+    // The base moved without touching the merge base (and the title changed): the files stand, one compare confirms it.
+    const benign = setup();
+    pr2(benign.gh.routes, A, [restFile(1)]);
+    whenServed(benign.gh.routes, FILES, () => pr2(benign.gh.routes, A, [restFile(1)], { baseSha: sha('5'), title: 'Renamed' }));
+    const kept = await benign.spent(() => diffOf(benign.svc.prDiff('app', 2)));
+    expect(kept.requests).toEqual([...FULL(A), COMPARE(A, sha('5'))]);
+    expect(kept.out).toMatchObject({ headOid: A, baseOid: MERGE_BASE, title: 'Renamed' });
+  });
+
+  it('gives up with a retryable 502, caching nothing, when the PR keeps changing', async () => {
+    const { svc, spent, synced, gh, logs } = setup();
+    let n = 0;
+    const push = () => {
+      pr2(gh.routes, sha(String(++n)), [restFile(n)]);
+      whenServed(gh.routes, FILES, push);
+    };
+    pr2(gh.routes, A, [restFile(0)]);
+    whenServed(gh.routes, FILES, push);
+    synced(2, { head_oid: A });
+    const failed = await spent(() => svc.prDiff('app', 2).catch((e: HttpError) => e));
+    expect(failed.out).toMatchObject({ status: 502, message: 'The pull request changed while its diff was being fetched; try again' });
+    expect(failed.requests).toEqual([PULL, COMPARE(A), FILES, PULL, COMPARE(sha('1')), FILES, PULL]);
     expect(svc.stats().entries).toBe(0);
-    expect(logs.some((l) => l.includes('not caching'))).toBe(true);
+    expect(logs.filter((l) => l.includes('changed while its files were being fetched'))).toHaveLength(2);
+    // Once it settles, the next request succeeds.
+    pr2(gh.routes, B, [restFile(9)]);
+    expect((await diffOf(svc.prDiff('app', 2))).headOid).toBe(B);
   });
 
   it("lists at most GitHub's 3000 files but reports the PR's full count", async () => {
@@ -255,6 +325,23 @@ describe('PR diffs', () => {
     synced(2, { head_oid: A });
     const err = await svc.prDiff('app', 2).catch((e: HttpError) => e);
     expect(err).toMatchObject({ status: 502, message: expect.stringContaining('Gave up') });
+  });
+
+  it('applies the build deadline across retries', async () => {
+    let filesFetches = 0;
+    const { svc, synced, gh } = setup({}, {
+      buildTimeoutMs: 50,
+      // The second attempt's files never arrive (until the build is aborted).
+      fetchImpl: (inner) => async (input, init) =>
+        String(input).includes('/files') && ++filesFetches === 2
+          ? new Promise<Response>((_, reject) => init!.signal!.addEventListener('abort', () => reject(new Error('aborted'))))
+          : inner(input, init),
+    });
+    pr2(gh.routes, A, [restFile(1)]);
+    whenServed(gh.routes, FILES, () => pr2(gh.routes, B, [restFile(2)]));
+    synced(2, { head_oid: A });
+    expect(await svc.prDiff('app', 2).catch((e: HttpError) => e)).toMatchObject({ status: 502, message: expect.stringContaining('Gave up') });
+    expect(svc.stats().entries).toBe(0);
   });
 
   it('maps missing things, missing tokens and GitHub failures to API errors', async () => {

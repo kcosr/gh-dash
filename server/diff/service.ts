@@ -25,6 +25,8 @@ export const OPEN_PR_TTL_MS = 60 * 60_000;
  * request still lands in the cache, and the client's retry joins it in flight.
  */
 const BUILD_TIMEOUT_MS = 120_000;
+/** Full fetches of a PR diff before giving up on a PR that keeps changing underneath (each costs 3+ requests). */
+const PR_SNAPSHOT_ATTEMPTS = 2;
 /** After finding no token, don't run `gh auth token` (a blocking subprocess) again for this long. */
 const NO_TOKEN_RETRY_MS = 30_000;
 const MB = 1024 * 1024;
@@ -293,6 +295,11 @@ export class DiffService {
    * Otherwise, and always with `refresh`, it is revalidated: `pulls/N` and the merge base (2 requests), and the files
    * are fetched again only if the head or merge base changed. A head the sync hasn't seen yet is first checked with a
    * conditional request, which costs nothing when unchanged.
+   *
+   * Fetched files are only served (and cached) once a conditional re-read of `pulls/N` confirms that the head, base
+   * branch and merge base didn't change during pagination. A cache miss therefore costs `pulls/N`, the merge base,
+   * one request per 100 files and a (normally free) 304. If the PR did change, the diff is rebuilt from the fresh
+   * metadata, up to PR_SNAPSHOT_ATTEMPTS times in all, and then fails with a retryable 502.
    */
   async prDiff(repoName: string, number: number, refresh = false): Promise<Payload> {
     const repo = this.repo(repoName);
@@ -311,50 +318,71 @@ export class DiffService {
     return this.once(`pr/${repo.name}/${number}/${refresh}`, () =>
       this.fetching(`${repo.name}#${number}`, async (rest, signal) => {
         const base = `/repos/${enc(repo.owner)}/${enc(repo.name)}`;
-        const headRef = `${base}/commits/pull/${number}/head`;
-        if (current && (await rest.sha(headRef, current.oid, { signal })) === current.oid) {
+        if (current && (await rest.sha(`${base}/commits/pull/${number}/head`, current.oid, { signal })) === current.oid) {
           const hit = this.cached(current.key);
           if (hit) return hit;
         }
-        const pull = await rest.json<RestPull>(`${base}/pulls/${number}`, { signal });
-        const head = pull.head.sha;
+        const mergeBases = new Map<string, Promise<string>>();
         // Any page but the first omits the compare's own file list (up to 300 files with patches, ~1 MB for a big PR),
-        // so page 2 of 1-commit pages costs a few KB.
-        const compare = await rest.json<RestCompare>(`${base}/compare/${pull.base.sha}...${head}`, { query: { per_page: 1, page: 2 }, signal });
-        const mergeBase = compare.merge_base_commit.sha;
-        const now = this.now();
-        const target = {
-          key: `pr/${repo.name}/${number}/${head}`, kind: 'pr' as const, repo: repo.name, number, oid: head,
-          baseRef: pull.base.ref, baseOid: mergeBase, fetchedAt: now,
+        // so page 2 of 1-commit pages costs a few KB. The merge base is a function of (base.sha, head).
+        const mergeBaseOf = (p: RestPull) => {
+          const range = `${p.base.sha}...${p.head.sha}`;
+          if (!mergeBases.has(range)) {
+            const compare = rest.json<RestCompare>(`${base}/compare/${range}`, { query: { per_page: 1, page: 2 }, signal });
+            mergeBases.set(range, compare.then((c) => c.merge_base_commit.sha));
+          }
+          return mergeBases.get(range)!;
         };
-        const fields = {
-          title: pull.title,
-          totalFiles: pull.changed_files,
-          additions: pull.additions,
-          deletions: pull.deletions,
-          fetchedAt: new Date(now).toISOString(),
-          url: `${pull.html_url}/files`,
+        const save = async (p: RestPull, mergeBase: string, diff: Diff) => {
+          const key = `pr/${repo.name}/${number}/${p.head.sha}`;
+          const entry = { key, kind: 'pr' as const, repo: repo.name, number, oid: p.head.sha, baseRef: p.base.ref, baseOid: mergeBase, fetchedAt: this.now() };
+          const out = await this.store(entry, JSON.stringify(diff));
+          this.safely('cleanup', () => this.cache.dropOthers(repo.name, number, key), undefined);
+          return out;
         };
-
-        // Same head and merge base: the files are unchanged; refresh the PR's own fields only.
-        const same = entry && entry.oid === head && entry.baseOid === mergeBase ? this.cached(entry.key) : null;
-        if (same) return this.store(target, JSON.stringify({ ...(JSON.parse(await payloadText(same)) as Diff), ...fields }));
-
-        const files = await rest.paginate<RestFile[], RestFile>(`${base}/pulls/${number}/files`, (page) => page, MAX_FILES, {
-          query: { per_page: 100 },
-          signal,
+        const fieldsOf = (p: RestPull) => ({
+          title: p.title,
+          totalFiles: p.changed_files,
+          additions: p.additions,
+          deletions: p.deletions,
+          fetchedAt: new Date(this.now()).toISOString(),
+          url: `${p.html_url}/files`,
         });
-        const diff: Diff = {
-          kind: 'pr', repo: repo.name, number, title: fields.title, baseOid: mergeBase, headOid: head, files: files.items.map(toFile),
-          totalFiles: fields.totalFiles, additions: fields.additions, deletions: fields.deletions, fetchedAt: fields.fetchedAt, url: fields.url,
-        };
-        // `pulls/N/files` isn't pinned to a commit: a push during pagination would mix two heads' files under one head.
-        // Only a diff whose head is still current afterwards (a free 304) is cached.
-        const pinned = (await rest.sha(headRef, head, { signal })) === head;
-        if (!pinned) this.log(`[diff] ${repo.name}#${number} was pushed to while fetching; not caching this diff`);
-        const out = await this.store(pinned ? target : null, JSON.stringify(diff));
-        if (pinned) this.safely('cleanup', () => this.cache.dropOthers(repo.name, number, target.key), undefined);
-        return out;
+
+        const pullPath = `${base}/pulls/${number}`;
+        let pull = (await rest.versioned<RestPull>(pullPath, null, { signal }))!;
+        for (let attempt = 1; ; attempt++) {
+          const head = pull.body.head.sha;
+          const mergeBase = await mergeBaseOf(pull.body);
+          // Same head and merge base as the cached diff: its files still apply; refresh the PR's own fields only.
+          const same = entry && entry.oid === head && entry.baseOid === mergeBase ? this.cached(entry.key) : null;
+          if (same) return save(pull.body, mergeBase, { ...(JSON.parse(await payloadText(same)) as Diff), ...fieldsOf(pull.body) });
+
+          const files = await rest.paginate<RestFile[], RestFile>(`${base}/pulls/${number}/files`, (page) => page, MAX_FILES, {
+            query: { per_page: 100 },
+            signal,
+          });
+          // `pulls/N/files` is pinned to neither head nor base: a push, retarget or moved merge base during pagination
+          // would mix pages or label files with the wrong sides. Re-read the PR: a 304 (free) proves head and base
+          // unchanged; otherwise the head and base branch must match, and the merge base unless base.sha is the same.
+          const after = await rest.versioned<RestPull>(pullPath, pull.etag, { signal });
+          const latest = after?.body ?? pull.body;
+          const consistent =
+            latest.head.sha === head &&
+            latest.base.ref === pull.body.base.ref &&
+            (latest.base.sha === pull.body.base.sha || (await mergeBaseOf(latest)) === mergeBase);
+          if (consistent) {
+            const fields = fieldsOf(latest);
+            return save(latest, mergeBase, {
+              kind: 'pr', repo: repo.name, number, title: fields.title, baseOid: mergeBase, headOid: head, files: files.items.map(toFile),
+              totalFiles: fields.totalFiles, additions: fields.additions, deletions: fields.deletions, fetchedAt: fields.fetchedAt, url: fields.url,
+            });
+          }
+          this.log(`[diff] ${repo.name}#${number} changed while its files were being fetched (attempt ${attempt} of ${PR_SNAPSHOT_ATTEMPTS})`);
+          // Never serve a mixed snapshot: start over from the fresh metadata, or give up with a retryable error.
+          if (attempt >= PR_SNAPSHOT_ATTEMPTS) throw new HttpError(502, 'The pull request changed while its diff was being fetched; try again');
+          pull = after!;
+        }
       }),
     );
   }

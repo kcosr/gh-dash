@@ -40,6 +40,7 @@ interface Fetched<T> {
   body: T | null;
   /** Link rel="next", for paginated resources. */
   next: string | null;
+  etag: string | null;
 }
 
 export interface RawFile {
@@ -75,6 +76,15 @@ export class GitHubRestClient {
     return (await this.get(url(path, opts.query), JSON_TYPE, readJson<T>, opts)).body!;
   }
 
+  /**
+   * A JSON resource with its ETag. Given the ETag of an earlier response, the request is conditional and an
+   * unchanged resource answers 304 (null here), which doesn't count against the rate limit.
+   */
+  async versioned<T>(path: string, etag: string | null = null, opts: CallOptions = {}): Promise<{ body: T; etag: string | null } | null> {
+    const res = await this.get(url(path, opts.query), JSON_TYPE, readJson<T>, opts, etag ?? undefined);
+    return res.body === null ? null : { body: res.body, etag: res.etag };
+  }
+
   /** Follows Link rel="next" until there is none or `limit` items were collected (serially, as GitHub asks). */
   async paginate<P, I>(path: string, items: (page: P) => I[], limit: number, opts: CallOptions = {}): Promise<{ first: P; items: I[] }> {
     let next: string | null = url(path, opts.query);
@@ -94,7 +104,8 @@ export class GitHubRestClient {
    * answers 304, which doesn't count against the rate limit.
    */
   async sha(path: string, known?: string, opts: CallOptions = {}): Promise<string> {
-    const { body } = await this.get(url(path), SHA_TYPE, readText, opts, known);
+    // This media type's ETag is the quoted SHA.
+    const { body } = await this.get(url(path), SHA_TYPE, readText, opts, known && `"${known}"`);
     return body === null ? known! : body.trim();
   }
 
@@ -103,6 +114,7 @@ export class GitHubRestClient {
     return (await this.get(url(path, opts.query), 'application/vnd.github.raw+json', (res) => readLimited(res, maxBytes), opts)).body!;
   }
 
+  /** `etag`: sent verbatim as If-None-Match (including any W/ prefix). */
   private async get<T>(target: string, accept: string, read: (res: Response) => Promise<T>, opts: CallOptions, etag?: string): Promise<Fetched<T>> {
     if (!target.startsWith(`${API}/`)) throw new GitHubError('http', `Refusing to send the GitHub token outside ${API}: ${target.slice(0, 100)}`);
     checkToken(this.opts.token);
@@ -134,7 +146,7 @@ export class GitHubRestClient {
           Authorization: `Bearer ${this.opts.token}`,
           'User-Agent': 'gh-dash',
           'X-GitHub-Api-Version': API_VERSION,
-          ...(etag ? { 'If-None-Match': `"${etag}"` } : {}),
+          ...(etag ? { 'If-None-Match': etag } : {}),
         },
         signal: signal ? AbortSignal.any([timeout, signal]) : timeout,
       });
@@ -143,7 +155,7 @@ export class GitHubRestClient {
     }
     const path = new URL(target).pathname;
     // A 304's rate-limit headers don't reflect the bucket (and it costs nothing).
-    if (res.status === 304) return { body: null, next: null };
+    if (res.status === 304) return { body: null, next: null, etag: etag ?? null };
     this.trackRateLimit(res);
     if (res.status === 401) throw new GitHubError('auth', 'GitHub rejected the token (401)', { status: 401 });
     if (!res.ok) {
@@ -162,7 +174,7 @@ export class GitHubRestClient {
       if (err instanceof GitHubError || err instanceof RetryableError) throw err;
       throw new RetryableError(`reading the response for ${path} failed: ${(err as Error).message}`, null);
     }
-    return { body, next: nextLink(res.headers.get('link')) };
+    return { body, next: nextLink(res.headers.get('link')), etag: res.headers.get('etag') };
   }
 
   private trackRateLimit(res: Response): void {

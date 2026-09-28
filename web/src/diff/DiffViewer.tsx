@@ -51,6 +51,8 @@ const EXPAND_LINES = 20;
 const GAP = 12;
 /** Quiet time after a jump's last scroll event before the scroll position picks the file again. */
 const SETTLE_MS = 150;
+/** Keys that scroll the focused diff scroller (they end a jump's settling like a wheel does). */
+const SCROLL_KEYS = new Set(['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End']);
 
 registerThemes();
 
@@ -283,7 +285,7 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
   // frame or more later, when a quick next j may already have set another file. So while a jump is
   // in flight, `current` stays its target (j/k step from it) and scroll events don't move it; the
   // scroll position takes over once scrolling has been quiet for SETTLE_MS, or at once when the
-  // reader scrolls (wheel, touch, scrollbar).
+  // reader scrolls (wheel, touch, scrollbar, scrolling keys).
   const settling = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const settle = useCallback(() => {
     clearTimeout(settling.current);
@@ -304,12 +306,14 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
     const release = (e: Event) => {
       // A pointer on the scroller itself is on its scrollbar; anything else is a click in the diff.
       if (e.type === 'pointerdown' && e.target !== el) return;
+      // Keys that scroll the diff; Space only where it isn't pressing a focused expand control.
+      if (e instanceof KeyboardEvent && !(SCROLL_KEYS.has(e.key) || (e.key === ' ' && e.target === el))) return;
       clearTimeout(settling.current);
       settling.current = undefined;
     };
-    for (const type of ['wheel', 'touchstart', 'pointerdown']) el.addEventListener(type, release, { passive: true });
+    for (const type of ['wheel', 'touchstart', 'pointerdown', 'keydown']) el.addEventListener(type, release, { passive: true });
     return () => {
-      for (const type of ['wheel', 'touchstart', 'pointerdown']) el.removeEventListener(type, release);
+      for (const type of ['wheel', 'touchstart', 'pointerdown', 'keydown']) el.removeEventListener(type, release);
       clearTimeout(settling.current);
     };
   }, [hasFiles]);

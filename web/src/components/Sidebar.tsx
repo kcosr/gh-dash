@@ -146,7 +146,7 @@ export function Sidebar() {
   };
 
   return (
-    <aside className="sidebar" aria-label="Repository scope">
+    <aside className="sidebar" id="repository-sidebar" aria-label="Repository scope">
       <div className="side-top">
         <label className="field">
           <Icon name="search" />

@@ -7,6 +7,7 @@ import { EmptyState, ErrorNote, ProgressBar } from '../components/EmptyState';
 import { FilterInput } from '../components/FilterInput';
 import { Icon } from '../components/Icon';
 import { PrRow, ReleaseRow } from '../components/PrRow';
+import { RepoChip } from '../components/RepoChip';
 import { Seg, WHO_OPTIONS } from '../components/Seg';
 import { useUI } from '../components/ui';
 import { prFetchParams, releaseListParams } from '../lib/apiQuery';
@@ -68,7 +69,7 @@ export function PullRequestsView() {
         if (s.pr) set({ pr: pr.id }, { replace: true });
       } else if (e.key === 'Enter' && cursor >= 0) {
         // Enter on a focused control (a toolbar button, a link) belongs to that control.
-        if ((e.target as Element | null)?.closest?.('button, a[href], input, select, textarea, summary, [role="button"], [role="checkbox"], [role="link"], [role="menuitem"]')) return;
+        if ((e.target as Element | null)?.closest?.('button, a[href], input, select, textarea, summary, [role="button"], [role="checkbox"], [role="link"], [role="menuitem"], [role="separator"]')) return;
         e.preventDefault();
         set({ pr: order[cursor].id });
       } else if (e.key === 'o' && cursor >= 0) {
@@ -176,8 +177,8 @@ export function PullRequestsView() {
               {groups.map((g) => (
                 <section key={g.key}>
                   <div className="group-h">
-                    <span className="gt">{g.title}</span>
-                    {g.sub && <span className="gs">{g.sub}</span>}
+                    <span className="gt">{s.group === 'repo' ? <RepoChip name={g.key} className="repo-ref" /> : g.title}</span>
+                    {g.sub && s.group !== 'repo' && <span className="gs">{g.sub}</span>}
                     <span className="rule" />
                     <span className="gc">
                       {g.prs} {plural(g.prs, 'PR')}{g.releases ? ` · ${g.releases} ${plural(g.releases, 'release')}` : ''}

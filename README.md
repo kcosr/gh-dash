@@ -38,6 +38,9 @@ Use **Settings** to adjust the sync interval, backfill window and fork inclusion
 Add any unlinked commit emails under **My commit emails** so those commits count as yours.
 Click a sidebar repository row to focus on it; use its checkbox to add or remove it
 from your selection. Sidebar counts show all open PRs and issues as of the last sync.
+Click repository names in lists and activity to filter to them. Drag the sidebar's
+divider to resize it; its width is saved in your browser. You can also focus the
+divider and use arrow keys, or double-click it to reset the width.
 
 ## Configuration and deployment
 

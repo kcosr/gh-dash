@@ -8,6 +8,7 @@ import { ExportModal } from './components/ExportModal';
 import { PromptDialog } from './components/PromptDialog';
 import { FirstSyncCard, NoTokenCard } from './components/Setup';
 import { Sidebar } from './components/Sidebar';
+import { useSidebarResize } from './components/SidebarResize';
 import { ToastProvider, useToast } from './components/Toasts';
 import { TopBar, useSyncNow, useTheme } from './components/TopBar';
 import { UIProvider, useUI } from './components/ui';
@@ -142,12 +143,13 @@ function Shell() {
     : null;
   const hasSide = !setup && view !== 'repos' && view !== 'repo' && view !== 'settings';
   const drawer = !setup && s.pr ? s.pr : null;
+  const sidebar = useSidebarResize(hasSide, !!drawer);
 
   return (
     <>
-      <div className={cx('app', !hasSide && 'no-side', drawer && 'has-drawer')}>
+      <div ref={sidebar.frame} style={sidebar.style} className={cx('app', !hasSide && 'no-side', drawer && 'has-drawer', sidebar.dragging && 'resizing-sidebar')}>
         <TopBar theme={theme} onToggleTheme={toggleTheme} />
-        {hasSide && <Sidebar />}
+        {hasSide && <div className="sidebar-pane"><Sidebar />{sidebar.separator}</div>}
         {setup ? (
           <main className="main tint">
             <div className="scroll">

@@ -111,6 +111,7 @@ export interface GqlPullRequest {
   deletions: number;
   changedFiles: number;
   headRefName: string;
+  headRefOid: string;
   baseRefName: string;
   author: GqlActor | null;
   mergedBy: { login: string } | null;

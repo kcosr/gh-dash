@@ -93,6 +93,7 @@ export function mapPullRequest(p: GqlPullRequest): PrRecord {
     changedFiles: p.changedFiles,
     commitCount: p.commits.totalCount,
     headRef: p.headRefName,
+    headOid: p.headRefOid,
     baseRef: p.baseRefName,
     labels: mapLabels(p.labels),
     closingIssues: (p.closingIssuesReferences?.nodes ?? []).map((i) => ({

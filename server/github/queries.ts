@@ -68,7 +68,7 @@ const PR_FIELDS = `
 fragment PrFields on PullRequest {
   number title body state isDraft url
   createdAt updatedAt mergedAt closedAt
-  additions deletions changedFiles headRefName baseRefName
+  additions deletions changedFiles headRefName headRefOid baseRefName
   author { ${ACTOR} }
   mergedBy { login }
   ${LABELS}

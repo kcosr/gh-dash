@@ -39,8 +39,8 @@ URLs, and compare. Worth checking in particular:
 - `viewer-account.json` / `lookup.json`: the field names the Add dialog and "me" depend on (`emails { nodes { email } }`,
   `commitEmail`, `userPermissions { downloadCode readMergeRequest }`, `issuesEnabled`, `updatedAfter` on
   `mergeRequests` / `issues`, `count` on `releases`), and what a Guest gets for them on a private project.
-- `merge-requests.json`: `mergeCommitSha` / `squashCommitSha` on merged MRs of each merge method (merge commit, squash,
-  fast-forward), and that they are null on open and closed ones.
+- `merge-requests.json`: `mergeCommitSha` on merged MRs of each merge method (merge commit, squash, fast-forward), and
+  that it is null on open and closed ones. (19.3.3's `MergeRequest` has no `squashCommitSha` field at all.)
 - `member-projects.json`: that `simple=true` really leaves out `visibility` (the sync source lists the full entity for
   that reason), `forked_from_project` on a fork whose upstream the token can't see, and `namespace.kind` for a project
   shared from another user's personal namespace.

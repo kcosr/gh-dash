@@ -212,7 +212,9 @@ export function mapMergeRequest(m: GqlMergeRequest, base: string): PrRecord {
     commits,
     // Only a merged MR has landed commits; the sync links the target branch's commits to it through them.
     mergeCommitOid: state === 'merged' ? landed(m.mergeCommitSha) : null,
-    squashCommitOid: state === 'merged' ? landed(m.squashCommitSha) : null,
+    // 19.3's GraphQL MergeRequest has no squash SHA, so squash-merged MRs are linked only through `mergeCommitSha` and
+    // the MR's own commit SHAs.
+    squashCommitOid: null,
   };
 }
 

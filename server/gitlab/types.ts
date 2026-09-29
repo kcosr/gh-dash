@@ -119,9 +119,8 @@ export interface GqlMergeRequest {
   /** Who merged it, or who set it to auto-merge while it's open. */
   mergeUser: { username: string } | null;
   diffStatsSummary: { additions: number; deletions: number; fileCount: number } | null;
-  /** The merge commit on the target branch, and the squash commit; set once merged (a fast-forward merge has no merge commit). */
+  /** The merge commit on the target branch; set once merged (a fast-forward merge has no merge commit). */
   mergeCommitSha: string | null;
-  squashCommitSha: string | null;
   labels: GqlLabels | null;
   commits: { nodes: GqlCommit[] } | null;
   /** null while GitLab's explicit_mr_work_item_relations feature flag is off (the 19.3 default). */

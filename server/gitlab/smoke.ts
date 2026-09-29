@@ -4,7 +4,7 @@
  *
  * Besides the mapping of what the sync reads, it checks the GitLab calls the integration wave adds (DESIGN §10.3), which
  * the fake instance can't prove: the viewer's emails, the token validation query, projects(ids:), the candidates
- * listing, the lookup query with its permission fields and counts, merge and squash commit SHAs, what glab does for a
+ * listing, the lookup query with its permission fields and counts, merge commit SHAs, what glab does for a
  * host it isn't logged in to, and how the instance takes the sync's per-source pool of concurrent rounds.
  *
  * Output is anonymised unless --verbose: counts, field checks, error kinds and timings are safe to share, and titles,
@@ -371,11 +371,14 @@ const PERMISSIONS = `query SmokePermissions($first: Int!) {
 }`;
 const PERMISSION_PROJECTS = 50;
 
-/** §4.5: merged MRs with the SHAs the commit-to-MR link-up uses, and the commits the sync lists for an MR. */
+/**
+ * §4.5: merged MRs with the SHAs the commit-to-MR link-up uses, and the commits the sync lists for an MR. 19.3's GraphQL
+ * MergeRequest has no squash SHA, so a squash-merged MR links through `mergeCommitSha` and its own commits.
+ */
 const MERGED_MRS = `query SmokeMergedMrs($path: ID!, $first: Int!) {
   project(fullPath: $path) {
     mergeRequests(state: merged, first: $first, sort: UPDATED_DESC) {
-      nodes { iid state mergedAt targetBranch mergeCommitSha squashCommitSha diffHeadSha commits(first: 20) { nodes { sha } } }
+      nodes { iid state mergedAt targetBranch mergeCommitSha diffHeadSha commits(first: 20) { nodes { sha } } }
     }
   }
 }`;
@@ -436,7 +439,6 @@ export interface MergedMr {
   mergedAt: string | null;
   targetBranch: string;
   mergeCommitSha: string | null;
-  squashCommitSha: string | null;
   diffHeadSha: string | null;
   commits: { nodes: { sha: string }[] } | null;
 }
@@ -535,15 +537,13 @@ export function checkValidate(c: Check, d: ValidateData, expect: { login: string
   return { addresses, detail };
 }
 
-/** How the commits page links to merged MRs by the SQL of §4.5: by merge SHA, squash SHA, a commit the MR lists, or not at all. */
-export function linkCommits(oids: string[], mrs: MergedMr[]): { merge: number; squash: number; listed: number; none: number } {
+/** How the commits page links to merged MRs by the SQL of §4.5: by merge SHA, a commit the MR lists, or not at all. */
+export function linkCommits(oids: string[], mrs: MergedMr[]): { merge: number; listed: number; none: number } {
   const merge = new Set(mrs.flatMap((m) => (m.mergeCommitSha ? [m.mergeCommitSha] : [])));
-  const squash = new Set(mrs.flatMap((m) => (m.squashCommitSha ? [m.squashCommitSha] : [])));
   const listed = new Set(mrs.flatMap((m) => (m.commits?.nodes ?? []).map((n) => n.sha)));
-  const out = { merge: 0, squash: 0, listed: 0, none: 0 };
+  const out = { merge: 0, listed: 0, none: 0 };
   for (const oid of oids) {
     if (merge.has(oid)) out.merge++;
-    else if (squash.has(oid)) out.squash++;
     else if (listed.has(oid)) out.listed++;
     else out.none++;
   }
@@ -1356,29 +1356,28 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv, io: SmokeIo):
       }
       if (!mrs.length) throw new Skip('no merged merge requests in this project (pass --project with one that has some)');
       for (const m of mrs) {
-        has(c, m, ['mergeCommitSha', 'squashCommitSha'], 'merge request');
+        has(c, m, ['mergeCommitSha'], 'merge request');
         c.expect(m.state === 'merged', 'a merge request that is not merged came back for state: merged');
-        for (const sha of [m.mergeCommitSha, m.squashCommitSha]) c.expect(!sha || OID.test(sha), 'a merge or squash commit SHA is not a SHA');
+        c.expect(!m.mergeCommitSha || OID.test(m.mergeCommitSha), 'a merge commit SHA is not a SHA');
       }
       const withMerge = mrs.filter((m) => m.mergeCommitSha).length;
-      const withSquash = mrs.filter((m) => m.squashCommitSha).length;
-      const neither = mrs.filter((m) => !m.mergeCommitSha && !m.squashCommitSha).length;
-      if (neither === mrs.length) c.note('no merged MR has a mergeCommitSha or squashCommitSha (fast-forward merges only?): links would come from the MR commits alone');
+      const without = mrs.length - withMerge;
+      if (!withMerge) c.note('no merged MR has a mergeCommitSha (fast-forward or squash merges only?): links would come from the MR commits alone');
       show('merged MRs', mrs.slice(0, 3).map((m) => ({ ...m, commits: m.commits?.nodes.length })));
       // What the link-up of §4.5 does with the commits page the sync reads.
       const commits = st.rounds.commits;
-      if (!commits) return `${mrs.length} merged MRs · merge SHA on ${withMerge} · squash SHA on ${withSquash} · neither ${neither} · (no commits round to link)`;
+      if (!commits) return `${mrs.length} merged MRs · merge SHA on ${withMerge} · none ${without} · (no commits round to link)`;
       const oids = commits.items.map((x) => x.oid);
       const linked = linkCommits(oids, mrs);
       const known = new Set(oids);
       const windowStart = commits.hasMore ? (commits.items.at(-1)?.committedAt ?? since) : since;
       const recent = mrs.filter((m) => m.targetBranch === repo!.defaultBranch && m.mergedAt !== null && Date.parse(m.mergedAt) > Date.parse(windowStart) + DAY_MS);
-      const linkable = recent.filter((m) => [m.mergeCommitSha, m.squashCommitSha, ...(m.commits?.nodes ?? []).map((n) => n.sha)].some((sha) => !!sha && known.has(sha))).length;
+      const linkable = recent.filter((m) => [m.mergeCommitSha, ...(m.commits?.nodes ?? []).map((n) => n.sha)].some((sha) => !!sha && known.has(sha))).length;
       if (recent.length && !linkable) c.fail(`none of the ${recent.length} MRs merged into the default branch within the commits page can be linked to a commit on it: Activity would show their commits as direct pushes`);
       else if (linkable < recent.length) c.note(`${recent.length - linkable} of ${recent.length} recent default-branch MRs have no commit on the page to link to (rebased, or merged after the page?)`);
       return (
-        `${mrs.length} merged MRs · merge SHA on ${withMerge} · squash SHA on ${withSquash} · neither ${neither} · commits page ${oids.length}: ` +
-        `linked by merge SHA ${linked.merge}, by squash SHA ${linked.squash}, by listed MR commits ${linked.listed}, not linked ${linked.none} · recent default-branch MRs linkable ${linkable} of ${recent.length}`
+        `${mrs.length} merged MRs · merge SHA on ${withMerge} · none ${without} · commits page ${oids.length}: ` +
+        `linked by merge SHA ${linked.merge}, by listed MR commits ${linked.listed}, not linked ${linked.none} · recent default-branch MRs linkable ${linkable} of ${recent.length}`
       );
     },
     (!repo && 'no project') || (repo && !repo.defaultBranch && 'empty repository'),

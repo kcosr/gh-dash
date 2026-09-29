@@ -156,11 +156,11 @@ describe('GitLab → rows: merge requests', () => {
 
   it('reads the commits a merged MR landed as, and none for one that has not merged', () => {
     expect([merged!.mergeCommitOid, merged!.squashCommitOid]).toEqual(['3333333333333333333333333333333333333333', null]);
-    // Squash merged: a squash commit as well (and a fast-forward merge would have no merge commit). Case is normalized.
-    const squashed = mapMergeRequest({ ...mrs[1]!, mergeCommitSha: null, squashCommitSha: 'ABCDEF0000000000000000000000000000000000' }, BASE);
-    expect([squashed.mergeCommitOid, squashed.squashCommitOid]).toEqual([null, 'abcdef0000000000000000000000000000000000']);
+    // Case is normalized. GitLab 19.3 has no squash SHA to read, so squashCommitOid is always null.
+    const upper = mapMergeRequest({ ...mrs[1]!, mergeCommitSha: 'ABCDEF0000000000000000000000000000000000' }, BASE);
+    expect([upper.mergeCommitOid, upper.squashCommitOid]).toEqual(['abcdef0000000000000000000000000000000000', null]);
     // Only a merged MR has landed commits, whatever GitLab holds for the others.
-    const open = mapMergeRequest({ ...mrs[0]!, mergeCommitSha: 'a'.repeat(40), squashCommitSha: 'b'.repeat(40) }, BASE);
+    const open = mapMergeRequest({ ...mrs[0]!, mergeCommitSha: 'a'.repeat(40) }, BASE);
     expect([open.mergeCommitOid, open.squashCommitOid]).toEqual([null, null]);
     expect([draft, closed, locked].map((p) => [p!.mergeCommitOid, p!.squashCommitOid])).toEqual([[null, null], [null, null], [null, null]]);
   });

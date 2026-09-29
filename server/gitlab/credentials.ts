@@ -20,7 +20,7 @@ const DAY_MS = 86_400_000;
  * Who the token is for, its emails ("me"), the instance and the personal namespace's size. `emails` needs a recent
  * GitLab; smoke v2 checks it on the real instance.
  */
-const CREDENTIAL_CHECK = `
+export const CREDENTIAL_CHECK = `
 query CredentialCheck {
   currentUser { id username name avatarUrl publicEmail commitEmail emails { nodes { email } } }
   metadata { version enterprise }

@@ -112,7 +112,6 @@ export function smokeOps(): Ops {
   const known = knownProjects();
   const byPath = (path: unknown) => known.find((p) => p.fullPath === path);
   const updatedSince = (v: Record<string, unknown>, times: string[]) => times.filter((t) => Date.parse(t) >= Date.parse(String(v.since))).length;
-  const squash = '4'.repeat(40);
   return {
     // The token validation query: the account with its emails, the instance, and the personal projects' count.
     SmokeValidate: () => ({
@@ -147,15 +146,15 @@ export function smokeOps(): Ops {
         nodes: [11, 12, 21].map((id) => ({ id: gid(id), ...permissionsOf(gid(id)) })),
       },
     }),
-    // A squash-merged MR (its squash commit is the second commit of commits.json), a merge-commit one (the first), and an
-    // old one merged into a release branch.
+    // A fast-forwarded MR (no merge commit; its own commit is the second commit of commits.json, as 19.3's GraphQL has no
+    // squash SHA to say so), a merge-commit one (the first), and an old one merged into a release branch.
     SmokeMergedMrs: () => ({
       project: {
         mergeRequests: {
           nodes: [
-            { iid: '6', state: 'merged', mergedAt: ago(2), targetBranch: 'main', mergeCommitSha: null, squashCommitSha: squash, diffHeadSha: 'c'.repeat(40), commits: { nodes: [{ sha: 'c'.repeat(40) }] } },
-            { iid: '5', state: 'merged', mergedAt: ago(3), targetBranch: 'main', mergeCommitSha: HEAD, squashCommitSha: null, diffHeadSha: 'a'.repeat(40), commits: { nodes: [{ sha: 'a'.repeat(40) }] } },
-            { iid: '3', state: 'merged', mergedAt: ago(200), targetBranch: 'release/1.0', mergeCommitSha: 'd'.repeat(40), squashCommitSha: null, diffHeadSha: 'e'.repeat(40), commits: { nodes: [] } },
+            { iid: '6', state: 'merged', mergedAt: ago(2), targetBranch: 'main', mergeCommitSha: null, diffHeadSha: 'c'.repeat(40), commits: { nodes: [{ sha: commitsFixture[1]!.id }] } },
+            { iid: '5', state: 'merged', mergedAt: ago(3), targetBranch: 'main', mergeCommitSha: HEAD, diffHeadSha: 'a'.repeat(40), commits: { nodes: [{ sha: 'a'.repeat(40) }] } },
+            { iid: '3', state: 'merged', mergedAt: ago(200), targetBranch: 'release/1.0', mergeCommitSha: 'd'.repeat(40), diffHeadSha: 'e'.repeat(40), commits: { nodes: [] } },
           ],
         },
       },

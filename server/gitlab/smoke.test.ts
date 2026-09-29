@@ -625,25 +625,24 @@ describe('gitlab smoke: the integration wave\'s checks', () => {
     });
   });
 
-  describe('merge and squash commit SHAs', () => {
+  describe('merge commit SHAs', () => {
     it('links the commits page to the merged MRs by SHA', async () => {
       const { text } = await run();
       expect(block(text, 'merge shas')).toMatch(
-        /PASS\s+3 merged MRs · merge SHA on 2 · squash SHA on 1 · neither 0 · commits page 2: linked by merge SHA 1, by squash SHA 1, by listed MR commits 0, not linked 0 · recent default-branch MRs linkable 2 of 2/,
+        /PASS\s+3 merged MRs · merge SHA on 2 · none 1 · commits page 2: linked by merge SHA 1, by listed MR commits 1, not linked 0 · recent default-branch MRs linkable 2 of 2/,
       );
     });
 
     const cases: [string, ReturnType<typeof mutate>, RegExp][] = [
       ['mergeCommitSha is left out', mutate('SmokeMergedMrs', (d) => delete d.project.mergeRequests.nodes[0].mergeCommitSha), /merge request\.mergeCommitSha is missing from the response/],
-      ['squashCommitSha is left out', mutate('SmokeMergedMrs', (d) => d.project.mergeRequests.nodes.forEach((n: Data) => delete n.squashCommitSha)), /merge request\.squashCommitSha is missing from the response/],
-      ['a merge SHA is not a SHA', mutate('SmokeMergedMrs', (d) => (d.project.mergeRequests.nodes[1].mergeCommitSha = 'HEAD')), /a merge or squash commit SHA is not a SHA/],
-      ['a squash SHA is abbreviated', mutate('SmokeMergedMrs', (d) => (d.project.mergeRequests.nodes[0].squashCommitSha = '4444444')), /a merge or squash commit SHA is not a SHA/],
+      ['a merge SHA is not a SHA', mutate('SmokeMergedMrs', (d) => (d.project.mergeRequests.nodes[1].mergeCommitSha = 'HEAD')), /a merge commit SHA is not a SHA/],
+      ['a merge SHA is abbreviated', mutate('SmokeMergedMrs', (d) => (d.project.mergeRequests.nodes[1].mergeCommitSha = '3333333')), /a merge commit SHA is not a SHA/],
       ['an MR that is not merged comes back', mutate('SmokeMergedMrs', (d) => (d.project.mergeRequests.nodes[0].state = 'opened')), /a merge request that is not merged came back/],
       ['the connection is null', mutate('SmokeMergedMrs', (d) => (d.project.mergeRequests = null)), /project\.mergeRequests is null/],
       [
         'no SHA leads to a commit on the page',
         mutate('SmokeMergedMrs', (d) =>
-          d.project.mergeRequests.nodes.forEach((n: Data) => Object.assign(n, { mergeCommitSha: n.mergeCommitSha && '9'.repeat(40), squashCommitSha: n.squashCommitSha && '9'.repeat(40), commits: { nodes: [{ sha: '8'.repeat(40) }] } })),
+          d.project.mergeRequests.nodes.forEach((n: Data) => Object.assign(n, { mergeCommitSha: n.mergeCommitSha && '9'.repeat(40), commits: { nodes: [{ sha: '8'.repeat(40) }] } })),
         ),
         /none of the 2 MRs merged into the default branch within the commits page can be linked to a commit on it: Activity would show their commits as direct pushes/,
       ],
@@ -654,16 +653,16 @@ describe('gitlab smoke: the integration wave\'s checks', () => {
       expect(block(text, 'merge shas')).toMatch(expected);
     });
 
-    it('links through the MR\'s listed commits when it has no merge or squash SHA (fast-forward), and notes it', async () => {
+    it('links through the MR\'s listed commits when it has no merge SHA (fast-forward or squash), and notes it', async () => {
       const ff = mutate('SmokeMergedMrs', (d) =>
-        d.project.mergeRequests.nodes.forEach((n: Data) => Object.assign(n, { mergeCommitSha: null, squashCommitSha: null, commits: { nodes: [{ sha: n.iid === '6' ? '4'.repeat(40) : '3'.repeat(40) }] } })),
+        d.project.mergeRequests.nodes.forEach((n: Data) => Object.assign(n, { mergeCommitSha: null, commits: { nodes: [{ sha: n.iid === '6' ? '4'.repeat(40) : '3'.repeat(40) }] } })),
       );
       const { text } = await run([], { ops: ff });
-      expect(block(text, 'merge shas')).toMatch(/PASS[^]*merge SHA on 0 · squash SHA on 0 · neither 3[^]*by listed MR commits 2, not linked 0[^]*~ no merged MR has a mergeCommitSha or squashCommitSha/);
+      expect(block(text, 'merge shas')).toMatch(/PASS[^]*merge SHA on 0 · none 3[^]*by listed MR commits 2, not linked 0[^]*~ no merged MR has a mergeCommitSha/);
     });
 
     it('notes a recent MR that has no commit on the page, without failing while another links', async () => {
-      const { text } = await run([], { ops: mutate('SmokeMergedMrs', (d) => (d.project.mergeRequests.nodes[0].squashCommitSha = '9'.repeat(40))) });
+      const { text } = await run([], { ops: mutate('SmokeMergedMrs', (d) => (d.project.mergeRequests.nodes[0].commits = { nodes: [{ sha: '9'.repeat(40) }] })) });
       expect(block(text, 'merge shas')).toMatch(/PASS[^]*~ 1 of 2 recent default-branch MRs have no commit on the page to link to/);
     });
 
@@ -674,9 +673,9 @@ describe('gitlab smoke: the integration wave\'s checks', () => {
     });
 
     it('links in memory as the SQL of the design does', () => {
-      const mr = (over: Partial<MergedMr>): MergedMr => ({ iid: '1', state: 'merged', mergedAt: null, targetBranch: 'main', mergeCommitSha: null, squashCommitSha: null, diffHeadSha: null, commits: null, ...over });
-      const linked = linkCommits(['a', 'b', 'c', 'd', 'e'], [mr({ mergeCommitSha: 'a' }), mr({ squashCommitSha: 'b' }), mr({ commits: { nodes: [{ sha: 'c' }, { sha: 'a' }] } })]);
-      expect(linked).toEqual({ merge: 1, squash: 1, listed: 1, none: 2 });
+      const mr = (over: Partial<MergedMr>): MergedMr => ({ iid: '1', state: 'merged', mergedAt: null, targetBranch: 'main', mergeCommitSha: null, diffHeadSha: null, commits: null, ...over });
+      const linked = linkCommits(['a', 'b', 'c', 'd', 'e'], [mr({ mergeCommitSha: 'a' }), mr({ commits: { nodes: [{ sha: 'c' }, { sha: 'a' }] } })]);
+      expect(linked).toEqual({ merge: 1, listed: 1, none: 3 });
     });
   });
 

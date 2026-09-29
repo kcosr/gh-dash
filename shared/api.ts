@@ -331,7 +331,20 @@ export interface SyncStatus {
   rateLimit: { limit: number; remaining: number; resetAt: string } | null;
   tokenSource: TokenSource;
   viewer: string | null;
+  /** Key of the one repository a single-repo sync is syncing (e.g. one just added); null for a full sync. */
+  repo?: string | null;
 }
+
+// ---------------------------------------------------------------------------
+// Adding and removing repositories
+// ---------------------------------------------------------------------------
+
+/**
+ * Why a repository can't be added (or synced): 'not-found' (doesn't exist, or the token can't see it), 'sso' (the
+ * organization requires SAML single sign-on), 'org-policy' (an organization policy refuses the token),
+ * 'permission' (the token sees the repository but not its pull requests, issues or code).
+ */
+export type AccessProblem = 'not-found' | 'sso' | 'org-policy' | 'permission';
 
 // ---------------------------------------------------------------------------
 // Query parameters (all optional; all sent as URL query strings)

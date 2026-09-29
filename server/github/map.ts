@@ -52,7 +52,7 @@ export function mapRepo(r: GqlRepo): RepoRecord {
     isFork: r.isFork,
     languageName: r.primaryLanguage?.name ?? null,
     languageColor: r.primaryLanguage?.color ?? null,
-    topics: r.repositoryTopics.nodes.map((n) => n.topic.name),
+    topics: r.repositoryTopics?.nodes.map((n) => n.topic.name) ?? [],
     defaultBranch: r.defaultBranchRef?.name ?? null,
     stars: r.stargazerCount,
     forks: r.forkCount,

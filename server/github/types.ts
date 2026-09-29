@@ -55,7 +55,8 @@ export interface GqlRepo {
   isArchived: boolean;
   isFork: boolean;
   primaryLanguage: { name: string; color: string | null } | null;
-  repositoryTopics: { nodes: { topic: { name: string } }[] };
+  /** null when a partial read (queryPartial) was refused this field. */
+  repositoryTopics: { nodes: { topic: { name: string } }[] } | null;
   defaultBranchRef: { name: string } | null;
   stargazerCount: number;
   forkCount: number;
@@ -90,6 +91,17 @@ export interface ViewerRepoData {
 
 export interface ViewerData {
   viewer: GqlViewer;
+  rateLimit: GqlRateLimit;
+}
+
+export interface ManualReposData {
+  nodes: ((GqlRepo & GqlProbe) | null)[];
+  rateLimit: GqlRateLimit;
+}
+
+export interface RepoNodeData {
+  viewer: GqlViewer;
+  node: (GqlRepo & GqlProbe) | null;
   rateLimit: GqlRateLimit;
 }
 

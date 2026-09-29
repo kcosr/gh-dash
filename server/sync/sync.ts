@@ -1,15 +1,17 @@
-import type { Settings, TrackedBy } from '../../shared/api';
+import type { Settings, TokenKind, TrackedBy } from '../../shared/api';
 import type { Db } from '../db/db';
 import { getMeta, setMeta, type ViewerMeta } from '../db/meta';
 import type { RepoProbe, RepoRecord } from '../db/records';
-import { repoKey, resolveRepo } from '../db/repo-key';
+import { repoKey, repoKeySql, resolveRepo } from '../db/repo-key';
 import {
   applyProbe,
   deleteItem,
   deleteStarsExcept,
   getSyncState,
   markReposRemoved,
+  markUnavailable,
   pruneCommits,
+  refreshManual,
   releaseExists,
   starExists,
   storedOpenNumbers,
@@ -25,13 +27,17 @@ import {
 } from '../db/write';
 import { GitHubError, type GitHubClient } from '../github/client';
 import { mapCommit, mapIssue, mapProbe, mapPullRequest, mapRelease, mapRepo, mapStar } from '../github/map';
-import { recheckQuery, REPO_DETAIL, REPO_PROBES, VIEWER_REPO, VIEWER_REPOS } from '../github/queries';
+import { type AccessFailure, accessFailure, notFound, reasonOf } from '../github/access';
+import { MANUAL_REPOS, recheckQuery, REPO_DETAIL, REPO_NODE, REPO_PROBES, VIEWER_REPO, VIEWER_REPOS } from '../github/queries';
 import type {
+  GqlError,
   GqlIssue,
   GqlPullRequest,
   GqlViewer,
+  ManualReposData,
   RecheckData,
   RepoDetailData,
+  RepoNodeData,
   RepoProbesData,
   ViewerRepoData,
   ViewerReposData,
@@ -70,6 +76,8 @@ export interface SyncDeps {
   now?: () => number;
   concurrency?: number;
   onProgress?: (p: SyncProgress) => void;
+  /** The kind of token the client uses: what to suggest when a repo added by hand can't be read. */
+  tokenKind?: TokenKind | null;
 }
 
 export interface RepoPlan {
@@ -155,14 +163,14 @@ const isFatal = (err: unknown) => err instanceof GitHubError && (err.kind === 'a
 const message = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
 export async function runSync(deps: SyncDeps, req: SyncRequest = {}): Promise<SyncResult> {
-  const { db, client, settings } = deps;
+  const { db, settings } = deps;
   const nowMs = deps.now?.() ?? Date.now();
   const nowIso = isoSec(nowMs);
   const backfillStart = isoSec(nowMs - settings.backfillDays * DAY_MS);
   const full = !!req.full;
   const errors: string[] = [];
 
-  const targets = req.repo ? await fetchOneRepo(deps, req.repo, nowIso) : await fetchAllRepos(deps, nowIso, errors);
+  const targets = req.repo ? await fetchOneRepo(deps, req.repo, nowIso, errors) : await fetchAllRepos(deps, nowIso, errors);
 
   const progress: SyncProgress = { done: 0, total: targets.length, current: null };
   deps.onProgress?.({ ...progress });
@@ -177,12 +185,21 @@ export async function runSync(deps: SyncDeps, req: SyncRequest = {}): Promise<Sy
     try {
       // Await first: `newItems += await …` would read newItems before the await and lose concurrent updates.
       const added = await syncRepo(deps, t, { full, includeForks: settings.includeForks, backfillStart, nowMs, nowIso });
-      newItems += added;
-      updateSyncState(db, t.id, { synced_at: nowIso, last_error: null });
+      // Removed (DELETE /repos) while it synced: its rows are gone, and it must not come back.
+      if (repoExists(db, t.id)) {
+        newItems += added;
+        updateSyncState(db, t.id, { synced_at: nowIso, last_error: null });
+      }
     } catch (err) {
       if (isFatal(err)) fatal = message(err);
-      else errors.push(`${key}: ${message(err)}`);
-      updateSyncState(db, t.id, { last_error: message(err) });
+      else if (!repoExists(db, t.id)) {
+        // Removed while it synced: its writes failed on the missing row. Nothing to report.
+      } else {
+        const lost = t.trackedBy === 'manual' ? lostAccess(err, key, deps.tokenKind ?? null) : null;
+        if (lost) markUnavailable(db, t.id, reasonOf(lost), nowIso);
+        errors.push(`${key}: ${lost ? `unavailable: ${reasonOf(lost)}` : message(err)}`);
+      }
+      if (repoExists(db, t.id)) updateSyncState(db, t.id, { last_error: message(err) });
     }
     progress.done++;
     deps.onProgress?.({ ...progress });
@@ -190,6 +207,18 @@ export async function runSync(deps: SyncDeps, req: SyncRequest = {}): Promise<Sy
   if (fatal) errors.push(`Sync stopped: ${fatal}`);
   const forksSkipped = settings.includeForks ? 0 : targets.filter((t) => t.record.isFork && t.record.defaultBranch).length;
   return { repos: targets.length, newItems, errors, forksSkipped };
+}
+
+const repoExists = (db: Db, id: number) => !!db.get('SELECT 1 FROM repos WHERE id = ?', [id]);
+
+/**
+ * The repository itself can no longer be read (REPO_DETAIL failed on `repository`, not on one of its sections): what
+ * to record for a repo added by hand. A section the token may not read stays an ordinary error.
+ */
+function lostAccess(err: unknown, key: string, kind: TokenKind | null): AccessFailure | null {
+  if (!(err instanceof GitHubError) || (err.kind !== 'not-found' && err.kind !== 'forbidden')) return null;
+  const failure = accessFailure(err.errors, ['repository'], key, kind);
+  return failure && failure.problem !== 'permission' ? failure : null;
 }
 
 /**
@@ -216,25 +245,49 @@ function claimViewer(db: Db, v: GqlViewer): void {
   saveViewer(db, v);
 }
 
-/** `repo`: a key or an owned repo's short name; a bare name not tracked yet may name a repo the viewer just created. */
-async function fetchOneRepo(deps: SyncDeps, repo: string, nowIso: string): Promise<RepoTarget[]> {
-  // The viewer's repository(name:) only sees repos the viewer owns (syncing others by node id comes with adding them).
-  const ref = resolveRepo(deps.db, repo);
-  if (ref && ref.trackedBy !== 'owned') throw new Error(`Only repositories you own can be synced on their own for now: ${ref.key}`);
-  if (!ref && repo.includes('/')) throw new Error(`Repository isn't tracked: ${repo}`);
-  const name = ref?.name ?? repo;
-  const data = await deps.client.query<ViewerRepoData>(VIEWER_REPO, { name });
-  claimViewer(deps.db, data.viewer);
-  const node = data.viewer.repository;
-  if (!node) throw new Error(`Repository not found on GitHub: ${ref?.key ?? name}`);
+/**
+ * One repository: `repo` is a key or an owned repo's short name. A tracked repo is read by node id (it may have been
+ * renamed since). A bare name nothing tracks yet may name a repo the viewer just created: that is looked up among the
+ * viewer's own. A repo added by hand that can't be read is marked unavailable, and there is nothing to sync.
+ */
+async function fetchOneRepo(deps: SyncDeps, repo: string, nowIso: string, errors: string[]): Promise<RepoTarget[]> {
+  const { db, client } = deps;
+  const ref = resolveRepo(db, repo);
+  if (!ref) {
+    if (repo.includes('/')) throw new Error(`Repository isn't tracked: ${repo}`);
+    const data = await client.query<ViewerRepoData>(VIEWER_REPO, { name: repo });
+    claimViewer(db, data.viewer);
+    const node = data.viewer.repository;
+    if (!node) throw new Error(`Repository not found on GitHub: ${repo}`);
+    const record = mapRepo(node);
+    const probe = mapProbe(node);
+    const id = db.tx(() => {
+      const repoId = upsertOwned(db, record, nowIso);
+      applyProbe(db, repoId, probe);
+      return repoId;
+    });
+    return [{ id, record, probe, trackedBy: 'owned' }];
+  }
+
+  const { data, errors: gqlErrors } = await client.queryPartial<RepoNodeData>(REPO_NODE, { id: ref.nodeId });
+  claimViewer(db, data.viewer);
+  const node = data.node;
+  if (!node) {
+    if (ref.trackedBy === 'owned') throw new Error(`Repository not found on GitHub: ${ref.key}`);
+    const failure = accessFailure(gqlErrors, ['node'], ref.key, deps.tokenKind ?? null) ?? notFound(ref.key, deps.tokenKind ?? null);
+    markUnavailable(db, ref.id, reasonOf(failure), nowIso);
+    errors.push(`${ref.key}: unavailable: ${reasonOf(failure)}`);
+    return [];
+  }
   const record = mapRepo(node);
-  const probe = mapProbe(node);
-  const id = deps.db.tx(() => {
-    const repoId = upsertOwned(deps.db, record, nowIso);
-    applyProbe(deps.db, repoId, probe);
+  // A section the token may not read leaves its probe incomplete: sync without one (the section's error follows).
+  const probe = gqlErrors.length ? null : mapProbe(node);
+  const id = db.tx(() => {
+    const repoId = ref.trackedBy === 'owned' ? upsertOwned(db, record, nowIso) : refreshManual(db, record, nowIso);
+    if (repoId !== null && probe) applyProbe(db, repoId, probe);
     return repoId;
   });
-  return [{ id, record, probe, trackedBy: 'owned' }];
+  return id === null ? [] : [{ id, record, probe, trackedBy: ref.trackedBy }];
 }
 
 async function fetchAllRepos(deps: SyncDeps, nowIso: string, errors: string[]): Promise<RepoTarget[]> {
@@ -255,26 +308,75 @@ async function fetchAllRepos(deps: SyncDeps, nowIso: string, errors: string[]): 
     return out;
   });
 
+  const manual = await fetchManualRepos(deps, nowIso, errors);
+
+  // A node the token can't read loses only its own probe (the repo then syncs as if it had changed).
   const probes = new Map<string, RepoProbe>();
-  const chunks: string[][] = [];
-  for (let i = 0; i < records.length; i += PROBE_CHUNK) chunks.push(records.slice(i, i + PROBE_CHUNK).map((r) => r.nodeId));
-  await pool(chunks, 4, async (chunk) => {
+  await pool(chunked(records.map((r) => r.nodeId), PROBE_CHUNK), 4, async (chunk) => {
     try {
-      const data = await client.query<RepoProbesData>(REPO_PROBES, { ids: chunk });
-      for (const n of data.nodes) if (n) probes.set(n.id, mapProbe(n));
+      const { data, errors: gqlErrors } = await client.queryPartial<RepoProbesData>(REPO_PROBES, { ids: chunk });
+      data.nodes.forEach((n, i) => {
+        if (n && !gqlErrors.some((e) => e.path?.[0] === 'nodes' && e.path[1] === i)) probes.set(n.id, mapProbe(n));
+      });
     } catch (err) {
       if (isFatal(err)) throw err;
       errors.push(`probe: ${message(err)}`);
     }
   });
 
-  return db.tx(() =>
+  const owned = db.tx(() =>
     records.map((record, i) => {
       const probe = probes.get(record.nodeId) ?? null;
       if (probe) applyProbe(db, ids[i]!, probe);
       return { id: ids[i]!, record, probe, trackedBy: 'owned' as const };
     }),
   );
+  return [...owned, ...manual];
+}
+
+const chunked = <T>(items: T[], size: number): T[][] =>
+  Array.from({ length: Math.ceil(items.length / size) }, (_, i) => items.slice(i * size, (i + 1) * size));
+
+/**
+ * Refreshes the live repos added by hand by node id (they follow renames and transfers), unavailable ones included so
+ * they are checked again every run. One that can't be read is marked unavailable: its data is kept and it isn't
+ * synced. A chunk failing for another reason skips its repos this run.
+ */
+async function fetchManualRepos(deps: SyncDeps, nowIso: string, errors: string[]): Promise<RepoTarget[]> {
+  const { db, client } = deps;
+  const rows = db.all<{ id: number; node_id: string; key: string }>(
+    `SELECT id, node_id, ${repoKeySql('repos')} AS key FROM repos WHERE tracked_by = 'manual' AND removed_at IS NULL ORDER BY id`,
+  );
+  const targets = new Map<number, RepoTarget>();
+  await pool(chunked(rows, PROBE_CHUNK), 4, async (chunk) => {
+    let res: { data: ManualReposData; errors: GqlError[] };
+    try {
+      res = await client.queryPartial<ManualReposData>(MANUAL_REPOS, { ids: chunk.map((r) => r.node_id) });
+    } catch (err) {
+      if (isFatal(err)) throw err;
+      errors.push(`manual repos: ${message(err)}`);
+      return;
+    }
+    db.tx(() =>
+      chunk.forEach((row, i) => {
+        const node = res.data.nodes[i];
+        const at = ['nodes', i];
+        if (!node) {
+          const failure = accessFailure(res.errors, at, row.key, deps.tokenKind ?? null) ?? notFound(row.key, deps.tokenKind ?? null);
+          markUnavailable(db, row.id, reasonOf(failure), nowIso);
+          return;
+        }
+        const record = mapRepo(node);
+        const partial = res.errors.some((e) => e.path?.[0] === 'nodes' && e.path[1] === i);
+        const probe = partial ? null : mapProbe(node);
+        const id = refreshManual(db, record, nowIso);
+        if (id === null) return;
+        if (probe) applyProbe(db, id, probe);
+        targets.set(row.id, { id, record, probe, trackedBy: 'manual' });
+      }),
+    );
+  });
+  return rows.flatMap((r) => targets.get(r.id) ?? []);
 }
 
 interface OpenPass {

@@ -58,6 +58,25 @@ query ViewerRepo($name: String!) {
 ${REPO_FIELDS}
 ${PROBE_FIELDS}`;
 
+/** Repos added by hand, by node id: their fields and probes, one request per chunk. Ones the token can't read come back null. */
+export const MANUAL_REPOS = `
+query ManualRepos($ids: [ID!]!) {
+  nodes(ids: $ids) { ... on Repository { ...RepoFields ...ProbeFields } }
+  ${RATE_LIMIT}
+}
+${REPO_FIELDS}
+${PROBE_FIELDS}`;
+
+/** One tracked repo by node id (a single-repo sync). The viewer comes along: it is claimed before anything is written. */
+export const REPO_NODE = `
+query RepoNode($id: ID!) {
+  viewer { id login name avatarUrl }
+  node(id: $id) { ... on Repository { ...RepoFields ...ProbeFields } }
+  ${RATE_LIMIT}
+}
+${REPO_FIELDS}
+${PROBE_FIELDS}`;
+
 export const VIEWER = `
 query Viewer {
   viewer { id login name avatarUrl }

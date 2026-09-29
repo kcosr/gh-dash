@@ -3,7 +3,9 @@
  * comments column), its comments and the composer. Small and quiet on purpose: UI type at the viewer's size, the
  * app's tokens, text buttons. Everything the cards need comes from ThreadsCtx, which DiffViewer provides.
  */
-import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
+import {
+  createContext, useContext, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent, type ReactNode,
+} from 'react';
 import type { CommentThread, Me, ThreadComment } from '../../../shared/api';
 import type { ThreadPlacement } from '../../../shared/comment-placement';
 import type { useThreadActions } from '../api/hooks';
@@ -15,7 +17,7 @@ import { useLayer } from '../lib/layers';
 import { plainPreview } from '../lib/markdown';
 import { fmtDateTime, plural, rel } from '../lib/time';
 import { copyText, cx } from '../lib/util';
-import { getDraft, loadNewDraft, setDraft, setNewDraftBody } from './drafts';
+import { getDraft, isSendingDraft, loadNewDraft, setDraft, setNewDraftBody, setSendingDraft, subscribeNewDrafts } from './drafts';
 import type { DraftAnchor, DraftSpot } from './threadModel';
 
 export type ThreadActions = ReturnType<typeof useThreadActions>;
@@ -114,7 +116,23 @@ export function Composer({
   const [store] = useState(() => given ?? keyStore(draftKey!));
   const [text, setText] = useState(() => store.load() || initial);
   const [submitting, setSubmitting] = useState(false);
-  const busy = submitting || sending;
+  // A draft under a key (a reply, an edit, a general comment) is in the shared sending registry while it's sent: the
+  // composer that sent it may be set aside (Esc) or unmounted, and the draft reopened meanwhile. A reopened one is
+  // read-only, and closes once its text went (the registry lets go after the draft is cleared). A new thread's draft
+  // (`store`) is the viewer's to track (`sending`).
+  const sendKey = given ? null : draftKey!;
+  const sendingElsewhere = useSyncExternalStore(subscribeNewDrafts, () => sendKey !== null && isSendingDraft(sendKey));
+  const busy = submitting || sending || sendingElsewhere;
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
+  const wasSending = useRef(sendingElsewhere);
+  useEffect(() => {
+    if (wasSending.current && !sendingElsewhere && !submitting && store.load() === '') onClose();
+    wasSending.current = sendingElsewhere;
+  }, [sendingElsewhere, submitting, store, onClose]);
   const area = useRef<HTMLTextAreaElement>(null);
   const toast = useToast();
   useLayer(true, onClose);
@@ -145,16 +163,22 @@ export function Composer({
     setText(v);
     store.save(v === initial ? '' : v);
   };
+  // The draft is cleared only if it still holds what was sent, and only a composer still open closes: a send that
+  // outlives it (set aside, reopened) never closes another.
   const submit = async () => {
     if (!text.trim() || busy) return;
+    const sent = text;
+    if (sendKey !== null) setSendingDraft(sendKey, true);
     setSubmitting(true);
     try {
-      await onSubmit(text);
-      store.save('');
-      (onSent ?? onClose)();
+      await onSubmit(sent);
+      if (store.load() === sent) store.save('');
+      if (mounted.current) (onSent ?? onClose)();
     } catch (e) {
       toast(`Couldn't save: ${(e as Error).message}`, { error: true });
-      setSubmitting(false);
+      if (mounted.current) setSubmitting(false);
+    } finally {
+      if (sendKey !== null) setSendingDraft(sendKey, false);
     }
   };
   const onKeyDown = (e: ReactKeyboardEvent) => {

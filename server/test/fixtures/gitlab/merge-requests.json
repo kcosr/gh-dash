@@ -1,0 +1,135 @@
+{
+  "project": {
+    "mergeRequests": {
+      "pageInfo": { "hasNextPage": true, "endCursor": "eyJ1cGRhdGVkX2F0IjoiMjAyNi0wOS0xOSJ9" },
+      "nodes": [
+        {
+          "iid": "7",
+          "title": "Draft: New settings page",
+          "description": "Adds a settings page.",
+          "state": "opened",
+          "draft": true,
+          "webUrl": "https://gitlab.example.com/gitlab/alice/app/-/merge_requests/7",
+          "createdAt": "2026-09-22T08:00:00Z",
+          "updatedAt": "2026-09-22T09:00:00Z",
+          "mergedAt": null,
+          "closedAt": "2026-09-22T08:30:00Z",
+          "sourceBranch": "settings",
+          "targetBranch": "main",
+          "diffHeadSha": "7777777777777777777777777777777777777777",
+          "commitCount": 2,
+          "author": { "username": "bob", "name": "Bob B", "avatarUrl": "/gitlab/uploads/-/system/user/avatar/3/avatar.png" },
+          "mergeUser": { "username": "alice" },
+          "diffStatsSummary": { "additions": 10, "deletions": 2, "fileCount": 3 },
+          "labels": { "nodes": [{ "title": "UX", "color": "#F0AD4E" }] },
+          "commits": {
+            "nodes": [
+              {
+                "sha": "7777777777777777777777777777777777777777",
+                "fullTitle": "Wire the settings form",
+                "committedDate": "2026-09-22T07:50:00Z",
+                "webUrl": "https://gitlab.example.com/gitlab/alice/app/-/commit/7777777777777777777777777777777777777777",
+                "authorName": "Bob B",
+                "authorEmail": "Bob@Example.com",
+                "author": { "username": "bob", "name": "Bob B", "avatarUrl": "https://secure.gravatar.com/avatar/b0b" }
+              },
+              {
+                "sha": "6666666666666666666666666666666666666666",
+                "fullTitle": "Add the settings page skeleton",
+                "committedDate": "2026-09-22T07:40:00Z",
+                "webUrl": "https://gitlab.example.com/gitlab/alice/app/-/commit/6666666666666666666666666666666666666666",
+                "authorName": "Bob (laptop)",
+                "authorEmail": "bob@laptop.example",
+                "author": null
+              }
+            ]
+          },
+          "workItemRelations": null
+        },
+        {
+          "iid": "5",
+          "title": "Fix login flow",
+          "description": "Closes #3",
+          "state": "merged",
+          "draft": false,
+          "webUrl": "https://gitlab.example.com/gitlab/alice/app/-/merge_requests/5",
+          "createdAt": "2026-09-20T09:00:00Z",
+          "updatedAt": "2026-09-21T10:00:05Z",
+          "mergedAt": "2026-09-21T10:00:00Z",
+          "closedAt": "2026-09-20T12:00:00Z",
+          "sourceBranch": "fix",
+          "targetBranch": "main",
+          "diffHeadSha": "aaaa000000000000000000000000000000000000",
+          "commitCount": 1,
+          "author": { "username": "alice", "name": "Alice A", "avatarUrl": null },
+          "mergeUser": { "username": "alice" },
+          "diffStatsSummary": { "additions": 12, "deletions": 3, "fileCount": 2 },
+          "labels": { "nodes": [{ "title": "bug", "color": "#d9534f" }, { "title": "priority::high", "color": "#f00" }] },
+          "commits": {
+            "nodes": [
+              {
+                "sha": "aaaa000000000000000000000000000000000000",
+                "fullTitle": "fix login",
+                "committedDate": "2026-09-20T08:55:00Z",
+                "webUrl": "https://gitlab.example.com/gitlab/alice/app/-/commit/aaaa000000000000000000000000000000000000",
+                "authorName": "Alice A",
+                "authorEmail": "alice@example.com",
+                "author": { "username": "alice", "name": "Alice A", "avatarUrl": null }
+              }
+            ]
+          },
+          "workItemRelations": {
+            "nodes": [
+              { "workItem": { "iid": "3", "title": "Login broken", "state": "CLOSED", "webUrl": "https://gitlab.example.com/gitlab/alice/app/-/issues/3" } },
+              { "workItem": null }
+            ]
+          }
+        },
+        {
+          "iid": "4",
+          "title": "Try another approach",
+          "description": null,
+          "state": "closed",
+          "draft": false,
+          "webUrl": "https://gitlab.example.com/gitlab/alice/app/-/merge_requests/4",
+          "createdAt": "2026-09-19T09:00:00Z",
+          "updatedAt": "2026-09-20T11:00:00Z",
+          "mergedAt": null,
+          "closedAt": "2026-09-20T11:00:00Z",
+          "sourceBranch": "attempt",
+          "targetBranch": "main",
+          "diffHeadSha": null,
+          "commitCount": null,
+          "author": { "username": "carol", "name": "Carol C", "avatarUrl": null },
+          "mergeUser": null,
+          "diffStatsSummary": null,
+          "labels": { "nodes": [] },
+          "commits": { "nodes": [] },
+          "workItemRelations": { "nodes": [] }
+        },
+        {
+          "iid": "2",
+          "title": "Bump deps",
+          "description": "",
+          "state": "locked",
+          "draft": false,
+          "webUrl": "https://gitlab.example.com/gitlab/alice/app/-/merge_requests/2",
+          "createdAt": "2026-09-18T09:00:00Z",
+          "updatedAt": "2026-09-19T09:30:00Z",
+          "mergedAt": null,
+          "closedAt": null,
+          "sourceBranch": "deps",
+          "targetBranch": "main",
+          "diffHeadSha": "2020202020202020202020202020202020202020",
+          "commitCount": 1,
+          "author": { "username": "alice", "name": "Alice A", "avatarUrl": null },
+          "mergeUser": { "username": "alice" },
+          "diffStatsSummary": { "additions": 1, "deletions": 1, "fileCount": 1 },
+          "labels": null,
+          "commits": null,
+          "workItemRelations": null
+        }
+      ]
+    }
+  }
+}

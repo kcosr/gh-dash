@@ -1,0 +1,11 @@
+{
+  "project": {
+    "mergeRequest": {
+      "title": "Fix login flow",
+      "webUrl": "https://gitlab.example.com/gitlab/team/platform/api/-/merge_requests/5",
+      "targetBranch": "main",
+      "diffRefs": { "baseSha": "9999999999999999999999999999999999999999", "headSha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "startSha": "7777777777777777777777777777777777777777" },
+      "diffStatsSummary": { "additions": 9, "deletions": 4, "fileCount": 8 }
+    }
+  }
+}

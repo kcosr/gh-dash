@@ -250,4 +250,15 @@ describe('comment threads API', () => {
     expect(doc.components.schemas.NewPrThread!.required).toEqual(['commitOid', 'body']);
     expect(doc.components.schemas.NewThread!.required).toEqual(['body']);
   });
+
+  it('documents Markdown besides JSON for the thread lists, and no CSV', async () => {
+    const doc = await openApi();
+    const types = (path: string) => Object.keys(doc.paths[path]!.get!.responses['200']!.content!);
+    expect(types('/api/v1/prs/{repo}/{number}/threads')).toEqual(['application/json', 'text/markdown']);
+    expect(types('/api/v1/commits/{repo}/{oid}/threads')).toEqual(['application/json', 'text/markdown']);
+    expect(types('/api/v1/prs')).toEqual(['application/json', 'text/markdown', 'text/csv']);
+    const docs = await (await makeApp().app.request('/api/docs')).text();
+    expect(docs).toContain('Response: 200 · JSON, or <code>format=md</code></p>');
+    expect(docs).toContain('Response: 200 · JSON, or <code>format=md</code> / <code>format=csv</code></p>');
+  });
 });

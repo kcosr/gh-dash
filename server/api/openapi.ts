@@ -294,7 +294,8 @@ export interface EndpointDoc {
   body?: { schema: Schema; example: unknown; optional?: boolean };
   /** `type`: the response content type when it isn't JSON. */
   response: { status: number; schema?: Schema; description?: string; type?: string };
-  textFormats?: boolean;
+  /** Also served as text: `true` for format=md and format=csv, 'md' for format=md only. */
+  textFormats?: true | 'md';
   example?: string;
 }
 
@@ -310,7 +311,7 @@ function commentEndpoints(): EndpointDoc[] {
     {
       method: 'get', path: '/api/v1/prs/{repo}/{number}/threads', tag, summary: "A pull request's comment threads, with their comments",
       description: 'Oldest first. Anchors are as made; the diff viewer places them in the current diff (outdated or moved).',
-      params: [repo, p('number', 'PR number', int()), format], response: { status: 200, schema: threads },
+      params: [repo, p('number', 'PR number', int()), format], response: { status: 200, schema: threads }, textFormats: 'md',
     },
     {
       method: 'post', path: '/api/v1/prs/{repo}/{number}/threads', tag, summary: 'Start a thread on a pull request with its first comment',
@@ -319,7 +320,7 @@ function commentEndpoints(): EndpointDoc[] {
     },
     {
       method: 'get', path: '/api/v1/commits/{repo}/{oid}/threads', tag, summary: "A commit's comment threads, with their comments",
-      params: [repo, p('oid', 'Full 40-character commit SHA'), format], response: { status: 200, schema: threads },
+      params: [repo, p('oid', 'Full 40-character commit SHA'), format], response: { status: 200, schema: threads }, textFormats: 'md',
     },
     {
       method: 'post', path: '/api/v1/commits/{repo}/{oid}/threads', tag, summary: 'Start a thread on a commit with its first comment',
@@ -497,7 +498,8 @@ export function openApiDocument(version: string): Schema {
             description: 'OK',
             content: {
               [e.response.type ?? 'application/json']: { schema: e.response.schema },
-              ...(e.textFormats ? { 'text/markdown': { schema: str() }, 'text/csv': { schema: str() } } : {}),
+              ...(e.textFormats ? { 'text/markdown': { schema: str() } } : {}),
+              ...(e.textFormats === true ? { 'text/csv': { schema: str() } } : {}),
             },
           }
         : { description: e.response.description ?? 'OK' },

@@ -73,11 +73,12 @@ export interface SourceRegistryOptions {
 }
 
 /**
- * Where this instance sends a source's requests: the configured URL for a source its config names, which is what the
- * credentials are for. The row's URL is what another instance last configured (it may have recreated the row), and
- * only stands in for a source not configured here, which never has a token.
+ * Where this instance reaches a source: its requests go there, pasted URLs of it are read against it, and /sources
+ * reports it. For a source its config names that is the configured URL, which is what the credentials are for. The
+ * row's URL is what another instance last configured (it may have recreated the row), and only stands in for a source
+ * not configured here, which never has a token.
  */
-function reachedAt(row: SourceRow, config: SourceConfig | null): string {
+export function reachedAt(row: Pick<SourceRow, 'baseUrl'>, config: Pick<SourceConfig, 'baseUrl'> | null): string {
   return config ? config.baseUrl : row.baseUrl;
 }
 

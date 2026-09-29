@@ -10,7 +10,7 @@ import { GITHUB_SOURCE_ID, removeSource } from '../db/sources';
 import type { DiffService } from '../diff/service';
 import { GITLAB_TOKEN_ENV } from '../gitlab/credentials';
 import { HttpError } from '../lib/errors';
-import type { SourceRegistry, SourceRuntime } from '../sources/registry';
+import { reachedAt, type SourceRegistry, type SourceRuntime } from '../sources/registry';
 import type { SyncManager } from '../sync/manager';
 import { notASource } from '../sync/tracking';
 
@@ -49,7 +49,8 @@ async function describeSources(deps: SourceDeps, runtimes: SourceRuntime[]): Pro
       host: runtime.host,
       kind: runtime.kind,
       name: row.name,
-      url: row.baseUrl,
+      // Where this server reaches it (the configured URL), which the web reads pasted URLs against.
+      url: reachedAt(row, runtime.config),
       configured: runtime.configured,
       removable: removable(runtime),
       viewer: row.viewer ? { login: row.viewer.login, name: row.viewer.name, avatarUrl: row.viewer.avatarUrl } : null,

@@ -21,7 +21,7 @@ import { DAY_MS, isoSec } from '../lib/time';
 import { SourceError } from '../provider/errors';
 import { defaultSleep, type RetryLimits } from '../provider/transport';
 import type { LookupRecord, RepoCandidateRecord, SyncSource, ViewerInfo } from '../provider/types';
-import type { SourceRegistry } from '../sources/registry';
+import { reachedAt, type SourceRegistry } from '../sources/registry';
 import { noTokenMessage, tokenKind, type ResolvedToken, type TokenSupply } from '../token';
 
 /** How long the candidate lists are reused (the Add dialog filters them locally as you type). */
@@ -138,8 +138,9 @@ export class Tracking {
     if (!runtime) throw new HttpError(400, notASource(h));
     const open = runtime.syncSource;
     if (!runtime.configured) throw new HttpError(400, `${runtime.label} isn't configured on this server.`);
-    // Every source but github.com is a GitLab instance in this wave.
-    const baseUrl = runtime.row.baseUrl;
+    // Every source but github.com is a GitLab instance in this wave. Pasted URLs are read against the URL its client
+    // uses (the configured one), not the one another instance may have stored.
+    const baseUrl = reachedAt(runtime.row, runtime.config);
     return {
       id: runtime.id,
       host: runtime.host,

@@ -12,8 +12,8 @@ import { useToast } from '../components/Toasts';
 import { apiLink } from '../lib/account';
 import { dur, fmtBytes, fmtDateTime, fmtNum, fmtTime, plural, relFuture, relLong } from '../lib/time';
 import { cx } from '../lib/util';
-import { AccountSection } from './SettingsAccount';
 import { InstanceSection } from './SettingsInstance';
+import { SourcesSection } from './SettingsSources';
 import { TrackedSection } from './SettingsTracked';
 
 /** A link to this API from outside the app; disabled with a hint while the Local API is off. */
@@ -173,7 +173,7 @@ export function SettingsView() {
               <ErrorNote error={status.error} onRetry={() => { void status.refetch(); void settings.refetch(); }} />
             </section>
           )}
-          <AccountSection rateLimit={st?.rateLimit} />
+          <SourcesSection rateLimit={st?.rateLimit} />
 
           <TrackedSection />
 

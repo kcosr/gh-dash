@@ -407,6 +407,37 @@ img.acct-av { width: 20px; height: 20px; border-radius: 50%; flex: none; backgro
 .acct-check { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--text-2); cursor: pointer; }
 .acct-check:has(input:disabled) { cursor: default; opacity: .6; }
 .set-c.stack > small { font-size: 12px; line-height: 1.45; }
+/* Settings → Sources: a block per source inside the card, each under its mark and host (design §7.6). */
+.src-block { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border); }
+.set-sec h2 + .src-block { margin-top: 0; padding-top: 0; border-top: 0; }
+.src-head { display: flex; align-items: center; gap: 7px; min-width: 0; margin-bottom: 12px; font-size: 13.5px; }
+.src-head svg { width: 14px; height: 14px; flex: none; color: var(--muted); }
+.src-head b { font-weight: 600; color: var(--text); }
+.src-host { min-width: 0; font-size: 12.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.src-block .set-actions { flex-wrap: wrap; }
+.set-sec dl.kv dd.src-dd { flex-direction: column; align-items: flex-start; }
+.src-warn { display: flex; align-items: baseline; gap: 8px; font-size: 12.5px; color: var(--text-2); line-height: 1.5; }
+.src-warn::before { content: ""; flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--star); transform: translateY(-1px); }
+.src-link { white-space: nowrap; }
+.src-link svg { display: inline-block; width: 11px; height: 11px; margin-left: 3px; vertical-align: -1px; }
+/* Inside a source the blocks' own rules separate things: the help and the notes under it go without one. */
+.src-block .help, .src-block .set-foot { margin-top: 12px; padding-top: 0; border-top: 0; }
+.src-add-btn { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border); }
+.src-url { flex: 1; min-width: 0; max-width: 460px; }
+.acct-token > .input { width: 100%; }
+.src-methods { display: flex; flex-wrap: wrap; gap: 6px 18px; }
+.src-method { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; color: var(--text); cursor: pointer; }
+.src-method code { font-size: 12px; }
+.src-file { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.src-file small { flex-basis: 100%; font-size: 12px; }
+.src-check { display: flex; flex-direction: column; gap: 4px; max-width: 640px; margin-top: 12px; padding: 10px 12px; border-radius: 8px; background: var(--surface-2); font-size: 12.5px; color: var(--text-2); }
+.src-check-who { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; font-size: 13px; color: var(--text); }
+.src-check-who svg { width: 13px; height: 13px; color: var(--add); }
+.src-check.bad .src-check-who svg { color: var(--star); }
+.src-check .form-err { margin-top: 0; }
+.src-row-actions { display: flex; gap: 8px; }
+.src-block small code { white-space: nowrap; }
+.set-c.stack > .src-check { margin-top: 4px; }
 .setup-card .acct-choice { margin-bottom: 4px; }
 .setup-card .acct-token { margin-bottom: 8px; }
 .setup-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; margin-top: 16px; }

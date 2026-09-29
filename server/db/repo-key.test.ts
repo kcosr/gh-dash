@@ -34,7 +34,7 @@ describe('repoKeySql / repoKey', () => {
 describe('resolveRepo', () => {
   it('finds a live repo by exact short name', () => {
     const db = seedDb();
-    expect(resolveRepo(db, 'app')).toEqual({ id: idOf(db, 'app'), key: 'app', owner: 'alice', name: 'app', nodeId: 'R_app', trackedBy: 'owned' });
+    expect(resolveRepo(db, 'app')).toEqual({ id: idOf(db, 'app'), key: 'app', owner: 'alice', name: 'app', path: 'alice/app', nodeId: 'R_app', trackedBy: 'owned' });
     expect(resolveRepo(db, 'secret')).toMatchObject({ id: idOf(db, 'secret'), key: 'secret' });
   });
 

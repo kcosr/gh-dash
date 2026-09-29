@@ -158,8 +158,7 @@ export class DiffService {
   private repo(key: string): { id: number; repo: DiffRepo } {
     const ref = resolveRepo(this.db, key);
     if (!ref) throw new HttpError(404, 'Repository not found');
-    const { path } = this.db.get<{ path: string }>('SELECT name_with_owner AS path FROM repos WHERE id = ?', [ref.id])!;
-    return { id: ref.id, repo: { key: ref.key, owner: ref.owner, name: ref.name, path } };
+    return { id: ref.id, repo: { key: ref.key, owner: ref.owner, name: ref.name, path: ref.path } };
   }
 
   /** Full SHA for an abbreviated one, from synced commits or cached commit diffs, when unambiguous. */

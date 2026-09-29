@@ -25,6 +25,8 @@ export interface RepoRef {
   key: string;
   owner: string;
   name: string;
+  /** The provider's path for the repo (GitHub `owner/name`), for requests to the provider. */
+  path: string;
   nodeId: string;
   trackedBy: 'owned' | 'manual';
 }
@@ -40,7 +42,9 @@ interface RefRow {
 /** The live repo an API key names, or null. Currently an exact short-name match (case-sensitive); every repo is `owned`. */
 export function resolveRepo(db: Db, key: string): RepoRef | null {
   const row = db.get<RefRow>('SELECT id, name, name_with_owner, owner, node_id FROM repos WHERE name = ? AND removed_at IS NULL', [key]);
-  return row ? { id: row.id, key: repoKey(row), owner: row.owner, name: row.name, nodeId: row.node_id, trackedBy: 'owned' } : null;
+  return row
+    ? { id: row.id, key: repoKey(row), owner: row.owner, name: row.name, path: row.name_with_owner, nodeId: row.node_id, trackedBy: 'owned' }
+    : null;
 }
 
 /** Input key → repo id for each input that names a live repo, in input order (inputs that name none are absent). */

@@ -41,7 +41,11 @@ function AgentRow({ a, now, onNewToken, onRevoke }: { a: Agent; now: number; onN
         {revoked ? `Revoked ${relLong(a.revokedAt!, now)}` : a.lastUsedAt ? `Used ${relLong(a.lastUsedAt, now)}` : `Added ${relLong(a.createdAt, now)} · not used yet`}
       </span>
       <span className="spacer" />
-      {!revoked && onNewToken && <button type="button" className="btn sm ghost" onClick={() => onNewToken(a)}>New token…</button>}
+      {onNewToken && (
+        <button type="button" className="btn sm ghost" onClick={() => onNewToken(a)} title={revoked ? 'Give it a token again: it can write here once more' : 'Replace its token'}>
+          New token…
+        </button>
+      )}
       {!revoked && onRevoke && <button type="button" className="btn sm ghost" onClick={() => onRevoke(a)}>Revoke…</button>}
     </li>
   );
@@ -126,7 +130,9 @@ export function AgentsSection() {
 
   const newToken = (a: Agent) => openConfirm({
     title: `New token for ${a.name}?`,
-    body: `The token ${a.name} uses now stops working at once; configure it with the new one.`,
+    body: a.revokedAt
+      ? `${a.name} can write here again with the new token.`
+      : `The token ${a.name} uses now stops working at once; configure it with the new one.`,
     confirmLabel: 'Make a new token',
     onConfirm: async () => {
       const r = await regenerate.mutateAsync(a.id).catch((e: unknown) => { throw new Error(bridgeError(e)); });
@@ -189,7 +195,8 @@ export function AgentsSection() {
       ) : (
         <p className="set-foot muted">
           Agents are added where the server runs: <code>node dist/server/index.mjs agents add &lt;name&gt;</code> prints the
-          new agent's token once. <code>agents list</code> shows them, <code>agents revoke &lt;name&gt;</code> stops a token.
+          new agent's token once; <code>agents list</code> shows them, <code>agents regenerate &lt;name&gt;</code> makes one a
+          new token, and <code>agents revoke &lt;name&gt;</code> stops it.
         </p>
       )}
     </section>

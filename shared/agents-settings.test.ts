@@ -34,7 +34,10 @@ describe('Settings → Agents', () => {
   it("asks for a name no agent has", () => {
     const list = [agent(1, 'Claude')];
     expect(agentNameProblem('  ', list)).toBe('Give it a name');
-    expect(agentNameProblem('claude', list)).toBe('An agent has that name');
+    expect(agentNameProblem('claude', list)).toBe('An agent has that name: give it a new token instead');
+    expect(agentNameProblem('YOU', list)).toBe('“You” is you: give the agent another name');
+    expect(agentNameProblem('x'.repeat(65), list)).toBe('At most 64 characters');
+    expect(agentNameProblem('x'.repeat(64), list)).toBeNull();
     expect(agentNameProblem(' Codex ', list)).toBeNull();
   });
 });

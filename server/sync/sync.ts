@@ -119,8 +119,10 @@ export function planRepo(r: RepoRecord, probe: RepoProbe | null, s: SyncStateRow
 
   let commits: RepoPlan['commits'] = null;
   if (r.defaultBranch && (!r.isFork || ctx.includeForks)) {
+    // The head the source read, where it reads one (GitLab), says whether the branch moved; else its push time does.
+    const moved = r.headOid ? r.headOid !== s.commits_head : r.pushedAt !== s.commits_pushed_at;
     if (full || !s.commits_pushed_at || s.commits_branch !== r.defaultBranch) commits = { stopAtKnown: false };
-    else if (r.pushedAt !== s.commits_pushed_at) commits = { stopAtKnown: true };
+    else if (moved) commits = { stopAtKnown: true };
   }
 
   const byUpdatedAt = (hwm: string | null, latest: string | null | undefined) => {
@@ -484,7 +486,9 @@ async function syncRepo(deps: SyncDeps, t: RepoTarget, run: RunContext): Promise
         advance('commits', page.hasMore && !stopped, page.endCursor, () => {
           // A walk that went through the whole window has seen every commit on the branch since backfillStart.
           if (!stopped) pruneCommits(db, id, run.backfillStart, commitWalk.seen);
-          updateSyncState(db, id, { commits_pushed_at: r.pushedAt, commits_branch: r.defaultBranch, commits_head: commitWalk.head ?? null });
+          // The head the plan compared, when the source read one: a walk can come back empty (a head older than the
+          // window) or, if a push landed meanwhile, start above it; the walk's first commit otherwise.
+          updateSyncState(db, id, { commits_pushed_at: r.pushedAt, commits_branch: r.defaultBranch, commits_head: r.headOid ?? commitWalk.head ?? null });
         });
       }
 

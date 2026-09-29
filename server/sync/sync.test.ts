@@ -799,6 +799,18 @@ describe('planRepo', () => {
   it('skips commits for empty repos', () => {
     expect(planRepo({ ...repo, defaultBranch: null }, probe, { ...state, commits_pushed_at: null }, ctx).commits).toBeNull();
   });
+
+  it('walks commits when the head a source reads moved, even to a commit of the same time', () => {
+    const walked = { ...state, commits_head: 'a'.repeat(40) };
+    // A push or force-push to a commit dated like the old head: only the head tells.
+    expect(planRepo({ ...repo, headOid: 'b'.repeat(40) }, probe, walked, ctx).commits).toEqual({ stopAtKnown: true });
+    // The same head is the same branch, whatever its time says.
+    expect(planRepo({ ...repo, headOid: 'a'.repeat(40) }, probe, walked, ctx).commits).toBeNull();
+    expect(planRepo({ ...repo, headOid: 'a'.repeat(40), pushedAt: '2026-09-26T00:00:00Z' }, probe, walked, ctx).commits).toBeNull();
+    // No head read (GitHub, or none found): the push time decides, as before.
+    expect(planRepo(repo, probe, walked, ctx).commits).toBeNull();
+    expect(planRepo({ ...repo, headOid: null, pushedAt: '2026-09-26T00:00:00Z' }, probe, walked, ctx).commits).toEqual({ stopAtKnown: true });
+  });
 });
 
 describe('releases', () => {

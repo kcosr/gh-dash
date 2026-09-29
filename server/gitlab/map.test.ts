@@ -96,18 +96,18 @@ describe('GitLab → rows: viewer and projects', () => {
     expect(mapViewerEmails({ ...(viewerAccountFixture as ViewerAccountData).currentUser!, publicEmail: null, commitEmail: ' ', emails: null })).toEqual([]);
   });
 
-  it('maps projects: path as name, namespace as owner, head commit date as pushedAt', () => {
+  it('maps projects: path as name, namespace as owner, the head commit and its date as pushedAt', () => {
     const [app, tools] = owned.map((p) => mapProject(p, BASE));
     expect(app).toEqual({
       nodeId: 'gid://gitlab/Project/11', name: 'app', nameWithOwner: 'alice/app', owner: 'alice', description: null,
       url: 'https://gitlab.example.com/gitlab/alice/app', visibility: 'public', isArchived: false, isFork: false,
       languageName: 'TypeScript', languageColor: '#3178c6', topics: ['dashboard'], defaultBranch: 'main', stars: 2, forks: 1,
-      createdAt: '2025-01-01T00:00:00Z', pushedAt: '2026-09-21T10:00:00Z',
+      createdAt: '2025-01-01T00:00:00Z', pushedAt: '2026-09-21T10:00:00Z', headOid: '3'.repeat(40),
     });
-    // Internal, archived fork with an empty repository: no default branch, and pushedAt falls back to the last activity.
+    // Internal, archived fork with an empty repository: no default branch or head, and pushedAt falls back to the last activity.
     expect(tools).toMatchObject({
       name: 'corp.tools', visibility: 'internal', isArchived: true, isFork: true, languageName: null, languageColor: null,
-      defaultBranch: null, pushedAt: '2025-06-01T09:30:00Z',
+      defaultBranch: null, pushedAt: '2025-06-01T09:30:00Z', headOid: null,
     });
   });
 

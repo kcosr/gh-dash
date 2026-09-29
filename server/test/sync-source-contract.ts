@@ -92,6 +92,8 @@ export function checkRepoRecord(r: RepoRecord | RepoCandidateRecord): void {
   expect(r.defaultBranch === null || (typeof r.defaultBranch === 'string' && r.defaultBranch.length > 0), `${at}: defaultBranch`).toBe(true);
   count(r.forks, `${at}: forks`);
   time(r.createdAt, `${at}: createdAt`);
+  // The branch head, where the source reads one: the sync compares it with the head it walked from.
+  if (r.headOid !== undefined && r.headOid !== null) expect(r.headOid, `${at}: headOid`).toMatch(OID);
 }
 
 export function checkProbe(p: RepoProbe, probesStars: boolean): void {

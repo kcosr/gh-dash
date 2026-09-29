@@ -9,7 +9,8 @@ import { ensureSource, GITHUB_SOURCE_ID, getSource } from '../db/sources';
 import { notFound } from '../gitlab/access';
 import { GitLabSyncSource } from '../gitlab/sync-source';
 import { reasonOf } from '../provider/access';
-import { BASE, type Handler } from '../test/gitlab';
+import commitsFixture from '../test/fixtures/gitlab/commits.json';
+import { BASE, type Handler, page } from '../test/gitlab';
 import { syncInstance } from '../test/gitlab-instance';
 import { addManualRepo } from '../test/seed';
 import { runSync, type SyncRequest } from './sync';
@@ -78,6 +79,39 @@ describe('a GitLab source', () => {
     // Asked once per move.
     await sync({}, NOW + 2 * HOUR);
     expect(take()).toEqual(['graphql OwnedProjects', 'graphql Probes']);
+  });
+
+  it('walks the commits when the head moved to a commit of the same time, and prunes one a force-push rewrote', async () => {
+    const { db, fake, sync, take } = setup();
+    await sync();
+    take();
+    const app = repoRow(db, `${HOST}/alice/app`)!.id;
+    const oids = () => db.all<{ oid: string }>('SELECT substr(oid, 1, 4) AS oid FROM commits WHERE repo_id = ? ORDER BY oid', [app]).map((c) => c.oid);
+    expect(oids()).toEqual(['3333', '4444']);
+    const head = fake.owned.projects.nodes[0]!.repository!.tree!.lastCommit!;
+    const COMMITS = '/api/v4/projects/11/repository/commits';
+    const walks = () => take().filter((r) => r.startsWith(`${COMMITS}?`)).length;
+
+    // A force-push replaced the head with a commit of the same time: the project's head time didn't move.
+    const rewritten = { ...structuredClone(commitsFixture[0]!), id: sha('5'), short_id: '55555555', title: 'Merge (amended)' };
+    fake.routes[COMMITS] = page([rewritten, ...commitsFixture.slice(1)], null);
+    head.sha = sha('5');
+    expect(await sync({}, NOW + HOUR)).toMatchObject({ errors: [] });
+    expect(walks()).toBe(1);
+    expect(oids()).toEqual(['4444', '5555']);
+
+    // Nothing moved since: no walk.
+    await sync({}, NOW + 2 * HOUR);
+    expect(walks()).toBe(0);
+
+    // A new commit of the same time on top: walked until the previous head.
+    const pushed = { ...structuredClone(rewritten), id: sha('6'), short_id: '66666666', title: 'Same second' };
+    fake.routes[COMMITS] = page([pushed, rewritten, ...commitsFixture.slice(1)], null);
+    head.sha = sha('6');
+    await sync({}, NOW + 3 * HOUR);
+    expect(walks()).toBe(1);
+    expect(oids()).toEqual(['4444', '5555', '6666']);
+    expect(db.get('SELECT commits_head FROM sync_state WHERE repo_id = ?', [app])).toEqual({ commits_head: sha('6') });
   });
 
   it('refreshes the projects added by hand by global id, and sets aside one GitLab no longer shows', async () => {

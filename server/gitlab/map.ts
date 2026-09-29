@@ -93,13 +93,14 @@ export function mapViewerEmails(u: GqlViewerAccount): string[] {
 }
 
 /**
- * `pushedAt` is when the default branch last moved, as its head commit's date: the sync compares it to decide whether
- * to walk the commits, and lastActivityAt (which GitLab moves at most hourly) would hide pushes. Repositories without
- * commits fall back to lastActivityAt.
+ * `headOid` is the default branch's head commit, which the sync compares to decide whether to walk the commits: a push
+ * or force-push can move the head to a commit of the same time. `pushedAt` is when the branch last moved as that
+ * commit's date, for display (lastActivityAt, which GitLab moves at most hourly, would hide pushes). Repositories
+ * without commits have no head, and fall back to lastActivityAt.
  */
 export function mapProject(p: GqlProject, base: string): RepoRecord {
   const language = p.languages?.[0] ?? null;
-  const head = p.repository?.tree?.lastCommit?.committedDate;
+  const last = p.repository?.tree?.lastCommit;
   return {
     nodeId: p.id,
     name: p.path,
@@ -117,7 +118,8 @@ export function mapProject(p: GqlProject, base: string): RepoRecord {
     stars: p.starCount,
     forks: p.forksCount,
     createdAt: utc(p.createdAt ?? EPOCH),
-    pushedAt: utcOrNull(head ?? p.lastActivityAt),
+    pushedAt: utcOrNull(last?.committedDate ?? p.lastActivityAt),
+    headOid: last?.sha || null,
   };
 }
 

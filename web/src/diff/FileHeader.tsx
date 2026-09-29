@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import type { Provider } from '../../../shared/provider';
 import { Icon } from '../components/Icon';
 import { cx } from '../lib/util';
 import { baseName, renameParts, type ViewerFile } from './model';
@@ -26,20 +27,17 @@ const NOTES = {
 } as const;
 
 /**
- * GitHub anchors each file on a PR's "Files changed" tab and a commit page as #diff-<sha256(path)>.
- * Falls back to the page itself where SubtleCrypto is unavailable (plain HTTP off localhost).
+ * The file on the host's diff page (a PR's changed files, a commit page), anchored as the host does it
+ * (`Provider.link.fileAnchor`). Falls back to the page itself where SubtleCrypto is unavailable (plain HTTP off localhost).
  */
-function useFileAnchor(url: string, path: string, active: boolean): string {
+function useFileAnchor(url: string, path: string, provider: Provider, active: boolean): string {
   const [href, setHref] = useState(url);
   useEffect(() => {
     if (!active || !crypto.subtle) return;
     let live = true;
-    void crypto.subtle.digest('SHA-256', new TextEncoder().encode(path)).then((buf) => {
-      const hex = [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
-      if (live) setHref(`${url}#diff-${hex}`);
-    });
+    provider.link.fileAnchor(path).then((anchor) => { if (live) setHref(`${url}${anchor}`); }, () => { /* keep the page */ });
     return () => { live = false; };
-  }, [url, path, active]);
+  }, [url, path, provider, active]);
   return href;
 }
 
@@ -61,15 +59,16 @@ function Path({ vf }: { vf: ViewerFile }) {
 }
 
 /** A file's sticky header: fold toggle, path (renames as old → new), line counts, and a note when there's no diff to show. */
-export function FileHeader({ vf, diffUrl, collapsed, onToggle, contextFailed }: {
+export function FileHeader({ vf, diffUrl, provider, collapsed, onToggle, contextFailed }: {
   vf: ViewerFile;
   diffUrl: string;
+  provider: Provider;
   collapsed: boolean;
   onToggle: (id: string) => void;
   contextFailed: boolean;
 }) {
   const f = vf.file;
-  const href = useFileAnchor(diffUrl, f.path, vf.note === 'unavailable');
+  const href = useFileAnchor(diffUrl, f.path, provider, vf.note === 'unavailable');
   const foldable = (vf.fileDiff?.hunks.length ?? 0) > 0;
   return (
     <div className={cx('dvh', `st-${f.status}`, (!foldable || collapsed) && 'flat')} data-path={f.path}>
@@ -84,7 +83,7 @@ export function FileHeader({ vf, diffUrl, collapsed, onToggle, contextFailed }: 
       {f.additions + f.deletions > 0 && <Counts add={f.additions} del={f.deletions} />}
       <span className="spacer" />
       {vf.note === 'unavailable'
-        ? <a className="dvh-note" href={href} target="_blank" rel="noopener noreferrer"><span className="dvh-why">Diff not available from GitHub · </span>view on GitHub <Icon name="ext" /></a>
+        ? <a className="dvh-note" href={href} target="_blank" rel="noopener noreferrer"><span className="dvh-why">Diff not available from {provider.name} · </span>view on {provider.name} <Icon name="ext" /></a>
         : vf.note
           ? <span className="dvh-note">{NOTES[vf.note]}</span>
           : collapsed

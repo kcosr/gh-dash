@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent, ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import type { PullRequest } from '../../../shared/api';
+import { capitalize, refText } from '../../../shared/provider';
 import { highlightParts } from '../../../shared/repo-display';
 import { matchRepoRef, repoParts, repoRefKeys } from '../../../shared/repos';
 import { api } from '../api/client';
@@ -16,7 +17,7 @@ import { copyText, useDebounced } from '../lib/util';
 import { prIconClass, prIconName } from './bits';
 import { Icon } from './Icon';
 import type { IconName } from './Icon';
-import { useRepoLabel, useRepoMapCtx } from './repoMapContext';
+import { useProviderOf, useRepoLabel, useRepoMapCtx, useWords } from './repoMapContext';
 import { useToast } from './Toasts';
 import { useUI } from './ui';
 
@@ -52,6 +53,8 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggle
   const toast = useToast();
   const { openAddRepo } = useUI();
   const repoLabel = useRepoLabel();
+  const providerOf = useProviderOf();
+  const w = useWords().pr;
   const { repos: repoMap } = useRepoMapCtx();
   const repos = useRepos();
   const views = useViews();
@@ -130,7 +133,7 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggle
       prItems.push({
         key: 'search-prs',
         icon: ic('search'),
-        label: `Search pull requests for “${q.trim()}”`,
+        label: `Search ${w.many} for “${q.trim()}”`,
         right: <span>/prs?q=</span>,
         run: () => navigate({ pathname: '/prs', search: patchSearch(carrySearch(location.search), 'prs', { q: q.trim(), state: 'all' }) }),
       });
@@ -141,11 +144,11 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggle
         key: `pr:${p.id}`,
         icon: <span className={`pr-ic ${prIconClass(p)}`}><Icon name={prIconName(p)} /></span>,
         label: p.title,
-        right: <span>{repoLabel(p.repo)}#{p.number} · {fmtDate(p.activityAt)}</span>,
+        right: <span>{refText(providerOf(p.repo).kind, repoLabel(p.repo), p.number, 'pr')} · {fmtDate(p.activityAt)}</span>,
         run: () => openPr(p),
       });
     }
-    if (prItems.length) out.push({ title: ql ? 'Pull requests' : 'Recent pull requests', items: prItems });
+    if (prItems.length) out.push({ title: ql ? capitalize(w.many) : `Recent ${w.many}`, items: prItems });
 
     if (ql && !refMatch) out.push({ title: 'Issues', items: [{
       key: 'search-issues', icon: ic('issue'), label: `Search issues for “${q.trim()}”`,
@@ -155,7 +158,7 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggle
     const vs = (views.data ?? []).filter((v) => has(v.name));
     if (vs.length) out.push({ title: 'Saved views', items: vs.map((v) => ({ key: `view:${v.id}`, icon: ic('bookmark'), label: v.name, run: () => navigate(`${v.path}${v.query ? `?${v.query}` : ''}`) })) });
 
-    const nav: [string, string, IconName][] = [['Pull requests', '/prs', 'merge'], ['Issues', '/issues', 'issue'], ['Activity', '/activity', 'pulse'], ['Repositories', '/repos', 'book'], ['Insights', '/insights', 'chart'], ['Settings', '/settings', 'sliders']];
+    const nav: [string, string, IconName][] = [[w.nav, '/prs', 'merge'], ['Issues', '/issues', 'issue'], ['Activity', '/activity', 'pulse'], ['Repositories', '/repos', 'book'], ['Insights', '/insights', 'chart'], ['Settings', '/settings', 'sliders']];
     const navItems = nav.filter(([l]) => has(l)).map(([l, p, i]) => ({ key: `go:${p}`, icon: ic(i), label: l, run: () => go(p) }));
     if (navItems.length) out.push({ title: 'Go to', items: navItems });
 
@@ -175,7 +178,7 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggle
     ].filter((a) => has(a.label));
     if (acts.length) out.push({ title: 'Actions', items: acts });
     return out;
-  }, [q, repos.data, repoMap, repoLabel, views.data, prSearch.data, view, s, location.search, location.pathname, repoParam, onToggleSidebar, sidebarHidden, apiBase, openAddRepo]);
+  }, [q, repos.data, repoMap, repoLabel, providerOf, w, views.data, prSearch.data, view, s, location.search, location.pathname, repoParam, onToggleSidebar, sidebarHidden, apiBase, openAddRepo]);
 
   const flat = sections.flatMap((sec) => sec.items);
   const cur = Math.min(idx, Math.max(0, flat.length - 1));
@@ -207,7 +210,7 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggle
           <Icon name="search" />
           <input
             ref={input}
-            placeholder="Search repos, pull requests, views, actions…"
+            placeholder={`Search repos, ${w.many}, views, actions…`}
             value={q}
             onChange={(e) => setQ(e.target.value)}
             autoComplete="off"

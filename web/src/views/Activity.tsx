@@ -2,6 +2,7 @@ import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } fro
 import type { ReactNode } from 'react';
 import { EVENT_TYPES } from '../../../shared/api';
 import type { Actor, EventType, StatsBucket } from '../../../shared/api';
+import type { PrWords } from '../../../shared/provider';
 import { useActivityFeed, useRepoMap, useStats } from '../api/hooks';
 import { ActivityStrip } from '../charts';
 import { Avatar, AvatarStack } from '../components/Avatar';
@@ -12,6 +13,7 @@ import { FilterToolbar } from '../components/FilterToolbar';
 import { Icon } from '../components/Icon';
 import type { IconName } from '../components/Icon';
 import { RepoChip } from '../components/RepoChip';
+import { useProviderOf, useWords } from '../components/repoMapContext';
 import { Seg, WHO_OPTIONS } from '../components/Seg';
 import { useUI } from '../components/ui';
 import { NoReposSelected } from './PullRequests';
@@ -60,13 +62,13 @@ function stripFromByDay(byDay: Record<string, number>, range: ResolvedRange): St
  * Fallback for servers without `facets.byDay`: /stats day buckets, limited to the selected types.
  * Approximate: stats commits include PR merge commits, which the feed shows as PR events instead.
  */
-function stripDays(series: StatsBucket[] | undefined, types: EventType[]) {
+function stripDays(series: StatsBucket[] | undefined, types: EventType[], w: PrWords) {
   if (!series) return [];
   const on = new Set(types);
   return series.map((b) => {
     const parts: [number, string, string][] = [];
     if (on.has('commit')) parts.push([b.commits, 'commit', 'commits']);
-    if (on.has('pr')) parts.push([b.prsOpened + b.prsMerged, 'PR event', 'PR events']);
+    if (on.has('pr')) parts.push([b.prsOpened + b.prsMerged, `${w.short} event`, `${w.shortMany} events`]);
     if (on.has('issue')) parts.push([b.issuesOpened + b.issuesClosed, 'issue event', 'issue events']);
     if (on.has('release')) parts.push([b.releases, 'release', 'releases']);
     if (on.has('star')) parts.push([b.stars, 'star', 'stars']);
@@ -80,6 +82,7 @@ export function ActivityView() {
   const { s, set, range } = useUrlState();
   const { openExport } = useUI();
   const repoMap = useRepoMap();
+  const w = useWords().pr;
   const noTypes = s.types.length === 0;
   const feed = useActivityFeed(activityParams(s));
   const pages = feed.data?.pages;
@@ -100,8 +103,8 @@ export function ActivityView() {
     if (!pages) return [];
     // Keep the strip empty immediately, including while previous query data is displayed.
     if (byDay) return stripFromByDay(noTypes ? {} : byDay, range);
-    return stripDays(stats.data?.series, s.types);
-  }, [pages, byDay, noTypes, range, stats.data, s.types]);
+    return stripDays(stats.data?.series, s.types, w);
+  }, [pages, byDay, noTypes, range, stats.data, s.types, w]);
 
   // Infinite scroll
   useEffect(() => {
@@ -172,7 +175,7 @@ export function ActivityView() {
             return (
               <button key={t.type} type="button" className={`chip-toggle${on ? ' on' : ''}`} aria-pressed={on} onClick={() => toggleType(t.type)}>
                 <span style={{ color: t.color }}><Icon name={t.icon} /></span>
-                {t.label}
+                {t.type === 'pr' ? w.nav : t.label}
                 <span className="n">{facets ? (facets.byType?.[t.type] ?? 0).toLocaleString() : '–'}</span>
               </button>
             );
@@ -301,6 +304,7 @@ const FeedItem = memo(function FeedItem({ row, expanded, onExpand, onOpenPr, onO
   defaultBranch: (repo: string) => string;
 }) {
   let cls = '', icon: IconName = 'commit', text: ReactNode = null, sub: ReactNode = null;
+  const providerOf = useProviderOf();
   const repo = (key: string) => <RepoChip repo={key} className="ev-repo" />;
   // Commit links open the diff in-app; modifier and middle clicks still go to GitHub.
   const diffLink = (key: string, c: { oid: string; url: string }, className: string, children: ReactNode) => (
@@ -347,7 +351,7 @@ const FeedItem = memo(function FeedItem({ row, expanded, onExpand, onOpenPr, onO
         <>
           <Who actor={e.actor} /> {e.kind}{' '}
           <a className={`t${active ? ' on' : ''}`} href={p.url} onClick={(ev) => { ev.preventDefault(); onOpenPr(p.id); }}>{p.title}</a>
-          <span className="num"><RepoChip repo={p.repo} className="repo-ref" />#{p.number}</span>
+          <span className="num"><RepoChip repo={p.repo} className="repo-ref" />{providerOf(p.repo).prRef}{p.number}</span>
         </>
       );
       if (e.kind === 'merged' && p.body.trim()) sub = <p className="ev-desc">{plainPreview(p.body)}</p>;

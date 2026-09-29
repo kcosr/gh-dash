@@ -1,5 +1,6 @@
 /** Pure helpers for adding and removing repositories (the Add dialog, the Remove confirmation). */
 import type { RepoCandidate, RepoPreview } from '../../../shared/api';
+import { PROVIDERS, type Provider } from '../../../shared/provider';
 import { parseRepoInput } from '../../../shared/repos';
 import { fmtDateSmart, plural } from './time';
 
@@ -32,21 +33,22 @@ export function matchCandidates<C extends Pick<RepoCandidate, 'key' | 'owner' | 
 
 /**
  * What the first sync of a previewed repo fetches: "Since Sep 29, 2025: ~1,240 commits · 350 PRs · 90 issues · about 30
- * GitHub requests", or "size unknown" when GitHub didn't say.
+ * GitHub requests", or "size unknown" when the host didn't say. `p` is the repo's host.
  */
-export function backfillLine(b: RepoPreview['backfill']): string {
+export function backfillLine(b: RepoPreview['backfill'], p: Provider = PROVIDERS.github): string {
   const since = `Since ${fmtDateSmart(b.since)}`;
   if (b.commits === null || b.prs === null || b.issues === null || b.requests === null) return `${since}: size unknown`;
   const n = (v: number, one: string, many = `${one}s`) => `${v.toLocaleString()} ${plural(v, one, many)}`;
-  return `${since}: ~${n(b.commits, 'commit')} · ${n(b.prs, 'PR')} · ${n(b.issues, 'issue')} · about ${n(b.requests, 'GitHub request')}`;
+  return `${since}: ~${n(b.commits, 'commit')} · ${n(b.prs, p.pr.short, p.pr.shortMany)} · ${n(b.issues, 'issue')} · about ${n(b.requests, `${p.name} request`)}`;
 }
 
 /**
  * The Remove confirmation's text. `commentCount` is where the diff-comments track plugs in (its branch isn't merged
  * here): once `Repo.commentCount` exists, pass it, and the text names the user's own comments that go with the repo.
+ * `p` is the repo's host.
  */
-export function removeRepoBody(commentCount?: number): string {
+export function removeRepoBody(commentCount?: number, p: Provider = PROVIDERS.github): string {
   const comments = commentCount ? `, and your ${commentCount.toLocaleString()} ${plural(commentCount, 'comment')}` : '';
-  return `gh-dash stops syncing it and deletes its pull requests, issues, commits and releases from this dashboard${comments}. `
-    + 'It also leaves your sets. Nothing changes on GitHub. Adding it again re-syncs from scratch.';
+  return `gh-dash stops syncing it and deletes its ${p.pr.many}, issues, commits and releases from this dashboard${comments}. `
+    + `It also leaves your sets. Nothing changes on ${p.name}. Adding it again re-syncs from scratch.`;
 }

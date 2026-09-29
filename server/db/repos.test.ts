@@ -1,14 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { addManualRepo, seedDb } from '../test/seed';
+import { addManualRepo, GITHUB, seedDb } from '../test/seed';
 import { listRepos } from './repos';
-import { repoKey } from './repo-key';
 import { upsertOwned, upsertStar } from './write';
 
 describe('listRepos lastActivityAt', () => {
   it('is the latest push / PR / issue / release activity; stars do not count', () => {
     const db = seedDb();
     // An inactive repository: last pushed in January, starred in September.
-    const dusty = upsertOwned(db, {
+    const dusty = upsertOwned(db, GITHUB, {
       nodeId: 'R_dusty', name: 'dusty', nameWithOwner: 'alice/dusty', owner: 'alice', description: null, url: 'https://github.com/alice/dusty',
       visibility: 'public', isArchived: false, isFork: false, languageName: null, languageColor: null, topics: [], defaultBranch: 'main',
       stars: 1, forks: 0, createdAt: '2025-01-01T00:00:00Z', pushedAt: '2026-01-29T01:03:25Z',
@@ -33,7 +32,8 @@ describe('listRepos identity', () => {
     const unavailable = addManualRepo(db, 'carol/tool');
     db.run(`UPDATE repos SET unavailable_at = '2026-09-29T00:00:00Z', unavailable_reason = 'Not found' WHERE id = ?`, [unavailable]);
     const repos = listRepos(db, 'UTC');
-    for (const r of repos) expect(r.key).toBe(repoKey({ name: r.name, name_with_owner: r.nameWithOwner }));
+    // On github.com the key is the provider path.
+    for (const r of repos) expect(r).toMatchObject({ key: r.nameWithOwner, source: 'github.com', provider: 'github' });
     const byKey = new Map(repos.map((r) => [r.key, r]));
     expect(byKey.get('alice/app')).toMatchObject({ name: 'app', trackedBy: 'owned', addedAt: null, unavailable: null });
     expect(byKey.get('bob/app')).toMatchObject({ name: 'app', owner: 'bob', trackedBy: 'manual', addedAt: '2026-09-28T00:00:00Z', unavailable: null });

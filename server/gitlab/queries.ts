@@ -11,7 +11,7 @@ const LABELS = 'labels(first: 20) { nodes { title color } }';
  * `isForked` rather than `forkedFrom`, which is null when the upstream isn't visible to the token. The tree's
  * lastCommit is the default branch head: GitLab's lastActivityAt moves at most hourly, too coarse to tell pushes.
  */
-const PROJECT_FIELDS = `
+export const PROJECT_FIELDS = `
 fragment ProjectFields on Project {
   id path fullPath namespace { fullPath } description webUrl visibility archived isForked
   starCount forksCount createdAt lastActivityAt topics
@@ -20,7 +20,7 @@ fragment ProjectFields on Project {
 }`;
 
 /** Open counts plus cheap "latest item" probes that tell the sync which sections changed. Filters match round()'s. */
-const PROBE_FIELDS = `
+export const PROBE_FIELDS = `
 fragment ProbeFields on Project {
   id
   openMergeRequests: mergeRequests(state: opened) { count }

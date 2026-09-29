@@ -16,7 +16,7 @@ import type {
   ViewerAccount,
   ViewerInfo,
 } from '../provider/types';
-import { notFound, unreadable } from './access';
+import { notFound, unavailable, unreadable } from './access';
 import { GitLabClient } from './client';
 import {
   mapCandidate,
@@ -293,8 +293,9 @@ export class GitLabSyncSource implements SyncSource {
   /**
    * Whether the token can read a project, in one request: its record and probe, the counts that size its first sync,
    * and what the token may read of it. Commits since `since` aren't counted (GitLab can't do that cheaply): null.
-   * A project the token sees but whose code, merge requests or issues it can't read is 'permission'. `owned` is a
-   * project in the viewer's personal namespace, which is what the sync tracks as theirs.
+   * A project whose code the token can't read is 'permission'. Merge requests or issues that are turned off (or hidden
+   * at the token's role) don't refuse it: they're listed in `unavailable`, with a count of 0. `owned` is a project in
+   * the viewer's personal namespace, which is what the sync tracks as theirs.
    */
   async lookup(path: string, since: string): Promise<LookupRecord> {
     const { currentUser, project } = await this.graphql.query<ProjectLookupData>(PROJECT_LOOKUP, { path, since });
@@ -304,15 +305,16 @@ export class GitLabSyncSource implements SyncSource {
     if (denied) return { ok: false, viewer, path: project.fullPath, access: denied };
     const record = mapProject(project, this.base);
     const probe = mapProbe(project);
+    const off = unavailable(project);
     const counts: BackfillCounts = {
       commits: null,
-      prs: project.recentMergeRequests?.count ?? null,
-      issues: project.recentIssues?.count ?? null,
+      prs: off.includes('prs') ? 0 : (project.recentMergeRequests?.count ?? null),
+      issues: off.includes('issues') ? 0 : (project.recentIssues?.count ?? null),
       releases: project.releaseCount?.count ?? 0,
       openPrs: probe.openPrs,
       openIssues: probe.openIssues,
     };
-    return { ok: true, viewer, record, probe, owned: record.owner.toLowerCase() === viewer.login.toLowerCase(), counts };
+    return { ok: true, viewer, record, probe, owned: record.owner.toLowerCase() === viewer.login.toLowerCase(), counts, unavailable: off };
   }
 
   /**

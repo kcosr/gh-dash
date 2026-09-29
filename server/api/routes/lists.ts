@@ -1,5 +1,6 @@
 import { type Context, Hono } from 'hono';
 import type { ActivityEvent, Commit, Issue, Release, Star } from '../../../shared/api';
+import type { Db } from '../../db/db';
 import type { Scope } from '../../db/filters';
 import { loadQueryCtx } from '../../db/filters';
 import {
@@ -13,7 +14,7 @@ import {
   type Page,
 } from '../../db/lists';
 import { activityCsv, commitsCsv, issuesCsv, prsCsv, releasesCsv, starsCsv } from '../../format/csv';
-import { eventsMarkdown, type MdContext, prsMarkdown } from '../../format/markdown';
+import { eventsMarkdown, type KindOf, type MdContext, prsMarkdown } from '../../format/markdown';
 import type { AppDeps } from '../app';
 import { HttpError, parseWith } from '../http';
 import {
@@ -39,7 +40,15 @@ function page(q: PageQuery, keyLength: number): Page {
   return { limit: q.limit ?? 200, after: decodeCursor(q.cursor, keyLength) };
 }
 
-const mdCtx = (scope: Scope): MdContext => ({ tz: scope.tz, now: Date.now(), from: scope.from, to: scope.to });
+/** Each repo's code host (by repo key), for the exports' words (`#`/`!`, PRs/MRs). Unknown keys read as GitHub. */
+function repoKinds(db: Db): KindOf {
+  const kinds = new Map(
+    db.all<{ key: string; kind: string }>('SELECT r.key, s.kind FROM repos r JOIN sources s ON s.id = r.source_id').map((r) => [r.key, r.kind]),
+  );
+  return (repo) => (kinds.get(repo) === 'gitlab' ? 'gitlab' : 'github');
+}
+
+const mdCtx = (scope: Scope, kindOf: KindOf): MdContext => ({ tz: scope.tz, now: Date.now(), from: scope.from, to: scope.to, kindOf });
 
 // Entities as feed events, so every list's Markdown shares the day-grouped event format.
 const commitEvent = (commit: Commit): ActivityEvent => ({ type: 'commit', at: commit.committedAt, repo: commit.repo, actor: commit.author, commit });
@@ -61,7 +70,7 @@ export function listRoutes({ db, config }: AppDeps): Hono {
     if (q.format === 'md' || q.format === 'csv') {
       const { items } = listPrs(db, ctx, scope, filter, null);
       return q.format === 'md'
-        ? markdown(c, prsMarkdown(items, { state: filter.state, who: scope.who, group: q.group ?? 'week' }, mdCtx(scope)))
+        ? markdown(c, prsMarkdown(items, { state: filter.state, who: scope.who, group: q.group ?? 'week' }, mdCtx(scope, repoKinds(db))))
         : csv(c, prsCsv(items));
     }
     const res = listPrs(db, ctx, scope, filter, page(q, 3));
@@ -83,7 +92,8 @@ export function listRoutes({ db, config }: AppDeps): Hono {
     const ctx = loadQueryCtx(db, config.myEmails);
     if (q.format === 'md' || q.format === 'csv') {
       const { items } = listActivity(db, ctx, scope, types, null);
-      return q.format === 'md' ? markdown(c, eventsMarkdown('Activity', items, mdCtx(scope))) : csv(c, activityCsv(items));
+      const kindOf = repoKinds(db);
+      return q.format === 'md' ? markdown(c, eventsMarkdown('Activity', items, mdCtx(scope, kindOf))) : csv(c, activityCsv(items, kindOf));
     }
     const res = listActivity(db, ctx, scope, types, page(q, 2));
     return c.json({ ...res, nextCursor: encodeCursor(res.nextCursor) });
@@ -95,7 +105,7 @@ export function listRoutes({ db, config }: AppDeps): Hono {
     const ctx = loadQueryCtx(db, config.myEmails);
     if (q.format === 'md' || q.format === 'csv') {
       const { items } = listCommits(db, ctx, scope, null);
-      return q.format === 'md' ? markdown(c, eventsMarkdown('Commits', items.map(commitEvent), mdCtx(scope))) : csv(c, commitsCsv(items));
+      return q.format === 'md' ? markdown(c, eventsMarkdown('Commits', items.map(commitEvent), mdCtx(scope, repoKinds(db)))) : csv(c, commitsCsv(items));
     }
     const res = listCommits(db, ctx, scope, page(q, 3));
     return c.json({ ...res, nextCursor: encodeCursor(res.nextCursor) });
@@ -108,7 +118,7 @@ export function listRoutes({ db, config }: AppDeps): Hono {
     const state = q.state ?? 'all';
     if (q.format === 'md' || q.format === 'csv') {
       const { items } = listIssues(db, ctx, scope, state, null);
-      return q.format === 'md' ? markdown(c, eventsMarkdown('Issues', items.map(issueEvent), mdCtx(scope))) : csv(c, issuesCsv(items));
+      return q.format === 'md' ? markdown(c, eventsMarkdown('Issues', items.map(issueEvent), mdCtx(scope, repoKinds(db)))) : csv(c, issuesCsv(items));
     }
     const res = listIssues(db, ctx, scope, state, page(q, 3));
     return c.json({ ...res, nextCursor: encodeCursor(res.nextCursor) });
@@ -121,7 +131,7 @@ export function listRoutes({ db, config }: AppDeps): Hono {
     if (q.format === 'md' || q.format === 'csv') {
       const { items } = listReleases(db, ctx, scope, null);
       return q.format === 'md'
-        ? markdown(c, eventsMarkdown('Releases', items.map(releaseEvent), mdCtx(scope)))
+        ? markdown(c, eventsMarkdown('Releases', items.map(releaseEvent), mdCtx(scope, repoKinds(db))))
         : csv(c, releasesCsv(items));
     }
     const res = listReleases(db, ctx, scope, page(q, 3));
@@ -134,7 +144,7 @@ export function listRoutes({ db, config }: AppDeps): Hono {
     const ctx = loadQueryCtx(db, config.myEmails);
     if (q.format === 'md' || q.format === 'csv') {
       const { items } = listStars(db, ctx, scope, null);
-      return q.format === 'md' ? markdown(c, eventsMarkdown('Stars', items.map(starEvent), mdCtx(scope))) : csv(c, starsCsv(items));
+      return q.format === 'md' ? markdown(c, eventsMarkdown('Stars', items.map(starEvent), mdCtx(scope, repoKinds(db)))) : csv(c, starsCsv(items));
     }
     const res = listStars(db, ctx, scope, page(q, 3));
     return c.json({ ...res, nextCursor: encodeCursor(res.nextCursor) });

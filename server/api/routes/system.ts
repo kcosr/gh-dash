@@ -1,9 +1,9 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import type { Me, Settings } from '../../../shared/api';
-import { getMeta } from '../../db/meta';
 import { resolveRepo } from '../../db/repo-key';
 import { getSettings, patchSettings, settingsPatchSchema } from '../../db/settings';
+import { GITHUB_SOURCE_ID, getSource } from '../../db/sources';
 import { noTokenMessage } from '../../token';
 import type { AppDeps } from '../app';
 import { HttpError, jsonBody, parseWith } from '../http';
@@ -15,7 +15,7 @@ export function systemRoutes({ db, sync, config, diffs, tokens }: AppDeps): Hono
   const withEnv = (s: Settings): Settings => ({ ...s, myEmailsFromEnv: config.myEmails });
 
   r.get('/me', (c) => {
-    const viewer = getMeta(db, 'viewer');
+    const viewer = getSource(db, GITHUB_SOURCE_ID)?.viewer;
     const me: Me = {
       login: viewer?.login ?? '',
       name: viewer?.name ?? null,

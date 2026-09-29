@@ -10,11 +10,11 @@
 // Repositories are named to a source by their provider path (RepoRecord.nameWithOwner: GitHub "owner/name", GitLab
 // "group/subgroup/project"), never by this app's key, and by node id once tracked.
 
-import type { Diff, DiffFile } from '../../shared/api';
+import type { Diff, DiffFile, ProviderKind } from '../../shared/api';
 import type { CommitRecord, IssueRecord, PrRecord, ReleaseRecord, RepoProbe, RepoRecord, StarRecord } from '../db/records';
 import type { AccessFailure } from './access';
 
-export type ProviderKind = 'github' | 'gitlab';
+export type { ProviderKind };
 
 /** The account a source's token belongs to. */
 export interface ViewerInfo {
@@ -173,7 +173,20 @@ export interface BackfillCounts {
  * Both carry the viewer, which the tracking API checks before answering.
  */
 export type LookupRecord =
-  | { ok: true; viewer: ViewerInfo; record: RepoRecord; probe: RepoProbe; owned: boolean; counts: BackfillCounts }
+  | {
+      ok: true;
+      viewer: ViewerInfo;
+      record: RepoRecord;
+      probe: RepoProbe;
+      owned: boolean;
+      counts: BackfillCounts;
+      /**
+       * Parts of the repository the provider doesn't show this token, without refusing it (GitLab: pull requests or issues
+       * turned off, or hidden at the token's role). They have nothing to sync, and their counts are 0. Absent or empty when
+       * all are there.
+       */
+      unavailable?: ('prs' | 'issues')[];
+    }
   | { ok: false; viewer: ViewerInfo; path: string; access: AccessFailure };
 
 export interface SyncSource {

@@ -1,7 +1,10 @@
 /** react-markdown + remark-gfm (split into its own chunk; import through ./Markdown). */
-import ReactMarkdown from 'react-markdown';
+import { useMemo } from 'react';
+import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import type { Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { resolveItemUrl } from '../../../shared/provider';
+import type { LinkBase } from '../../../shared/provider';
 
 const components: Components = {
   // react-markdown's urlTransform blanks unsafe URLs (javascript:, data:, vbscript:). Render
@@ -28,9 +31,14 @@ const components: Components = {
   table: ({ node: _n, children }) => <div className="md-table"><table>{children}</table></div>,
 };
 
-export default function MarkdownRenderer({ source }: { source: string }) {
+/** `linkBase`: the item's repo, which root-relative URLs resolve against (after the safety transform). */
+export default function MarkdownRenderer({ source, linkBase }: { source: string; linkBase?: LinkBase }) {
+  const urlTransform = useMemo(
+    () => (linkBase ? (url: string) => resolveItemUrl(defaultUrlTransform(url), linkBase) : defaultUrlTransform),
+    [linkBase],
+  );
   return (
-    <ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml components={components}>
+    <ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml components={components} urlTransform={urlTransform}>
       {source}
     </ReactMarkdown>
   );

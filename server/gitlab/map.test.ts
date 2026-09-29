@@ -203,14 +203,14 @@ describe('GitLab → rows: issues, commits, releases, stars', () => {
   });
 
   it('maps a project of the membership list as a candidate: visibility, fork and last activity', () => {
-    const listed = (memberProjectsFixture as unknown as RestProject[]).map(mapCandidate);
-    expect(listed[0]).toEqual({
+    const listed = new Map((memberProjectsFixture as unknown as RestProject[]).map(mapCandidate).map((c) => [c.nameWithOwner, c]));
+    expect(listed.get('team/platform/api')).toEqual({
       nodeId: 'gid://gitlab/Project/40', name: 'api', nameWithOwner: 'team/platform/api', owner: 'team/platform', description: 'Platform API',
       visibility: 'private', isArchived: false, isFork: false, stars: 5, pushedAt: '2026-09-27T10:00:00Z',
     });
-    expect(listed[2]).toMatchObject({ nameWithOwner: 'bob/tool', visibility: 'internal', isFork: true, description: "Bob's helper scripts" });
-    expect(listed[3]).toMatchObject({ name: 'docs', description: null });
-    expect(listed[4]).toMatchObject({ isArchived: true });
+    expect(listed.get('bob/tool')).toMatchObject({ nodeId: 'gid://gitlab/Project/23', visibility: 'internal', isFork: true, description: "Bob's helper scripts" });
+    expect(listed.get('team/docs')).toMatchObject({ name: 'docs', description: null, visibility: 'public' });
+    expect(listed.get('alice/corp.tools')).toMatchObject({ isArchived: true });
   });
 
   it('drops upcoming releases like drafts, and publishes historical ones at their release date', () => {

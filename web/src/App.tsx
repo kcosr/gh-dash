@@ -20,11 +20,13 @@ import { hasBlockingLayer, isTypingTarget, topLayer } from './lib/layers';
 import { useCanonicalRepoUrl } from './lib/canonicalUrl';
 import { getSidebarHidden, setSidebarHidden } from './lib/storage';
 import { plural } from './lib/time';
+import { capitalize } from '../../shared/provider';
 import { repoLabel } from '../../shared/repos';
 import { repoFromPath, useUrlState } from './lib/urlState';
 import { cx, isChunkLoadError } from './lib/util';
 import { preloadMarkdown } from './components/Markdown';
 import { RepoMapProvider } from './components/RepoChip';
+import { useWords } from './components/repoMapContext';
 import { Icon } from './components/Icon';
 import { PullRequestsView } from './views/PullRequests';
 
@@ -158,10 +160,11 @@ function Shell() {
   useCanonicalRepoUrl();
   const repoKey = repoFromPath(useLocation().pathname);
   const name = repoKey && repoLabel(repoKey, repos.data ?? []);
+  const prsTitle = capitalize(useWords().pr.many);
   useEffect(() => {
-    const t = { prs: 'Pull requests', issues: 'Issues', activity: 'Activity', repos: 'Repositories', repo: name || 'Repository', insights: 'Insights', settings: 'Settings' }[view];
+    const t = { prs: prsTitle, issues: 'Issues', activity: 'Activity', repos: 'Repositories', repo: name || 'Repository', insights: 'Insights', settings: 'Settings' }[view];
     document.title = `${t} · gh-dash`;
-  }, [view, name]);
+  }, [view, name, prsTitle]);
 
   const noData = repos.isSuccess && repos.data.length === 0;
   const setup = noData && view !== 'settings'

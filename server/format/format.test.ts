@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { ActivityEvent, PullRequest } from '../../shared/api';
+import type { ActivityEvent, Issue, PullRequest } from '../../shared/api';
 import { activityCsv, prsCsv, toCsv } from './csv';
 import { eventsMarkdown, firstParagraph, type MdContext, prsMarkdown, rangeLabel } from './markdown';
 
@@ -141,5 +141,45 @@ describe('csv', () => {
     expect(row).toContain(',bug;ui,');
     const star: ActivityEvent = { type: 'star', at: '2026-09-27T01:30:00Z', repo: 'app', actor: { ...me, login: 'carol' } };
     expect(activityCsv([star]).split('\r\n')[1]).toBe('2026-09-27T01:30:00Z,star,,app,carol,,,');
+  });
+});
+
+describe('exports with GitLab repos', () => {
+  const GL = 'gitlab.example.com/alice/app';
+  const kindOf = (repo: string) => (repo.startsWith('gitlab.example.com/') ? 'gitlab' as const : 'github' as const);
+  const mr = (n: number, at: string) =>
+    pr(n, at, { id: `${GL}#${n}`, repo: GL, url: `https://gitlab.example.com/alice/app/-/merge_requests/${n}` });
+  const issue: Issue = {
+    id: `${GL}#4`, repo: GL, number: 4, title: 'Crash', body: '', state: 'closed', author: me, closedBy: me,
+    createdAt: '2026-09-20T09:00:00Z', updatedAt: '2026-09-26T09:00:00Z', closedAt: '2026-09-26T09:00:00Z', labels: [],
+    url: 'https://gitlab.example.com/alice/app/-/issues/4',
+  };
+
+  it('write MRs with ! and MR words, and neutral words when both hosts are listed', () => {
+    const only = prsMarkdown([mr(3, '2026-09-26T10:00:00Z')], { state: 'merged', who: 'me', group: 'repo' }, { ...ctx, kindOf });
+    expect(only.split('\n')).toEqual([
+      '## Merged MRs by me · Sep 10 – Sep 27, 2026', '', `### ${GL}`, '',
+      `- **PR 3** ([${GL}!3](https://gitlab.example.com/alice/app/-/merge_requests/3))`, '',
+    ]);
+    const both = prsMarkdown([mr(3, '2026-09-26T10:00:00Z'), pr(2, '2026-09-18T10:00:00Z')], { state: 'all', who: 'everyone', group: 'repo' }, { ...ctx, kindOf });
+    expect(both.split('\n')[0]).toBe('## All PRs & MRs · Sep 10 – Sep 27, 2026');
+    expect(both).toContain('([app#2](https://github.com/alice/app/pull/2))');
+  });
+
+  it('write MR events with ! and keep # for issues, in Markdown and in the CSV ref column', () => {
+    const events: ActivityEvent[] = [
+      { type: 'pr', kind: 'opened', at: '2026-09-26T10:00:00Z', repo: GL, actor: me, pr: mr(5, '2026-09-26T10:00:00Z') },
+      { type: 'issue', kind: 'closed', at: '2026-09-26T09:00:00Z', repo: GL, actor: me, issue },
+    ];
+    const lines = eventsMarkdown('Activity', events, { ...ctx, kindOf }).split('\n').filter((l) => l.startsWith('- '));
+    expect(lines).toEqual([
+      `- 10:00 · **alice** opened MR [${GL}!5](https://gitlab.example.com/alice/app/-/merge_requests/5): PR 5`,
+      `- 09:00 · **alice** closed issue [${GL}#4](https://gitlab.example.com/alice/app/-/issues/4): Crash`,
+    ]);
+    const rows = activityCsv(events, kindOf).split('\r\n');
+    expect(rows[1]).toBe(`2026-09-26T10:00:00Z,pr,opened,${GL},alice,PR 5,!5,https://gitlab.example.com/alice/app/-/merge_requests/5`);
+    expect(rows[2]).toContain(',#4,');
+    // Without a lookup every repo is GitHub's, as before.
+    expect(activityCsv(events).split('\r\n')[1]).toContain(',#5,');
   });
 });

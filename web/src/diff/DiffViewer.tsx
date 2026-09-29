@@ -8,6 +8,7 @@ import { CodeView, WorkerPoolContextProvider, type CodeViewHandle } from '@pierr
 import HighlightWorker from '@pierre/diffs/worker/worker.js?worker';
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from 'react';
 import type { Diff } from '../../../shared/api';
+import { PROVIDERS, type Provider } from '../../../shared/provider';
 import { Icon } from '../components/Icon';
 import { Seg } from '../components/Seg';
 import { isTypingTarget, useLayer } from '../lib/layers';
@@ -22,6 +23,8 @@ import './diff.css';
 
 export interface DiffViewerProps {
   diff: Diff;
+  /** The diff's host, for the links to its files there; GitHub by default. */
+  provider?: Provider;
   /** Full file contents at a commit, for expanding context; resolves null when unavailable. */
   loadFile: (ref: string, path: string) => Promise<string | null>;
   /** Narrow layout (≤900px). */
@@ -143,7 +146,7 @@ function Position({ current, indexOf, total }: { current: CurrentFile; indexOf: 
   return <span className="dvr-pos">File <b>{(i + 1).toLocaleString()}</b> of {total.toLocaleString()}</span>;
 }
 
-export default function DiffViewer({ diff, loadFile, compact, isActive, file, onFileChange }: DiffViewerProps) {
+export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile, compact, isActive, file, onFileChange }: DiffViewerProps) {
   // Keyed by what buildFiles reads, not the diff object: a PR diff revalidated on reopen comes back
   // as a new object (fetchedAt moved) with structurally shared, unchanged files, and must not re-render.
   const files = useMemo(() => buildFiles(diff), [diff.files, diff.baseOid, diff.headOid]);
@@ -385,12 +388,13 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
       <FileHeader
         vf={vf}
         diffUrl={diff.url}
+        provider={provider}
         collapsed={item.collapsed === true}
         onToggle={toggleCollapsed}
         contextFailed={failed.has(`${rev}\0${vf.id}`)}
       />
     );
-  }, [byId, diff.url, rev, failed, toggleCollapsed]);
+  }, [byId, diff.url, provider, rev, failed, toggleCollapsed]);
 
   // Desktop only (the compact list is a touch overlay); memoized so the file list doesn't re-render.
   const hints = useMemo(() => (compact ? undefined : (

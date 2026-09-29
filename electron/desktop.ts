@@ -55,7 +55,8 @@ export class Desktop {
     }
   }
 
-  private writeTokenSource(choice: TokenChoice | null) {
+  /** github.com's choice (config.json's top-level tokenSource: glab is for GitLab sources only). */
+  private writeTokenSource(choice: Exclude<TokenChoice, 'glab'> | null) {
     writeConfigFile(this.d.configPath, { ...this.readConfig(), tokenSource: choice });
   }
 

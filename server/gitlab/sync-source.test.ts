@@ -237,13 +237,13 @@ describe('GitLabSyncSource: the Add dialog', () => {
   it('lists the projects the token is a member of, newest activity first, without the ones in its personal namespace', async () => {
     const { source, requests } = setup({
       '/api/graphql': graphql({ Viewer: () => viewerFixture }),
-      '/api/v4/projects': page(memberProjectsFixture, null, { 'x-total': '5' }),
+      '/api/v4/projects': page(memberProjectsFixture, null, { 'x-total': String(memberProjectsFixture.length) }),
     });
     const c = await source.candidates();
     expect(c.viewer).toMatchObject({ id: 'gid://gitlab/User/2', login: 'alice' });
     // alice/app and alice/corp.tools are hers, and tracked automatically; bob/tool is in another user's namespace.
-    expect(c.items.map((r) => r.nameWithOwner)).toEqual(['team/platform/api', 'bob/tool', 'team/docs']);
-    expect(c.items[1]).toMatchObject({ nodeId: 'gid://gitlab/Project/21', owner: 'bob', visibility: 'internal', isFork: true });
+    expect(c.items.map((r) => r.nameWithOwner)).toEqual(['platform/team/svc', 'team/platform/api', 'bob/tool', 'team/docs', 'platform/api']);
+    expect(c.items[2]).toMatchObject({ nodeId: 'gid://gitlab/Project/23', owner: 'bob', visibility: 'internal', isFork: true });
     expect(c.suggested).toEqual(c.items);
     expect(c.truncated).toBe(false);
     expect(requests).toContain('/api/v4/projects?membership=true&archived=false&order_by=last_activity_at&sort=desc&per_page=100&page=1');
@@ -309,17 +309,30 @@ describe('GitLabSyncSource: the Add dialog', () => {
     expect(miss).toMatchObject({ ok: false, viewer: { login: 'alice' }, path: 'bob/gone', access: { problem: 'not-found', message: expect.stringContaining('bob/gone') } });
   });
 
-  it('refuses a project the token sees but cannot read all of, naming the provider spelling and what is missing', async () => {
+  it('refuses a project whose code the token cannot read, naming the provider spelling', async () => {
     const seen = (patch: Record<string, unknown>) => setup(lookupRoute({ ...clone(lookupFixture.project), ...patch }));
     const noCode = await seen({ userPermissions: { downloadCode: false, readMergeRequest: true } }).source.lookup('team/Platform/api', SINCE);
-    expect(noCode).toMatchObject({ ok: false, path: 'team/platform/api', access: { problem: 'permission', message: 'The token can see team/platform/api but not its code.' } });
-    const noIssues = await seen({ issuesEnabled: false }).source.lookup('team/platform/api', SINCE);
-    expect(noIssues).toMatchObject({ ok: false, access: { problem: 'permission', message: 'The token can see team/platform/api but not its issues.' } });
-    const noMrs = await seen({ userPermissions: { downloadCode: true, readMergeRequest: false }, issuesEnabled: false }).source.lookup('team/platform/api', SINCE);
-    expect(noMrs).toMatchObject({ ok: false, access: { message: 'The token can see team/platform/api but not its merge requests and issues.' } });
-    // Counts that GitLab did not give are unknown, not zero.
-    const unknown = await seen({ recentMergeRequests: null, recentIssues: null, releaseCount: null }).source.lookup('team/platform/api', SINCE);
+    expect(noCode).toMatchObject({ ok: false, viewer: { login: 'alice' }, path: 'team/platform/api', access: { problem: 'permission', message: 'The token can see team/platform/api but not its code.' } });
+    // Code, and merge requests too: still the code that is refused.
+    const nothing = await seen({ userPermissions: { downloadCode: false, readMergeRequest: false } }).source.lookup('team/platform/api', SINCE);
+    expect(nothing).toMatchObject({ ok: false, access: { problem: 'permission', message: 'The token can see team/platform/api but not its code.' } });
+  });
+
+  it('accepts a project with merge requests or issues turned off (or hidden), and reports them unavailable with nothing to count', async () => {
+    const seen = (patch: Record<string, unknown>) => setup(lookupRoute({ ...clone(lookupFixture.project), ...patch })).source.lookup('team/platform/api', SINCE);
+    const all = await seen({});
+    expect(all.ok && all.unavailable).toEqual([]);
+    // GitLab lists no connection for a feature that is off.
+    const noIssues = await seen({ issuesEnabled: false, recentIssues: null });
+    expect(noIssues).toMatchObject({ ok: true, unavailable: ['issues'], counts: { commits: null, prs: 12, issues: 0, releases: 4, openPrs: 3, openIssues: 7 } });
+    const noMrs = await seen({ userPermissions: { downloadCode: true, readMergeRequest: false }, recentMergeRequests: null });
+    expect(noMrs).toMatchObject({ ok: true, unavailable: ['prs'], counts: { prs: 0, issues: 30 } });
+    const neither = await seen({ userPermissions: { downloadCode: true, readMergeRequest: false }, issuesEnabled: false, recentMergeRequests: null, recentIssues: null });
+    expect(neither).toMatchObject({ ok: true, unavailable: ['prs', 'issues'], counts: { prs: 0, issues: 0 } });
+    // Counts GitLab did not give for a feature that is on are unknown, not zero.
+    const unknown = await seen({ recentMergeRequests: null, recentIssues: null, releaseCount: null });
     expect(unknown.ok && unknown.counts).toEqual({ commits: null, prs: null, issues: null, releases: 0, openPrs: 3, openIssues: 7 });
+    expect(unknown.ok && unknown.unavailable).toEqual([]);
   });
 
   it('cannot tell what a first sync costs, as it cannot count the commits', () => {
@@ -331,9 +344,19 @@ describe('GitLabSyncSource: the Add dialog', () => {
   it('answers all of it from the fake instance', async () => {
     const fake = fakeInstance();
     const source = new GitLabSyncSource({ baseUrl: BASE, token: 'glpat-test-token', fetchImpl: fake.fetchImpl, sleep: async () => {} });
-    expect((await source.candidates()).items.map((r) => r.nameWithOwner)).toEqual(['team/platform/api', 'bob/tool', 'team/docs']);
+    // The archived project is not listed, alice's own are left out.
+    expect((await source.candidates()).items.map((r) => [r.nameWithOwner, r.visibility])).toEqual([
+      ['platform/team/svc', 'internal'], ['team/platform/api', 'private'], ['bob/tool', 'internal'], ['team/docs', 'public'], ['platform/api', 'private'],
+    ]);
     const own = await source.lookup('alice/app', SINCE);
-    expect(own.ok && own.owned).toBe(true);
+    expect(own).toMatchObject({ ok: true, owned: true, unavailable: [] });
+    // alice's own project with issues turned off is still hers to track.
+    const noIssues = await source.lookup('alice/corp.tools', SINCE);
+    expect(noIssues).toMatchObject({ ok: true, owned: true, unavailable: ['issues'], counts: { issues: 0, prs: 12 } });
+    // A guest of the group's private project reads no code.
+    expect(await source.lookup('platform/team/svc', SINCE)).toMatchObject({ ok: false, path: 'platform/team/svc', access: { problem: 'permission' } });
+    expect(await source.lookup('team/platform/api', SINCE)).toMatchObject({ ok: true, owned: false, unavailable: [] });
+    expect(await source.lookup('bob/gone', SINCE)).toMatchObject({ ok: false, access: { problem: 'not-found' } });
   });
 });
 

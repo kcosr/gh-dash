@@ -15,7 +15,7 @@ in REST (`avatar_url`).
 | `owned-projects.json` | GraphQL `OwnedProjects` (`currentUser` and `projects(personal: true)`) |
 | `project.json` | GraphQL `Project` (`currentUser` and `project(fullPath:)` with probe fields) |
 | `lookup.json` | GraphQL `ProjectLookup` (that project plus `userPermissions`, `issuesEnabled` and the counts) |
-| `member-projects.json` | REST `GET /projects?membership=true` (the full entity, newest activity first) |
+| `member-projects.json` | REST `GET /projects?membership=true` (the full entity, newest activity first; the fake instance also serves it as `simple=true`, without visibility, archived and the fork's upstream) |
 | `probes.json` | GraphQL `Probes` (`projects(ids:)`) |
 | `merge-requests.json` | GraphQL `MergeRequests` (`project.mergeRequests`) |
 | `releases.json` | GraphQL `Releases` (`project.releases`) |

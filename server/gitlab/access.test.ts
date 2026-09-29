@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { reasonOf } from '../provider/access';
-import { notFound, permissionDenied, unreadable } from './access';
+import { codeHidden, notFound, unavailable, unreadable } from './access';
 
 describe('GitLab access wording', () => {
   it('says GitLab does not show a project, without claiming to know why', () => {
@@ -14,24 +14,29 @@ describe('GitLab access wording', () => {
     );
   });
 
-  it('names what the token cannot read of a project it sees', () => {
-    expect(permissionDenied('alice/app', ['code'])).toEqual({
+  it('names the code as what the token cannot read of a project it sees', () => {
+    expect(codeHidden('alice/app')).toEqual({
       problem: 'permission',
       message: 'The token can see alice/app but not its code.',
       hint: "Guests can't read a private project's code; ask for Reporter access.",
     });
-    expect(permissionDenied('alice/app', ['code', 'merge requests', 'issues']).message).toBe('The token can see alice/app but not its code, merge requests and issues.');
-    expect(permissionDenied('alice/app', ['merge requests', 'issues']).message).toBe('The token can see alice/app but not its merge requests and issues.');
   });
 
-  it('finds what is unreadable from the permissions GitLab reports, and takes what it did not report as readable', () => {
+  it('refuses a project only for its code, and takes a permission GitLab did not report as readable', () => {
+    expect(unreadable('alice/app', { userPermissions: { downloadCode: true, readMergeRequest: true } })).toBeNull();
+    expect(unreadable('alice/app', { userPermissions: null })).toBeNull();
+    expect(unreadable('alice/app', { userPermissions: { downloadCode: null, readMergeRequest: null } })).toBeNull();
+    expect(unreadable('alice/app', { userPermissions: { downloadCode: false, readMergeRequest: true } })).toEqual(codeHidden('alice/app'));
+    // Merge requests and issues out of reach are not a reason to refuse.
+    expect(unreadable('alice/app', { userPermissions: { downloadCode: true, readMergeRequest: false } })).toBeNull();
+  });
+
+  it('reports the merge requests and issues the token gets nothing of, in the order of the counts', () => {
     const all = { userPermissions: { downloadCode: true, readMergeRequest: true }, issuesEnabled: true };
-    expect(unreadable('alice/app', all)).toBeNull();
-    expect(unreadable('alice/app', { userPermissions: null, issuesEnabled: null })).toBeNull();
-    expect(unreadable('alice/app', { ...all, userPermissions: { downloadCode: false, readMergeRequest: true } })?.message).toContain('not its code.');
-    expect(unreadable('alice/app', { ...all, userPermissions: { downloadCode: true, readMergeRequest: false } })?.message).toContain('not its merge requests.');
-    expect(unreadable('alice/app', { ...all, issuesEnabled: false })?.message).toContain('not its issues.');
-    const none = unreadable('alice/app', { userPermissions: { downloadCode: false, readMergeRequest: false }, issuesEnabled: false });
-    expect(none).toMatchObject({ problem: 'permission', message: 'The token can see alice/app but not its code, merge requests and issues.' });
+    expect(unavailable(all)).toEqual([]);
+    expect(unavailable({ userPermissions: null, issuesEnabled: null })).toEqual([]);
+    expect(unavailable({ ...all, issuesEnabled: false })).toEqual(['issues']);
+    expect(unavailable({ ...all, userPermissions: { downloadCode: true, readMergeRequest: false } })).toEqual(['prs']);
+    expect(unavailable({ userPermissions: { downloadCode: false, readMergeRequest: false }, issuesEnabled: false })).toEqual(['prs', 'issues']);
   });
 });

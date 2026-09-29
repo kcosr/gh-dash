@@ -11,6 +11,10 @@
  * optional fields are fine; renames/removals are not.
  */
 
+/** The kind of code host a source is. Its words and URL shapes are in shared/provider.ts. */
+export type ProviderKind = 'github' | 'gitlab';
+/** The host of the built-in github.com source (`Repo.source`). Its keys are `owner/name`; every other source's carry the host. */
+export const GITHUB_HOST = 'github.com';
 /** 'internal': a GitHub Enterprise repository visible to every member of the enterprise. */
 export type Visibility = 'public' | 'private' | 'internal';
 export type VisibilityFilter = 'all' | Visibility;
@@ -60,10 +64,14 @@ export interface RepoStats {
 
 export interface Repo {
   /**
-   * Identity everywhere in the API and in URLs (`repos=` lists, path params, every `repo` field): "owner/name"
-   * (GitLab later: "group/sub/project"). `name` is the short name.
+   * Identity everywhere in the API and in URLs (`repos=` lists, path params, every `repo` field): "owner/name" on
+   * github.com, "<host>/<full path>" on every other source (e.g. "gitlab.example.com/platform/team/app"). Opaque:
+   * read `source` for the host rather than parsing it. `name` is the short name.
    */
   key: string;
+  /** The source's host ("github.com", "gitlab.example.com"): which code host the repo is on. */
+  source: string;
+  provider: ProviderKind;
   name: string;
   nameWithOwner: string;
   owner: string;
@@ -232,20 +240,25 @@ export interface Settings {
  *  - env: GITHUB_TOKEN in the process environment (or the headless env file); locks the choice.
  *  - file: a token file the user owns (config `tokenFile` / GITHUB_TOKEN_FILE), re-read on use.
  *  - gh-cli: the output of `gh auth token`.
+ *  - glab: what `glab` has for a GitLab source's host (GitLab sources only).
  *  - app: a token handed to the server by the desktop app (pasted, optionally remembered in the OS keychain).
  *  - none: no usable token.
  */
-export type TokenSource = 'env' | 'file' | 'gh-cli' | 'app' | 'none';
+export type TokenSource = 'env' | 'file' | 'gh-cli' | 'glab' | 'app' | 'none';
 
 /**
  * Which source the user chose (persisted in config.json as `tokenSource`). `auto` is the headless default and
  * keeps the legacy order GITHUB_TOKEN > token file > gh. The desktop app starts with no choice (null) and
- * never falls back silently. GITHUB_TOKEN in the environment always wins (AccountStatus.locked).
+ * never falls back silently. GITHUB_TOKEN in the environment always wins (AccountStatus.locked). `glab` is for GitLab
+ * sources only.
  */
-export type TokenChoice = 'auto' | 'gh' | 'file' | 'app';
+export type TokenChoice = 'auto' | 'gh' | 'glab' | 'file' | 'app';
 
-/** Token kind, from its prefix: github_pat_ fine-grained, ghp_ classic, gho_ OAuth (what gh uses), ghu_/ghs_ app tokens. */
-export type TokenKind = 'fine-grained' | 'classic' | 'oauth' | 'app' | 'unknown';
+/**
+ * Token kind, from its prefix: github_pat_ fine-grained, ghp_ classic, gho_ OAuth (what gh uses), ghu_/ghs_ app tokens.
+ * GitLab: glpat- is a personal (or group/project) access token; OAuth when GitLab won't describe the token.
+ */
+export type TokenKind = 'fine-grained' | 'classic' | 'oauth' | 'app' | 'personal' | 'unknown';
 
 /** Pre-filled fine-grained token page: read-only Metadata, Contents, Issues, Pull requests (repository access must be picked by hand). */
 export const TOKEN_CREATE_URL =
@@ -288,6 +301,44 @@ export interface AccountStatus {
   /** Configured token file path (not its contents); null when none. */
   tokenFile: string | null;
   /** When the token was last validated against GitHub. */
+  checkedAt: string | null;
+}
+
+/**
+ * A source's credential as this server holds it (never the token): GitHub's AccountStatus, generalised to every source.
+ * GitLab's scopes, expiry and instance come from validating the token (2 requests); none of it is stored.
+ */
+export interface SourceAccount {
+  /** Effective source right now. */
+  source: TokenSource;
+  /** The configured choice; null = nothing chosen (desktop), or nothing configured. */
+  choice: TokenChoice | null;
+  /** `env` is set in the environment: it is always used, and the choice can't be changed from the app. */
+  locked: boolean;
+  /** The variable that locks this source (GITHUB_TOKEN, a GitLab source's tokenEnv); null when none does. */
+  env: string | null;
+  login: string | null;
+  name: string | null;
+  avatarUrl: string | null;
+  /** The account this database was synced for, on this source; null before its first sync. */
+  dbLogin: string | null;
+  mismatch: boolean;
+  kind: TokenKind | null;
+  /** When the token stops working (ISO); null when it doesn't expire or it's unknown (GitLab OAuth tokens). */
+  expiresAt: string | null;
+  /** The token's scopes; null when unknown (GitHub fine-grained tokens, GitLab OAuth tokens). */
+  scopes: string[] | null;
+  /** GitLab: the scopes include api or write_repository, which gh-dash never needs. null for GitHub, or unknown. */
+  canWrite: boolean | null;
+  /** GitHub: owned repositories (total / private). GitLab: projects in the personal namespace (private unknown). */
+  repos: { total: number; private: number | null } | null;
+  /** The provider's CLI (gh, glab). `login` comes from its config without running it (gh only). */
+  cli: { name: 'gh' | 'glab'; available: boolean; path: string | null; login: string | null } | null;
+  /** Configured token file path (not its contents); null when none. */
+  tokenFile: string | null;
+  /** The GitLab instance's version; null for GitHub, or before a validation. */
+  instance: { version: string; enterprise: boolean } | null;
+  error: string | null;
   checkedAt: string | null;
 }
 

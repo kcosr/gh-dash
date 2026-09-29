@@ -47,13 +47,24 @@ function operationName(body: unknown): string {
   return /^\s*query\s+(\w+)/.exec(query)?.[1] ?? '?';
 }
 
-/** The GraphQL endpoint's handler: dispatches on the operation name to a function of the variables returning `data`. */
+/** What an operation returns to make GitLab answer with GraphQL errors (say, a field the schema doesn't have) instead of data. */
+export class GraphqlErrors {
+  constructor(readonly messages: string[]) {}
+}
+export const graphqlErrors = (...messages: string[]) => new GraphqlErrors(messages);
+
+/**
+ * The GraphQL endpoint's handler: dispatches on the operation name to a function of the variables returning `data`
+ * (or graphqlErrors(…)).
+ */
 export function graphql(ops: Record<string, (vars: Record<string, unknown>) => unknown>): Handler {
   return (req) => {
     const { query, variables } = req.body as { query: string; variables?: Record<string, unknown> };
     const op = ops[operationName({ query })];
     if (!op) return { body: { errors: [{ message: `no fake for ${operationName({ query })}` }] } };
-    return { body: { data: op(variables ?? {}) } };
+    const result = op(variables ?? {});
+    if (result instanceof GraphqlErrors) return { body: { errors: result.messages.map((message) => ({ message })) } };
+    return { body: { data: result } };
   };
 }
 

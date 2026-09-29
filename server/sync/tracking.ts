@@ -9,7 +9,7 @@
 
 import { GITHUB_HOST, type AddRepoResponse, type RepoCandidate, type RepoCandidatesResponse, type RepoLookup, type RepoPreview, type TrackedBy } from '../../shared/api';
 import { inputHost, parseGitHubInput, parseGitLabInput } from '../../shared/repos';
-import { HttpError } from '../api/http';
+import { HttpError } from '../lib/errors';
 import type { Db } from '../db/db';
 import { getRepo } from '../db/repos';
 import { getSettings } from '../db/settings';

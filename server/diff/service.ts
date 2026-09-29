@@ -1,7 +1,7 @@
 import { promisify } from 'node:util';
 import { gunzip as gunzipCb, gzip as gzipCb } from 'node:zlib';
 import type { DiffCacheStats, Diff } from '../../shared/api';
-import { HttpError } from '../api/http';
+import { HttpError } from '../lib/errors';
 import type { Db } from '../db/db';
 import { repoKeySql, resolveRepo } from '../db/repo-key';
 import { getSettings } from '../db/settings';

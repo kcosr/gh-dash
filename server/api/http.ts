@@ -1,16 +1,9 @@
 import type { Context } from 'hono';
-import type { ContentfulStatusCode } from 'hono/utils/http-status';
-import type { z } from 'zod';
+import { HttpError } from '../lib/errors';
 
-export class HttpError extends Error {
-  readonly status: ContentfulStatusCode;
-  readonly details?: unknown;
-  constructor(status: ContentfulStatusCode, message: string, details?: unknown) {
-    super(message);
-    this.status = status;
-    this.details = details;
-  }
-}
+// HttpError and parseWith live in lib/errors.ts, where the services can reach them without HTTP; the routes and tests
+// keep importing them from here.
+export { HttpError, parseWith } from '../lib/errors';
 
 /** Public origin of the request, honouring a reverse proxy's forwarded headers. */
 export function origin(c: Context): string {
@@ -18,16 +11,6 @@ export function origin(c: Context): string {
   const proto = c.req.header('x-forwarded-proto') ?? url.protocol.replace(':', '');
   const host = c.req.header('x-forwarded-host') ?? c.req.header('host') ?? url.host;
   return `${proto}://${host}`;
-}
-
-function zodMessage(error: z.ZodError): string {
-  return error.issues.map((i) => (i.path.length ? `${i.path.join('.')}: ${i.message}` : i.message)).join('; ');
-}
-
-export function parseWith<S extends z.ZodType>(schema: S, input: unknown): z.infer<S> {
-  const r = schema.safeParse(input);
-  if (!r.success) throw new HttpError(400, zodMessage(r.error), r.error.issues);
-  return r.data;
 }
 
 /** Parses the JSON request body; an empty body is `{}`. */

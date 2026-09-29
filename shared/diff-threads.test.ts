@@ -85,17 +85,25 @@ describe('threads → viewer model', () => {
 describe('new threads', () => {
   it("shows a draft where its lines are now, from the revision and text it was started on", () => {
     const started = { path: 'a.ts', side: 'new' as const, startLine: 2, endLine: 3, commitOid: OLD, baseOid: null, snippet: 'one\ntwo' };
+    const all = () => true;
     // Same revision: at its lines.
-    expect(draftSpot({ ...started, commitOid: HEAD }, 'pr', createPlacer(diff))).toEqual({ at: 'line', side: 'new', startLine: 2, endLine: 3, relocated: false });
+    expect(draftSpot({ ...started, commitOid: HEAD }, 'pr', createPlacer(diff), all)).toEqual({ at: 'line', side: 'new', startLine: 2, endLine: 3, relocated: false });
     // A later push moved its lines down by one.
     const pushed = { ...diff, files: [{ path: 'a.ts', patch: PATCH.replace('@@ -1,5 +1,6 @@\n', '@@ -1,5 +1,7 @@\n+// pushed\n') }] };
-    expect(draftSpot(started, 'pr', createPlacer(pushed))).toEqual({ at: 'line', side: 'new', startLine: 3, endLine: 4, relocated: true });
+    expect(draftSpot(started, 'pr', createPlacer(pushed), all)).toEqual({ at: 'line', side: 'new', startLine: 3, endLine: 4, relocated: true });
     // Its lines changed: at the file's top.
-    expect(draftSpot({ ...started, snippet: 'gone\nnow' }, 'pr', createPlacer(diff))).toEqual({ at: 'file', why: 'outdated' });
+    expect(draftSpot({ ...started, snippet: 'gone\nnow' }, 'pr', createPlacer(diff), all)).toEqual({ at: 'file', why: 'outdated' });
     // Its file left the diff: nowhere.
-    expect(draftSpot({ ...started, path: 'c.ts' }, 'pr', createPlacer(diff))).toBeNull();
+    expect(draftSpot({ ...started, path: 'c.ts' }, 'pr', createPlacer(diff), all)).toBeNull();
     // A commit never changes.
-    expect(draftSpot({ ...started, snippet: 'gone\nnow' }, 'commit', createPlacer(diff))).toMatchObject({ at: 'line', startLine: 2, relocated: false });
+    expect(draftSpot({ ...started, snippet: 'gone\nnow' }, 'commit', createPlacer(diff), all)).toMatchObject({ at: 'line', startLine: 2, relocated: false });
+  });
+
+  it('puts a draft whose lines the diff no longer shows (expanded context, reloaded) at its file top', () => {
+    const onContext = { path: 'a.ts', side: 'new' as const, startLine: 40, endLine: 41, commitOid: HEAD, baseOid: null, snippet: 'a\nb' };
+    const shown = (side: 'old' | 'new', line: number) => side === 'new' && line <= 6;
+    expect(draftSpot(onContext, 'pr', createPlacer(diff), shown)).toEqual({ at: 'file', why: 'hidden' });
+    expect(draftSpot({ ...onContext, startLine: 5, endLine: 6, snippet: 'FOUR\nfive' }, 'pr', createPlacer(diff), shown)).toMatchObject({ at: 'line', startLine: 5 });
   });
 
   it('anchors a selection to one side, in order, even across sides of a unified view', () => {

@@ -356,7 +356,9 @@ export function DraftComposer() {
       <div className="dth-top">
         {at.at === 'line'
           ? <span>New comment · {lines} ({at.side}){at.relocated && <span className="dth-moved"> · moved since you started it</span>}</span>
-          : <span>New comment · was {lines} ({d.side}) <span className="dth-moved">· its lines changed since you started it</span></span>}
+          : at.why === 'outdated'
+            ? <span>New comment · was {lines} ({d.side}) <span className="dth-moved">· its lines changed since you started it</span></span>
+            : <span>New comment · {lines} ({d.side}) <span className="dth-moved">· not in the diff's context: expand it to see them</span></span>}
       </div>
       {at.at === 'file' && <pre className="dth-snippet">{d.snippet}</pre>}
       <Composer

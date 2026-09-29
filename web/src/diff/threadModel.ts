@@ -37,16 +37,27 @@ export interface DraftAnchor extends LineRange {
 
 /**
  * Where a draft's composer shows in the diff on screen: under its lines (`relocated` when a later push moved them),
- * or at its file's top when its lines changed since it was started. null when its file left the diff.
+ * or at its file's top: when its lines changed since it was started (`outdated`), or when the diff doesn't show them
+ * (`hidden`: expanded context, which a reload folds away again, and Pierre draws nothing on lines it doesn't show).
+ * null when its file left the diff.
  */
 export type DraftSpot =
   | { at: 'line'; side: CommentSide; startLine: number; endLine: number; relocated: boolean }
-  | { at: 'file'; why: 'outdated' }
+  | { at: 'file'; why: 'outdated' | 'hidden' }
   | null;
 
-export function draftSpot(d: DraftAnchor, kind: 'pr' | 'commit', place: (t: PlaceableThread) => ThreadPlacement): DraftSpot {
+/** `visible`: whether the diff on screen shows a line of the draft's file. */
+export function draftSpot(
+  d: DraftAnchor,
+  kind: 'pr' | 'commit',
+  place: (t: PlaceableThread) => ThreadPlacement,
+  visible: (side: CommentSide, line: number) => boolean,
+): DraftSpot {
   const p = place({ kind, commitOid: d.commitOid, baseOid: d.baseOid, path: d.path, side: d.side, startLine: d.startLine, endLine: d.endLine, snippet: d.snippet });
-  if (p.kind === 'line') return { at: 'line', side: p.side, startLine: p.startLine, endLine: p.endLine, relocated: p.relocated };
+  if (p.kind === 'line') {
+    if (!visible(p.side, p.endLine)) return { at: 'file', why: 'hidden' };
+    return { at: 'line', side: p.side, startLine: p.startLine, endLine: p.endLine, relocated: p.relocated };
+  }
   return p.kind === 'outdated' && p.reason === 'lines' ? { at: 'file', why: 'outdated' } : null;
 }
 

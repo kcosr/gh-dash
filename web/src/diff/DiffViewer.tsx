@@ -242,12 +242,21 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
   }), []);
   // The new thread being written survives a reload (with its text: drafts.ts), like the rest of the reader's place.
   // It shows where placement puts it in the diff on screen, which may have moved on since it was started.
+  // A draft opened on expanded context shows under its lines while the context stays expanded: Pierre keeps it for
+  // this revision until the viewer goes (a reload folds it away again).
+  const rev = `${diff.baseOid}..${diff.headOid}`;
   const [draft, setDraftState] = useState<DraftAnchor | null>(() => getDraftAnchor(comments.key));
-  const setDraft = useCallback((d: DraftAnchor | null) => {
+  const [draftOpenedAt, setDraftOpenedAt] = useState<string | null>(null);
+  const setDraft = useCallback((d: DraftAnchor | null, openedAt: string | null = null) => {
     setDraftState(d);
+    setDraftOpenedAt(openedAt);
     setDraftAnchor(comments.key, d);
   }, [comments.key]);
-  const spot = useMemo(() => (draft ? draftSpot(draft, diff.kind, createPlacer({ files: diffFiles, headOid, baseOid })) : null), [draft, diff.kind, diffFiles, headOid, baseOid]);
+  const spot = useMemo(() => {
+    if (!draft) return null;
+    const visible = (side: 'old' | 'new', line: number) => draftOpenedAt === rev || shown(draft.path, side, line);
+    return draftSpot(draft, diff.kind, createPlacer({ files: diffFiles, headOid, baseOid }), visible);
+  }, [draft, draftOpenedAt, rev, shown, diff.kind, diffFiles, headOid, baseOid]);
   const theme = useSyncExternalStore(subscribeTheme, readTheme);
   const [prefs, setPrefs] = useState(getDiffPrefs);
   const updatePrefs = useCallback((patch: Partial<DiffPrefs>) => setPrefs((p) => ({ ...p, ...patch })), []);
@@ -291,16 +300,15 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
     return item;
   }), [files, count, flips, isCollapsed, notes, draft, spot]);
 
+  // Full contents Pierre loaded, per path: a new thread on expanded context takes its snippet from them. Keyed on
+  // the revision, so a refreshed diff starts empty.
+  const contents = useMemo(() => new Map<string, { old: string[] | null; new: string[] | null }>(), [rev]);
   // Context expansion: Pierre asks for both sides of a partial (patch-only) diff on the first expand.
   // A failure leaves the hunks as they are and says so in the header. loadFile resolves null for
   // files the server can't serve (missing, binary, too large): those aren't asked for again. It
   // rejects on transient failures (network, rate limit), which the next click retries.
   // Both sets are keyed by revision and path: a refreshed diff (new head or merge base) asks again,
   // and a load still pending from the previous revision can't mark a file of the new one.
-  const rev = `${diff.baseOid}..${diff.headOid}`;
-  // Full contents Pierre loaded, per path: a new thread on expanded context takes its snippet from them. Keyed on
-  // the revision, so a refreshed diff starts empty.
-  const contents = useMemo(() => new Map<string, { old: string[] | null; new: string[] | null }>(), [rev]);
   const [failed, setFailed] = useState<ReadonlySet<string>>(new Set());
   const unavailable = useRef(new Set<string>());
   const loadDiffFiles = useCallback(async (fd: FileDiffMetadata): Promise<FileDiffLoadedFiles> => {
@@ -331,7 +339,7 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
     const lines = selectionAnchor(id, vf.file.patch, range);
     const snippet = draftSnippet(vf.file.patch, contents.get(id), lines);
     if (snippet === null) toast("Couldn't read these lines: expand the context around them and select them again", { error: true });
-    else setDraft({ ...lines, commitOid: diff.headOid, baseOid: diff.baseOid, snippet });
+    else setDraft({ ...lines, commitOid: diff.headOid, baseOid: diff.baseOid, snippet }, rev);
   };
   // A plain click's line is let go at once (while any selection stands, Pierre parks the "+" at its end instead of
   // following the pointer; an open composer keeps its own lines selected). It's remembered instead, marked on its

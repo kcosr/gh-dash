@@ -1,5 +1,6 @@
 import type {
   ActivityEvent,
+  CommentFilter,
   Commit,
   EventType,
   Facets,
@@ -107,10 +108,16 @@ const idList = (ids: number[]) => JSON.stringify(ids);
 export interface PrFilter {
   state: PrStateFilter;
   labels: string[] | null;
+  /** Only PRs with local comment threads (any, or unresolved ones). */
+  comments?: CommentFilter;
 }
 
 const PR_FROM = 'pull_requests p JOIN repos r ON r.id = p.repo_id';
-const PR_SELECT = `p.*, ${repoKeySql('r')} AS repo, r.source_id AS source_id`;
+// Threads are keyed by repo and number (not p.id), so they match the PR's current row.
+const PR_THREADS = 'FROM comment_threads t WHERE t.repo_id = p.repo_id AND t.pr_number = p.number';
+const PR_SELECT =
+  `p.*, ${repoKeySql('r')} AS repo, r.source_id AS source_id, ` +
+  `(SELECT count(*) ${PR_THREADS}) AS threads, (SELECT count(*) ${PR_THREADS} AND t.status = 'open') AS unresolved_threads`;
 
 function prWhere(ctx: QueryCtx, scope: Scope, f: PrFilter, ignoreRepos: boolean): Where {
   const w = new Where();
@@ -122,6 +129,7 @@ function prWhere(ctx: QueryCtx, scope: Scope, f: PrFilter, ignoreRepos: boolean)
       JSON.stringify(f.labels.map((l) => l.toLowerCase())),
     );
   }
+  if (f.comments) w.add(`EXISTS (SELECT 1 ${PR_THREADS}${f.comments === 'unresolved' ? " AND t.status = 'open'" : ''})`);
   addRange(w, 'p.activity_at', scope);
   addWho(w, scope.who, ctx, 'p.author_login');
   addText(w, scope.q, 'pull_requests', 'p', ['p.title', 'p.body']);

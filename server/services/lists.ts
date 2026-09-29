@@ -98,7 +98,7 @@ const wantsText = (q: PageParams) => q.format === 'md' || q.format === 'csv';
 
 export function queryPrs({ db, config }: QueryDeps, q: z.infer<typeof prQuerySchema>): ListReply<PrListResponse> {
   const { scope, ctx } = scopedQuery(db, config, q);
-  const filter = { state: q.state ?? 'all', labels: splitList(q.labels) };
+  const filter = { state: q.state ?? 'all', labels: splitList(q.labels), comments: q.comments };
   if (wantsText(q)) {
     const { items } = listPrs(db, ctx, scope, filter, null);
     return q.format === 'md'

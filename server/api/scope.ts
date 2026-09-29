@@ -28,6 +28,7 @@ export const pageSchema = z.object({
 export const prQuerySchema = scopeSchema.extend(pageSchema.shape).extend({
   state: z.enum(['open', 'merged', 'closed', 'all']).optional(),
   labels: z.string().optional(),
+  comments: z.enum(['any', 'unresolved']).optional(),
   group: z.enum(['day', 'week', 'month', 'repo']).optional(),
 });
 

@@ -32,6 +32,9 @@ export interface PrRow {
   labels: string;
   closing_issues: string;
   url: string;
+  /** Local comment threads, where the query counts them (PR lists and details, not activity events). */
+  threads?: number;
+  unresolved_threads?: number;
 }
 
 export interface CommitRow {
@@ -144,6 +147,7 @@ export function toPr(r: PrRow, isMe: IsMe): PullRequest {
     baseRef: r.base_ref,
     labels: JSON.parse(r.labels) as Label[],
     url: r.url,
+    ...(r.threads === undefined ? {} : { comments: { threads: r.threads, unresolved: r.unresolved_threads ?? 0 } }),
   };
 }
 

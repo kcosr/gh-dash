@@ -32,7 +32,7 @@ describe('diff URL state', () => {
   });
 
   it('never saves or carries what is open on top of a view', () => {
-    expect(OVERLAY_KEYS).toEqual(['pr', 'diff', 'file']);
+    expect(OVERLAY_KEYS).toEqual(['pr', 'diff', 'file', 'thread', 'only']);
     expect(canonicalQuery('?who=me&diff=kcosr/gh-dash%232&file=a.ts&pr=kcosr/gh-dash%232&range=7d')).toBe('range=7d&who=me');
     expect(canonicalQuery('?range=7d&who=me')).toBe(canonicalQuery('?who=me&range=7d&diff=x@abcdef1'));
     expect(parseUrlState(carrySearch('?repos=alice/app&diff=alice/app@abcdef1&file=a.ts'), 'activity')).toMatchObject({ repos: ['alice/app'], diff: null, file: null });

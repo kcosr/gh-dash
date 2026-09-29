@@ -1,5 +1,6 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { addManualRepo, seedDb } from '../test/seed';
+import { createThread, getPrincipal, SELF_PRINCIPAL_ID, setThreadStatus } from './comments';
 import type { Db } from './db';
 import { ftsQuery, loadQueryCtx, type QueryCtx, type Scope } from './filters';
 import { type CursorKey, getPrDetail, listActivity, listCommits, listIssues, listPrs, listStars } from './lists';
@@ -132,6 +133,45 @@ describe('repo keys', () => {
     expect(own('others').facets.byRepo).toEqual({ 'bob/app': 1 });
     expect(own('mine', ['app', 'bob/app']).items.map((p) => p.id)).toEqual(['alice/app#3', 'alice/app#2', 'alice/app#1']);
     expect(own('all').total).toBe(own('mine').total + own('others').total);
+  });
+});
+
+describe('PR comment threads', () => {
+  const own = seedDb();
+  const you = getPrincipal(own, SELF_PRINCIPAL_ID)!;
+  const repoId = (name: string) => own.get<{ id: number }>('SELECT id FROM repos WHERE name = ?', [name])!.id;
+  const general = { path: null, side: null, startLine: null, endLine: null, snippet: null };
+  const open = (repo: string, target: { kind: 'pr'; number: number } | { kind: 'commit'; oid: string }) =>
+    createThread(own, { repoId: repoId(repo), ...target }, { commitOid: 'a'.repeat(40), baseOid: null, anchor: general, body: 'x' }, you);
+  open('app', { kind: 'pr', number: 2 });
+  setThreadStatus(own, open('app', { kind: 'pr', number: 2 }).id, 'resolved');
+  setThreadStatus(own, open('app', { kind: 'pr', number: 3 }).id, 'resolved');
+  // Neither the same number in another repo nor a commit thread counts.
+  open('secret', { kind: 'pr', number: 2 });
+  open('app', { kind: 'commit', oid: 'a'.repeat(40) });
+  const ownCtx = loadQueryCtx(own);
+
+  it('counts them on list items and the detail', () => {
+    const counts = Object.fromEntries(listPrs(own, ownCtx, scope(), all, null).items.map((p) => [p.id, p.comments]));
+    expect(counts).toEqual({
+      'alice/secret#1': { threads: 0, unresolved: 0 },
+      'alice/app#3': { threads: 1, unresolved: 0 },
+      'alice/app#2': { threads: 2, unresolved: 1 },
+      'alice/app#1': { threads: 0, unresolved: 0 },
+    });
+    expect(getPrDetail(own, ownCtx, 'alice/app', 2)!.comments).toEqual({ threads: 2, unresolved: 1 });
+    // Activity events carry no counts.
+    const events = listActivity(own, ownCtx, scope(), ['pr'], null).items;
+    expect(events.some((e) => e.type === 'pr' && 'comments' in e.pr)).toBe(false);
+  });
+
+  it('filters to PRs with threads, or unresolved ones, in items, totals and facets', () => {
+    const any = listPrs(own, ownCtx, scope({ repos: ['app'] }), { ...all, comments: 'any' }, null);
+    expect(any.items.map((p) => p.id)).toEqual(['alice/app#3', 'alice/app#2']);
+    expect(any.total).toBe(2);
+    expect(any.facets.byRepo).toEqual({ 'alice/app': 2 });
+    const unresolved = listPrs(own, ownCtx, scope(), { ...all, comments: 'unresolved' }, null);
+    expect(unresolved.items.map((p) => p.id)).toEqual(['alice/app#2']);
   });
 });
 

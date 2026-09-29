@@ -303,6 +303,52 @@ function rewriteSavedViews(db: Db): void {
   }
 }
 
+// Local review comments (never sent to GitHub). Authors are principals: row 1 is the dashboard's own user; agents
+// writing through the API get rows of their own. Threads are keyed by repo and PR number or commit oid, not by
+// pull_requests.id: sync may delete and re-create a PR row (a transfer), and the user's comments must outlive that.
+// A thread's revision (commit_oid, base_oid) and snippet let a later revision of the PR's diff relocate it.
+// AUTOINCREMENT: ids end up in URLs, client caches and agents' hands, so a deleted one must never name something new.
+const COMMENTS = `
+CREATE TABLE principals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind TEXT NOT NULL CHECK (kind IN ('self', 'agent')),
+  name TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+INSERT INTO principals (id, kind, name, created_at) VALUES (1, 'self', 'You', strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));
+
+CREATE TABLE comment_threads (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo_id INTEGER NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  pr_number INTEGER,
+  commit_oid TEXT NOT NULL,
+  base_oid TEXT,
+  path TEXT,
+  side TEXT CHECK (side IN ('old', 'new')),
+  start_line INTEGER,
+  end_line INTEGER,
+  snippet TEXT,
+  status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'resolved')),
+  resolved_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  CHECK (side IS NULL OR path IS NOT NULL),
+  CHECK ((side IS NULL) = (start_line IS NULL) AND (side IS NULL) = (end_line IS NULL) AND (side IS NULL) = (snippet IS NULL)),
+  CHECK (start_line IS NULL OR (start_line >= 1 AND end_line >= start_line))
+);
+CREATE INDEX comment_threads_target ON comment_threads(repo_id, pr_number, commit_oid);
+
+CREATE TABLE comments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  thread_id INTEGER NOT NULL REFERENCES comment_threads(id) ON DELETE CASCADE,
+  author_id INTEGER NOT NULL REFERENCES principals(id),
+  body TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  edited_at TEXT
+);
+CREATE INDEX comments_thread ON comments(thread_id);
+`;
+
 // Repositories from several code hosts ("sources"): github.com is source 1, created here (for new databases too) and
 // never removed. Every repo belongs to a source and gets its public key as a column (`owner/name` on github.com,
 // `<host>/<full path>` elsewhere; see repo-key.ts). node_id stops being globally unique: GitLab ids like
@@ -408,7 +454,8 @@ const MIGRATIONS: Migration[] = [
   { name: 'commits-head', version: 3, destructive: false, sql: V3 },
   { name: 'pr-head-oid', version: 4, destructive: false, sql: V4 },
   { name: 'repos-v5', version: 5, destructive: true, rebuild: true, sql: REPOS_REBUILD, up: rewriteSavedViews },
-  { name: 'sources', version: 6, destructive: true, rebuild: true, sql: SOURCES, up: moveViewerMeta },
+  { name: 'comments', version: 6, destructive: false, sql: COMMENTS },
+  { name: 'sources', version: 7, destructive: true, rebuild: true, sql: SOURCES, up: moveViewerMeta },
 ];
 
 /** The schema version this build creates and understands. */

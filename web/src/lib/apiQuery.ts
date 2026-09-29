@@ -30,7 +30,7 @@ export function scopeParams(s: UrlState, opts: { q?: boolean } = {}): ScopeQuery
 
 /** The PR list as the UI fetches it. No `group`: grouping is client-side (it only shapes format=md). */
 export function prFetchParams(s: UrlState): PrQuery {
-  return { ...scopeParams(s), state: s.state };
+  return { ...scopeParams(s), state: s.state, comments: s.comments ?? undefined };
 }
 
 export function issueListParams(s: UrlState): IssueQuery & { state: 'open' | 'closed' | 'all' } {

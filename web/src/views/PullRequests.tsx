@@ -30,7 +30,8 @@ export function PullRequestsView() {
   const words = useWords();
   const w = words.pr;
   const prs = usePrList(prFetchParams(s));
-  const relOn = s.rel && (s.state === 'merged' || s.state === 'all');
+  // Releases have no comments: a comments filter shows PRs alone.
+  const relOn = s.rel && (s.state === 'merged' || s.state === 'all') && !s.comments;
   const rels = useReleases(releaseListParams(s), relOn);
 
   const groups = useMemo(() => {
@@ -142,6 +143,16 @@ export function PullRequestsView() {
             onClick={() => set({ rel: !s.rel })}
           >
             <Icon name="tag" />Releases
+          </button>
+          {/* Local review comments, one chip stepping through: all PRs → with comments → with unresolved ones. */}
+          <button
+            type="button"
+            className={`chip-toggle${s.comments ? ' on' : ''}`}
+            aria-pressed={!!s.comments}
+            title={s.comments === 'any' ? 'PRs with your comments · click for unresolved only' : s.comments === 'unresolved' ? 'PRs with unresolved comments · click for all PRs' : 'Only PRs with your comments'}
+            onClick={() => set({ comments: s.comments === null ? 'any' : s.comments === 'any' ? 'unresolved' : null })}
+          >
+            <Icon name="comment" />{s.comments === 'any' ? 'Commented' : s.comments === 'unresolved' ? 'Unresolved' : 'Comments'}
           </button>
           <span className="spacer" />
           <Ctl label="Group">

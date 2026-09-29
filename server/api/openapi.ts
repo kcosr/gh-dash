@@ -27,6 +27,26 @@ const SOURCE_TOKEN_SOURCE = enumOf('env', 'file', 'gh-cli', 'glab', 'app', 'none
 /** An instance setting with where it came from. */
 const setting = (value: Schema): Schema => obj({ value, source: enumOf('default', 'file', 'env') });
 
+/** A new thread's request body. A PR thread must name the head it was made on; a commit thread is on the commit. */
+function newThread(kind: 'pr' | 'commit'): Schema {
+  const anchor = ['baseOid', 'path', 'side', 'startLine', 'endLine', 'snippet'];
+  return {
+    ...obj({
+      commitOid: str(kind === 'pr' ? 'headOid of the diff shown (full SHA)' : "Optional; if sent, the commit's own full SHA"),
+      baseOid: nullable(str("The diff's baseOid")),
+      path: nullable(str()),
+      side: nullable(enumOf('old', 'new')),
+      startLine: nullable(int()),
+      endLine: nullable(int()),
+      snippet: nullable(str()),
+      body: str('Markdown, at most 65536 characters'),
+    }, kind === 'pr' ? anchor : ['commitOid', ...anchor]),
+    description:
+      'Anchor levels: no path (the whole PR or commit); path only (a file); or path, side, startLine, endLine and snippet ' +
+      '(lines, at most 1000, snippet holding exactly those lines).',
+  };
+}
+
 const schemas: Record<string, Schema> = {
   Error: obj({ error: str(), details: {} }, ['details']),
   Actor: obj({ login: nullable(str()), name: nullable(str()), avatarUrl: nullable(str()), isMe: bool }),
@@ -57,7 +77,8 @@ const schemas: Record<string, Schema> = {
     activityAt: { ...dateTime, description: 'mergedAt if merged, closedAt if closed, else createdAt' },
     additions: int(), deletions: int(), changedFiles: int(), commitCount: int(), headRef: str(), baseRef: str(),
     labels: arr(ref('Label')), url: str(),
-  }),
+    comments: { ...ref('CommentCounts'), description: 'Local comment threads (GET /prs and the PR detail; not on activity events)' },
+  }, ['comments']),
   PullRequestDetail: {
     allOf: [
       ref('PullRequest'),
@@ -308,6 +329,35 @@ const schemas: Record<string, Schema> = {
     bytes: int('Bytes used by cached diffs and file contents (compressed)'),
     maxBytes: int('Current cap (settings.diffCacheMb in bytes)'),
   }),
+  CommentCounts: obj({ threads: int(), unresolved: int('Threads still open') }),
+  Principal: obj({
+    id: int('1 is the dashboard user'),
+    kind: enumOf('self', 'agent'),
+    name: str(),
+  }),
+  ThreadComment: obj({
+    id: int(), author: ref('Principal'), body: str('Markdown'), createdAt: dateTime, editedAt: nullable(dateTime),
+  }),
+  CommentThread: obj({
+    id: int(),
+    kind: enumOf('pr', 'commit'),
+    repo: str(),
+    number: nullable(int('PR number; null for commits')),
+    commitOid: str('The revision the thread was made on: the diff\'s headOid then (PR head, or the commit)'),
+    baseOid: nullable(str("The diff's baseOid then (merge base or first parent)")),
+    path: nullable(str('File (DiffFile.path); null for a PR- or commit-level thread')),
+    side: nullable({ ...enumOf('old', 'new'), description: 'null for a file- or PR-level thread' }),
+    startLine: nullable(int('1-based, on side')),
+    endLine: nullable(int('Inclusive')),
+    snippet: nullable(str('The anchored lines as they were, joined with \\n (endLine - startLine + 1 lines)')),
+    status: enumOf('open', 'resolved'),
+    resolvedAt: nullable(dateTime),
+    createdAt: dateTime,
+    updatedAt: { ...dateTime, description: 'Last comment added, edited or deleted, or status change' },
+    comments: { ...arr(ref('ThreadComment')), description: 'Oldest first; never empty' },
+  }),
+  NewPrThread: newThread('pr'),
+  NewThread: newThread('commit'),
 };
 
 const list = (item: Schema, withFacets = false): Schema =>
@@ -361,8 +411,63 @@ export interface EndpointDoc {
   body?: { schema: Schema; example: unknown; optional?: boolean };
   /** `type`: the response content type when it isn't JSON. */
   response: { status: number; schema?: Schema; description?: string; type?: string };
-  textFormats?: boolean;
+  /** Also served as text: `true` for format=md and format=csv, 'md' for format=md only. */
+  textFormats?: true | 'md';
   example?: string;
+}
+
+/** Local review threads on diffs (never sent to GitHub). */
+function commentEndpoints(): EndpointDoc[] {
+  const tag = 'Comments';
+  const repo = p('repo', 'Repo name');
+  const format = q('format', "'md' returns the threads as text/markdown.", { ...enumOf('json', 'md'), default: 'json' });
+  const id = (what: string) => p('id', `${what} id`, int());
+  const threads = obj({ items: arr(ref('CommentThread')) });
+  const example = { commitOid: '0123456789abcdef0123456789abcdef01234567', path: 'src/app.ts', side: 'new', startLine: 12, endLine: 13, snippet: 'const a = 1;\nconst b = 2;', body: 'Why two?' };
+  return [
+    {
+      method: 'get', path: '/api/v1/prs/{repo}/{number}/threads', tag, summary: "A pull request's comment threads, with their comments",
+      description: 'Oldest first. Anchors are as made; the diff viewer places them in the current diff (outdated or moved).',
+      params: [repo, p('number', 'PR number', int()), format], response: { status: 200, schema: threads }, textFormats: 'md',
+    },
+    {
+      method: 'post', path: '/api/v1/prs/{repo}/{number}/threads', tag, summary: 'Start a thread on a pull request with its first comment',
+      description: 'The PR must be synced (404 otherwise). Rejected from other origins (403).',
+      params: [repo, p('number', 'PR number', int())], body: { schema: ref('NewPrThread'), example }, response: { status: 200, schema: ref('CommentThread') },
+    },
+    {
+      method: 'get', path: '/api/v1/commits/{repo}/{oid}/threads', tag, summary: "A commit's comment threads, with their comments",
+      params: [repo, p('oid', 'Full 40-character commit SHA'), format], response: { status: 200, schema: threads }, textFormats: 'md',
+    },
+    {
+      method: 'post', path: '/api/v1/commits/{repo}/{oid}/threads', tag, summary: 'Start a thread on a commit with its first comment',
+      description: 'The commit need not be synced.',
+      params: [repo, p('oid', 'Full 40-character commit SHA')], body: { schema: ref('NewThread'), example: { path: 'README.md', body: 'Typo in the intro' } },
+      response: { status: 200, schema: ref('CommentThread') },
+    },
+    { method: 'get', path: '/api/v1/threads/{id}', tag, summary: 'One thread', params: [id('Thread')], response: { status: 200, schema: ref('CommentThread') } },
+    {
+      method: 'patch', path: '/api/v1/threads/{id}', tag, summary: 'Resolve or reopen a thread',
+      params: [id('Thread')], body: { schema: obj({ status: enumOf('open', 'resolved') }), example: { status: 'resolved' } },
+      response: { status: 200, schema: ref('CommentThread') },
+    },
+    { method: 'delete', path: '/api/v1/threads/{id}', tag, summary: 'Delete a thread and its comments', params: [id('Thread')], response: { status: 204, description: 'Deleted' } },
+    {
+      method: 'post', path: '/api/v1/threads/{id}/comments', tag, summary: 'Reply to a thread (its status stays as it is)',
+      params: [id('Thread')], body: { schema: obj({ body: str('Markdown') }), example: { body: 'Fixed in the next push.' } },
+      response: { status: 200, schema: ref('CommentThread') },
+    },
+    {
+      method: 'patch', path: '/api/v1/comments/{id}', tag, summary: 'Edit a comment (your own only, else 403)',
+      params: [id('Comment')], body: { schema: obj({ body: str('Markdown') }), example: { body: 'Why two constants?' } },
+      response: { status: 200, schema: ref('CommentThread') },
+    },
+    {
+      method: 'delete', path: '/api/v1/comments/{id}', tag, summary: 'Delete a comment; deleting the first comment deletes its thread',
+      description: 'Returns the thread as it is now, or null when the thread went with its first comment.',
+      params: [id('Comment')], response: { status: 200, schema: obj({ thread: nullable(ref('CommentThread')) }) },
+    },
+  ];
 }
 
 export const ENDPOINTS: EndpointDoc[] = [
@@ -418,6 +523,7 @@ export const ENDPOINTS: EndpointDoc[] = [
       ...SCOPE,
       q('state', 'PR state.', { ...enumOf('open', 'merged', 'closed', 'all'), default: 'all' }, 'merged'),
       q('labels', 'Comma-separated; PR must have at least one (case-insensitive).'),
+      q('comments', 'Only PRs with local comment threads: any, or with at least one unresolved.', enumOf('any', 'unresolved')),
       q('group', 'Headings for format=md.', { ...enumOf('day', 'week', 'month', 'repo'), default: 'week' }),
       ...PAGE,
     ],
@@ -549,6 +655,7 @@ export const ENDPOINTS: EndpointDoc[] = [
   },
   { method: 'get', path: '/api/v1/diff-cache', tag: 'Diffs', summary: 'Diff cache size', response: { status: 200, schema: ref('DiffCacheStats') } },
   { method: 'delete', path: '/api/v1/diff-cache', tag: 'Diffs', summary: 'Empty the diff cache and release its disk space', response: { status: 200, schema: ref('DiffCacheStats') } },
+  ...commentEndpoints(),
   { method: 'get', path: '/api/v1/sync/status', tag: 'Sync', summary: 'Sync progress, last result, next run and rate limit', response: { status: 200, schema: ref('SyncStatus') } },
   {
     method: 'post', path: '/api/v1/sync', tag: 'Sync', summary: 'Start a sync now (409 if one is running)',
@@ -579,7 +686,8 @@ export function openApiDocument(version: string): Schema {
             description: 'OK',
             content: {
               [e.response.type ?? 'application/json']: { schema: e.response.schema },
-              ...(e.textFormats ? { 'text/markdown': { schema: str() }, 'text/csv': { schema: str() } } : {}),
+              ...(e.textFormats ? { 'text/markdown': { schema: str() } } : {}),
+              ...(e.textFormats === true ? { 'text/csv': { schema: str() } } : {}),
             },
           }
         : { description: e.response.description ?? 'OK' },

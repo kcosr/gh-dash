@@ -193,6 +193,19 @@ describe('migration to repo keys (repos rebuild)', () => {
     expect(foreignKeys(db)).toBe(1);
   });
 
+  it('rechecks under the write lock: a database another process created meanwhile is not rebuilt by a sync-off instance', () => {
+    const db = new Db(new DatabaseSync(':memory:'));
+    // This instance saw v0 (a new database); before it takes the write lock, another process creates the v4 schema.
+    const tx = db.tx.bind(db);
+    db.tx = <T>(fn: () => T): T => {
+      db.exec(V4_SQL);
+      db.exec('PRAGMA user_version = 4');
+      return tx(fn);
+    };
+    expect(() => migrate(db, false)).toThrow(/Database schema v4 needs destructive migration v\d+/);
+    expect(version(db)).toBe(4);
+  });
+
   it('refuses a database from a newer gh-dash', () => {
     const db = new Db(new DatabaseSync(':memory:'));
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION + 1}`);

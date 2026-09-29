@@ -332,18 +332,22 @@ function checkForeignKeys(db: Db, from: number, to: number): void {
   );
 }
 
+/** A new database (v0) has nothing to lose, so any instance may create it; an existing one needs a syncing instance. */
+function checkDestructive(version: number, pending: Migration[], allowDestructive: boolean): void {
+  const blocked = version > 0 && pending.find((m) => m.destructive && !allowDestructive);
+  if (blocked) {
+    throw new Error(
+      `Database schema v${version} needs destructive migration v${blocked.version}; start an instance without GH_DASH_SYNC=off once to upgrade it.`,
+    );
+  }
+}
+
 export function migrate(db: Db, allowDestructive: boolean): void {
   const current = userVersion(db);
   checkNotNewer(current);
   const pending = MIGRATIONS.filter((m) => m.version > current);
   if (pending.length === 0) return;
-  // A new database (v0) has nothing to lose, so any instance may create it.
-  const blocked = current > 0 && pending.find((m) => m.destructive && !allowDestructive);
-  if (blocked) {
-    throw new Error(
-      `Database schema v${current} needs destructive migration v${blocked.version}; start an instance without GH_DASH_SYNC=off once to upgrade it.`,
-    );
-  }
+  checkDestructive(current, pending, allowDestructive);
   // PRAGMA foreign_keys is a silent no-op inside a transaction, so it is switched off before BEGIN.
   const suspendFks = pending.some((m) => m.rebuild) && foreignKeysOn(db);
   if (suspendFks) db.exec('PRAGMA foreign_keys = OFF');
@@ -353,6 +357,8 @@ export function migrate(db: Db, allowDestructive: boolean): void {
       const now = userVersion(db);
       checkNotNewer(now);
       const batch = MIGRATIONS.filter((x) => x.version > now);
+      // Another process may have created the database meanwhile: the fresh-database exception holds only while it is still v0.
+      checkDestructive(now, batch, allowDestructive);
       const rebuild = batch.some((m) => m.rebuild);
       if (rebuild && foreignKeysOn(db)) {
         throw new Error('Cannot suspend foreign keys for a table rebuild: migrate() must not run inside a transaction.');

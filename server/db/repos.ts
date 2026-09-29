@@ -65,7 +65,13 @@ export function listRepos(db: Db, tz: string, now = Date.now(), onlyKey?: string
   const since30 = isoSec(now - 30 * DAY_MS);
   const merged = countBy(db, 'SELECT repo_id, count(*) AS n FROM pull_requests WHERE merged_at >= ? GROUP BY repo_id', [since30]);
   const commits = countBy(db, 'SELECT repo_id, count(*) AS n FROM commits WHERE committed_at >= ? GROUP BY repo_id', [since30]);
-  const stars = countBy(db, 'SELECT repo_id, count(*) AS n FROM stars WHERE starred_at >= ? GROUP BY repo_id', [since30]);
+  // Stars count for owned repos only (like activity and Insights): a manual repo can keep stars from when it was owned.
+  const stars = countBy(
+    db,
+    `SELECT s.repo_id, count(*) AS n FROM stars s JOIN repos r ON r.id = s.repo_id
+     WHERE s.starred_at >= ? AND r.tracked_by = 'owned' GROUP BY s.repo_id`,
+    [since30],
+  );
 
   const today = localDayNum(tz, now);
   const firstWeek = today - weekdayMon0(today) - (WEEKS - 1) * 7;

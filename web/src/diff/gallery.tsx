@@ -44,9 +44,6 @@ function writeParams(p: Params) {
   history.replaceState(null, '', `?${q}`);
 }
 
-/** Fixtures only carry the repo name; they all come from public repos of this owner. */
-const OWNER = 'kcosr';
-
 function Gallery() {
   const [p, setP] = useState(readParams);
   const [diff, setDiff] = useState<Diff | null>(null);
@@ -71,7 +68,7 @@ function Gallery() {
 
   const loadFile = useCallback(async (ref: string, path: string) => {
     if (p.load === 'none' || !diff) return null;
-    const res = await fetch(`https://raw.githubusercontent.com/${OWNER}/${diff.repo}/${ref}/${path.split('/').map(encodeURIComponent).join('/')}`);
+    const res = await fetch(`https://raw.githubusercontent.com/${diff.repo.split('/').map(encodeURIComponent).join('/')}/${ref}/${path.split('/').map(encodeURIComponent).join('/')}`);
     return res.ok ? res.text() : null;
   }, [diff, p.load]);
 

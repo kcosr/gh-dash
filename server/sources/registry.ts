@@ -72,9 +72,18 @@ export interface SourceRegistryOptions {
   seams?: Pick<CredentialOptions, 'platform' | 'exec' | 'fs' | 'now'> & { fetchImpl?: typeof fetch; sleep?: (ms: number) => Promise<void> };
 }
 
+/**
+ * Where this instance sends a source's requests: the configured URL for a source its config names, which is what the
+ * credentials are for. The row's URL is what another instance last configured (it may have recreated the row), and
+ * only stands in for a source not configured here, which never has a token.
+ */
+function reachedAt(row: SourceRow, config: SourceConfig | null): string {
+  return config ? config.baseUrl : row.baseUrl;
+}
+
 /** What a GitLab runtime was built from: a change rebuilds it (a provider can't be reconfigured in place). */
 function recipe(row: SourceRow, config: SourceConfig | null, glabPath: string | null): string {
-  return JSON.stringify({ baseUrl: row.baseUrl, config, glabPath: config ? glabPath : null });
+  return JSON.stringify({ baseUrl: reachedAt(row, config), config, glabPath: config ? glabPath : null });
 }
 
 /** "glab", "file", "GITLAB_TOKEN (locked)", "not chosen": how the source's token is found, without the token. */
@@ -291,7 +300,7 @@ export class SourceRegistry {
     this.runtimes.get(row.id)?.unsubscribe();
     const b = this.build(row, config, this.current.glabPath, recipe(row, config, this.current.glabPath));
     this.runtimes.set(row.id, b);
-    this.log(`[sources] ${b.runtime.label} ${config ? `at ${row.baseUrl} · ${describe(config, this.env)}` : 'is in the database but not configured on this server'}`);
+    this.log(`[sources] ${b.runtime.label} ${config ? `at ${config.baseUrl} · ${describe(config, this.env)}` : 'is in the database but not configured on this server'}`);
     return b.runtime;
   }
 
@@ -326,7 +335,8 @@ export class SourceRegistry {
     if (config && appToken) tokens.setAppToken(appToken);
     const db = this.db;
     const last = { row };
-    const baseUrl = row.baseUrl;
+    // The sync and diff clients carry the token: never to another URL than the one its credentials are configured for.
+    const baseUrl = reachedAt(row, config);
     const runtime: SourceRuntime = {
       id: row.id,
       kind: row.kind,

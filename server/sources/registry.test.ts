@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fakeExec, fakeFs } from '../test/credentials';
 import { fakeGitHub } from '../test/github';
-import { BASE, fakeGitLab, graphql, type Handler } from '../test/gitlab';
+import { BASE, fakeGitLab, graphql, type Handler, sha } from '../test/gitlab';
 import { fakeGraphQL } from '../test/graphql';
 import { testTokens } from '../test/tokens';
 import { type Db, openDb } from '../db/db';
@@ -183,6 +183,26 @@ describe('SourceRegistry', () => {
     // github.com's app token goes through its TokenProvider; unknown hosts are nobody's.
     expect(registry.setAppToken('github.com', PAT)).toBeNull();
     expect(registry.setAppToken('nowhere.example.com', PAT)).toBeNull();
+  });
+
+  it('sends a configured source its token at the configured URL only, whatever URL another instance stored', async () => {
+    const { db, registry, api } = setup({ env: { GITLAB_TOKEN: PAT } });
+    const [gl] = registry.apply({ glabPath: null, sources: [gitlab(HOST, { tokenEnv: 'GITLAB_TOKEN' })] });
+    // Another instance removes the source and adds it again at another scheme, port and relative root.
+    removeSource(db, gl!.id);
+    const other = 'http://gitlab.example.com:8080/other';
+    ensureSource(db, { kind: 'gitlab', host: HOST, baseUrl: other });
+    const found = registry.byHost(HOST)!;
+    expect(found).toMatchObject({ configured: true, config: { baseUrl: BASE } });
+    expect(found.row.baseUrl).toBe(other);
+
+    // Validation, a sync client and a diff client: every request with the token goes to the configured URL.
+    await found.tokens.check();
+    await found.syncSource(PAT).viewer().catch(() => null);
+    await (await found.diffs.get()).commit({ key: `${HOST}/alice/app`, owner: 'alice', name: 'app', path: 'alice/app' }, sha('a'), AbortSignal.timeout(5000)).catch(() => null);
+    const sent = api.calls.filter((c) => c.headers.Authorization === `Bearer ${PAT}`);
+    expect(sent.map((c) => c.url.pathname)).toEqual(['/gitlab/api/graphql', `/gitlab${SELF}`, '/gitlab/api/graphql', '/gitlab/api/graphql', '/gitlab/api/v4/projects/alice%2Fapp/repository/commits/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa']);
+    expect(api.calls.filter((c) => !c.url.href.startsWith(`${BASE}/`))).toEqual([]);
   });
 
   it("forgets a source's app token with the source: the host added again waits for a token of its own", async () => {

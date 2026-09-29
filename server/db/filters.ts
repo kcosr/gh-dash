@@ -2,6 +2,7 @@ import type { VisibilityFilter, Who } from '../../shared/api';
 import { isoSec } from '../lib/time';
 import type { Db, Param } from './db';
 import { getMeta } from './meta';
+import { REPO_IDS_FOR_KEYS } from './repo-key';
 import { getSettings } from './settings';
 
 /** Parsed, validated scope shared by every list/stats query. Times are UTC ms; `to` is exclusive. */
@@ -64,7 +65,7 @@ export function addRepoScope(w: Where, scope: Scope, ctx: QueryCtx, ignoreRepos 
   if (!ignoreRepos) {
     if (scope.repos === null) w.add(`r.is_archived = 0 AND r.hidden = 0${ctx.includeForks ? '' : ' AND r.is_fork = 0'}`);
     else if (scope.repos.length === 0) w.add('0');
-    else w.add('r.name IN (SELECT value FROM json_each(?))', JSON.stringify(scope.repos));
+    else w.add(`r.id IN ${REPO_IDS_FOR_KEYS}`, JSON.stringify(scope.repos));
   }
   if (scope.visibility !== 'all') w.add('r.visibility = ?', scope.visibility);
 }

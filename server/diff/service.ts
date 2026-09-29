@@ -3,6 +3,7 @@ import { gunzip as gunzipCb, gzip as gzipCb } from 'node:zlib';
 import type { DiffCacheStats, Diff } from '../../shared/api';
 import { HttpError } from '../api/http';
 import type { Db } from '../db/db';
+import { repoKeySql, resolveRepo } from '../db/repo-key';
 import { getSettings } from '../db/settings';
 import { SourceError } from '../provider/errors';
 import type { DiffRepo, DiffSource, PrRevision, ProviderKind } from '../provider/types';
@@ -125,7 +126,7 @@ export class DiffService {
   /** Applies the size cap and drops entries of removed repos (at startup, after inserts, when the cap changes). */
   evict(): void {
     this.safely('eviction', () => {
-      const repos = this.db.all<{ name: string }>('SELECT name FROM repos WHERE removed_at IS NULL').map((r) => r.name);
+      const repos = this.db.all<{ key: string }>(`SELECT ${repoKeySql('repos')} AS key FROM repos WHERE removed_at IS NULL`).map((r) => r.key);
       const removed = this.cache.evict(this.maxBytes(), repos);
       if (removed) this.log(`[diff] evicted ${removed} cache entries`);
     }, undefined);
@@ -155,13 +156,10 @@ export class DiffService {
 
   /** A tracked repository by its key: its row id (synced PRs and commits hang off it) and what sources are told. */
   private repo(key: string): { id: number; repo: DiffRepo } {
-    const row = this.db.get<DiffRepo & { id: number }>(
-      'SELECT id, name AS key, owner, name, name_with_owner AS path FROM repos WHERE name = ? AND removed_at IS NULL',
-      [key],
-    );
-    if (!row) throw new HttpError(404, 'Repository not found');
-    const { id, ...repo } = row;
-    return { id, repo };
+    const ref = resolveRepo(this.db, key);
+    if (!ref) throw new HttpError(404, 'Repository not found');
+    const { path } = this.db.get<{ path: string }>('SELECT name_with_owner AS path FROM repos WHERE id = ?', [ref.id])!;
+    return { id: ref.id, repo: { key: ref.key, owner: ref.owner, name: ref.name, path } };
   }
 
   /** Full SHA for an abbreviated one, from synced commits or cached commit diffs, when unambiguous. */

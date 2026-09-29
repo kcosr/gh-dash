@@ -211,12 +211,12 @@ const THREAD_STATUS_WORD: Record<ThreadStatusFilter, string> = { open: 'unresolv
 /**
  * GET /threads as text: a section per PR or commit, in the order the list first reaches it, holding that target's threads
  * as the per-target export renders them (`threadsMarkdown`, under the section's heading). A commit is `repo@abc1234`.
- * The heading names the filters in force: `# Comments · unresolved · commits · matching "retry"` (the kind unless all,
- * the text if any).
+ * The heading names the filters in force: `# Comments · unresolved · commits · by agents · waiting on you · matching
+ * "retry"` (the kind unless all, who opened them and waiting if asked, the text if any).
  */
 export function threadListMarkdown(
   items: readonly ThreadListItem[],
-  filter: { status: ThreadStatusFilter; kind: ThreadKindFilter; q: string | null },
+  filter: { status: ThreadStatusFilter; kind: ThreadKindFilter; q: string | null; by?: string | null; waiting?: boolean },
   kindOf: KindOf = GITHUB_ONLY,
 ): string {
   const kinds = items.map((t) => kindOf(t.repo));
@@ -224,6 +224,8 @@ export function threadListMarkdown(
     '# Comments',
     THREAD_STATUS_WORD[filter.status],
     ...(filter.kind === 'all' ? [] : [filter.kind === 'commit' ? 'commits' : mixedPrWords(kinds).many]),
+    ...(filter.by ? [`by ${escapeInline(filter.by)}`] : []),
+    ...(filter.waiting ? ['waiting on you'] : []),
     ...(filter.q ? [`matching "${escapeInline(filter.q.replace(/\s+/g, ' '))}"`] : []),
   ].join(' · ');
   if (items.length === 0) return `${heading}\n\n_No ${filter.status === 'all' ? '' : `${THREAD_STATUS_WORD[filter.status]} `}comments._\n`;

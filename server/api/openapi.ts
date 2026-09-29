@@ -475,6 +475,8 @@ function commentEndpoints(): EndpointDoc[] {
     q('status', "'open' (unresolved) by default; 'all' for both.", { ...enumOf('open', 'resolved', 'all'), default: 'open' }),
     q('kind', 'Threads on pull requests (merge requests), on commits, or both.', { ...enumOf('pr', 'commit', 'all'), default: 'all' }),
     q('sort', "By last activity (`updatedAt`): 'recent' newest first, 'oldest' the reverse. Ties by thread id in the same direction.", { ...enumOf('recent', 'oldest'), default: 'recent' }),
+    q('author', "Who opened the thread (its first comment's author): 'self' (you), 'agents' (any agent), or one agent's id (GET /agents; 400 for an id nobody has). Default: anyone.", str(), 'agents'),
+    q('waiting', "'you': open threads whose last comment isn't yours (someone is waiting on you).", enumOf('you')),
     ...SCOPE.filter((param) => ['repos', 'source', 'visibility', 'ownership'].includes(param.name)),
     q('q', 'Case-insensitive substring (ASCII) of any comment of the thread, or of its file path.', str(), 'typo'),
     PAGE[0]!,
@@ -486,7 +488,8 @@ function commentEndpoints(): EndpointDoc[] {
       method: 'get', path: '/api/v1/threads', tag, summary: 'Every comment thread in scope, across PRs and commits',
       description:
         'Scoped like the PR list (source, repos, visibility, ownership; removed repositories are hidden), but not by `who` or the date range: a thread stays open however old it is. ' +
-        '`who`, `from`, `to`, `range` and `tz` are accepted and ignored. Each thread carries its comments, and what it is on when that is synced.',
+        '`who`, `from`, `to`, `range` and `tz` are accepted and ignored. Each thread carries its comments, and what it is on when that is synced. ' +
+        '`counts` follow every filter but `status` (`author` and `waiting` included).',
       params: listParams, response: { status: 200, schema: threadList }, textFormats: 'md', example: 'status=open&kind=pr',
     },
     {

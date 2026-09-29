@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Link, useLocation } from 'react-router';
 import { isUnreachable } from '../api/client';
-import { useAccount, useStartSync, useSyncStatus, useWorkSources } from '../api/hooks';
+import { useAccount, useStartSync, useSyncStatus, useUnresolvedCount, useWorkSources } from '../api/hooks';
 import { PROVIDERS } from '../../../shared/provider';
 import type { PrWords } from '../../../shared/provider';
 import { getTheme, setTheme } from '../lib/storage';
@@ -11,6 +11,7 @@ import { fmtNum, fmtTime, relFuture, relLong } from '../lib/time';
 import { ALL, ctxOf, usePlaces, useSwitchContext, viewHref } from '../lib/contexts';
 import { GITHUB_HOST } from '../../../shared/api';
 import { firstTrouble, hostNames, sourceSettingsLink, troubleLabel } from '../lib/sources';
+import { tabCountParams } from '../lib/apiQuery';
 import { viewFromPath } from '../lib/urlState';
 import { useNow } from '../lib/util';
 import { MOD_K } from './bits';
@@ -24,8 +25,9 @@ import { useUI } from './ui';
 const NAV: { path: string; label: (w: PrWords) => string; icon: IconName; views: string[] }[] = [
   { path: '/prs', label: (w) => w.nav, icon: 'merge', views: ['prs'] },
   { path: '/issues', label: () => 'Issues', icon: 'issue', views: ['issues'] },
-  { path: '/activity', label: () => 'Activity', icon: 'pulse', views: ['activity'] },
+  { path: '/comments', label: () => 'Comments', icon: 'comment', views: ['comments'] },
   { path: '/repos', label: () => 'Repositories', icon: 'book', views: ['repos', 'repo'] },
+  { path: '/activity', label: () => 'Activity', icon: 'pulse', views: ['activity'] },
   { path: '/insights', label: () => 'Insights', icon: 'chart', views: ['insights'] },
 ];
 
@@ -124,6 +126,7 @@ export function TopBar({ theme, onToggleTheme, onOpenSidebar, sidebarOpen = fals
             <Link key={n.path} to={hrefTo(n.path)} className={on ? 'on' : undefined} aria-current={on ? 'page' : undefined}>
               <Icon name={n.icon} />
               {n.label(w)}
+              {n.path === '/comments' && <UnresolvedCount href={hrefTo(n.path)} />}
             </Link>
           );
         })}
@@ -144,6 +147,16 @@ export function TopBar({ theme, onToggleTheme, onOpenSidebar, sidebarOpen = fals
       </Link>
     </header>
   );
+}
+
+/**
+ * The Comments tab's quiet count: unresolved threads in the scope the tab leads to (`href`: the context and repo
+ * selection it opens with, the page's or, from Settings, the one remembered); none at 0.
+ */
+function UnresolvedCount({ href }: { href: string }) {
+  const { data: n } = useUnresolvedCount(tabCountParams(href));
+  if (!n) return null;
+  return <span className="n" title={`${n.toLocaleString()} unresolved`}>{n.toLocaleString()}<span className="sr-only"> unresolved</span></span>;
 }
 
 /**

@@ -57,8 +57,8 @@ export function ctxOf(search: string): Ctx {
 export const PLACES_KEY = 'gh-dash:places';
 
 /** The views with a tab in the top bar. Settings and a repo's page are not: they aren't remembered as views. */
-export type TabView = 'prs' | 'issues' | 'activity' | 'repos' | 'insights';
-const TAB_VIEWS: readonly TabView[] = ['prs', 'issues', 'activity', 'repos', 'insights'];
+export type TabView = 'prs' | 'comments' | 'issues' | 'activity' | 'repos' | 'insights';
+const TAB_VIEWS: readonly TabView[] = ['prs', 'comments', 'issues', 'activity', 'repos', 'insights'];
 
 /** The tab a path is (`/prs`, `/prs/`), else undefined: a repo's page (`/repos/<key>`), Settings, and unknown paths. */
 const tabOf = (pathname: string) => TAB_VIEWS.find((t) => pathname.replace(/\/+$/, '').toLowerCase() === `/${t}`);

@@ -27,7 +27,7 @@ export function RepoMapProvider({ children }: { children: ReactNode }) {
     const multi = sources.length > 1;
     return { sources, byHost, multi, current, badges: multi && !current };
   }, [sources, ctx]);
-  const pathname = view === 'prs' || view === 'issues' || view === 'repos' || view === 'activity' || view === 'insights' ? location.pathname : '/activity';
+  const pathname = view === 'prs' || view === 'comments' || view === 'issues' || view === 'repos' || view === 'activity' || view === 'insights' ? location.pathname : '/activity';
   const params = new URLSearchParams(location.search);
   for (const k of OVERLAY_KEYS) params.delete(k);
   const search = params.toString();

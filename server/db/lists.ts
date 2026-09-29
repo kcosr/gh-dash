@@ -119,6 +119,12 @@ const PR_SELECT =
   `p.*, ${repoKeySql('r')} AS repo, r.source_id AS source_id, ` +
   `(SELECT count(*) ${PR_THREADS}) AS threads, (SELECT count(*) ${PR_THREADS} AND t.status = 'open') AS unresolved_threads`;
 
+// Commit threads are keyed by repo and oid, with no PR number: a PR's own threads are not its commits'.
+const COMMIT_THREADS = 'FROM comment_threads t WHERE t.repo_id = c.repo_id AND t.pr_number IS NULL AND t.commit_oid = c.oid';
+export const COMMIT_SELECT =
+  `c.*, ${repoKeySql('r')} AS repo, r.source_id AS source_id, ` +
+  `(SELECT count(*) ${COMMIT_THREADS}) AS threads, (SELECT count(*) ${COMMIT_THREADS} AND t.status = 'open') AS unresolved_threads`;
+
 function prWhere(ctx: QueryCtx, scope: Scope, f: PrFilter, ignoreRepos: boolean): Where {
   const w = new Where();
   addRepoScope(w, scope, ctx, ignoreRepos);
@@ -182,7 +188,7 @@ export function listCommits(db: Db, ctx: QueryCtx, scope: Scope, page: Page): Li
   const isMe = isMeFn(ctx);
   const { rows, next, total } = runPaged<CommitRow>(db, {
     from: 'commits c JOIN repos r ON r.id = c.repo_id',
-    select: `c.*, ${repoKeySql('r')} AS repo, r.source_id AS source_id`,
+    select: COMMIT_SELECT,
     where: w,
     at: 'c.committed_at',
     keys: [repoKeySql('r'), 'c.oid'],
@@ -401,15 +407,16 @@ export function listActivity(
 function hydrateEvents(db: Db, ctx: QueryCtx, rows: EventRow[]): ActivityEvent[] {
   const isMe = isMeFn(ctx);
   const ids = (type: EventType) => idList([...new Set(rows.filter((r) => r.type === type).map((r) => r.eid))]);
-  const load = <R extends { id: number }, T>(type: EventType, table: string, alias: string, map: (row: R) => T) => {
+  // `select` defaults to the entity and its repo; PRs and commits add their local comment counts (only the page's rows).
+  const load = <R extends { id: number }, T>(type: EventType, table: string, alias: string, map: (row: R) => T, select = `${alias}.*, ${repoKeySql('r')} AS repo, r.source_id AS source_id`) => {
     const out = new Map<number, T>();
     if (!rows.some((r) => r.type === type)) return out;
-    const sql = `SELECT ${alias}.*, ${repoKeySql('r')} AS repo, r.source_id AS source_id FROM ${table} ${alias} JOIN repos r ON r.id = ${alias}.repo_id WHERE ${alias}.id IN (SELECT value FROM json_each(?))`;
+    const sql = `SELECT ${select} FROM ${table} ${alias} JOIN repos r ON r.id = ${alias}.repo_id WHERE ${alias}.id IN (SELECT value FROM json_each(?))`;
     for (const row of db.all<R>(sql, [ids(type)])) out.set(row.id, map(row));
     return out;
   };
-  const commits = load<CommitRow, Commit>('commit', 'commits', 'c', (r) => toCommit(r, isMe));
-  const prs = load<PrRow, PullRequest>('pr', 'pull_requests', 'p', (r) => toPr(r, isMe));
+  const commits = load<CommitRow, Commit>('commit', 'commits', 'c', (r) => toCommit(r, isMe), COMMIT_SELECT);
+  const prs = load<PrRow, PullRequest>('pr', 'pull_requests', 'p', (r) => toPr(r, isMe), PR_SELECT);
   const issues = load<IssueRow, Issue>('issue', 'issues', 'i', (r) => toIssue(r, isMe));
   const releases = load<ReleaseRow, Release>('release', 'releases', 'rel', (r) => toRelease(r, isMe));
   const stars = load<StarRow, Star>('star', 'stars', 's', toStar);

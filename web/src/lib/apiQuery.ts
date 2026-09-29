@@ -3,23 +3,31 @@
  * "Copy API URL", so what you see is exactly what the API link returns.
  */
 import { EVENT_TYPES } from '../../../shared/api';
-import type { ActivityQuery, IssueQuery, PrQuery, RepoQuery, ScopeQuery, StatsQuery } from '../../../shared/api';
+import type { ActivityQuery, IssueQuery, PrQuery, RepoQuery, ScopeQuery, StatsQuery, ThreadListQuery } from '../../../shared/api';
 import { apiUrl } from '../api/client';
 import type { Endpoint } from '../api/client';
 import { resolveRange } from './range';
 import { browserTz } from './time';
+import { parseUrlState } from './urlState';
 import type { UrlState, ViewName } from './urlState';
 
 /** Earliest date we ever ask for when "all time" is meant (e.g. open PRs). */
 export const ALL_TIME_FROM = '2008-01-01';
 
-export function scopeParams(s: UrlState, opts: { q?: boolean } = {}): ScopeQuery {
-  const r = resolveRange(s.range, s.from, s.to);
+/** Which repos: the context, the selection, visibility and ownership. */
+function repoScope(s: Pick<UrlState, 'source' | 'repos' | 'vis' | 'own'>): Pick<ScopeQuery, 'source' | 'repos' | 'visibility' | 'ownership'> {
   return {
     source: s.source ?? undefined,
     repos: s.repos === null ? undefined : s.repos.join(','),
     visibility: s.vis === 'all' ? undefined : s.vis,
     ownership: s.own === 'all' ? undefined : s.own,
+  };
+}
+
+export function scopeParams(s: UrlState, opts: { q?: boolean } = {}): ScopeQuery {
+  const r = resolveRange(s.range, s.from, s.to);
+  return {
+    ...repoScope(s),
     who: s.who,
     from: r.from,
     to: r.to,
@@ -44,6 +52,31 @@ export function repoListParams(s: UrlState): RepoQuery {
 /** The PR list as exported / shown in the API tab (`group` sets the Markdown headings). */
 export function prListParams(s: UrlState): PrQuery {
   return { ...prFetchParams(s), group: s.group };
+}
+
+/**
+ * The Comments list as the UI fetches it and the export shows it: the repo scope, search and filters, without `who` or
+ * the date range (a thread stays open however old it is). File order is the client's (within the newest-first list).
+ */
+export function threadListParams(s: UrlState): ThreadListQuery {
+  return {
+    ...repoScope(s),
+    q: s.q || undefined,
+    status: s.status,
+    kind: s.kind === 'all' ? undefined : s.kind,
+    sort: s.threadSort === 'oldest' ? 'oldest' : undefined,
+  };
+}
+
+/** The Comments tab's count: unresolved threads in the list's scope (not its filters). */
+export function threadCountParams(s: Pick<UrlState, 'source' | 'repos' | 'vis' | 'own'>): ThreadListQuery {
+  return { ...repoScope(s), status: 'open', limit: 1 };
+}
+
+/** The count for where the Comments tab leads (`href`, from viewHref): the scope the list opens with. */
+export function tabCountParams(href: string): ThreadListQuery {
+  const i = href.indexOf('?');
+  return threadCountParams(parseUrlState(i < 0 ? '' : href.slice(i), 'comments'));
 }
 
 export function releaseListParams(s: UrlState): ScopeQuery {
@@ -73,6 +106,8 @@ export interface ExportTarget {
   params: Record<string, string | number | undefined>;
   /** Whether the endpoint supports format=md. */
   md: boolean;
+  /** An endpoint with Markdown that has no CSV. */
+  csv?: false;
   label: string;
 }
 
@@ -91,6 +126,8 @@ export function exportTarget(view: ViewName, s: UrlState, repoKey?: string): Exp
       return { endpoint: 'repos', params: { ...repoListParams(s) }, md: false, label: 'repositories' };
     case 'settings':
       return { endpoint: 'settings', params: {}, md: false, label: 'settings' };
+    case 'comments':
+      return { endpoint: 'threads', params: { ...threadListParams(s) }, md: true, csv: false, label: 'comments' };
     case 'prs':
     default:
       return { endpoint: 'prs', params: { ...prListParams(s) }, md: true, label: 'pull requests' };

@@ -9,6 +9,7 @@ import { Avatar, AvatarStack } from '../components/Avatar';
 import { prIconName } from '../components/bits';
 import { DateRangeButton } from '../components/DateRange';
 import { EmptyState, ErrorNote, ProgressBar } from '../components/EmptyState';
+import { CommentBadge } from '../components/PrRow';
 import { FilterToolbar } from '../components/FilterToolbar';
 import { Icon } from '../components/Icon';
 import type { IconName } from '../components/Icon';
@@ -323,6 +324,7 @@ const FeedItem = memo(function FeedItem({ row, expanded, onExpand, onOpenPr, onO
           <div key={c.oid} className="c-li">
             {diffLink(row.repo, c, 'sha', c.shortOid || c.oid.slice(0, 7))}
             <span title={c.body ? `${c.headline}\n\n${c.body}` : c.headline}>{c.headline}</span>
+            <CommentBadge c={c.comments} />
             <time dateTime={c.committedAt} title={fmtDateTime(c.committedAt)}>{fmtTime(c.committedAt)}</time>
           </div>
         ))}
@@ -352,6 +354,7 @@ const FeedItem = memo(function FeedItem({ row, expanded, onExpand, onOpenPr, onO
           <Who actor={e.actor} /> {e.kind}{' '}
           <a className={`t${active ? ' on' : ''}`} href={p.url} onClick={(ev) => { ev.preventDefault(); onOpenPr(p.id); }}>{p.title}</a>
           <span className="num"><RepoChip repo={p.repo} className="repo-ref" />{providerOf(p.repo).prRef}{p.number}</span>
+          <CommentBadge c={p.comments} />
         </>
       );
       if (e.kind === 'merged' && p.body.trim()) sub = <p className="ev-desc">{plainPreview(p.body)}</p>;
@@ -379,7 +382,7 @@ const FeedItem = memo(function FeedItem({ row, expanded, onExpand, onOpenPr, onO
     } else if (e.type === 'commit') {
       // (normally aggregated; kept for completeness)
       cls = 'commit'; icon = 'commit';
-      text = <><Who actor={e.actor} /> pushed {diffLink(e.repo, e.commit, 't', e.commit.headline)} to {repo(e.repo)}</>;
+      text = <><Who actor={e.actor} /> pushed {diffLink(e.repo, e.commit, 't', e.commit.headline)} to {repo(e.repo)}<CommentBadge c={e.commit.comments} /></>;
     } else {
       cls = 'star'; icon = 'starFill';
       text = <><Avatar actor={e.actor} size={18} /><b>{actorName(e.actor)}</b> starred {repo(e.repo)}</>;

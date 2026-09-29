@@ -1,12 +1,12 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import type { CommentThread, PullRequest, PullRequestDetail } from '../../../shared/api';
+import type { PullRequest, PullRequestDetail } from '../../../shared/api';
 import { capitalize, refText } from '../../../shared/provider';
 import { findCachedPr, splitPrId, usePrDetail, useThreads } from '../api/hooks';
 import { hasBlockingLayer, isTypingTarget, useLayer } from '../lib/layers';
-import { plainPreview } from '../lib/markdown';
 import { dur, fmtDate, fmtDateTime, plural, rel } from '../lib/time';
+import { sortThreads } from '../lib/threadList';
 import { commitDiffId, useUrlState } from '../lib/urlState';
 import { actorName, actorSubject, copyText, isPlainClick } from '../lib/util';
 import { Avatar } from './Avatar';
@@ -16,11 +16,8 @@ import { Labels } from './Label';
 import { Markdown } from './Markdown';
 import { RepoChip } from './RepoChip';
 import { useProviderOf, useRepoLabel } from './repoMapContext';
+import { ThreadRow } from './ThreadRow';
 import { useToast } from './Toasts';
-
-/** Threads in reading order without a diff at hand: general first, then by path and line. */
-const sortThreads = (list: CommentThread[]) =>
-  [...list].sort((a, b) => (a.path ?? '').localeCompare(b.path ?? '') || (a.startLine ?? 0) - (b.startLine ?? 0) || a.id - b.id);
 
 /**
  * PR details: a right column on desktop, the content pane on narrow screens. `resize` is the
@@ -147,20 +144,7 @@ export function PrDrawer({ id, compact, resize }: { id: string; compact: boolean
       {!!threads.data?.length && (
         <section className="dr-sec">
           <h3>Comments <span className="n">{threads.data.length}</span></h3>
-          {sortThreads(threads.data).map((t) => {
-            const first = t.comments[0]!;
-            const lines = t.startLine === null ? '' : `:${t.startLine === t.endLine ? t.startLine : `${t.startLine}–${t.endLine}`}`;
-            const name = t.path === null ? 'General' : t.path.slice(t.path.lastIndexOf('/') + 1);
-            return (
-              <button key={t.id} type="button" className={`th-li${t.status === 'resolved' ? ' resolved' : ''}`} onClick={() => openDiff(id, t.id)}
-                title={`${t.path ?? 'General'}${lines}${t.status === 'resolved' ? ' · resolved' : ''} · open the diff at this thread`}>
-                <Icon name={t.status === 'resolved' ? 'check' : 'comment'} />
-                <span className="th-where"><span className="name">{name}</span>{lines && <span className="ln">{lines}</span>}</span>
-                <span className="th-text">{plainPreview(first.body, 140)}</span>
-                {t.comments.length > 1 && <span className="th-n" title={`${t.comments.length - 1} ${plural(t.comments.length - 1, 'reply', 'replies')}`}>+{t.comments.length - 1}</span>}
-              </button>
-            );
-          })}
+          {sortThreads(threads.data).map((t) => <ThreadRow key={t.id} thread={t} onOpen={() => openDiff(id, t.id)} />)}
         </section>
       )}
 

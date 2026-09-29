@@ -288,6 +288,11 @@ describe('places', () => {
       expect(viewHref(remembered, GL, '/issues', '/prs', `?source=${GL}&who=everyone`)).toBe(`/issues?source=${GL}&who=everyone&state=closed`);
     });
 
+    it('remembers the Comments view too, its thread settings and the diff apart', () => {
+      const seen = at(['/comments', '?status=all&kind=commit&group=none&sort=file&diff=a/b%401234567&thread=3']);
+      expect(viewHref(seen, ALL, '/comments', '/prs', '?range=30d')).toBe('/comments?range=30d&status=all&kind=commit&group=none&sort=file');
+    });
+
     it('lets the page\'s scope win, a param it lacks included', () => {
       // Remembered: range=7d and who=me. The page has neither, so the view doesn't either.
       expect(viewHref(remembered, ALL, '/activity', '/prs', '?state=all')).toBe('/activity?types=push');

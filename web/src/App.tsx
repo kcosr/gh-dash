@@ -36,6 +36,7 @@ import { PullRequestsView } from './views/PullRequests';
 // browser is idle after the first render, so navigating to them is instant. Route changes run in
 // a transition, so while a chunk is still loading the current view stays on screen (no flash).
 const loaders = {
+  comments: () => import('./views/Comments'),
   issues: () => import('./views/Issues'),
   activity: () => import('./views/Activity'),
   repos: () => import('./views/Repositories'),
@@ -43,6 +44,7 @@ const loaders = {
   insights: () => import('./views/Insights'),
   settings: () => import('./views/Settings'),
 };
+const CommentsView = lazy(() => loaders.comments().then((m) => ({ default: m.CommentsView })));
 const IssuesView = lazy(() => loaders.issues().then((m) => ({ default: m.IssuesView })));
 const ActivityView = lazy(() => loaders.activity().then((m) => ({ default: m.ActivityView })));
 const RepositoriesView = lazy(() => loaders.repos().then((m) => ({ default: m.RepositoriesView })));
@@ -171,7 +173,7 @@ function Shell() {
   const name = repoKey && repoLabel(repoKey, repos.data ?? []);
   const prsTitle = capitalize(useWords().pr.many);
   useEffect(() => {
-    const t = { prs: prsTitle, issues: 'Issues', activity: 'Activity', repos: 'Repositories', repo: name || 'Repository', insights: 'Insights', settings: 'Settings' }[view];
+    const t = { prs: prsTitle, comments: 'Comments', issues: 'Issues', activity: 'Activity', repos: 'Repositories', repo: name || 'Repository', insights: 'Insights', settings: 'Settings' }[view];
     document.title = `${t} · gh-dash`;
   }, [view, name, prsTitle]);
 
@@ -320,6 +322,7 @@ const router = createBrowserRouter([
     children: [
       { index: true, element: <RedirectHome /> },
       { path: 'prs', element: <PullRequestsView /> },
+      { path: 'comments', element: <CommentsView /> },
       { path: 'issues', element: <IssuesView /> },
       { path: 'activity', element: <ActivityView /> },
       { path: 'repos', element: <RepositoriesView /> },

@@ -32,6 +32,8 @@ import type {
   StatsQuery,
   StatsResponse,
   SyncStatus,
+  ThreadListQuery,
+  ThreadListResponse,
 } from '../../../shared/api';
 
 export class ApiError extends Error {
@@ -86,7 +88,7 @@ export function toQueryString(params: Params = {}): string {
   return parts.join('&');
 }
 
-export type Endpoint = 'prs' | 'activity' | 'stats' | 'releases' | 'repos' | 'commits' | 'issues' | 'stars' | 'settings' | 'sync/status';
+export type Endpoint = 'prs' | 'activity' | 'stats' | 'releases' | 'repos' | 'commits' | 'issues' | 'stars' | 'threads' | 'settings' | 'sync/status';
 
 /** "/api/v1/prs?repos=a,b&who=me…" */
 export function apiUrl(endpoint: Endpoint | string, params?: Params): string {
@@ -216,6 +218,8 @@ export const api = {
   deleteThread: (threadId: number) => request<void>('DELETE', `/api/v1/threads/${threadId}`),
   editComment: (commentId: number, body: string) => request<CommentThread>('PATCH', `/api/v1/comments/${commentId}`, { body }),
   deleteComment: (commentId: number) => request<{ thread: CommentThread | null }>('DELETE', `/api/v1/comments/${commentId}`),
+  /** Every thread in scope, across PRs and commits (the Comments list). */
+  threadList: (q: ThreadListQuery) => get<ThreadListResponse>(apiUrl('threads', { ...q })),
 
   settings: () => get<Settings>('/api/v1/settings'),
   patchSettings: (body: Partial<Settings>) => request<Settings>('PATCH', '/api/v1/settings', body),

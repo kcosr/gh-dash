@@ -98,7 +98,7 @@ export function ExportModal({ initialTab, onClose }: { initialTab: ExportTab; on
           <span className="muted">
             {tab === 'md'
               ? <>Same output as <code>?format=md</code> on the API. Paste into notes or a status update.</>
-              : <>Every filter in the UI maps to a query parameter. Formats: JSON{target.md && <>, <code>md</code>, <code>csv</code></>}.{docsUrl && <> <a href={docsUrl} target="_blank" rel="noopener noreferrer">API docs</a></>}</>}
+              : <>Every filter in the UI maps to a query parameter. Formats: JSON{target.md && <>, <code>md</code>{target.csv !== false && <>, <code>csv</code></>}</>}.{docsUrl && <> <a href={docsUrl} target="_blank" rel="noopener noreferrer">API docs</a></>}</>}
           </span>
           <span className="spacer" />
           <button type="button" className="btn primary" onClick={copy} disabled={tab === 'md' ? md.data === undefined : !base}

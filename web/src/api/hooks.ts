@@ -22,6 +22,8 @@ import type {
   Source,
   StatsQuery,
   SyncStatus,
+  ThreadListQuery,
+  ThreadListResponse,
 } from '../../../shared/api';
 import { GITHUB_HOST } from '../../../shared/api';
 import { ApiError, api, isClientError, isUnreachable } from './client';
@@ -55,6 +57,8 @@ export const qk = {
   diff: (id: string) => ['diff', id] as const,
   /** A PR's ("<repo>#<n>") or a commit's ("<repo>@<full oid>") comment threads. */
   threads: (id: string) => ['threads', id] as const,
+  /** GET /threads: the Comments list, and the tab's count (a synced PR's title and state come with each thread). */
+  threadList: (q: ThreadListQuery) => ['thread-list', q] as const,
   blob: (repo: string, ref: string, path: string) => ['blob', repo, ref, path] as const,
   diffCache: ['diff-cache'] as const,
   /** The Add dialog's lists and access checks: read from GitHub, never refetched by a sync. */
@@ -75,7 +79,7 @@ export const refetchAfterSync = (q: Query) =>
  * Queries whose answers follow the default selection: every list or stats request without an explicit `repos=`
  * (the views, the palette's PR search, the export previews). Hiding or showing a repo changes them.
  */
-const SELECTION_QUERIES = ['prs', 'issues', 'activity', 'releases', 'commits', 'stars', 'stats', 'palette-prs', 'export-md', 'export-sample'];
+const SELECTION_QUERIES = ['prs', 'issues', 'activity', 'releases', 'commits', 'stars', 'stats', 'thread-list', 'palette-prs', 'export-md', 'export-sample'];
 export const followsDefaultSelection = (q: Query) => SELECTION_QUERIES.includes(q.queryKey[0] as string);
 
 // ---------------------------------------------------------------- reference data
@@ -281,6 +285,33 @@ export function useReleases(q: ScopeQuery, enabled = true) {
   return useQuery({ queryKey: qk.releases(params), queryFn: () => api.releases(params), placeholderData: keepPreviousData, enabled: enabled && ready });
 }
 
+/** Threads in scope are few (a person's own review comments): the list fetches up to 1000 and groups them itself. */
+export const THREAD_LIMIT = 1000;
+
+/** GET /threads as the Comments list asks for it: its query key and function (up to THREAD_LIMIT threads). */
+export function threadListQuery(q: ThreadListQuery) {
+  const params = { ...q, limit: q.limit ?? THREAD_LIMIT };
+  return { queryKey: qk.threadList(params), queryFn: () => api.threadList(params) };
+}
+
+export function useThreadList(q: ThreadListQuery) {
+  const ready = useSourceReady(q.source);
+  return useQuery({ ...threadListQuery(q), placeholderData: keepPreviousData, enabled: ready });
+}
+
+/** The Comments tab's count: unresolved threads in scope (threadCountParams). Quietly absent when it can't be had. */
+export function useUnresolvedCount(q: ThreadListQuery) {
+  const ready = useSourceReady(q.source);
+  return useQuery({
+    queryKey: qk.threadList(q),
+    queryFn: () => api.threadList(q),
+    select: (d) => d.counts.open,
+    placeholderData: keepPreviousData,
+    enabled: ready,
+    retry: (count, err) => count < 1 && !isClientError(err),
+  });
+}
+
 export function useIssueList(q: IssueQuery) {
   const params = { ...q, limit: 100 };
   const ready = useSourceReady(q.source);
@@ -451,41 +482,62 @@ export function useThreads(id: string | null) {
 }
 
 /**
- * Everything that changes a target's threads. Each answer updates the list in place, and PR counts are refetched (and
- * repos' comment counts, which the Remove confirmation quotes, when comments come or go). A list fetch still in flight may have read the threads before the change and would answer with them after it, undoing
- * it on screen: it is cancelled before the answer goes in, and the list is fetched again afterwards to settle.
+ * Everything that changes a target's threads. Each answer updates the list in place, and the Comments list (with the
+ * tab's count) and PR counts are refetched; so are repos' comment counts (the Remove confirmation quotes them) when
+ * comments come or go, and the Activity feed's per-PR and per-commit counts when a thread comes or goes or changes
+ * status. A list fetch still in flight may have read the threads before the change and would answer with them after
+ * it, undoing it on screen: it is cancelled before the answer goes in, and the list is fetched again afterwards to
+ * settle. A target whose threads aren't loaded (a change made from the Comments list) gets no partial list: they are
+ * fetched whole when it opens.
  */
+/**
+ * A thread's new status, at once, in every cached Comments list that has it (the row changes before the refetch lands).
+ * Writing marks a list fresh, and a list not on screen (another status filter) would then be shown as it was, without
+ * the thread it has gained or lost, until it went stale again: every list is marked stale again after, without a fetch
+ * (threadActions has already refetched those on screen).
+ */
+export function patchThreadLists(qc: QueryClient, thread: CommentThread): void {
+  qc.setQueriesData<ThreadListResponse>({ queryKey: ['thread-list'] }, (d) =>
+    d && { ...d, items: d.items.map((x) => (x.id === thread.id ? { ...x, ...thread } : x)) });
+  void qc.invalidateQueries({ queryKey: ['thread-list'], refetchType: 'none' });
+}
+
 export function threadActions(qc: QueryClient, id: string) {
   const t = parseDiffId(id);
   const key = qk.threads(id);
   const put = (thread: CommentThread) => {
-    qc.setQueryData<CommentThread[]>(key, (list = []) =>
-      list.some((x) => x.id === thread.id) ? list.map((x) => (x.id === thread.id ? thread : x)) : [...list, thread]);
+    qc.setQueryData<CommentThread[]>(key, (list) =>
+      list && (list.some((x) => x.id === thread.id) ? list.map((x) => (x.id === thread.id ? thread : x)) : [...list, thread]));
   };
-  const drop = (threadId: number) => qc.setQueryData<CommentThread[]>(key, (list = []) => list.filter((x) => x.id !== threadId));
+  const drop = (threadId: number) => qc.setQueryData<CommentThread[]>(key, (list) => list?.filter((x) => x.id !== threadId));
   const counts = () => {
+    void qc.invalidateQueries({ queryKey: ['thread-list'] });
     if (t?.kind !== 'pr') return;
     void qc.invalidateQueries({ queryKey: ['prs'] });
     void qc.invalidateQueries({ queryKey: qk.pr(t.repo, t.number) });
   };
-  const done = async <T,>(p: Promise<T>, apply: (v: T) => void, commentsChanged = false) => {
+  /** `comments`: comments came or went. `threads`: a thread came or went, or its status changed (by the answer). */
+  const done = async <T,>(p: Promise<T>, apply: (v: T) => void, change: { comments?: boolean; threads?: (v: T) => boolean } = {}) => {
     const v = await p;
     await qc.cancelQueries({ queryKey: key });
     apply(v);
     void qc.invalidateQueries({ queryKey: key });
     counts();
-    if (commentsChanged) void qc.invalidateQueries({ queryKey: qk.repos });
+    if (change.comments) void qc.invalidateQueries({ queryKey: qk.repos });
+    if (change.threads?.(v)) void qc.invalidateQueries({ queryKey: ['activity'] });
     return v;
   };
+  const always = () => true;
   return {
     create: (body: NewPrThread) =>
-      done(t?.kind === 'pr' ? api.createPrThread(t.repo, t.number, body) : api.createCommitThread(t!.repo, (t as { oid: string }).oid, body), put, true),
-    reply: (threadId: number, body: string) => done(api.reply(threadId, body), put, true),
-    setStatus: (threadId: number, status: 'open' | 'resolved') => done(api.setThreadStatus(threadId, status), put),
+      done(t?.kind === 'pr' ? api.createPrThread(t.repo, t.number, body) : api.createCommitThread(t!.repo, (t as { oid: string }).oid, body), put, { comments: true, threads: always }),
+    reply: (threadId: number, body: string) => done(api.reply(threadId, body), put, { comments: true }),
+    setStatus: (threadId: number, status: 'open' | 'resolved') => done(api.setThreadStatus(threadId, status), put, { threads: always }),
     edit: (commentId: number, body: string) => done(api.editComment(commentId, body), put),
+    // Deleting a thread's first comment deletes the thread.
     deleteComment: (threadId: number, commentId: number) =>
-      done(api.deleteComment(commentId), (r) => (r.thread ? put(r.thread) : drop(threadId)), true),
-    deleteThread: (threadId: number) => done(api.deleteThread(threadId), () => drop(threadId), true),
+      done(api.deleteComment(commentId), (r) => (r.thread ? put(r.thread) : drop(threadId)), { comments: true, threads: (r) => !r.thread }),
+    deleteThread: (threadId: number) => done(api.deleteThread(threadId), () => drop(threadId), { comments: true, threads: always }),
   };
 }
 

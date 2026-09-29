@@ -99,7 +99,7 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggle
   });
 
   const openPr = (p: PullRequest) => {
-    const stay = view === 'prs' || view === 'activity' || view === 'repo';
+    const stay = view === 'prs' || view === 'comments' || view === 'activity' || view === 'repo';
     const base = stay ? location.search : carrySearch(location.search);
     navigate({ pathname: stay ? location.pathname : '/prs', search: patchSearch(base, stay ? view : 'prs', { pr: p.id, diff: null }) });
   };
@@ -133,7 +133,7 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggle
             labelParts: parts,
             right: <>{r.visibility === 'private' && <Icon name="lock" title="Private" />}{r.visibility === 'internal' && <Icon name="lock" title="Internal" />}<span>{away(r) ? `Switch to ${byHost.get(r.source)?.name ?? r.source}` : 'Select only this repo'}</span></>,
             run: () => {
-              if (view === 'prs' || view === 'issues' || view === 'repos' || view === 'activity' || view === 'insights') set({ repos: [r.key], ...keepRepoInScope(r, s) });
+              if (view === 'prs' || view === 'comments' || view === 'issues' || view === 'repos' || view === 'activity' || view === 'insights') set({ repos: [r.key], ...keepRepoInScope(r, s) });
               else navigate(`/prs?${repoLinkSearch(r.key, ctx ? r.source : null)}`);
             },
           },
@@ -172,7 +172,7 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggle
     const vs = (views.data ?? []).filter((v) => has(v.name));
     if (vs.length) out.push({ title: 'Saved views', items: vs.map((v) => ({ key: `view:${v.id}`, icon: ic('bookmark'), label: v.name, run: () => navigate(`${v.path}${v.query ? `?${v.query}` : ''}`) })) });
 
-    const nav: [string, string, IconName][] = [[w.nav, '/prs', 'merge'], ['Issues', '/issues', 'issue'], ['Activity', '/activity', 'pulse'], ['Repositories', '/repos', 'book'], ['Insights', '/insights', 'chart'], ['Settings', '/settings', 'sliders']];
+    const nav: [string, string, IconName][] = [[w.nav, '/prs', 'merge'], ['Issues', '/issues', 'issue'], ['Comments', '/comments', 'comment'], ['Repositories', '/repos', 'book'], ['Activity', '/activity', 'pulse'], ['Insights', '/insights', 'chart'], ['Settings', '/settings', 'sliders']];
     const navItems = nav.filter(([l]) => has(l)).map(([l, p, i]) => ({ key: `go:${p}`, icon: ic(i), label: l, run: () => go(p) }));
     if (navItems.length) out.push({ title: 'Go to', items: navItems });
 

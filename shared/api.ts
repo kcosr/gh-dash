@@ -145,8 +145,8 @@ export interface PullRequest {
   baseRef: string;
   labels: Label[];
   url: string;
-  /** Local comment threads on this PR (GET /prs and the PR detail; absent on activity events). */
-  comments?: CommentCounts;
+  /** Local comment threads on this PR (on list items, the detail and activity events alike; zero counts when none). */
+  comments: CommentCounts;
 }
 
 export interface PullRequestDetail extends PullRequest {
@@ -168,6 +168,8 @@ export interface Commit {
   deletions: number;
   /** Set when the commit landed via a pull request (e.g. squash merge). */
   prNumber: number | null;
+  /** Local comment threads on this commit itself (not on a PR it landed through; zero counts when none). */
+  comments: CommentCounts;
 }
 
 export interface Issue {
@@ -861,6 +863,47 @@ export interface NewPrThread extends NewThread {
   commitOid: string;
 }
 
+export type ThreadStatusFilter = ThreadStatus | 'all';
+/** Threads on PRs, on commits, or both. */
+export type ThreadKindFilter = 'pr' | 'commit' | 'all';
+/** By last activity (`updatedAt`): newest first, or oldest first. */
+export type ThreadSort = 'recent' | 'oldest';
+
+/**
+ * GET /threads: every thread in scope, across PRs and commits. The scope is source, repos, visibility and ownership
+ * (not `who` or the date range: a thread stays open however old it is); `q` matches comment bodies and file paths.
+ */
+export interface ThreadListQuery extends Pick<ScopeQuery, 'repos' | 'source' | 'visibility' | 'ownership' | 'q'>, PageQuery {
+  /** Default 'open'. */
+  status?: ThreadStatusFilter;
+  /** Default 'all'. */
+  kind?: ThreadKindFilter;
+  /** Default 'recent'. */
+  sort?: ThreadSort;
+  /** 'md' returns every matching thread as text/markdown; there is no CSV (400). */
+  format?: Exclude<ListFormat, 'csv'>;
+}
+
+/** A thread in GET /threads: the thread, and what it is on. */
+export interface ThreadListItem extends CommentThread {
+  /**
+   * The PR's title or the commit's headline; null when that isn't synced (a thread can outlive its PR's row). A commit the
+   * sync doesn't hold takes its headline from a synced PR that lists it (the newest one), else null.
+   */
+  targetTitle: string | null;
+  /** The PR's state; null for a commit thread, or a PR that isn't synced. */
+  prState: PrState | null;
+  /** The PR or commit on its code host: the synced row's url, else built from the repo's url (never null). */
+  targetUrl: string;
+  /** A PR thread made on an earlier push than the PR's current head (false for commits, or when the head isn't known). */
+  earlierPush: boolean;
+}
+
+export interface ThreadListResponse extends ListResponse<ThreadListItem> {
+  /** Threads per status in the same scope and filters, ignoring `status` (the status control's counts). */
+  counts: Record<ThreadStatus, number>;
+}
+
 // ---------------------------------------------------------------------------
 // Endpoint index (for reference; implemented in server/, consumed in web/src/api)
 // ---------------------------------------------------------------------------
@@ -895,10 +938,10 @@ export interface NewPrThread extends NewThread {
 // GET    /api/v1/views                         -> { items: SavedView[] }
 // POST   /api/v1/views         {name, path, query} -> SavedView  (repo references in path and query are stored as keys)
 // DELETE /api/v1/views/:id                     -> 204
-// GET    /api/v1/prs            PrQuery        -> PrListResponse | text/markdown | text/csv   (items carry `comments` counts)
+// GET    /api/v1/prs            PrQuery        -> PrListResponse | text/markdown | text/csv   (items carry `comments` counts, as do PRs in activity events)
 // GET    /api/v1/prs/:repo/:number             -> PullRequestDetail
-// GET    /api/v1/activity       ActivityQuery  -> ActivityResponse | text/markdown | text/csv
-// GET    /api/v1/commits        ScopeQuery&PageQuery -> ListResponse<Commit>
+// GET    /api/v1/activity       ActivityQuery  -> ActivityResponse | text/markdown | text/csv   (PR and commit events carry `comments` counts)
+// GET    /api/v1/commits        ScopeQuery&PageQuery -> ListResponse<Commit>   (items carry `comments` counts of the commit's own threads)
 // GET    /api/v1/issues         IssueQuery     -> ListResponse<Issue>
 // GET    /api/v1/releases       ScopeQuery&PageQuery -> ListResponse<Release>
 // GET    /api/v1/stars          ScopeQuery&PageQuery -> ListResponse<Star>
@@ -921,6 +964,8 @@ export interface NewPrThread extends NewThread {
 // POST   /api/v1/prs/:repo/:number/threads NewPrThread -> CommentThread   (404 unless the PR is synced)
 // GET    /api/v1/commits/:repo/:oid/threads {format?: 'md'} -> { items: CommentThread[] } | text/markdown  (oid: full SHA)
 // POST   /api/v1/commits/:repo/:oid/threads NewThread -> CommentThread
+// GET    /api/v1/threads    ThreadListQuery    -> ThreadListResponse | text/markdown   (every thread in scope, across PRs
+//          and commits: status open by default, newest activity first; format=md groups them per PR or commit)
 // GET    /api/v1/threads/:id                   -> CommentThread
 // PATCH  /api/v1/threads/:id   {status}        -> CommentThread
 // DELETE /api/v1/threads/:id                   -> 204

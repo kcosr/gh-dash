@@ -6,17 +6,21 @@ import { useCallback, useMemo, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router';
 import { EVENT_TYPES } from '../../../shared/api';
 import { encodeQueryValue } from '../../../shared/query';
-import type { CommentFilter, EventType, GroupBy, Ownership, PrStateFilter, Repo, VisibilityFilter, Who } from '../../../shared/api';
+import type { CommentFilter, EventType, GroupBy, Ownership, PrStateFilter, Repo, ThreadKindFilter, ThreadStatusFilter, VisibilityFilter, Who } from '../../../shared/api';
 import { RANGE_IDS, resolveRange } from './range';
 import type { RangeId, ResolvedRange } from './range';
 import { isValidDateOnly } from './time';
 
-export type ViewName = 'prs' | 'issues' | 'activity' | 'repos' | 'repo' | 'insights' | 'settings';
+export type ViewName = 'prs' | 'comments' | 'issues' | 'activity' | 'repos' | 'repo' | 'insights' | 'settings';
 export type Density = 'titles' | 'summary' | 'full';
 export type RepoSort = 'activity' | 'stars' | 'open' | 'name';
 export type RepoLayout = 'grid' | 'list';
 /** The diff's file list narrowed to files with comment threads, or with unresolved ones. */
 export type FileFilter = 'commented' | 'unresolved';
+/** The Comments list: one group per PR or commit, per repo, or none. */
+export type ThreadGroup = 'target' | 'repo' | 'none';
+/** The Comments list: by last activity (newest or oldest first), or each PR's or commit's threads in file order. */
+export type ThreadOrder = 'recent' | 'oldest' | 'file';
 
 export interface UrlState {
   /** The context: a source's host (`source=gitlab.example.com`), lower-case; null = All (param absent). */
@@ -51,12 +55,22 @@ export interface UrlState {
   // /repos only
   sort: RepoSort;
   layout: RepoLayout;
+  // /comments only
+  /** Unresolved ('open'), resolved or all threads. */
+  status: ThreadStatusFilter;
+  /** Threads on PRs, on commits, or both. */
+  kind: ThreadKindFilter;
+  /** The `group` param on /comments (elsewhere it is `group`). */
+  threadGroup: ThreadGroup;
+  /** The `sort` param on /comments (elsewhere it is `sort`). */
+  threadSort: ThreadOrder;
 }
 
 export type UrlPatch = Partial<UrlState>;
 
 export function viewFromPath(pathname: string): ViewName {
   const p = pathname.replace(/\/+$/, '') || '/';
+  if (p === '/comments') return 'comments';
   if (p === '/issues') return 'issues';
   if (p.startsWith('/activity')) return 'activity';
   if (p === '/repos') return 'repos';
@@ -92,6 +106,10 @@ export function defaultsFor(view: ViewName): UrlState {
     only: null,
     sort: 'activity',
     layout: 'grid',
+    status: 'open',
+    kind: 'all',
+    threadGroup: 'target',
+    threadSort: 'recent',
   };
 }
 
@@ -118,6 +136,8 @@ export function parseUrlState(search: string, view: ViewName): UrlState {
   const thread = Number(p.get('thread'));
   const comments = p.get('comments');
   const only = p.get('only');
+  // `group` and `sort` are per view: the Comments list's values are its own, and it leaves the others at their defaults.
+  const threads = view === 'comments';
   return {
     // Any non-empty value: one that names no source is dropped once the repos are known (useCanonicalRepoUrl).
     source: p.get('source')?.trim().toLowerCase() || null,
@@ -130,7 +150,7 @@ export function parseUrlState(search: string, view: ViewName): UrlState {
     to: range === 'custom' ? to : null,
     state: oneOf(p.get('state'), view === 'issues' ? ['open', 'closed', 'all'] as const : ['open', 'merged', 'closed', 'all'] as const, d.state),
     comments: view === 'prs' && (comments === 'any' || comments === 'unresolved') ? comments : null,
-    group: oneOf(p.get('group'), ['day', 'week', 'month', 'repo'] as const, d.group),
+    group: threads ? d.group : oneOf(p.get('group'), ['day', 'week', 'month', 'repo'] as const, d.group),
     density: oneOf(p.get('density'), ['titles', 'summary', 'full'] as const, d.density),
     rel: p.get('rel') !== '0',
     // keep canonical EVENT_TYPES order
@@ -141,13 +161,17 @@ export function parseUrlState(search: string, view: ViewName): UrlState {
     file: diffOk ? p.get('file') || null : null,
     thread: diffOk && Number.isInteger(thread) && thread > 0 ? thread : null,
     only: diffOk && (only === 'commented' || only === 'unresolved') ? only : null,
-    sort: oneOf(p.get('sort'), ['activity', 'stars', 'open', 'name'] as const, d.sort),
+    sort: threads ? d.sort : oneOf(p.get('sort'), ['activity', 'stars', 'open', 'name'] as const, d.sort),
     layout: oneOf(p.get('layout'), ['grid', 'list'] as const, d.layout),
+    status: threads ? oneOf(p.get('status'), ['open', 'resolved', 'all'] as const, d.status) : d.status,
+    kind: threads ? oneOf(p.get('kind'), ['all', 'pr', 'commit'] as const, d.kind) : d.kind,
+    threadGroup: threads ? oneOf(p.get('group'), ['target', 'repo', 'none'] as const, d.threadGroup) : d.threadGroup,
+    threadSort: threads ? oneOf(p.get('sort'), ['recent', 'oldest', 'file'] as const, d.threadSort) : d.threadSort,
   };
 }
 
 /** Param order in written URLs (unknown params are kept at the end). */
-const ORDER = ['source', 'repos', 'vis', 'own', 'who', 'range', 'from', 'to', 'state', 'comments', 'group', 'density', 'rel', 'types', 'q', 'sort', 'layout', 'pr', 'diff', 'file', 'thread', 'only'];
+const ORDER = ['source', 'repos', 'vis', 'own', 'who', 'range', 'from', 'to', 'state', 'status', 'kind', 'comments', 'group', 'density', 'rel', 'types', 'q', 'sort', 'layout', 'pr', 'diff', 'file', 'thread', 'only'];
 
 /** Serialize a full state to params, omitting defaults for the view. */
 function toParams(s: UrlState, view: ViewName): [string, string][] {
@@ -161,13 +185,16 @@ function toParams(s: UrlState, view: ViewName): [string, string][] {
   if (s.range === 'custom' && s.from && s.to) out.push(['range', 'custom'], ['from', s.from], ['to', s.to]);
   else if (s.range !== d.range && s.range !== 'custom') out.push(['range', s.range]);
   if (s.state !== d.state) out.push(['state', s.state]);
+  if (s.status !== d.status) out.push(['status', s.status]);
+  if (s.kind !== d.kind) out.push(['kind', s.kind]);
   if (s.comments) out.push(['comments', s.comments]);
-  if (s.group !== d.group) out.push(['group', s.group]);
+  const threads = view === 'comments';
+  if (threads ? s.threadGroup !== d.threadGroup : s.group !== d.group) out.push(['group', threads ? s.threadGroup : s.group]);
   if (s.density !== d.density) out.push(['density', s.density]);
   if (!s.rel) out.push(['rel', '0']);
   if (s.types.length !== d.types.length) out.push(['types', s.types.join(',')]);
   if (s.q) out.push(['q', s.q]);
-  if (s.sort !== d.sort) out.push(['sort', s.sort]);
+  if (threads ? s.threadSort !== d.threadSort : s.sort !== d.sort) out.push(['sort', threads ? s.threadSort : s.sort]);
   if (s.layout !== d.layout) out.push(['layout', s.layout]);
   if (s.pr) out.push(['pr', s.pr]);
   if (s.diff) {

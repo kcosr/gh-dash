@@ -14,10 +14,11 @@ const FATAL_EXIT_DELAY_MS = 200;
 /**
  * Handles one message from main. `set-token` sets the token choice and, when `token` is present, the app token (null
  * forgets it), validates the result against GitHub and answers `token-result` (ok = no error: a valid token, or no
- * token because nothing is chosen). `shutdown` closes the listeners and databases, then exits 0.
+ * token because nothing is chosen). `reload-sources` re-reads config.json's sources and answers `sources-result`.
+ * `shutdown` closes the listeners and databases, then exits 0.
  */
 export function mainMessageHandler(
-  server: Pick<RunningServer, 'tokens' | 'close'>,
+  server: Pick<RunningServer, 'tokens' | 'close'> & Partial<Pick<RunningServer, 'reloadSources'>>,
   post: (message: ServerToMain) => void,
   exit: (code: number) => void,
 ): (message: unknown) => Promise<void> {
@@ -28,6 +29,15 @@ export function mainMessageHandler(
       server.tokens.setChoice(msg.choice);
       const account = await server.tokens.check();
       post({ type: 'token-result', id: msg.id, ok: account.error === null, account });
+    } else if (msg?.type === 'reload-sources') {
+      try {
+        if (!server.reloadSources) throw new Error("This server can't reload its sources");
+        const runtimes = server.reloadSources();
+        const sources = runtimes.filter((r) => r.config).map((r) => r.host);
+        post({ type: 'sources-result', id: msg.id, ok: true, error: null, sources });
+      } catch (err) {
+        post({ type: 'sources-result', id: msg.id, ok: false, error: (err as Error).message, sources: [] });
+      }
     } else if (msg?.type === 'shutdown') {
       try {
         await server.close();

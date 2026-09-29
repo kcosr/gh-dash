@@ -39,6 +39,11 @@ export const DESKTOP_ENV = {
 export type MainToServer =
   /** Set (or clear) the app-provided token and/or the chosen source. Answered with `token-result`. */
   | { type: 'set-token'; id: number; choice: TokenChoice | null; token?: string | null }
+  /**
+   * config.json's `sources` or `glabPath` changed: re-read them and rebuild the sources that changed, without a
+   * restart. Answered with `sources-result`.
+   */
+  | { type: 'reload-sources'; id: number }
   /** Close the listeners and databases, then exit 0. */
   | { type: 'shutdown' };
 
@@ -50,6 +55,11 @@ export type ServerToMain =
    * (bad credentials, network failure); main only remembers a pasted token when ok.
    */
   | { type: 'token-result'; id: number; ok: boolean; account: AccountStatus }
+  /**
+   * Result of reload-sources: the hosts of the GitLab sources now configured, or why config.json couldn't be applied
+   * (nothing changed then). Tokens are validated afterwards, in the background.
+   */
+  | { type: 'sources-result'; id: number; ok: boolean; error: string | null; sources: string[] }
   /** Startup failed (bad config, database locked, port in use...). The child exits after sending it. */
   | { type: 'fatal'; message: string };
 

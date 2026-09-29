@@ -3,7 +3,7 @@ import { isoSec } from '../lib/time';
 import type { Db, Param } from './db';
 import { REPO_IDS_FOR_KEYS } from './repo-key';
 import { getSettings } from './settings';
-import { GITHUB_SOURCE_ID, getSource } from './sources';
+import { listSources } from './sources';
 
 /** Parsed, validated scope shared by every list/stats query. Times are UTC ms; `to` is exclusive. */
 export interface Scope {
@@ -19,31 +19,50 @@ export interface Scope {
   q: string | null;
 }
 
-/** Per-request facts needed to evaluate "me" and the default selection. */
+/**
+ * Per-request facts needed to evaluate "me" and the default selection. "Me" is per source: every source has its own
+ * account, so a login means one person on GitHub and possibly another on a GitLab instance.
+ */
 export interface QueryCtx {
-  /** Lower-cased login of the github.com account, or null before the first sync. */
-  viewer: string | null;
-  /** Lower-cased commit emails that count as me. */
+  /** Lower-cased login of each source's account, by source id. A source whose account isn't known yet has no entry. */
+  viewers: Map<number, string>;
+  /** Lower-cased commit emails that count as me on every source: settings.myEmails and GH_DASH_MY_EMAILS. */
   myEmails: string[];
+  /** Lower-cased commit emails of each source's account, by source id: they count as me in that source's repos only. */
+  viewerEmails: Map<number, string[]>;
   includeForks: boolean;
 }
 
 /** `envEmails`: GH_DASH_MY_EMAILS, which always count as "me" in addition to settings.myEmails. */
 export function loadQueryCtx(db: Db, envEmails: readonly string[] = []): QueryCtx {
   const settings = getSettings(db);
+  const viewers = new Map<number, string>();
+  const viewerEmails = new Map<number, string[]>();
+  for (const src of listSources(db)) {
+    if (!src.viewer) continue;
+    viewers.set(src.id, src.viewer.login.toLowerCase());
+    const emails = [...new Set(src.viewer.emails.map((e) => e.trim().toLowerCase()).filter(Boolean))];
+    if (emails.length) viewerEmails.set(src.id, emails);
+  }
   return {
-    viewer: getSource(db, GITHUB_SOURCE_ID)?.viewer?.login.toLowerCase() ?? null,
+    viewers,
     myEmails: [...new Set([...settings.myEmails, ...envEmails].map((e) => e.toLowerCase()))],
+    viewerEmails,
     includeForks: settings.includeForks,
   };
 }
 
-export type IsMe = (login: string | null, email?: string | null) => boolean;
+/** Is this actor me, on the source the row belongs to? `email` is only meaningful for commits. */
+export type IsMe = (login: string | null, email: string | null | undefined, sourceId: number) => boolean;
 
 export function isMeFn(ctx: QueryCtx): IsMe {
-  return (login, email) =>
-    (!!ctx.viewer && !!login && login.toLowerCase() === ctx.viewer) ||
-    (!!email && ctx.myEmails.includes(email.toLowerCase()));
+  return (login, email, sourceId) => {
+    const viewer = ctx.viewers.get(sourceId);
+    if (viewer && login && login.toLowerCase() === viewer) return true;
+    if (!email) return false;
+    const e = email.toLowerCase();
+    return ctx.myEmails.includes(e) || !!ctx.viewerEmails.get(sourceId)?.includes(e);
+  };
 }
 
 export class Where {
@@ -73,17 +92,29 @@ export function addRepoScope(w: Where, scope: Scope, ctx: QueryCtx, ignoreRepos 
   if (scope.ownership !== 'all') w.add(scope.ownership === 'mine' ? `r.tracked_by = 'owned'` : `r.tracked_by <> 'owned'`);
 }
 
-/** SQL predicate that is true when the actor in `loginCol` / `emailCol` is the viewer. */
+/**
+ * SQL predicate that is true when the actor in `loginCol` / `emailCol` is the viewer of the source the row's repo (alias
+ * `r`) is on. The login is compared with that source's account only; the emails are settings.myEmails and
+ * GH_DASH_MY_EMAILS everywhere, plus each source's own in its repos. Never NULL, so `NOT` of it keeps the rows of a
+ * source that has no account yet.
+ */
 export function meSql(ctx: QueryCtx, loginCol: string, emailCol?: string): { sql: string; params: Param[] } {
   const parts: string[] = [];
   const params: Param[] = [];
-  if (ctx.viewer) {
-    parts.push(`lower(ifnull(${loginCol}, '')) = ?`);
-    params.push(ctx.viewer);
+  if (ctx.viewers.size) {
+    const whens = [...ctx.viewers].map(() => 'WHEN ? THEN ?').join(' ');
+    parts.push(`ifnull(lower(ifnull(${loginCol}, '')) = CASE r.source_id ${whens} END, 0)`);
+    for (const [id, login] of ctx.viewers) params.push(id, login);
   }
-  if (emailCol && ctx.myEmails.length) {
-    parts.push(`lower(ifnull(${emailCol}, '')) IN (SELECT value FROM json_each(?))`);
-    params.push(JSON.stringify(ctx.myEmails));
+  if (emailCol) {
+    if (ctx.myEmails.length) {
+      parts.push(`lower(ifnull(${emailCol}, '')) IN (SELECT value FROM json_each(?))`);
+      params.push(JSON.stringify(ctx.myEmails));
+    }
+    for (const [id, emails] of ctx.viewerEmails) {
+      parts.push(`(r.source_id = ? AND lower(ifnull(${emailCol}, '')) IN (SELECT value FROM json_each(?)))`);
+      params.push(id, JSON.stringify(emails));
+    }
   }
   return { sql: parts.length ? `(${parts.join(' OR ')})` : '0', params };
 }

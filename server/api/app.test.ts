@@ -14,7 +14,7 @@ import { SyncManager } from '../sync/manager';
 import { fakeGitHub, page, type Reply, restFile, sha } from '../test/github';
 import { fakeGraphQL, prNode, repoNode } from '../test/graphql';
 import { Tracking } from '../github/tracking';
-import { addManualRepo, GITHUB, seedDb, setViewer } from '../test/seed';
+import { addManualRepo, GITHUB, seedDb, seedGitLab, setViewer } from '../test/seed';
 import { DESKTOP_SECRET_HEADER } from '../../shared/desktop';
 import { testTokens } from '../test/tokens';
 import { type AppDeps, type AppTransport, createApp } from './app';
@@ -652,6 +652,70 @@ describe('GH_DASH_MY_EMAILS', () => {
     expect(await res.json()).toMatchObject({ myEmails: ['x@y.example'], myEmailsFromEnv: ['me@home.example'], includeForks: true });
     expect(db.all("SELECT key FROM settings WHERE key = 'myEmailsFromEnv'")).toEqual([]);
     expect((await patch({ nope: 1 })).status).toBe(400);
+  });
+});
+
+describe('"me" per source', () => {
+  // The seed's GitHub viewer is alice; seedGitLab adds gitlab.example.com, claimed by bob (address bob@corp.example).
+  const range = 'from=2026-09-20&to=2026-09-26&tz=UTC';
+  const KEY = 'gitlab.example.com/platform/app';
+  function twoSources(myEmails: string[] = []) {
+    const db = seedDb();
+    seedGitLab(db);
+    return makeApp({ myEmails }, db);
+  }
+  const read = async <T>(app: ReturnType<typeof makeApp>, path: string) => (await (await app.request(`/api/v1${path}`)).json()) as T;
+  type Items = { items: { id?: string; headline?: string; author: { isMe: boolean } }[] };
+
+  it('/me is still the github.com account', async () => {
+    expect(await read(twoSources(), '/me')).toMatchObject({ login: 'Alice', name: 'Alice A', avatarUrl: 'https://avatars.example/alice' });
+  });
+
+  it('who=me and who=others follow each source’s account, on every list', async () => {
+    const app = twoSources();
+    const ids = async (path: string) => (await read<Items>(app, path)).items.map((i) => i.id);
+    expect(await ids(`/prs?${range}&who=me`)).toEqual(['alice/secret#1', `${KEY}#1`, 'alice/app#1']);
+    expect(await ids(`/prs?${range}&who=others`)).toEqual([`${KEY}#3`, 'alice/app#3', `${KEY}#2`, 'alice/app#2']);
+    expect(await ids(`/issues?${range}&state=all&who=me`)).toEqual(['alice/app#11', `${KEY}#1`]);
+    // Scoping to the GitLab repo: GitLab's bob is me, and GitLab's alice is not.
+    expect(await ids(`/prs?${range}&repos=${encodeURIComponent(KEY)}&who=me`)).toEqual([`${KEY}#1`]);
+    const commits = await read<Items>(app, `/commits?${range}&who=me`);
+    expect(commits.items.map((c) => c.headline).sort()).toEqual(['Bootstrap service', 'Commit c4', 'Merge pull request #1', 'Tune pipeline', 'Tweak config']);
+    expect(commits.items.every((c) => c.author.isMe)).toBe(true);
+    const activity = await read<{ total: number; items: { actor: { isMe: boolean } }[] }>(app, `/activity?${range}&who=me`);
+    expect(activity.items.every((e) => e.actor.isMe)).toBe(true);
+    const others = await read<{ total: number }>(app, `/activity?${range}&who=others`);
+    expect(activity.total + others.total).toBe((await read<{ total: number }>(app, `/activity?${range}`)).total);
+  });
+
+  it('stats: the "me" series and contributors span the sources', async () => {
+    type Stats = {
+      tiles: { commits: { value: number }; prsMerged: { value: number } };
+      series: { commitsMine: number; prsMergedMine: number }[];
+      contributors: { actor: { login: string | null; isMe: boolean }; commits: number; prsMerged: number }[];
+    };
+    const app = twoSources();
+    const stats = await read<Stats>(app, `/stats?${range}`);
+    expect(stats.series.reduce((a, b) => a + b.commitsMine, 0)).toBe(5);
+    expect(stats.series.reduce((a, b) => a + b.prsMergedMine, 0)).toBe(3);
+    expect(stats.contributors.filter((c) => c.actor.isMe)).toEqual([expect.objectContaining({ actor: expect.objectContaining({ login: 'Alice' }), commits: 5, prsMerged: 3 })]);
+    const mine = await read<Stats>(app, `/stats?${range}&who=me`);
+    expect([mine.tiles.commits.value, mine.tiles.prsMerged.value]).toEqual([5, 3]);
+    const gitlab = await read<Stats>(app, `/stats?${range}&who=me&repos=${encodeURIComponent(KEY)}`);
+    expect(gitlab.contributors).toEqual([expect.objectContaining({ actor: expect.objectContaining({ login: 'bob', isMe: true }), commits: 2, prsMerged: 1 })]);
+  });
+
+  it('GH_DASH_MY_EMAILS counts on the GitLab repos too', async () => {
+    const db = seedDb();
+    const { repoId } = seedGitLab(db);
+    upsertCommit(db, repoId, {
+      oid: 'f'.repeat(40), headline: 'From my laptop', body: '', committedAt: '2026-09-24T08:00:00Z', url: 'https://gitlab.example.com/c/f',
+      additions: 1, deletions: 0, prNumber: null, author: { login: null, name: 'Al', email: 'me@home.example', avatarUrl: null },
+    });
+    const commits = async (myEmails: string[]) =>
+      (await read<Items>(makeApp({ myEmails }, db), `/commits?${range}&who=me`)).items.map((c) => c.headline);
+    expect(await commits(['me@home.example'])).toContain('From my laptop');
+    expect(await commits([])).not.toContain('From my laptop');
   });
 });
 

@@ -7,6 +7,8 @@ import type { IsMe } from './filters';
 export interface PrRow {
   id: number;
   repo: string;
+  /** The source of the repo, whose account decides who is me. */
+  source_id: number;
   number: number;
   title: string;
   body: string;
@@ -35,6 +37,8 @@ export interface PrRow {
 export interface CommitRow {
   id: number;
   repo: string;
+  /** The source of the repo, whose account decides who is me. */
+  source_id: number;
   oid: string;
   headline: string;
   body: string;
@@ -52,6 +56,8 @@ export interface CommitRow {
 export interface IssueRow {
   id: number;
   repo: string;
+  /** The source of the repo, whose account decides who is me. */
+  source_id: number;
   number: number;
   title: string;
   body: string;
@@ -73,6 +79,8 @@ export interface IssueRow {
 export interface ReleaseRow {
   id: number;
   repo: string;
+  /** The source of the repo, whose account decides who is me. */
+  source_id: number;
   tag: string;
   name: string | null;
   body: string;
@@ -104,12 +112,12 @@ export interface PrCommitRow {
   author_avatar: string | null;
 }
 
-function toActor(isMe: IsMe, login: string | null, name: string | null, avatarUrl: string | null, email?: string | null): Actor {
-  return { login, name, avatarUrl, isMe: isMe(login, email) };
+function toActor(isMe: IsMe, sourceId: number, login: string | null, name: string | null, avatarUrl: string | null, email?: string | null): Actor {
+  return { login, name, avatarUrl, isMe: isMe(login, email, sourceId) };
 }
 
-function optionalActor(isMe: IsMe, login: string | null, name: string | null, avatarUrl: string | null): Actor | null {
-  return login === null ? null : toActor(isMe, login, name, avatarUrl);
+function optionalActor(isMe: IsMe, sourceId: number, login: string | null, name: string | null, avatarUrl: string | null): Actor | null {
+  return login === null ? null : toActor(isMe, sourceId, login, name, avatarUrl);
 }
 
 export function toPr(r: PrRow, isMe: IsMe): PullRequest {
@@ -121,7 +129,7 @@ export function toPr(r: PrRow, isMe: IsMe): PullRequest {
     body: r.body,
     state: r.state,
     isDraft: !!r.is_draft,
-    author: toActor(isMe, r.author_login, r.author_name, r.author_avatar),
+    author: toActor(isMe, r.source_id, r.author_login, r.author_name, r.author_avatar),
     mergedBy: r.merged_by,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
@@ -147,7 +155,7 @@ export function toPrDetail(r: PrRow, commits: PrCommitRow[], isMe: IsMe): PullRe
       headline: c.headline,
       committedAt: c.committed_at,
       url: c.url,
-      author: toActor(isMe, c.author_login, c.author_name, c.author_avatar, c.author_email),
+      author: toActor(isMe, r.source_id, c.author_login, c.author_name, c.author_avatar, c.author_email),
     })),
     closingIssues: JSON.parse(r.closing_issues) as ClosingIssueRecord[],
   };
@@ -160,7 +168,7 @@ export function toCommit(r: CommitRow, isMe: IsMe): Commit {
     repo: r.repo,
     headline: r.headline,
     body: r.body,
-    author: toActor(isMe, r.author_login, r.author_name, r.author_avatar, r.author_email),
+    author: toActor(isMe, r.source_id, r.author_login, r.author_name, r.author_avatar, r.author_email),
     committedAt: r.committed_at,
     url: r.url,
     additions: r.additions,
@@ -177,8 +185,8 @@ export function toIssue(r: IssueRow, isMe: IsMe): Issue {
     title: r.title,
     body: r.body,
     state: r.state,
-    author: toActor(isMe, r.author_login, r.author_name, r.author_avatar),
-    closedBy: optionalActor(isMe, r.closed_by_login, r.closed_by_name, r.closed_by_avatar),
+    author: toActor(isMe, r.source_id, r.author_login, r.author_name, r.author_avatar),
+    closedBy: optionalActor(isMe, r.source_id, r.closed_by_login, r.closed_by_name, r.closed_by_avatar),
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     closedAt: r.closed_at,
@@ -194,7 +202,7 @@ export function toRelease(r: ReleaseRow, isMe: IsMe): Release {
     tag: r.tag,
     name: r.name,
     body: r.body,
-    author: optionalActor(isMe, r.author_login, r.author_name, r.author_avatar),
+    author: optionalActor(isMe, r.source_id, r.author_login, r.author_name, r.author_avatar),
     publishedAt: r.published_at,
     isPrerelease: !!r.is_prerelease,
     url: r.url,

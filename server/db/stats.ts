@@ -4,7 +4,7 @@ import type { Db, Param } from './db';
 import { addRepoScope, meSql, type QueryCtx, type Scope, Where } from './filters';
 import { EVENT_SOURCES, type EventSource, sourceWhere } from './lists';
 import { repoKeySql } from './repo-key';
-import { GITHUB_SOURCE_ID, getSource } from './sources';
+import { listSources } from './sources';
 
 const SLICES = 12;
 const TOP_CONTRIBUTORS = 20;
@@ -35,6 +35,8 @@ const MERGE_PEOPLE: PersonCols = { login: 'p.author_login', email: null, name: '
  */
 interface Group {
   repo: string;
+  /** The source of the repo: logins are only comparable within one. */
+  source: number;
   visibility: Visibility;
   /** Local date in the request tz. */
   day: string | null;
@@ -78,6 +80,7 @@ function fetchGroups(db: Db, ctx: QueryCtx, scope: Scope, segments: OffsetSegmen
   const day = localDateSql(s.at, segments);
   const me = opts.mine && s.who ? meSql(ctx, s.who.login, s.who.email) : { sql: '0', params: [] as Param[] };
   col(`${repoKeySql('r')} AS repo`);
+  col('r.source_id AS source');
   col('r.visibility AS visibility');
   col(`CASE WHEN ${s.at} >= ? THEN ${day.sql} END AS day`, fromIso, ...day.params);
   // Same arithmetic (IEEE doubles, then floor) as Math.floor((t - from) * SLICES / len) in JS.
@@ -293,10 +296,13 @@ function publicStarTotals(db: Db, ctx: QueryCtx, scope: Scope): { current: numbe
   return { current, after };
 }
 
-/** Identity of a person: all "me" identities are one person; others by login, else commit email, else name. */
+/**
+ * Identity of a person: all "me" identities, on every source, are one person; others by login (within their source: the
+ * same login on two sources is two people), else commit email (an address is one person wherever it commits), else name.
+ */
 function personKey(g: Group): string {
   if (g.mine) return 'me';
-  if (g.login) return `l:${g.login.toLowerCase()}`;
+  if (g.login) return `l:${g.source}:${g.login.toLowerCase()}`;
   if (g.email) return `e:${g.email.toLowerCase()}`;
   return `n:${g.anon ?? g.name ?? ''}`;
 }
@@ -311,15 +317,19 @@ interface Person {
 }
 
 /**
- * People by commits + merged PRs (who filter applies). Every identity that is "me" (the viewer's login, or
- * a commit email in settings.myEmails / GH_DASH_MY_EMAILS) merges into one entry shown as the viewer.
- * Others merge by login, else (commits without a linked account) by email, and show the actor (name,
- * avatar) of their latest event.
+ * People by commits + merged PRs (who filter applies). Every identity that is "me" (a source's viewer login, or
+ * a commit email in settings.myEmails / GH_DASH_MY_EMAILS or the source's own) merges into one entry shown as the
+ * viewer: source 1's when the range has a "me" event on it, else the first source's that has one, so a scope holding
+ * one source's repos shows that source's account. Others merge by login within their source, else (commits without a
+ * linked account) by email, and show the actor (name, avatar) of their latest event.
  */
 function contributors(db: Db, commits: Group[], merges: Group[]): StatsResponse['contributors'] {
   const people = new Map<string, Person>();
+  /** Sources with a "me" event in the range. */
+  const meSources = new Set<number>();
   const add = (g: Group, key: 'commits' | 'prsMerged', last: string, display: Person['display']) => {
     const id = personKey(g);
+    if (g.mine) meSources.add(g.source);
     let p = people.get(id);
     if (!p) people.set(id, (p = { commits: 0, prsMerged: 0, total: 0, last, display }));
     else if (last > p.last) Object.assign(p, { last, display });
@@ -344,7 +354,7 @@ function contributors(db: Db, commits: Group[], merges: Group[]): StatsResponse[
       )
       .map((r): [number, Actor] => [r.id, { login: r.login, name: r.name, avatarUrl: r.avatar, isMe: false }]),
   );
-  const viewer = getSource(db, GITHUB_SOURCE_ID)?.viewer;
+  const viewer = listSources(db).find((src) => src.viewer && meSources.has(src.id))?.viewer;
   const label = (a: Actor) => a.login ?? a.name ?? '';
   return top
     .map(([id, p]) => {

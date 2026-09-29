@@ -2,7 +2,7 @@ import { type Db, openDb } from '../db/db';
 import type { ActorRecord, CommitRecord, IssueRecord, PrRecord, RepoRecord } from '../db/records';
 import { patchSettings } from '../db/settings';
 import { setRepoPrefs } from '../db/repos';
-import { GITHUB_HOST, GITHUB_SOURCE_ID, type SourceRef, type SourceViewer, sourceKey } from '../db/sources';
+import { ensureSource, GITHUB_HOST, GITHUB_SOURCE_ID, type SourceRef, type SourceRow, type SourceViewer, sourceKey } from '../db/sources';
 import { upsertCommit, upsertIssue, upsertPr, upsertRelease, upsertOwned, upsertStar } from '../db/write';
 
 /** The github.com source, as the write helpers take it. */
@@ -177,3 +177,53 @@ export function seedDb(): Db {
   patchSettings(db, { myEmails: ['alice@work.example'] });
   return db;
 }
+
+/** The GitLab instance `seedGitLab` adds. */
+export const GITLAB_HOST = 'gitlab.example.com';
+
+/**
+ * Adds a GitLab source (gitlab.example.com) to `db`, claimed by "bob" with the commit address bob@corp.example, and one
+ * repo on it: platform/app, key gitlab.example.com/platform/app. Its authors are chosen to tell the accounts apart:
+ * GitHub's alice (the seed's viewer) and GitLab's alice are different people, as are GitHub's bob and GitLab's bob.
+ *   - MR !1 merged by bob (me on GitLab), !2 open by alice (not me), !3 merged by alice (not me)
+ *   - commits gl1 by bob@corp.example (viewer address), gl2 by alice@work.example (settings.myEmails), gl3 by login
+ *     alice (not me), gl4 by login carol (not me). None carries a login of the viewer's: GitLab commits have none.
+ *   - issue 1 opened by bob (me), issue 2 opened by alice and closed by bob, release v2.0.0 by bob
+ * All times are September 2026 UTC, after the seed's own data began.
+ */
+export function seedGitLab(db: Db): { src: SourceRow; repoId: number } {
+  const src = ensureSource(db, { kind: 'gitlab', host: GITLAB_HOST, baseUrl: `https://${GITLAB_HOST}` });
+  setViewer(db, { id: '7', login: 'bob', name: 'Bob B', avatarUrl: 'https://avatars.example/bob-gl', emails: ['Bob@Corp.example'] }, src.id);
+  const path = 'platform/app';
+  const repoId = upsertOwned(
+    db,
+    src,
+    { ...repo('app'), nodeId: 'gid://gitlab/Project/1', nameWithOwner: path, owner: 'platform', url: `https://${GITLAB_HOST}/${path}` },
+    '2026-09-27T12:00:00Z',
+  );
+  const by = (login: string | null, email: string | null = null, name = login ?? 'Nobody'): ActorRecord => ({ login, name, email, avatarUrl: null });
+  upsertPr(db, repoId, pr(1, {
+    state: 'merged', createdAt: '2026-09-20T10:00:00Z', mergedAt: '2026-09-21T12:00:00Z', author: by('bob'), title: 'Ship parser',
+    commits: [
+      { oid: 'm1', headline: 'parser', committedAt: '2026-09-20T09:00:00Z', url: 'u', author: by(null, 'bob@corp.example', 'Bob (laptop)') },
+      { oid: 'm2', headline: 'review fixes', committedAt: '2026-09-20T11:00:00Z', url: 'u', author: by('alice') },
+    ],
+  }));
+  upsertPr(db, repoId, pr(2, { state: 'open', createdAt: '2026-09-22T11:00:00Z', author: by('alice'), title: 'Rework config' }));
+  upsertPr(db, repoId, pr(3, { state: 'merged', createdAt: '2026-09-23T10:00:00Z', mergedAt: '2026-09-24T12:00:00Z', author: by('alice'), title: 'Tidy tests' }));
+  upsertCommit(db, repoId, commit('gl1', '2026-09-21T09:00:00Z', by(null, 'bob@corp.example', 'Bob (laptop)'), null, 'Bootstrap service'));
+  upsertCommit(db, repoId, commit('gl2', '2026-09-22T10:00:00Z', by(null, 'alice@work.example', 'Alice (work)'), null, 'Tune pipeline'));
+  upsertCommit(db, repoId, commit('gl3', '2026-09-23T10:00:00Z', by('alice'), null, 'Rotate keys'));
+  upsertCommit(db, repoId, commit('gl4', '2026-09-24T10:00:00Z', by('carol'), null, 'Bump deps'));
+  upsertIssue(db, repoId, issue(1, { state: 'open', createdAt: '2026-09-24T09:00:00Z', author: by('bob'), title: 'Flaky deploy' }));
+  upsertIssue(db, repoId, issue(2, {
+    state: 'closed', createdAt: '2026-09-10T00:00:00Z', closedAt: '2026-09-25T10:00:00Z', author: by('alice'), closedBy: by('bob'), title: 'Stale cache',
+  }));
+  upsertRelease(db, repoId, {
+    tag: 'v2.0.0', name: 'Two', body: '', author: by('bob'), publishedAt: '2026-09-25T15:00:00Z', isPrerelease: false,
+    url: `https://${GITLAB_HOST}/${path}/-/releases/v2.0.0`,
+  });
+  return { src, repoId };
+}
+
+export { commit as commitRecord, issue as issueRecord, pr as prRecord, repo as repoRecord };

@@ -23,6 +23,15 @@ export class GitLabError extends SourceError {
   }
 }
 
+/** A failure worth retrying, with the HTTP status behind it (a 429 that outlasts the retries is a rate limit). */
+class Retry extends RetryableError {
+  readonly status: number | null;
+  constructor(message: string, retryAfterMs: number | null, status: number | null = null) {
+    super(message, retryAfterMs);
+    this.status = status;
+  }
+}
+
 /** Per-request cap; GitLab itself gives up on a GraphQL query after 30 s. */
 const REQUEST_TIMEOUT_MS = 60_000;
 
@@ -113,7 +122,14 @@ export class GitLabTransport {
           const resumeAt = new Date(Date.now() + err.retryAfterMs).toISOString();
           throw this.clean(new GitLabError('rate-limit', `GitLab ${err.message}; retry after ${resumeAt}`, { status: 429, resetAt: resumeAt }));
         }
-        if (n >= this.maxAttempts) throw this.clean(new GitLabError('transient', err.message));
+        if (n >= this.maxAttempts) {
+          // Still throttled after every retry: stop (the sync stops the run) rather than report a passing hiccup.
+          if (err instanceof Retry && err.status === 429) {
+            const resetAt = new Date(Date.now() + (err.retryAfterMs ?? 0)).toISOString();
+            throw this.clean(new GitLabError('rate-limit', `GitLab ${err.message}; retry after ${resetAt}`, { status: 429, resetAt }));
+          }
+          throw this.clean(new GitLabError('transient', err.message));
+        }
         await this.sleep(err.retryAfterMs ?? backoffMs(n));
       }
     }
@@ -234,11 +250,11 @@ async function failure(res: Response, what: string, scrub: (text: string) => str
   }
   if (status === 429) {
     const wait = retryAfterMs(res);
-    if (wait !== null) return new RetryableError(`rate limited (429) for ${what}`, wait);
+    if (wait !== null) return new Retry(`rate limited (429) for ${what}`, wait, status);
     const resetAt = rateLimitReset(res) ?? new Date(Date.now() + 60_000).toISOString();
     return new GitLabError('rate-limit', `GitLab rate limited ${what} (429); retry after ${resetAt}`, { status, resetAt });
   }
-  if (status >= 500) return new RetryableError(`GitLab returned ${status} for ${what}`, null);
+  if (status >= 500) return new Retry(`GitLab returned ${status} for ${what}`, null, status);
   const kind = status === 404 ? 'not-found' : 'http';
   return new GitLabError(kind, `GitLab returned ${status} for ${what}: ${detail}`, { status });
 }

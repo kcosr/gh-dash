@@ -141,6 +141,21 @@ describe('GitLab transport', () => {
     expect(await fail(bare.rest.json('/x'))).toMatchObject({ kind: 'rate-limit', resetAt: '2099-01-01T00:00:00.000Z' });
   });
 
+  it('ends a 429 that outlasts the retries as a rate limit, so the sync stops instead of pressing on', async () => {
+    const throttled = setup({ '/api/v4/x': { status: 429, text: 'Retry later\n', headers: { 'retry-after': '3' } } });
+    const before = Date.now();
+    const err = await fail(throttled.rest.json('/x'));
+    expect(err).toMatchObject({ kind: 'rate-limit', status: 429 });
+    expect(Date.parse(err.resetAt!)).toBeGreaterThanOrEqual(before + 3000 - 1000);
+    expect(Date.parse(err.resetAt!)).toBeLessThanOrEqual(Date.now() + 3000);
+    expect(throttled.sleeps).toEqual([3000, 3000]);
+    expect(throttled.calls).toHaveLength(3);
+    // Whatever failed last decides: a server error after a 429 is still transient.
+    let n = 0;
+    const mixed = setup({ '/api/v4/x': () => (++n === 1 ? { status: 429, text: '', headers: { 'retry-after': '1' } } : { status: 503, text: '' }) });
+    expect(await fail(mixed.rest.json('/x'))).toMatchObject({ kind: 'transient', status: null, resetAt: null });
+  });
+
   it('reads RateLimit-* headers when throttling is enabled, and has no reading otherwise', async () => {
     const plain = setup({ '/api/v4/x': { body: {} } });
     await plain.rest.json('/x');

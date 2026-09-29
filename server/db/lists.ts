@@ -224,6 +224,8 @@ export function listStars(db: Db, ctx: QueryCtx, scope: Scope, page: Page): List
   const w = new Where();
   addRepoScope(w, scope, ctx);
   addRange(w, 's.starred_at', scope);
+  // Like the star event source: stargazers of repos you own only.
+  w.add(`r.tracked_by = 'owned'`);
   // Stars are always by others; stars carry no text for `q`.
   if (scope.who === 'me' || scope.q) w.add('0');
   const { rows, next, total } = runPaged<StarRow>(db, {

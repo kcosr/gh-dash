@@ -3,7 +3,7 @@ import { DAY_MS, ymdToDayNum, zonedMidnight } from '../lib/time';
 import { addManualRepo, seedDb } from '../test/seed';
 import type { Db } from './db';
 import { loadQueryCtx, type QueryCtx, type Scope } from './filters';
-import { listActivity } from './lists';
+import { listActivity, listStars } from './lists';
 import { computeStats, defaultBucket } from './stats';
 import { upsertCommit, upsertOwned, upsertStar } from './write';
 
@@ -127,6 +127,7 @@ describe('computeStats', () => {
     expect(s.tiles.commits.value).toBe(base.tiles.commits.value! + 1);
     const events = listActivity(d, c, scope('2026-09-20', '2026-09-26'), ['star'], null);
     expect(events.items.map((e) => e.repo)).toEqual(['alice/app', 'alice/app']);
+    expect(listStars(d, c, scope('2026-09-20', '2026-09-26'), null).items.map((st) => st.repo)).toEqual(['alice/app', 'alice/app']);
     expect(listActivity(d, c, scope('2026-09-20', '2026-09-26', { ownership: 'others' }), null, null).facets.byType).toEqual({ commit: 1 });
   });
 

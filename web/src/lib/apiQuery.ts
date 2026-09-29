@@ -8,6 +8,7 @@ import { apiUrl } from '../api/client';
 import type { Endpoint } from '../api/client';
 import { resolveRange } from './range';
 import { browserTz } from './time';
+import { parseUrlState } from './urlState';
 import type { UrlState, ViewName } from './urlState';
 
 /** Earliest date we ever ask for when "all time" is meant (e.g. open PRs). */
@@ -70,6 +71,12 @@ export function threadListParams(s: UrlState): ThreadListQuery {
 /** The Comments tab's count: unresolved threads in the list's scope (not its filters). */
 export function threadCountParams(s: Pick<UrlState, 'source' | 'repos' | 'vis' | 'own'>): ThreadListQuery {
   return { ...repoScope(s), status: 'open', limit: 1 };
+}
+
+/** The count for where the Comments tab leads (`href`, from viewHref): the scope the list opens with. */
+export function tabCountParams(href: string): ThreadListQuery {
+  const i = href.indexOf('?');
+  return threadCountParams(parseUrlState(i < 0 ? '' : href.slice(i), 'comments'));
 }
 
 export function releaseListParams(s: UrlState): ScopeQuery {

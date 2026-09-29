@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ThreadListItem } from './api';
 import { api } from '../web/src/api/client';
-import { exportTarget, exportUrl, threadCountParams, threadListParams } from '../web/src/lib/apiQuery';
+import { exportTarget, exportUrl, tabCountParams, threadCountParams, threadListParams } from '../web/src/lib/apiQuery';
+import { viewHref } from '../web/src/lib/contexts';
+import type { Places } from '../web/src/lib/contexts';
 import { byFileOrder, groupThreads, sortThreads, threadTarget, withHeld } from '../web/src/lib/threadList';
 import { carrySearch, defaultsFor, parseUrlState, patchSearch, viewFromPath } from '../web/src/lib/urlState';
 
@@ -88,6 +90,21 @@ describe('Comments API params and export', () => {
   it("counts the tab's unresolved threads in the scope alone", () => {
     const s = parseUrlState('?source=github.com&repos=alice/app&status=resolved&kind=commit&q=x', 'comments');
     expect(threadCountParams(s)).toEqual({ source: 'github.com', repos: 'alice/app', visibility: undefined, ownership: undefined, status: 'open', limit: 1 });
+  });
+
+  it('counts the tab for where it leads: from Settings, the Comments list as remembered', () => {
+    const places: Places = { v: 1, last: 'github.com', places: {}, views: { 'github.com': { comments: '/comments?source=github.com&repos=alice/app&vis=private&own=mine&status=all&group=repo' } } };
+    const scope = (pathname: string, search: string) => {
+      const q = tabCountParams(viewHref(places, 'github.com', '/comments', pathname, search));
+      return Object.fromEntries(Object.entries(q).filter(([, v]) => v !== undefined));
+    };
+    expect(scope('/settings', '')).toEqual({ source: 'github.com', repos: 'alice/app', visibility: 'private', ownership: 'mine', status: 'open', limit: 1 });
+    // Elsewhere the page's scope goes with the tab, and is what it counts.
+    expect(scope('/prs', '?source=github.com&repos=alice/lib&state=open')).toEqual({ source: 'github.com', repos: 'alice/lib', status: 'open', limit: 1 });
+    // Nothing remembered: from Settings, the context's default selection.
+    const none: Places = { v: 1, last: 'github.com', places: {}, views: {} };
+    expect(tabCountParams(viewHref(none, 'github.com', '/comments', '/settings', ''))).toMatchObject({ source: 'github.com', repos: undefined, status: 'open' });
+    expect(tabCountParams('/comments')).toMatchObject({ source: undefined, repos: undefined, visibility: undefined, ownership: undefined });
   });
 
   it('fetches GET /threads', async () => {

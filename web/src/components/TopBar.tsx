@@ -11,9 +11,8 @@ import { fmtNum, fmtTime, relFuture, relLong } from '../lib/time';
 import { ALL, ctxOf, usePlaces, useSwitchContext, viewHref } from '../lib/contexts';
 import { GITHUB_HOST } from '../../../shared/api';
 import { firstTrouble, hostNames, sourceSettingsLink, troubleLabel } from '../lib/sources';
-import { threadCountParams } from '../lib/apiQuery';
-import { parseUrlState, viewFromPath } from '../lib/urlState';
-import type { UrlState } from '../lib/urlState';
+import { tabCountParams } from '../lib/apiQuery';
+import { viewFromPath } from '../lib/urlState';
 import { useNow } from '../lib/util';
 import { MOD_K } from './bits';
 import { Icon, ProviderIcon } from './Icon';
@@ -89,10 +88,8 @@ export function TopBar({ theme, onToggleTheme, onOpenSidebar, sidebarOpen = fals
   const view = viewFromPath(location.pathname);
   const { openPalette } = useUI();
   const w = useWords().pr;
-  const { current, multi } = useSourceCtx();
+  const { multi } = useSourceCtx();
   const hrefTo = useViewHref();
-  // The repos the tabs lead to: the Comments tab counts what its list would show (Settings: the context's default).
-  const scope = view === 'settings' ? { source: current?.host ?? null, repos: null, vis: 'all' as const, own: 'all' as const } : parseUrlState(location.search, view);
   const navRef = useRef<HTMLElement>(null);
   useEffect(() => {
     const nav = navRef.current;
@@ -129,7 +126,7 @@ export function TopBar({ theme, onToggleTheme, onOpenSidebar, sidebarOpen = fals
             <Link key={n.path} to={hrefTo(n.path)} className={on ? 'on' : undefined} aria-current={on ? 'page' : undefined}>
               <Icon name={n.icon} />
               {n.label(w)}
-              {n.path === '/comments' && <UnresolvedCount scope={scope} />}
+              {n.path === '/comments' && <UnresolvedCount href={hrefTo(n.path)} />}
             </Link>
           );
         })}
@@ -152,9 +149,12 @@ export function TopBar({ theme, onToggleTheme, onOpenSidebar, sidebarOpen = fals
   );
 }
 
-/** The Comments tab's quiet count: unresolved threads in the tabs' scope (the context, the repo selection); none at 0. */
-function UnresolvedCount({ scope }: { scope: Pick<UrlState, 'source' | 'repos' | 'vis' | 'own'> }) {
-  const { data: n } = useUnresolvedCount(threadCountParams(scope));
+/**
+ * The Comments tab's quiet count: unresolved threads in the scope the tab leads to (`href`: the context and repo
+ * selection it opens with, the page's or, from Settings, the one remembered); none at 0.
+ */
+function UnresolvedCount({ href }: { href: string }) {
+  const { data: n } = useUnresolvedCount(tabCountParams(href));
   if (!n) return null;
   return <span className="n" title={`${n.toLocaleString()} unresolved`}>{n.toLocaleString()}<span className="sr-only"> unresolved</span></span>;
 }

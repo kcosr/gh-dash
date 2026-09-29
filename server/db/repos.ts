@@ -156,9 +156,13 @@ function getSet(db: Db, id: number): RepoSet | null {
 function replaceMembers(db: Db, setId: number, repos: string[]): void {
   db.run('DELETE FROM repo_set_members WHERE set_id = ?', [setId]);
   const ids = resolveRepoIds(db, repos);
+  // Several inputs can name one repo (a key and an alias): the first one places it.
+  const added = new Set<number>();
   [...new Set(repos)].forEach((key, position) => {
     const repoId = ids.get(key);
-    if (repoId !== undefined) db.run('INSERT INTO repo_set_members (set_id, repo_id, position) VALUES (?, ?, ?)', [setId, repoId, position]);
+    if (repoId === undefined || added.has(repoId)) return;
+    added.add(repoId);
+    db.run('INSERT INTO repo_set_members (set_id, repo_id, position) VALUES (?, ?, ?)', [setId, repoId, position]);
   });
 }
 

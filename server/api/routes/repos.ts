@@ -1,11 +1,8 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { selectRepos } from '../../../shared/repos';
-import { resolveRepo, resolveRepoOn } from '../../db/repo-key';
-import { getSettings } from '../../db/settings';
-import { sourceByHost } from '../../db/sources';
-import { notASource } from '../../sync/tracking';
-import { createSet, createView, deleteSet, deleteView, getRepo, listRepos, listSets, listViews, removeRepo, setRepoPrefs, updateSet } from '../../db/repos';
+import { createSet, createView, deleteSet, deleteView, listSets, listViews, updateSet } from '../../db/repos';
+import { patchRepo, queryRepos, repoDetail } from '../../services/repos';
+import { removeTrackedRepo } from '../../sync/tracking';
 import type { AppDeps } from '../app';
 import { noCrossSiteReads } from '../auth';
 import { HttpError, jsonBody, parseWith } from '../http';
@@ -48,22 +45,11 @@ export function repoRoutes({ db, config, tracking, diffs }: AppDeps): Hono {
   const r = new Hono();
   if (!tracking) throw new Error('repoRoutes needs tracking');
 
-  r.get('/repos', (c) => {
-    const query = parseWith(repoQuery, c.req.query());
-    return c.json({ items: selectRepos(listRepos(db, config.defaultTz), query, getSettings(db).includeForks) });
-  });
+  r.get('/repos', (c) => c.json({ items: queryRepos({ db, config }, parseWith(repoQuery, c.req.query())) }));
 
-  r.get('/repos/:repo', (c) => {
-    const repo = getRepo(db, c.req.param('repo'), config.defaultTz);
-    if (!repo) throw new HttpError(404, 'Repository not found');
-    return c.json(repo);
-  });
+  r.get('/repos/:repo', (c) => c.json(repoDetail({ db, config }, c.req.param('repo'))));
 
-  r.patch('/repos/:repo', async (c) => {
-    const prefs = parseWith(repoPatch, await jsonBody(c));
-    if (!setRepoPrefs(db, c.req.param('repo'), prefs)) throw new HttpError(404, 'Repository not found');
-    return c.json(getRepo(db, c.req.param('repo'), config.defaultTz));
-  });
+  r.patch('/repos/:repo', async (c) => c.json(patchRepo({ db, config }, c.req.param('repo'), parseWith(repoPatch, await jsonBody(c)))));
 
   // Adding and removing repositories of other owners, on any source (`source`: its host; github.com by default). The
   // GETs spend the owner's quota on the code host: not for other sites.
@@ -85,19 +71,7 @@ export function repoRoutes({ db, config, tracking, diffs }: AppDeps): Hono {
   // With `source`, the repo may also be named by its path there (group%2Fproject), and must be on that source. A
   // source that isn't configured on this server still has its repos removed: that needs no token.
   r.delete('/repos/:repo', (c) => {
-    const q = parseWith(removeQuery, c.req.query());
-    const input = c.req.param('repo');
-    const src = q.source === undefined ? null : sourceByHost(db, q.source);
-    if (q.source !== undefined && !src) throw new HttpError(400, notASource(q.source.toLowerCase()));
-    const ref = src ? resolveRepoOn(db, input, src) : resolveRepo(db, input);
-    if (!ref) throw new HttpError(404, 'Repository not found');
-    if (ref.trackedBy === 'owned') {
-      throw new HttpError(409, 'Repositories you own are tracked automatically; hide it instead.', { key: ref.key, trackedBy: 'owned' });
-    }
-    // TODO(diff-comments): once comments exist, the Remove confirmation shows how many of the user's comments go with
-    // the repo (the user decided: show the count, then delete). Add Repo.commentCount; the cascade already deletes them.
-    removeRepo(db, ref.id);
-    diffs.evict();
+    removeTrackedRepo({ db, diffs }, c.req.param('repo'), parseWith(removeQuery, c.req.query()).source);
     return c.body(null, 204);
   });
 

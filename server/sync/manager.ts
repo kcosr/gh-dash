@@ -4,11 +4,13 @@ import type { Db } from '../db/db';
 import { deleteMeta, getMeta, type LastSyncMeta, type SyncLockMeta, type SyncLockSource, setMeta } from '../db/meta';
 import { repoKeySql, type RepoRef, resolveRepo, resolveRepoOn } from '../db/repo-key';
 import { getSettings } from '../db/settings';
-import { GITHUB_SOURCE_ID, getSource, type SourceRow, setSourceLastSync, setSourceRateLimit, tryClaimViewer } from '../db/sources';
+import { GITHUB_SOURCE_ID, getSource, type SourceRow, setSourceLastSync, setSourceRateLimit, sourceLabel, tryClaimViewer } from '../db/sources';
+import { HttpError } from '../lib/errors';
 import type { SyncSource } from '../provider/types';
 import { githubSyncSource } from '../sources/registry';
 import { noTokenMessage, type ResolvedToken, type TokenSupply } from '../token';
 import { AccountMismatch, runSync, type SyncProgress, type SyncRequest, type SyncResult } from './sync';
+import { notASource } from './tracking';
 
 /** A lock whose heartbeat is older than this belongs to a dead process. */
 const LOCK_STALE_MS = 90_000;
@@ -375,6 +377,42 @@ export class SyncManager {
       if (!this.startQueued()) this.reschedule();
     });
     return { result: { ok: true }, missing };
+  }
+
+  /**
+   * POST /sync without HTTP: checks that `body` names something this instance can sync, then starts a manual run
+   * (asking for the tokens afresh) and returns the status it started with. Throws HttpError: 404 for a `source` that
+   * isn't a source here or a repo key nothing tracks, 400 for a source (or a repo's source) this instance doesn't sync
+   * or when there is nothing to sync, 409 with the running status when a sync is running, 503 with the reasons when no
+   * requested source has a token.
+   */
+  async request(body: SyncRequest): Promise<SyncStatus> {
+    const { db } = this;
+    const req: SyncRequest = { ...body };
+    // `source` syncs that source alone; it must be one this instance syncs.
+    const source = req.source === undefined ? null : this.sources.byHost(req.source);
+    if (req.source !== undefined) {
+      if (!source) throw new HttpError(404, notASource(req.source));
+      if (!source.configured) throw new HttpError(400, `${source.label} isn't configured on this server.`);
+    }
+    if (req.repo !== undefined) {
+      // A tracked repo is synced by its key (with `source`, by its path there too); a bare name nothing tracks may be a
+      // repo the viewer just created on github.com.
+      const ref = source ? resolveRepoOn(db, req.repo, source) : resolveRepo(db, req.repo);
+      if (ref) {
+        req.repo = ref.key;
+        const on = this.sources.byId(ref.sourceId);
+        if (!on?.configured) throw new HttpError(400, `${on?.label ?? sourceLabel(getSource(db, ref.sourceId)!)} isn't configured on this server.`);
+      } else if (req.repo.includes('/') || (source && source.id !== GITHUB_SOURCE_ID)) {
+        throw new HttpError(404, `${req.repo} isn't tracked${source ? ` on ${source.label}` : ''}. Add it first (POST /api/v1/repos).`);
+      }
+    }
+    // Resolves the tokens afresh, so "Sync now" works right after `gh auth login` or a new token file.
+    const res = await this.start('manual', req);
+    if (!res.ok && res.reason === 'running') throw new HttpError(409, 'A sync is already running', this.status());
+    if (!res.ok && res.reason === 'no-token') throw new HttpError(503, this.noTokenMessage(req));
+    if (!res.ok) throw new HttpError(400, 'Nothing here to sync');
+    return this.status();
   }
 
   /** Whether this manager syncs the source at `host`: every source this instance's config names (github.com always). */

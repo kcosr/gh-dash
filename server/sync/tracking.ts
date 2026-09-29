@@ -11,9 +11,10 @@ import { GITHUB_HOST, type AddRepoResponse, type RepoCandidate, type RepoCandida
 import { inputHost, parseGitHubInput, parseGitLabInput } from '../../shared/repos';
 import { HttpError } from '../lib/errors';
 import type { Db } from '../db/db';
-import { getRepo } from '../db/repos';
+import { resolveRepo, resolveRepoOn } from '../db/repo-key';
+import { getRepo, removeRepo } from '../db/repos';
 import { getSettings } from '../db/settings';
-import { GITHUB_SOURCE_ID, getSource, setSourceRateLimit, sourceKey, tryClaimViewer, viewerMismatch, type SourceRef } from '../db/sources';
+import { GITHUB_SOURCE_ID, getSource, setSourceRateLimit, sourceByHost, sourceKey, tryClaimViewer, viewerMismatch, type SourceRef } from '../db/sources';
 import { addManual, applyProbe } from '../db/write';
 import { GitHubSyncSource } from '../github/sync-source';
 import { DAY_MS, isoSec } from '../lib/time';
@@ -30,6 +31,28 @@ const INTERACTIVE: RetryLimits = { maxAttempts: 2, maxRetryWaitMs: 10_000 };
 
 /** The 400 for a host that names no source in this database. */
 export const notASource = (host: string) => `${host} isn't a source here.`;
+
+/**
+ * Stops tracking a repository added by hand: deletes its pull requests, issues, commits, releases and stars, its set
+ * memberships and its cached diffs. Nothing changes on the code host. `input` is the repo's key (or an owned github.com
+ * repo's short name); with `source` (a host) it may also be the repo's path there, and the repo must be on that source.
+ * 400 for a host that isn't a source here, 404 for an unknown repo, 409 for one the viewer owns (hide it instead). A
+ * source that isn't configured on this server still has its repos removed: that needs no token.
+ */
+export function removeTrackedRepo(deps: { db: Db; diffs: { evict(): void } }, input: string, source?: string): void {
+  const { db } = deps;
+  const src = source === undefined ? null : sourceByHost(db, source);
+  if (source !== undefined && !src) throw new HttpError(400, notASource(source.toLowerCase()));
+  const ref = src ? resolveRepoOn(db, input, src) : resolveRepo(db, input);
+  if (!ref) throw new HttpError(404, 'Repository not found');
+  if (ref.trackedBy === 'owned') {
+    throw new HttpError(409, 'Repositories you own are tracked automatically; hide it instead.', { key: ref.key, trackedBy: 'owned' });
+  }
+  // TODO(diff-comments): once comments exist, the Remove confirmation shows how many of the user's comments go with
+  // the repo (the user decided: show the count, then delete). Add Repo.commentCount; the cascade already deletes them.
+  removeRepo(db, ref.id);
+  deps.diffs.evict();
+}
 
 /** The Sync manager's part: start a just-added repo's first sync, or queue it. */
 export interface FirstSync {

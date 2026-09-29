@@ -140,7 +140,7 @@ describe('resolveRepoIds', () => {
 
 describe('call sites', () => {
   const scope = (repos: string[] | null): Scope => ({
-    repos, visibility: 'all', who: 'everyone', from: Date.parse('2026-01-01T00:00:00Z'), to: Date.parse('2026-10-01T00:00:00Z'), tz: 'UTC', q: null,
+    repos, visibility: 'all', ownership: 'all', who: 'everyone', from: Date.parse('2026-01-01T00:00:00Z'), to: Date.parse('2026-10-01T00:00:00Z'), tz: 'UTC', q: null,
   });
 
   it('a list scope takes keys and aliases alike', () => {

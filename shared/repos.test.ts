@@ -237,6 +237,14 @@ describe('selectRepos with keys', () => {
     expect(keys(selectRepos(all, { scope: 'default', repos: 'kcosr/old' }))).toEqual(['kcosr/old']);
   });
 
+  it('filters by ownership: mine = owned, others = added by hand', () => {
+    expect(keys(selectRepos(all, { scope: 'default', ownership: 'mine' }))).toEqual(['kcosr/gh-dash', 'kcosr/sedes']);
+    expect(keys(selectRepos(all, { scope: 'default', ownership: 'others' }))).toEqual(['dlvhdr/gh-dash']);
+    expect(keys(selectRepos(all, { ownership: 'all' }))).toHaveLength(6);
+    expect(keys(selectRepos(all, { repos: 'gh-dash,dlvhdr/gh-dash', ownership: 'others' }))).toEqual(['dlvhdr/gh-dash']);
+    expect(keys(selectRepos(all, { q: 'DLVHDR' }))).toEqual(['dlvhdr/gh-dash']);
+  });
+
   it('filters by visibility and searches key text', () => {
     expect(keys(selectRepos(all, { repos: 'kcosr/gh-dash,dlvhdr/gh-dash', visibility: 'private' }))).toEqual(['dlvhdr/gh-dash']);
     expect(keys(selectRepos(all, { q: 'dlvhdr' }))).toEqual(['dlvhdr/gh-dash']);

@@ -1,8 +1,9 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { DAY_MS, ymdToDayNum, zonedMidnight } from '../lib/time';
-import { seedDb } from '../test/seed';
+import { addManualRepo, seedDb } from '../test/seed';
 import type { Db } from './db';
 import { loadQueryCtx, type QueryCtx, type Scope } from './filters';
+import { listActivity } from './lists';
 import { computeStats, defaultBucket } from './stats';
 import { upsertCommit, upsertOwned, upsertStar } from './write';
 
@@ -19,6 +20,7 @@ function scope(from: string, to: string, over: Partial<Scope> = {}): Scope {
   return {
     repos: null,
     visibility: 'all',
+    ownership: 'all',
     who: 'everyone',
     q: null,
     tz,
@@ -105,6 +107,27 @@ describe('computeStats', () => {
     const internal = computeStats(d, loadQueryCtx(d), scope('2026-09-20', '2026-09-26', { visibility: 'internal' }));
     expect(internal.byRepo.map((r) => [r.repo, r.stars])).toEqual([['alice/corp', 1]]);
     expect(internal.stars.every((b) => b.total === 0)).toBe(true);
+  });
+
+  it('counts stars of repos you own only: tile, series, cumulative line, per-repo and activity', () => {
+    const d = seedDb();
+    // A public repo added by hand, with stargazer rows (say, from before it was transferred away).
+    const theirs = addManualRepo(d, 'bob/lib', { stars: 40 });
+    for (const [login, at] of [['yan', '2026-09-21T00:00:00Z'], ['zoe', '2026-09-24T00:00:00Z']] as const) {
+      upsertStar(d, theirs, { login, name: null, avatarUrl: null, starredAt: at });
+    }
+    upsertCommit(d, theirs, { oid: 'b'.repeat(40), headline: 'x', body: '', author: { login: 'bob', name: null, email: null, avatarUrl: null }, committedAt: '2026-09-22T00:00:00Z', url: 'u', additions: 1, deletions: 0, prNumber: null });
+    const c = loadQueryCtx(d);
+    const base = computeStats(db, ctx, scope('2026-09-20', '2026-09-26'));
+    const s = computeStats(d, c, scope('2026-09-20', '2026-09-26'));
+    expect(s.tiles.newStars).toEqual(base.tiles.newStars);
+    expect(s.series.map((b) => b.stars)).toEqual(base.series.map((b) => b.stars));
+    expect(s.stars).toEqual(base.stars);
+    expect(s.byRepo.find((r) => r.repo === 'bob/lib')).toMatchObject({ commits: 1, stars: 0 });
+    expect(s.tiles.commits.value).toBe(base.tiles.commits.value! + 1);
+    const events = listActivity(d, c, scope('2026-09-20', '2026-09-26'), ['star'], null);
+    expect(events.items.map((e) => e.repo)).toEqual(['alice/app', 'alice/app']);
+    expect(listActivity(d, c, scope('2026-09-20', '2026-09-26', { ownership: 'others' }), null, null).facets.byType).toEqual({ commit: 1 });
   });
 
   it('stars are never "me"', () => {

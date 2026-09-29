@@ -14,6 +14,7 @@ beforeAll(() => {
 const scope = (over: Partial<Scope> = {}): Scope => ({
   repos: null,
   visibility: 'all',
+  ownership: 'all',
   who: 'everyone',
   from: Date.parse('2026-09-01T00:00:00Z'),
   to: Date.parse('2026-09-28T00:00:00Z'),
@@ -123,6 +124,14 @@ describe('repo keys', () => {
     expect(ids(null)).toContain('bob/app#7');
     expect(listPrs(d, c, scope(), all, null).facets.byRepo).toMatchObject({ 'alice/app': 3, 'bob/app': 1 });
     expect(getPrDetail(d, c, 'bob/app', 7)).toMatchObject({ id: 'bob/app#7', repo: 'bob/app' });
+
+    // ownership: mine = repos you own, others = repos added by hand; like visibility, it narrows facets too.
+    const own = (ownership: Scope['ownership'], repos: string[] | null = null) => listPrs(d, c, scope({ repos, ownership }), all, null);
+    expect(own('mine').items.map((p) => p.id)).not.toContain('bob/app#7');
+    expect(own('others').items.map((p) => p.id)).toEqual(['bob/app#7']);
+    expect(own('others').facets.byRepo).toEqual({ 'bob/app': 1 });
+    expect(own('mine', ['app', 'bob/app']).items.map((p) => p.id)).toEqual(['alice/app#3', 'alice/app#2', 'alice/app#1']);
+    expect(own('all').total).toBe(own('mine').total + own('others').total);
   });
 });
 

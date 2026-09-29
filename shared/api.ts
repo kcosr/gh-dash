@@ -16,6 +16,8 @@ export type Visibility = 'public' | 'private' | 'internal';
 export type VisibilityFilter = 'all' | Visibility;
 /** How a repository came to be tracked: synced because the viewer owns it, or added by hand. */
 export type TrackedBy = 'owned' | 'manual';
+/** Repos by how they are tracked: 'mine' = owned (tracked automatically), 'others' = added by hand. */
+export type Ownership = 'all' | 'mine' | 'others';
 export type Who = 'me' | 'others' | 'everyone';
 export type PrState = 'open' | 'merged' | 'closed';
 export type PrStateFilter = PrState | 'all';
@@ -341,6 +343,7 @@ export interface SyncStatus {
  *    default scope: all repos that are not archived, not hidden, and (unless settings.includeForks) not forks.
  *    An explicitly empty value (`repos=`) means "no repos" and returns nothing.
  *  - visibility: default 'all'.
+ *  - ownership: default 'all'; 'mine' = repositories you own, 'others' = repositories added by hand.
  *  - who: default 'everyone'. 'me' matches Actor.isMe. Stars are always by others.
  *  - from / to: 'YYYY-MM-DD' (interpreted in `tz`; `to` is inclusive through the end of that day),
  *    a full ISO datetime, or a relative offset like '-7d' / '-12w' / '-3m' (from now).
@@ -351,6 +354,7 @@ export interface SyncStatus {
 export interface ScopeQuery {
   repos?: string;
   visibility?: VisibilityFilter;
+  ownership?: Ownership;
   who?: Who;
   from?: string;
   to?: string;
@@ -389,6 +393,8 @@ export interface RepoQuery {
   repos?: string;
   scope?: 'all' | 'default';
   visibility?: VisibilityFilter;
+  ownership?: Ownership;
+  /** Case-insensitive substring of owner/name, description, topics or language. */
   q?: string;
   sort?: 'activity' | 'stars' | 'open' | 'name';
 }

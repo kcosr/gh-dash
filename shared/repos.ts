@@ -168,6 +168,7 @@ export function selectRepos(repos: Repo[], query: RepoQuery, includeForks = fals
   };
   return repos.filter((r) => (!selected || selected.has(r.key))
     && (!query.visibility || query.visibility === 'all' || r.visibility === query.visibility)
+    && (!query.ownership || query.ownership === 'all' || (query.ownership === 'mine') === (r.trackedBy === 'owned'))
     && (!text || `${r.key} ${r.description ?? ''} ${r.topics.join(' ')} ${r.language?.name ?? ''}`.toLowerCase().includes(text)))
     .sort((a, b) => Number(b.pinned) - Number(a.pinned) || Number(a.hidden) - Number(b.hidden) || compare(a, b) || a.name.localeCompare(b.name) || a.key.localeCompare(b.key));
 }

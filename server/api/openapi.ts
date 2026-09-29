@@ -229,6 +229,7 @@ const REPO = { ...p('repo', 'Repo key `owner/name`, URL-encoded as one segment (
 const SCOPE: ParamDoc[] = [
   q('repos', 'Comma-separated repo keys (owner/name; the short name of a repo you own also works). Omitted: default scope (non-archived, non-hidden, non-fork unless includeForks). Empty (`repos=`): no repos.', str(), 'kcosr/gh-dash,kcosr/tools'),
   q('visibility', 'Repo visibility filter (internal: GitHub Enterprise).', { ...enumOf('all', 'public', 'private', 'internal'), default: 'all' }),
+  q('ownership', 'mine: repositories you own (tracked automatically); others: repositories added by hand.', { ...enumOf('all', 'mine', 'others'), default: 'all' }),
   q('who', "'me' = the authenticated user (login, settings.myEmails or GH_DASH_MY_EMAILS); stars are always by others.", { ...enumOf('me', 'others', 'everyone'), default: 'everyone' }, 'me'),
   q('from', 'Start: YYYY-MM-DD (in tz), ISO datetime, or relative offset like -7d / -12w / -3m. Default: 29 days before today.', str(), '-30d'),
   q('to', 'End, inclusive: YYYY-MM-DD covers that whole day. Same formats as from. Default: end of today. Bounds must lie in 1970–2999 and span at most 7320 days (~20 years).', str()),
@@ -312,6 +313,7 @@ export const ENDPOINTS: EndpointDoc[] = [
     q('repos', 'Comma-separated repo keys (or short names of repos you own); explicit empty selects nothing. Overrides scope.'),
     q('scope', 'all (default) returns the inventory; default excludes archived/hidden and forks unless enabled in settings.', enumOf('all', 'default')),
     q('visibility', 'Repository visibility (internal: GitHub Enterprise)', enumOf('all', 'public', 'private', 'internal')),
+    q('ownership', 'mine: repositories you own; others: repositories added by hand', enumOf('all', 'mine', 'others')),
     q('q', 'Case-insensitive substring in owner/name, description, topics or language'),
     q('sort', 'Sort within pinned/hidden groups; default activity', enumOf('activity', 'stars', 'open', 'name')),
   ], response: { status: 200, schema: obj({ items: arr(ref('Repo')) }) } },

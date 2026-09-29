@@ -394,7 +394,7 @@ describe('planRepo', () => {
     repo_id: 1, commits_pushed_at: '2026-09-25T00:00:00Z', commits_branch: 'main', commits_head: null, prs_hwm: '2026-09-20T00:00:00Z', issues_hwm: '2026-09-01T00:00:00Z',
     releases_synced_at: '2026-09-27T00:00:00Z', stars_synced_at: '2026-09-27T00:00:00Z', stars_full_at: '2026-09-27T00:00:00Z', synced_at: '2026-09-27T00:00:00Z', last_error: null,
   };
-  const ctx = { full: false, includeForks: false, backfillStart: '2025-09-27T00:00:00Z', now: NOW, storedStars: { count: 3, latest: '2026-09-01T00:00:00Z' }, isKnownRelease: () => true };
+  const ctx = { full: false, syncStars: true, includeForks: false, backfillStart: '2025-09-27T00:00:00Z', now: NOW, storedStars: { count: 3, latest: '2026-09-01T00:00:00Z' }, isKnownRelease: () => true };
   const none = { commits: null, prs: null, issues: null, releases: null, stars: null };
 
   it('plans nothing when every probe matches the stored marks', () => {
@@ -425,6 +425,15 @@ describe('planRepo', () => {
     const fork = { ...repo, isFork: true };
     expect(planRepo(fork, probe, { ...state, commits_pushed_at: null }, ctx).commits).toBeNull();
     expect(planRepo(fork, probe, { ...state, commits_pushed_at: null }, { ...ctx, includeForks: true }).commits).toEqual({ stopAtKnown: false });
+  });
+
+  it('never plans stars for a repo the viewer does not own', () => {
+    const fresh = { ...state, commits_pushed_at: null, prs_hwm: null, issues_hwm: null, releases_synced_at: null, stars_synced_at: null, stars_full_at: null };
+    const others = { ...ctx, syncStars: false };
+    expect(planRepo(repo, probe, fresh, others)).toEqual({
+      commits: { stopAtKnown: false }, prs: { stopBefore: ctx.backfillStart }, issues: { stopBefore: ctx.backfillStart }, releases: { stopAtKnown: false }, stars: null,
+    });
+    expect(planRepo(repo, null, state, { ...others, full: true }).stars).toBeNull();
   });
 
   it('skips commits for empty repos', () => {

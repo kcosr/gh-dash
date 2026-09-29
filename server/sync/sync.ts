@@ -1,4 +1,4 @@
-import type { Settings } from '../../shared/api';
+import type { Settings, TrackedBy } from '../../shared/api';
 import type { Db } from '../db/db';
 import { getMeta, setMeta, type ViewerMeta } from '../db/meta';
 import type { RepoProbe, RepoRecord } from '../db/records';
@@ -85,6 +85,8 @@ export interface RepoPlan {
 
 export interface PlanContext {
   full: boolean;
+  /** Stargazers are synced for repos the viewer owns only. */
+  syncStars: boolean;
   /** Fork commit history (often a large upstream history) is only synced when forks are in scope. */
   includeForks: boolean;
   backfillStart: string;
@@ -114,12 +116,14 @@ export function planRepo(r: RepoRecord, probe: RepoProbe | null, s: SyncStateRow
   else if (!probe || probe.releaseTags.some((t) => !ctx.isKnownRelease(t))) releases = { stopAtKnown: true };
 
   let stars: RepoPlan['stars'] = null;
-  const canDiff = r.stars < FULL_STAR_DIFF_MAX;
-  const diffDue = !s.stars_full_at || ctx.now - Date.parse(s.stars_full_at) >= DAY_MS;
-  const { count, latest } = ctx.storedStars;
-  if (full || !s.stars_synced_at) stars = { mode: 'full' };
-  else if (canDiff && (r.stars > 0 || count > 0) && (diffDue || r.stars < count)) stars = { mode: 'full' };
-  else if (!probe || (probe.latestStarredAt && (!latest || probe.latestStarredAt > latest))) stars = { mode: 'incremental' };
+  if (ctx.syncStars) {
+    const canDiff = r.stars < FULL_STAR_DIFF_MAX;
+    const diffDue = !s.stars_full_at || ctx.now - Date.parse(s.stars_full_at) >= DAY_MS;
+    const { count, latest } = ctx.storedStars;
+    if (full || !s.stars_synced_at) stars = { mode: 'full' };
+    else if (canDiff && (r.stars > 0 || count > 0) && (diffDue || r.stars < count)) stars = { mode: 'full' };
+    else if (!probe || (probe.latestStarredAt && (!latest || probe.latestStarredAt > latest))) stars = { mode: 'incremental' };
+  }
 
   return {
     commits,
@@ -134,6 +138,7 @@ interface RepoTarget {
   id: number;
   record: RepoRecord;
   probe: RepoProbe | null;
+  trackedBy: TrackedBy;
 }
 
 type Section = 'commits' | 'prs' | 'issues' | 'openPrs' | 'openIssues' | 'releases' | 'stars';
@@ -229,7 +234,7 @@ async function fetchOneRepo(deps: SyncDeps, repo: string, nowIso: string): Promi
     applyProbe(deps.db, repoId, probe);
     return repoId;
   });
-  return [{ id, record, probe }];
+  return [{ id, record, probe, trackedBy: 'owned' }];
 }
 
 async function fetchAllRepos(deps: SyncDeps, nowIso: string, errors: string[]): Promise<RepoTarget[]> {
@@ -267,7 +272,7 @@ async function fetchAllRepos(deps: SyncDeps, nowIso: string, errors: string[]): 
     records.map((record, i) => {
       const probe = probes.get(record.nodeId) ?? null;
       if (probe) applyProbe(db, ids[i]!, probe);
-      return { id: ids[i]!, record, probe };
+      return { id: ids[i]!, record, probe, trackedBy: 'owned' as const };
     }),
   );
 }
@@ -308,6 +313,7 @@ async function syncRepo(deps: SyncDeps, t: RepoTarget, run: RunContext): Promise
 
   const plan = planRepo(r, t.probe, state, {
     full: run.full,
+    syncStars: t.trackedBy === 'owned',
     includeForks: run.includeForks,
     backfillStart: run.backfillStart,
     now: run.nowMs,

@@ -279,11 +279,12 @@ export function computeStats(db: Db, ctx: QueryCtx, scope: Scope, bucketParam?: 
   };
 }
 
-/** Current stargazer total of in-scope public repos, and how many of their stars came after the range. */
+/** Current stargazer total of in-scope public repos you own, and how many of their stars came after the range. */
 function publicStarTotals(db: Db, ctx: QueryCtx, scope: Scope): { current: number; after: number } {
   const w = new Where();
   addRepoScope(w, scope, ctx);
   w.add(`r.visibility = 'public'`);
+  w.add(`r.tracked_by = 'owned'`);
   const current = db.get<{ n: number | null }>(`SELECT sum(r.stars) AS n FROM repos r WHERE ${w.toSql()}`, w.params)!.n ?? 0;
   const after = db.get<{ n: number }>(
     `SELECT count(*) AS n FROM stars s JOIN repos r ON r.id = s.repo_id WHERE ${w.toSql()} AND s.starred_at >= ?`,

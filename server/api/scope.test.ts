@@ -53,7 +53,8 @@ describe('parseScope', () => {
     const s = parseScope({}, 'America/New_York', NOW);
     expect(iso(s.from)).toBe('2026-08-29T04:00:00.000Z');
     expect(iso(s.to)).toBe('2026-09-28T04:00:00.000Z');
-    expect(s).toMatchObject({ repos: null, visibility: 'all', who: 'everyone', tz: 'America/New_York', q: null });
+    expect(s).toMatchObject({ repos: null, visibility: 'all', ownership: 'all', who: 'everyone', tz: 'America/New_York', q: null });
+    expect(parseScope({ ownership: 'others' }, 'UTC', NOW).ownership).toBe('others');
   });
 
   it('distinguishes omitted, empty and listed repos', () => {

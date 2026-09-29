@@ -284,7 +284,9 @@ export const EVENT_SOURCES: EventSource[] = [
     type: 'release', kind: null, code: 'r', table: 'releases', alias: 'rel', at: 'rel.published_at',
     who: { login: 'rel.author_login' }, text: { table: 'releases', like: ['rel.tag', 'rel.name', 'rel.body'] },
   },
-  { type: 'star', kind: null, code: 's', table: 'stars', alias: 's', at: 's.starred_at', who: null, text: null },
+  // Stargazers are only synced for repos the viewer owns; this keeps any left from before a repo was transferred away
+  // out of activity and stats.
+  { type: 'star', kind: null, code: 's', table: 'stars', alias: 's', at: 's.starred_at', extra: `r.tracked_by = 'owned'`, who: null, text: null },
 ];
 
 interface EventRow {

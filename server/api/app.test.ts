@@ -334,11 +334,18 @@ describe('repo keys', () => {
     expect(await keys('repos=alice%2Fapp')).toEqual(['alice/app']);
     expect(await keys('repos=alice/app,bob/app&sort=name')).toEqual(['alice/app', 'bob/app']);
     expect(await keys('q=bob')).toEqual(['bob/app']);
+    expect(await keys('ownership=others')).toEqual(['bob/app']);
+    expect(await keys('ownership=mine')).not.toContain('bob/app');
+    expect((await app.request('/api/v1/repos?ownership=nope')).status).toBe(400);
+    expect((await app.request('/api/v1/prs?ownership=theirs')).status).toBe(400);
     const range = 'from=2026-09-01&to=2026-09-27&tz=UTC&state=all';
     const prs = async (repos: string) => ((await (await app.request(`/api/v1/prs?${range}&repos=${repos}`)).json()) as { items: { id: string }[] }).items.map((p) => p.id);
     expect(await prs('app')).toEqual(['alice/app#3', 'alice/app#2', 'alice/app#1']);
     expect(await prs('alice%2Fapp')).toEqual(await prs('app'));
     expect(await prs('bob/app')).toEqual([]);
+    const own = async (ownership: string) => ((await (await app.request(`/api/v1/prs?${range}&ownership=${ownership}`)).json()) as { total: number }).total;
+    expect(await own('others')).toBe(0);
+    expect(await own('mine')).toBe(await own('all'));
   });
 
   it('store set members and saved views by key', async () => {

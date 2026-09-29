@@ -259,14 +259,39 @@ node dist/server/index.mjs agents revoke Claude    # its comments stay
 ```
 
 The address is the server's own followed by `/mcp` (`http://127.0.0.1:4780/mcp` by default).
-For Claude Code:
+For Claude Code (`-s user` makes it available in every project):
 
 ```sh
-claude mcp add --transport http gh-dash http://127.0.0.1:4780/mcp --header "Authorization: Bearer <token>"
+claude mcp add -s user --transport http gh-dash http://127.0.0.1:4780/mcp --header "Authorization: Bearer <token>"
+```
+
+To keep the token out of the configuration, single-quote the header so Claude Code expands
+`${GH_DASH_AGENT_TOKEN}` from its environment when it connects:
+`--header 'Authorization: Bearer ${GH_DASH_AGENT_TOKEN}'`. For Codex, in `~/.codex/config.toml`
+(or `codex mcp add gh-dash --url http://127.0.0.1:4780/mcp --bearer-token-env-var GH_DASH_AGENT_TOKEN`):
+
+```toml
+[mcp_servers.gh-dash]
+url = "http://127.0.0.1:4780/mcp"
+bearer_token_env_var = "GH_DASH_AGENT_TOKEN"
 ```
 
 A token works until it is regenerated or revoked, so the agent's configuration survives
-restarts. Behind a reverse proxy, see [deploy/nginx.conf.example](deploy/nginx.conf.example)
+restarts.
+
+The tools (their descriptions tell the agent the rest):
+
+| Tool | What it does |
+| --- | --- |
+| `whoami` | The agent's name here, the version, the code hosts |
+| `list_repos`, `resolve_repo` | Tracked repositories; the key for a git remote URL (offline) |
+| `list_prs`, `find_pr`, `get_pr` | PRs (MRs) by state or text, by branch or commit, and one with its revisions, fetch refspec and files |
+| `list_threads`, `get_thread` | Comment threads, by who opened them or who they wait on, placed on the current diff |
+| `add_comment` | A thread on a PR (its head, or an earlier push) or a commit: the whole of it, a file, or lines of either side |
+| `reply`, `edit_comment`, `delete_comment` | Answer; change or delete the agent's own comments |
+| `resolve_thread`, `reopen_thread` | With an optional reply first |
+| `wait_for_reply` | Waits (up to 45 s by default) for someone else to write on the threads it cares about |
+| `show` | Asks your open gh-dash windows to show a thread or a diff | Behind a reverse proxy, see [deploy/nginx.conf.example](deploy/nginx.conf.example)
 for `/mcp` and the live updates at `/api/v1/stream`.
 
 ## Desktop app

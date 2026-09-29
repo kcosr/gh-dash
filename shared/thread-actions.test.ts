@@ -48,4 +48,30 @@ describe('thread actions', () => {
     await threadActions(qc, 'app#2').setStatus(1, 'resolved');
     expect(qc.getQueryState(key)?.isInvalidated).toBe(true);
   });
+
+  it("refetches repos' comment counts when comments come or go, on PRs and commits alike", async () => {
+    const qc = new QueryClient();
+    const repos = () => qc.getQueryState(qk.repos)?.isInvalidated;
+    const fresh = () => qc.setQueryData(qk.repos, { items: [] });
+    const commit = `app@${'a'.repeat(64)}`;
+    const cases: [string, (a: ReturnType<typeof threadActions>) => Promise<unknown>, unknown, number?][] = [
+      ['app#2', (a) => a.create({ body: 'x' } as never), thread(1)],
+      [commit, (a) => a.create({ body: 'x' } as never), { ...thread(1), kind: 'commit' }],
+      [commit, (a) => a.reply(1, 'x'), thread(1)],
+      ['app#2', (a) => a.deleteComment(1, 5), { thread: null }],
+      [commit, (a) => a.deleteThread(1), null, 204],
+    ];
+    for (const [id, act, body, status] of cases) {
+      fresh();
+      vi.stubGlobal('fetch', reply(body, status));
+      await act(threadActions(qc, id));
+      expect(repos(), id).toBe(true);
+    }
+    // A status change or an edit leaves the counts alone.
+    fresh();
+    vi.stubGlobal('fetch', reply(thread(1, 'resolved')));
+    await threadActions(qc, commit).setStatus(1, 'resolved');
+    await threadActions(qc, 'app#2').edit(5, 'y');
+    expect(repos()).toBe(false);
+  });
 });

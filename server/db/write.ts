@@ -174,6 +174,8 @@ export interface SyncStateRow {
   releases_synced_at: string | null;
   stars_synced_at: string | null;
   stars_full_at: string | null;
+  /** The repo's star count when its last stars pass completed: what a source that can't probe stars compares with. */
+  stars_count: number | null;
   synced_at: string | null;
   last_error: string | null;
 }

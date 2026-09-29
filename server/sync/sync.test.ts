@@ -12,6 +12,8 @@ import type { GqlIssue, GqlProbe, GqlPullRequest, GqlRepo } from '../github/type
 import detailFixture from '../test/fixtures/repo-detail.json';
 import probesFixture from '../test/fixtures/repo-probes.json';
 import reposFixture from '../test/fixtures/viewer-repos.json';
+import { fakeGitHub as fakeApi } from '../test/github';
+import { fakeGraphQL, releaseNode, repoNode } from '../test/graphql';
 import { planRepo, runSync } from './sync';
 import { addManualRepo, setViewer } from '../test/seed';
 
@@ -729,9 +731,9 @@ describe('planRepo', () => {
   const probe: RepoProbe = { openPrs: 0, openIssues: 0, latestPrUpdatedAt: '2026-09-20T00:00:00Z', latestIssueUpdatedAt: null, releaseTags: ['v1'], latestStarredAt: '2026-09-01T00:00:00Z' };
   const state: SyncStateRow = {
     repo_id: 1, commits_pushed_at: '2026-09-25T00:00:00Z', commits_branch: 'main', commits_head: null, prs_hwm: '2026-09-20T00:00:00Z', issues_hwm: '2026-09-01T00:00:00Z',
-    releases_synced_at: '2026-09-27T00:00:00Z', stars_synced_at: '2026-09-27T00:00:00Z', stars_full_at: '2026-09-27T00:00:00Z', synced_at: '2026-09-27T00:00:00Z', last_error: null,
+    releases_synced_at: '2026-09-27T00:00:00Z', stars_synced_at: '2026-09-27T00:00:00Z', stars_full_at: '2026-09-27T00:00:00Z', stars_count: 3, synced_at: '2026-09-27T00:00:00Z', last_error: null,
   };
-  const ctx = { full: false, syncStars: true, includeForks: false, backfillStart: '2025-09-27T00:00:00Z', now: NOW, storedStars: { count: 3, latest: '2026-09-01T00:00:00Z' }, isKnownRelease: () => true };
+  const ctx = { full: false, syncStars: true, probesStars: true, includeForks: false, backfillStart: '2025-09-27T00:00:00Z', now: NOW, storedStars: { count: 3, latest: '2026-09-01T00:00:00Z' }, isKnownRelease: () => true };
   const none = { commits: null, prs: null, issues: null, releases: null, stars: null };
 
   it('plans nothing when every probe matches the stored marks', () => {
@@ -758,6 +760,27 @@ describe('planRepo', () => {
     expect(planRepo({ ...repo, stars: 5000 }, probe, state, { ...ctx, now: NOW + 48 * HOUR }).stars).toBeNull();
   });
 
+  it("plans stars from the star count when the probe can't tell new ones (a source that doesn't probe stars)", () => {
+    const blind = { ...ctx, probesStars: false };
+    const noStar = { ...probe, latestStarredAt: null };
+    // Unchanged since the last pass: nothing, whatever the probe says, or without one.
+    expect(planRepo(repo, noStar, state, blind).stars).toBeNull();
+    expect(planRepo(repo, null, state, blind).stars).toBeNull();
+    // The count moved: an incremental pass, big projects (never re-listed in full) included.
+    expect(planRepo({ ...repo, stars: 4 }, noStar, state, blind).stars).toEqual({ mode: 'incremental' });
+    const big = { ...blind, now: NOW + 48 * HOUR };
+    expect(planRepo({ ...repo, stars: 5000 }, noStar, { ...state, stars_count: 4990 }, big).stars).toEqual({ mode: 'incremental' });
+    expect(planRepo({ ...repo, stars: 5000 }, noStar, { ...state, stars_count: 5000 }, big).stars).toBeNull();
+    // No count kept by the last pass: once.
+    expect(planRepo(repo, noStar, { ...state, stars_count: null }, blind).stars).toEqual({ mode: 'incremental' });
+    // The first pass, the daily diff and fewer stars than stored are as with a probe.
+    expect(planRepo(repo, noStar, { ...state, stars_synced_at: null }, blind).stars).toEqual({ mode: 'full' });
+    expect(planRepo(repo, noStar, state, { ...blind, now: Date.parse(state.stars_full_at!) + 25 * HOUR }).stars).toEqual({ mode: 'full' });
+    expect(planRepo({ ...repo, stars: 2 }, noStar, state, blind).stars).toEqual({ mode: 'full' });
+    // A source that probes stars goes by the probe, not the count.
+    expect(planRepo({ ...repo, stars: 4 }, { ...probe, latestStarredAt: '2026-08-01T00:00:00Z' }, state, ctx).stars).toBeNull();
+  });
+
   it('skips fork commit history unless forks are included', () => {
     const fork = { ...repo, isFork: true };
     expect(planRepo(fork, probe, { ...state, commits_pushed_at: null }, ctx).commits).toBeNull();
@@ -775,5 +798,35 @@ describe('planRepo', () => {
 
   it('skips commits for empty repos', () => {
     expect(planRepo({ ...repo, defaultBranch: null }, probe, { ...state, commits_pushed_at: null }, ctx).commits).toBeNull();
+  });
+});
+
+describe('releases', () => {
+  it("record a draft published after a newer release: a pass stops at a known release only once it has the probe's", async () => {
+    const gql = fakeGraphQL();
+    gql.state.strict = true;
+    const app = 'alice/app';
+    gql.state.releases[app] = [
+      releaseNode(app, 'v3', '2026-09-26T09:00:00Z'), releaseNode(app, 'v2.5', '2026-09-25T09:00:00Z', { isDraft: true }),
+      releaseNode(app, 'v2', '2026-09-24T09:00:00Z'), releaseNode(app, 'v1', '2026-09-20T09:00:00Z'),
+    ];
+    const probed = () => repoNode(app, { latestReleases: { nodes: gql.state.releases[app]!.slice(0, 3).map((r) => ({ tagName: r.tagName, isDraft: r.isDraft })) } });
+    gql.state.owned.push(probed());
+    const api = fakeApi({ '/graphql': gql.handler });
+    const db = openDb(':memory:');
+    const sync = (at: number) => runSync({ db, source: on(api.fetchImpl), src: github(db), settings: DEFAULT_SETTINGS, now: () => at });
+    const tags = () => db.all<{ tag: string }>('SELECT tag FROM releases ORDER BY tag').map((r) => r.tag);
+    await sync(NOW);
+    expect(tags()).toEqual(['v1', 'v2', 'v3']);
+
+    // Published: it keeps its place in the list (by creation), behind v3, which is known.
+    Object.assign(gql.state.releases[app]![1]!, { isDraft: false, publishedAt: '2026-09-27T10:00:00Z' });
+    gql.state.owned[0] = probed();
+    expect(await sync(NOW + HOUR)).toMatchObject({ newItems: 1, errors: [] });
+    expect(tags()).toEqual(['v1', 'v2', 'v2.5', 'v3']);
+    // Known now: not asked for again.
+    gql.state.ops.length = 0;
+    await sync(NOW + 2 * HOUR);
+    expect(gql.state.ops.filter((op) => op.startsWith('RepoDetail'))).toEqual([]);
   });
 });

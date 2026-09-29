@@ -13,6 +13,7 @@ import {
   deleteItem,
   deleteStarsExcept,
   getSyncState,
+  linkCommitsToPrs,
   markReposRemoved,
   markUnavailable,
   pruneCommits,
@@ -92,6 +93,11 @@ export interface PlanContext {
   full: boolean;
   /** Stargazers are synced for repos the viewer owns only. */
   syncStars: boolean;
+  /**
+   * Whether the probe's latestStarredAt tells of new stars (SyncSource.probesStars). When not, new stars are told by
+   * the star count moving since the last stars pass (sync_state.stars_count).
+   */
+  probesStars: boolean;
   /** Fork commit history (often a large upstream history) is only synced when forks are in scope. */
   includeForks: boolean;
   backfillStart: string;
@@ -125,9 +131,12 @@ export function planRepo(r: RepoRecord, probe: RepoProbe | null, s: SyncStateRow
     const canDiff = r.stars < FULL_STAR_DIFF_MAX;
     const diffDue = !s.stars_full_at || ctx.now - Date.parse(s.stars_full_at) >= DAY_MS;
     const { count, latest } = ctx.storedStars;
+    const starred = ctx.probesStars
+      ? !probe || (!!probe.latestStarredAt && (!latest || probe.latestStarredAt > latest))
+      : r.stars !== s.stars_count;
     if (full || !s.stars_synced_at) stars = { mode: 'full' };
     else if (canDiff && (r.stars > 0 || count > 0) && (diffDue || r.stars < count)) stars = { mode: 'full' };
-    else if (!probe || (probe.latestStarredAt && (!latest || probe.latestStarredAt > latest))) stars = { mode: 'incremental' };
+    else if (starred) stars = { mode: 'incremental' };
   }
 
   return {
@@ -389,6 +398,7 @@ async function syncRepo(deps: SyncDeps, t: RepoTarget, run: RunContext): Promise
   const plan = planRepo(r, t.probe, state, {
     full: run.full,
     syncStars: t.trackedBy === 'owned',
+    probesStars: source.probesStars,
     includeForks: run.includeForks,
     backfillStart: run.backfillStart,
     now: run.nowMs,
@@ -407,6 +417,9 @@ async function syncRepo(deps: SyncDeps, t: RepoTarget, run: RunContext): Promise
   let newItems = 0;
   /** The default-branch walk: its first (newest) commit, and every oid it returned. */
   const commitWalk: { head: string | null | undefined; seen: string[] } = { head: undefined, seen: [] };
+  // The probe's newest releases we don't have: an incremental pass doesn't stop at a known release before it has them
+  // (a draft published after a newer release was, say, is listed behind that one).
+  const pendingTags = new Set(plan.releases?.stopAtKnown ? (t.probe?.releaseTags ?? []).filter((tag) => !releaseExists(db, id, tag)) : []);
 
   const advance = (section: Section, hasMore: boolean, endCursor: string | null, onDone: () => void) => {
     if (hasMore && endCursor) cursor[section] = endCursor;
@@ -521,11 +534,12 @@ async function syncRepo(deps: SyncDeps, t: RepoTarget, run: RunContext): Promise
         const page = answered(res, 'releases');
         let hitKnown = false;
         for (const rel of page.items) {
-          if (plan.releases!.stopAtKnown && releaseExists(db, id, rel.tag)) {
+          if (plan.releases!.stopAtKnown && pendingTags.size === 0 && releaseExists(db, id, rel.tag)) {
             hitKnown = true;
             break;
           }
           if (upsertRelease(db, id, rel)) newItems++;
+          pendingTags.delete(rel.tag);
         }
         const oldest = page.oldestCreatedAt;
         const more = page.hasMore && !hitKnown && !!oldest && oldest >= run.backfillStart;
@@ -553,7 +567,7 @@ async function syncRepo(deps: SyncDeps, t: RepoTarget, run: RunContext): Promise
             deleteStarsExcept(db, id, starLogins);
             updateSyncState(db, id, { stars_full_at: run.nowIso });
           }
-          updateSyncState(db, id, { stars_synced_at: run.nowIso });
+          updateSyncState(db, id, { stars_synced_at: run.nowIso, stars_count: r.stars });
         });
         // An incremental pass that leaves our count out of step with the provider's means stars were removed: diff once.
         if (!active.has('stars') && starsMode === 'incremental' && !capped && storedStarInfo(db, id).count !== page.totalCount) {
@@ -569,6 +583,7 @@ async function syncRepo(deps: SyncDeps, t: RepoTarget, run: RunContext): Promise
   const stale = (o: OpenPass) =>
     o.done ? storedOpenNumbers(db, id, o.table).filter((n) => !o.seen.has(n)) : [];
   await recheckItems(deps, t, stale(open.prs), stale(open.issues));
+  if (!source.linksCommits) writeTx(db, t, () => linkCommitsToPrs(db, id));
   return newItems;
 }
 

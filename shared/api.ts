@@ -2,10 +2,18 @@
  * API contract shared by the server (server/) and the web app (web/).
  *
  * All endpoints live under /api/v1. All timestamps are ISO-8601 UTC strings.
- * Repos are identified by their key, "owner/name" (e.g. "kcosr/gh-dash"): every `repo` field and id carries it,
- * and path params take it URL-encoded as one segment (`kcosr%2Fgh-dash`). Inputs (path params, `repos=` lists,
- * set members, POST /sync `repo`) also accept the short name of a repository the authenticated user owns
- * ("gh-dash"), which is how repos were identified before keys had owners.
+ *
+ * Sources: the code hosts repositories are tracked on, each identified by its host: github.com (always there), and
+ * any number of GitLab instances (e.g. "gitlab.example.com"). GET /sources lists them. Pull requests are GitHub pull
+ * requests and GitLab merge requests alike (ids are "<repo>#<number>" for both), and "commits", "issues" and the rest
+ * mean the same on both.
+ *
+ * Repos are identified by their key: "owner/name" on github.com (e.g. "kcosr/gh-dash"), and "<host>/<full path>" on
+ * every other source (e.g. "gitlab.example.com/platform/team/app"). Every `repo` field and id carries it, and path
+ * params take it URL-encoded as one segment (`kcosr%2Fgh-dash`, `gitlab.example.com%2Fplatform%2Fteam%2Fapp`). Keys
+ * are opaque: read `Repo.source` for the host. Inputs (path params, `repos=` lists, set members, POST /sync `repo`)
+ * also accept the short name of a github.com repository the authenticated user owns ("gh-dash"), which is how repos
+ * were identified before keys had owners.
  *
  * Change policy: this file is the coordination point between agents. Additive,
  * optional fields are fine; renames/removals are not.
@@ -37,7 +45,7 @@ export const EVENT_TYPES: EventType[] = ['commit', 'pr', 'issue', 'release', 'st
 // Entities
 // ---------------------------------------------------------------------------
 
-/** A person. Commits can have an author with no linked GitHub account (login null). */
+/** A person. Commits can have an author with no linked account (login null; GitLab commits never have one). */
 export interface Actor {
   login: string | null;
   name: string | null;
@@ -225,7 +233,7 @@ export interface SavedView {
 export interface Settings {
   syncIntervalMinutes: number; // default 30; allowed 5..1440
   backfillDays: number; // default 365; how far back the first sync reaches for commits/PRs/issues
-  /** Extra commit emails that count as "me" (commits with no linked GitHub account). */
+  /** Extra commit emails that count as "me" on every source (commits with no linked account). */
   myEmails: string[];
   /**
    * Read-only: emails from the GH_DASH_MY_EMAILS env var (comma-separated). They always count as "me"
@@ -677,7 +685,7 @@ export interface StatsResponse {
 }
 
 // ---------------------------------------------------------------------------
-// Diffs: fetched from GitHub's REST API when a user opens one, cached in a separate
+// Diffs: fetched from the repo's code host (GitHub or GitLab) when a user opens one, cached in a separate
 // on-disk cache database. Never part of the background sync.
 // ---------------------------------------------------------------------------
 
@@ -692,8 +700,8 @@ export interface DiffFile {
   additions: number;
   deletions: number;
   /**
-   * Unified-diff hunks as GitHub returns them: starts at the first "@@" line, with no
-   * "diff --git" / "---" / "+++" header lines. null when GitHub omits the patch
+   * Unified-diff hunks as the code host returns them: starts at the first "@@" line, with no
+   * "diff --git" / "---" / "+++" header lines. null when the code host omits the patch
    * (binary files, or text diffs too large for the API).
    */
   patch: string | null;
@@ -710,18 +718,18 @@ export interface Diff {
   baseOid: string | null;
   /** New side of every file: the PR head, or the commit itself. */
   headOid: string;
-  /** In GitHub's order. */
+  /** In the code host's order. */
   files: DiffFile[];
-  /** Files GitHub reports as changed; exceeds files.length when GitHub caps the list (3000 files). */
+  /** Files the code host reports as changed; exceeds files.length when it caps the list (GitHub: 3000 files). */
   totalFiles: number;
   additions: number;
   deletions: number;
-  /** When this diff was fetched from GitHub (earlier than the request when served from the cache). */
+  /** When this diff was fetched from the code host (earlier than the request when served from the cache). */
   fetchedAt: string;
-  /** The PR's "Files changed" tab or the commit page on GitHub. */
+  /** The PR's "Files changed" tab (GitLab: the merge request's changes page) or the commit page on the code host. */
   url: string;
   /**
-   * Set when this cached copy was served because GitHub couldn't be asked whether it's still current
+   * Set when this cached copy was served because the code host couldn't be asked whether it's still current
    * (no token, rate limit, outage). Never set for refresh=1, which fails instead.
    */
   stale?: true;
@@ -750,7 +758,8 @@ export interface DiffCacheStats {
 //          409 for github.com, and while this server still has the source configured: remove it in Settings (desktop app) or from
 //          config.json / GH_DASH_GITLAB_URL first. Nothing adds a source or writes a credential over HTTP.)
 // GET    /api/v1/repos          RepoQuery      -> { items: Repo[] }          (unfiltered: all repos incl. archived/hidden/forks)
-// GET    /api/v1/repos/:repo                   -> Repo      (:repo = key, URL-encoded: kcosr%2Fgh-dash; or an owned repo's short name)
+// GET    /api/v1/repos/:repo                   -> Repo      (:repo = key, URL-encoded: kcosr%2Fgh-dash, gitlab.example.com%2Fgroup%2Fproject;
+//          or a github.com repo you own by its short name)
 // PATCH  /api/v1/repos/:repo   {pinned?, hidden?} -> Repo
 // GET    /api/v1/repo-candidates {refresh?: '1', source?} -> RepoCandidatesResponse   (cached 5 min per source and token)
 // GET    /api/v1/repo-lookup   {repo, source?} -> RepoLookup   (400 when `repo` names no repository on the source)
@@ -783,13 +792,14 @@ export interface DiffCacheStats {
 //          `repo`, the repo may be given by its path there. Without either, every source with a token.
 // GET    /api/v1/prs/:repo/:number/diff  {refresh?: '1'} -> Diff
 // GET    /api/v1/commits/:repo/:oid/diff {refresh?: '1'} -> Diff     (oid: 7-64 hex chars; need not be synced)
-//          Diff errors: 404 unknown repo/PR/commit, 503 no GitHub token, 429 GitHub rate limit, 502 other GitHub failure.
-//          refresh=1 re-checks GitHub for a PR's current head instead of using the last synced one.
+//          Diffs come from the repo's own source. Diff errors: 404 unknown repo/PR/commit, 503 no token for the source (or a source
+//          this server doesn't configure), 429 rate limit, 502 other failure of the code host.
+//          refresh=1 re-checks the code host for a PR's current head instead of using the last synced one.
 // GET    /api/v1/blob/:repo     {ref, path}    -> text/plain file contents at a commit (for expanding diff context);
 //          404 missing, 415 binary, 413 too large
 // GET    /api/v1/diff-cache                    -> DiffCacheStats
 // DELETE /api/v1/diff-cache                    -> DiffCacheStats (after clearing)
-// GET    /api/v1/account                       -> AccountStatus
+// GET    /api/v1/account                       -> AccountStatus   (github.com's credential; a source's is Source.account)
 // POST   /api/v1/account/check                 -> AccountStatus (re-resolve and re-validate the token now)
 //          GET /account never calls GitHub (a new token is validated in the background); InstanceInfo.apiUrl is the
 //          request's origin on a network listener, the Local API's URL (or null) on the desktop socket.

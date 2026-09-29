@@ -1,11 +1,12 @@
 # gh-dash
 
-A self-hosted dashboard for activity across your own GitHub repositories. Browse pull
-requests and their descriptions, follow commits, issues, releases and stars, and see
-trends over time. Filter by repository, date, visibility or contributor.
+A self-hosted dashboard for activity across your own GitHub and GitLab repositories. Browse
+pull requests (merge requests on GitLab) and their descriptions, follow commits, issues,
+releases and stars, and see trends over time. Filter by repository, date, visibility or
+contributor.
 
-gh-dash syncs to a local database for fast browsing. It reads from GitHub without
-changing your repositories.
+gh-dash syncs to a local database for fast browsing. It reads from GitHub and GitLab
+without changing your repositories.
 
 ![Activity timeline](docs/images/activity.png)
 
@@ -28,7 +29,8 @@ You need **Node.js 22.13 or newer** and a GitHub token with read access to your 
 For a fine-grained token, choose **All repositories** and grant **Metadata**, **Contents**,
 **Pull requests** and **Issues** read access. Set it in the `GITHUB_TOKEN` environment
 variable or a token file (`GITHUB_TOKEN_FILE`), or sign in with `gh auth login` if you use
-the GitHub CLI. For a desktop window instead of a server, see [Desktop app](#desktop-app).
+the GitHub CLI. To follow GitLab projects too, see [GitLab and other sources](#gitlab-and-other-sources).
+For a desktop window instead of a server, see [Desktop app](#desktop-app).
 
 From the project directory:
 
@@ -46,8 +48,8 @@ signed-in user are synced automatically; add others by hand (see below).
 
 - **Pull requests:** read descriptions, filter by state, and open a detail drawer.
 - **Diffs:** open a PR's changes with **Files changed** in its drawer, or click a commit's SHA
-  in the drawer or Activity (modifier-click still opens GitHub). Diffs are fetched from GitHub
-  on demand and cached on the server; see **Settings → Diff cache** for its size limit and to clear it.
+  in the drawer or Activity (modifier-click still opens the code host). Diffs are fetched from
+  GitHub or GitLab on demand and cached on the server; see **Settings → Diff cache** for its size limit and to clear it.
 - **Issues:** browse open or closed issues, expand descriptions, and filter by creator, repository, or date.
 - **Activity:** browse a combined timeline and jump to a day using the activity strip.
 - **Repositories and Insights:** explore repository activity, contributors and trends.
@@ -91,8 +93,8 @@ Shell expansion is not performed there; use absolute paths.
 They can also live in a JSON file, `$XDG_CONFIG_HOME/gh-dash/config.json` (or the path in
 `GH_DASH_CONFIG`). Its keys mirror the variables: `host`, `port`, `allowedHosts`, `db`,
 `cacheDb`, `sync`, `password`, `apiKey`, `myEmails`, `timezone` (`TZ`), `tokenSource`,
-`tokenFile` and `ghPath`. Lists are arrays and `sync` is a boolean; `null` clears
-`password`, `apiKey`, `tokenFile` and `ghPath`:
+`tokenFile`, `ghPath`, `glabPath` and `sources` (GitLab sources, below). Lists are arrays and
+`sync` is a boolean; `null` clears `password`, `apiKey`, `tokenFile`, `ghPath` and `glabPath`:
 
 ```json
 { "port": 4780, "db": "/srv/gh-dash/gh-dash.db", "allowedHosts": ["dash.example.com"], "tokenFile": "/etc/gh-dash/github-token" }
@@ -111,6 +113,11 @@ that holds a password or API key.
 | `GITHUB_TOKEN_FILE` | Unset | A file holding just the token, re-read on use, so replacing it needs no restart |
 | `GH_DASH_TOKEN_SOURCE` | `auto` | Without `GITHUB_TOKEN`: `auto` uses the token file if one is set, else the GitHub CLI; `file` or `gh` use only that |
 | `GH_DASH_GH_PATH` | `PATH`, then standard install locations | The GitHub CLI (`gh`) executable |
+| `GH_DASH_GITLAB_URL` | Unset | Declares a GitLab source by its URL, or replaces the `config.json` entry for the same host (see [GitLab and other sources](#gitlab-and-other-sources)) |
+| `GITLAB_TOKEN` | Unset | Read-only GitLab access for the GitLab source; wins over its other token sources |
+| `GITLAB_TOKEN_FILE` | Unset | A file holding just the GitLab token, re-read on use |
+| `GH_DASH_GITLAB_TOKEN_SOURCE` | Token file if set, else none | `glab` or `file`: where the GitLab source's token comes from when `GITLAB_TOKEN` is unset |
+| `GH_DASH_GLAB_PATH` | `PATH`, then standard install locations | The GitLab CLI (`glab`) executable |
 | `HOST` / `PORT` | `127.0.0.1` / `4780` | Listen address |
 | `GH_DASH_ALLOWED_HOSTS` | Unset | Host names the server answers to besides `localhost` and IP addresses, comma-separated |
 | `GH_DASH_DB` | `$XDG_STATE_HOME/gh-dash/gh-dash.db` | Database location |
@@ -127,8 +134,64 @@ Empty or relative XDG paths use the home defaults. UI settings remain in the dat
 An existing checkout-local database is not moved automatically; set `GH_DASH_DB` to
 its absolute path to keep using it.
 
-Diffs and file contents are fetched from GitHub when you open them and kept in a
-separate cache database (named after the main database, e.g. `gh-dash-cache.db`). Its size
+### GitLab and other sources
+
+gh-dash tracks repositories on several code hosts, called sources: github.com, which is
+always there, and any number of GitLab instances, self-managed or gitlab.com. Each source has
+its own token, account and sync, and a GitLab merge request is listed with the pull requests.
+A repository on a GitLab source is identified by `<host>/<group>/<project>`, for example
+`gitlab.example.com/platform/team/app`; GitHub keys stay `owner/name`. Your own projects (your
+personal namespace) are tracked automatically, like your GitHub repositories; other projects
+are added by hand.
+
+Declare a GitLab source in `config.json`:
+
+```json
+{
+  "glabPath": "/opt/homebrew/bin/glab",
+  "sources": [
+    { "kind": "gitlab", "url": "https://gitlab.example.com", "tokenSource": "file", "tokenFile": "/etc/gh-dash/gitlab-token" }
+  ]
+}
+```
+
+`url` is the instance's address, including its relative root if it has one; its host name is the
+source's identity. `tokenFile` is an absolute path. `tokenEnv` names the environment variable
+that holds the token (default `GITLAB_TOKEN`, when there is only one GitLab source). A headless
+server can declare one GitLab source with `GH_DASH_GITLAB_URL` instead, and choose its token
+with `GITLAB_TOKEN`, `GITLAB_TOKEN_FILE` or `GH_DASH_GITLAB_TOKEN_SOURCE`. Restart after edits.
+
+Where a GitLab source's token comes from, by `tokenSource`:
+
+- `GITLAB_TOKEN` (or the source's `tokenEnv`) in the environment is the token whenever it is
+  set, and locks the choice.
+- `file`: the token file, re-read on use, so replacing it needs no restart. gh-dash warns when
+  other users can read it.
+- `glab`: the token the GitLab CLI holds for that host (`glab auth login --hostname
+  gitlab.example.com`), read with `glab config get token`. Set `glabPath` when `glab` isn't on
+  `PATH` or in a standard install folder. Nothing is stored by gh-dash.
+- Without a `tokenSource`, a headless server uses the token file if one is set, and otherwise
+  has no token for that source. gh-dash never falls back from one method to another, and a
+  failing method says why.
+
+gh-dash only reads, so a token with the `read_api` scope is enough. It warns when the token can
+also change things on GitLab (the `api` scope, which the token that `glab` holds normally has)
+and when it expires within two weeks; the token's scopes and expiry are shown with the source.
+
+`GET /api/v1/sources` lists the sources with their account, sync state and repository counts,
+and never contains a token. `POST /api/v1/sources/<host>/check` validates a source's token
+again. `DELETE /api/v1/sources/<host>` removes a source that is no longer configured, together
+with all its data (nothing changes on GitLab). Sources and their credentials are never added
+or changed over HTTP, only in `config.json`, the environment or the desktop app.
+
+**Upgrading the database.** The first start of a version with sources upgrades the database in
+place: repositories now belong to a source. The upgrade can't be undone. An older gh-dash
+refuses an upgraded database ("upgraded by a newer gh-dash") rather than misread it, so copy
+the database file first if you may go back. An instance running with `GH_DASH_SYNC=off` won't
+perform the upgrade; start a syncing instance once first.
+
+Diffs and file contents are fetched from the repository's code host (GitHub or GitLab) when you
+open them and kept in a separate cache database (named after the main database, e.g. `gh-dash-cache.db`). Its size
 is capped by the `diffCacheMb` setting (200 MB by default); least recently viewed entries are
 dropped first. The cache can be deleted at any time and left out of backups.
 
@@ -158,10 +221,12 @@ The **API** button shows the current view's URL. Lists can be exported as Markdo
 or CSV. Explore the endpoint reference at `/api/docs` and the OpenAPI document at
 `/api/v1/openapi.json` on your running instance.
 
-Repositories are identified by their key, `owner/name`: every `repo` field and id carries it
-(`kcosr/gh-dash#24`), and path parameters take it URL-encoded as one segment
-(`/api/v1/repos/kcosr%2Fgh-dash`). Inputs also accept the short name of a repository you own,
-which is what earlier versions used everywhere.
+Repositories are identified by their key, `owner/name` on github.com and `<host>/<path>` on
+every other source: every `repo` field and id carries it (`kcosr/gh-dash#24`,
+`gitlab.example.com/platform/app#7` for a merge request), and path parameters take it
+URL-encoded as one segment (`/api/v1/repos/kcosr%2Fgh-dash`,
+`/api/v1/repos/gitlab.example.com%2Fplatform%2Fapp`). Inputs also accept the short name of a
+github.com repository you own, which is what earlier versions used everywhere.
 
 ## Desktop app
 

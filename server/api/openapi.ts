@@ -282,7 +282,7 @@ const schemas: Record<string, Schema> = {
     status: enumOf('added', 'removed', 'modified', 'renamed', 'copied', 'changed', 'unchanged'),
     additions: int(),
     deletions: int(),
-    patch: nullable(str('Unified-diff hunks as GitHub returns them, starting at the first "@@" line (no diff/---/+++ headers). null for binary files and diffs too large for the API.')),
+    patch: nullable(str('Unified-diff hunks as the code host returns them, starting at the first "@@" line (no diff/---/+++ headers). null for binary files and diffs too large for the API.')),
   }),
   Diff: obj({
     kind: enumOf('pr', 'commit'),
@@ -291,16 +291,16 @@ const schemas: Record<string, Schema> = {
     title: str('PR title or commit headline'),
     baseOid: nullable(str('Old side of every file: the merge base for a PR, the first parent for a commit (null for a root commit)')),
     headOid: str('New side of every file: the PR head, or the commit itself'),
-    files: { ...arr(ref('DiffFile')), description: "In GitHub's order; at most 3000" },
-    totalFiles: int('Files GitHub reports as changed; exceeds files.length when GitHub caps the list'),
+    files: { ...arr(ref('DiffFile')), description: "In the code host's order; GitHub lists at most 3000" },
+    totalFiles: int('Files the code host reports as changed; exceeds files.length when it caps the list'),
     additions: int(),
     deletions: int(),
-    fetchedAt: { ...dateTime, description: 'When the diff was fetched from GitHub (earlier than the request when cached)' },
-    url: str('The PR\'s "Files changed" tab or the commit page on GitHub'),
+    fetchedAt: { ...dateTime, description: 'When the diff was fetched from the code host (earlier than the request when cached)' },
+    url: str('The PR\'s "Files changed" tab (GitLab: the merge request\'s changes page) or the commit page on the code host'),
     stale: {
       ...bool,
       const: true,
-      description: "Present on a cached PR diff served because GitHub couldn't be asked whether it is still current (no token, rate limit, outage); never with refresh=1",
+      description: "Present on a cached PR diff served because the code host couldn't be asked whether it is still current (no token, rate limit, outage); never with refresh=1",
     },
   }, ['stale']),
   DiffCacheStats: obj({
@@ -366,14 +366,15 @@ export interface EndpointDoc {
 
 export const ENDPOINTS: EndpointDoc[] = [
   { method: 'get', path: '/api/health', tag: 'System', summary: 'Liveness check (never requires auth)', response: { status: 200, schema: obj({ ok: bool, version: str() }) } },
-  { method: 'get', path: '/api/v1/me', tag: 'System', summary: 'Authenticated GitHub user and token source', response: { status: 200, schema: ref('Me') } },
+  { method: 'get', path: '/api/v1/me', tag: 'System', summary: 'The github.com account and its token source (other sources: /sources)', response: { status: 200, schema: ref('Me') } },
   {
     method: 'get', path: '/api/v1/account', tag: 'System', summary: 'The GitHub account behind the token (never the token)',
-    description: 'Never calls GitHub: a new token is validated in the background (1 GraphQL point) and shown once that is done.',
+    description: "github.com's credential, as GET /sources/github.com shows it inside the source. Never calls GitHub: a new token is validated in the background (1 GraphQL point) and shown once that is done.",
     response: { status: 200, schema: ref('AccountStatus') },
   },
   {
     method: 'post', path: '/api/v1/account/check', tag: 'System', summary: 'Resolve the token again and re-validate it against GitHub',
+    description: "github.com's alias of POST /sources/github.com/check, answering with the account alone (200 even without a token: `error` says why).",
     response: { status: 200, schema: ref('AccountStatus') },
   },
   {
@@ -519,15 +520,15 @@ export const ENDPOINTS: EndpointDoc[] = [
   {
     method: 'get', path: '/api/v1/prs/{repo}/{number}/diff', tag: 'Diffs', summary: "A pull request's changes against its merge base",
     description:
-      'Fetched from GitHub on first view and cached. While the last sync shows the same head and base branch and no update since, ' +
-      'it is served without a GitHub request (open PRs are re-checked hourly, as the merge base can move). ' +
+      "Fetched from the repo's code host (GitHub or GitLab, whichever `repo` is on) on first view and cached. While the last sync shows the same head and base branch and no update since, " +
+      'it is served without a request to the code host (open PRs are re-checked hourly, as the merge base can move). ' +
       "When that re-check fails with 503, 429 or 502, a cached copy that matches the last sync's head and base branch is served " +
       'instead, with `stale: true` (not with refresh=1). ' +
-      'Errors: 404 unknown repo or PR, 503 no GitHub token, 429 GitHub rate limit (details.resetAt), 502 other GitHub failures, ' +
+      'Errors: 404 unknown repo or PR, 503 no token for the repo\'s source (or a source this server does not configure), 429 rate limit (details.resetAt), 502 other failures of the code host, ' +
       '403 for cross-site browser requests.',
     params: [
       REPO, p('number', 'PR number', int()),
-      q('refresh', "'1' re-checks the PR on GitHub (head, merge base, title) instead of trusting the last sync; files are fetched again only if the head or merge base changed.", enumOf('1')),
+      q('refresh', "'1' re-checks the PR on the code host (head, merge base, title) instead of trusting the last sync; files are fetched again only if the head or merge base changed.", enumOf('1')),
     ],
     response: { status: 200, schema: ref('Diff') },
   },
@@ -599,7 +600,7 @@ export function openApiDocument(version: string): Schema {
       title: 'gh-dash API',
       version,
       description:
-        'Read-only dashboard of GitHub activity across your own repositories. Timestamps are ISO-8601 UTC. ' +
+        'Read-only dashboard of activity across your repositories on GitHub and GitLab (its "sources"). Timestamps are ISO-8601 UTC. ' +
         'When GH_DASH_API_KEY is set, send `Authorization: Bearer <key>` or `X-API-Key: <key>`. ' +
         'The server answers only requests addressed to localhost, an IP address or a name in GH_DASH_ALLOWED_HOSTS (else 421).',
     },

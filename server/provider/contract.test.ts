@@ -5,6 +5,7 @@
 import { describe, expectTypeOf, it } from 'vitest';
 import type { CommitRecord, IssueRecord, PrRecord, ReleaseRecord, RepoProbe, RepoRecord, StarRecord } from '../db/records';
 import { GitHubDiffSource } from '../github/diff-source';
+import { GitHubSyncSource } from '../github/sync-source';
 import { GitHubError } from '../github/transport';
 import { GitLabDiffSource } from '../gitlab/diff-source';
 import { GitLabSyncSource } from '../gitlab/sync-source';
@@ -33,6 +34,7 @@ import type {
 
 describe('provider types', () => {
   it('are implemented by the sources', () => {
+    expectTypeOf<GitHubSyncSource>().toExtend<SyncSource>();
     expectTypeOf<GitLabSyncSource>().toExtend<SyncSource>();
     expectTypeOf<GitHubDiffSource>().toExtend<DiffSource>();
     expectTypeOf<GitLabDiffSource>().toExtend<DiffSource>();

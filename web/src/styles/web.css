@@ -778,3 +778,21 @@ a.sync:hover .sync-text { color: var(--text); text-decoration: underline; text-u
   .show-host { right: 8px; left: 8px; bottom: 8px; width: auto; }
   .show-acts .btn { height: 34px; }
 }
+.agent-row.revoked .trk-name { color: var(--muted); font-weight: 400; }
+.agent-row .trk-name .agent-mark { margin-left: 2px; }
+.agent-prefix { flex: none; font-size: 11.5px; color: var(--text-2); }
+.agent-row .btn.sm { flex: none; }
+.agent-add { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 14px; }
+.agent-add .input { width: 220px; max-width: 100%; }
+.agent-add .form-err { flex-basis: 100%; margin-top: 0; }
+.agent-token { margin-top: 14px; padding: 12px 14px; border-radius: 8px; background: var(--surface-2); font-size: 12.5px; color: var(--text-2); }
+.agent-token-h { display: flex; align-items: baseline; gap: 8px; margin: 0 0 8px !important; }
+.agent-token-h svg { width: 13px; height: 13px; color: var(--muted); transform: translateY(2px); }
+.agent-token-h b { color: var(--text); font-weight: 600; }
+.agent-token h3 { display: flex; align-items: baseline; gap: 8px; margin: 12px 0 6px; font-size: 12px; font-weight: 600; color: var(--text); }
+.agent-token h3 small { font: 11.5px var(--mono); font-weight: 400; color: var(--muted); }
+.agent-token > small { display: block; margin: 8px 0 6px; font-size: 12px; }
+.agent-snip { display: flex; align-items: flex-start; gap: 8px; }
+.agent-snip pre.code { flex: 1; min-width: 0; margin: 0; padding: 7px 10px; font-size: 11.5px; line-height: 1.55; background: var(--surface); white-space: pre-wrap; overflow-wrap: anywhere; word-break: normal; }
+.agent-snip > code.set-key { flex: 1; min-width: 0; padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); line-height: 1.5; }
+.agent-token .set-actions { margin-top: 12px; }

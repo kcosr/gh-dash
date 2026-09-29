@@ -4,7 +4,7 @@
  */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { QueryClient } from '@tanstack/react-query';
-import type { AccountStatus } from '../../../shared/api';
+import type { AccountStatus, Agent } from '../../../shared/api';
 import type { CredentialDraft, DesktopBridge, DesktopConfigPatch, DesktopState, DesktopTokenResult, SourceDraft } from '../../../shared/desktop';
 import { invalidateAccountData, qk, refetchAfterSync } from './hooks';
 
@@ -139,4 +139,34 @@ export function useSourceActions() {
   });
   const chooseTokenFile = useMutation({ mutationFn: (url: string) => need(bridge).chooseTokenFile(url) });
   return { testSource, addSource, setCredential, signOut, remove, locateGlab, chooseTokenFile };
+}
+
+/**
+ * The bridge's agent actions (shared/desktop.ts gains them with the agents' IPC). Until then they are typed here: a
+ * bridge without them rejects, and Settings says so.
+ */
+interface AgentBridge {
+  addAgent(name: string): Promise<{ agent: Agent; token: string }>;
+  regenerateAgentToken(id: number): Promise<{ agent: Agent; token: string }>;
+  revokeAgent(id: number): Promise<unknown>;
+}
+
+/**
+ * The desktop app's agent actions (Settings → Agents): adding one or making it a new token answers with the token, to
+ * show once; revoking keeps the agent and its comments. Each rejects outside the app. The list is refetched after
+ * each (the stream's `agents` message says so too, to every window).
+ */
+export function useAgentActions() {
+  const bridge = getBridge() as (DesktopBridge & Partial<AgentBridge>) | null;
+  const qc = useQueryClient();
+  const changed = () => void qc.invalidateQueries({ queryKey: qk.agents });
+  const agents = (): AgentBridge => {
+    const b = need(bridge) as DesktopBridge & Partial<AgentBridge>;
+    if (!b.addAgent || !b.regenerateAgentToken || !b.revokeAgent) throw new Error('This version of the app has no agents');
+    return b as AgentBridge;
+  };
+  const add = useMutation({ mutationFn: (name: string) => agents().addAgent(name), onSettled: changed });
+  const regenerate = useMutation({ mutationFn: (id: number) => agents().regenerateAgentToken(id), onSettled: changed });
+  const revoke = useMutation({ mutationFn: (id: number) => agents().revokeAgent(id), onSettled: changed });
+  return { add, regenerate, revoke };
 }

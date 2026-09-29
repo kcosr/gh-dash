@@ -13,6 +13,7 @@ import { apiLink } from '../lib/account';
 import { hostNames } from '../lib/sources';
 import { dur, fmtBytes, fmtDateTime, fmtNum, fmtTime, plural, relFuture, relLong } from '../lib/time';
 import { cx } from '../lib/util';
+import { AgentsSection } from './SettingsAgents';
 import { InstanceSection } from './SettingsInstance';
 import { SourcesSection } from './SettingsSources';
 import { TrackedSection } from './SettingsTracked';
@@ -250,6 +251,8 @@ export function SettingsView() {
           <DiffCacheSection />
 
           <InstanceSection />
+
+          <AgentsSection />
 
           <section className="card set-sec">
             <h2>API</h2>

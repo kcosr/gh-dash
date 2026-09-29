@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest';
 import type { Repo, TrackedBy } from './api';
 import {
   defaultRepoScope,
+  inputHost,
   matchRepoRef,
+  parseGitHubInput,
+  parseGitLabInput,
   parseRepoInput,
   repoLabel,
   repoParts,
@@ -10,6 +13,7 @@ import {
   repoRefKeys,
   repoResolver,
   resolveRepoKey,
+  sourceForInput,
   selectRepos,
   splitKey,
 } from './repos';
@@ -202,6 +206,127 @@ describe('parseRepoInput', () => {
 
   it('trims surrounding whitespace, newlines included', () => {
     expect(parseRepoInput('\n kcosr/gh-dash\n')).toEqual(ok);
+  });
+});
+
+describe('parseGitLabInput', () => {
+  const gitlab = { host: 'gitlab.example.com', baseUrl: 'https://gitlab.example.com' };
+  const ok = { path: 'platform/team/app' };
+  it.each([
+    'platform/team/app',
+    '  platform/team/app/  ',
+    'platform/team/app.git',
+    'gitlab.example.com/platform/team/app', // its key
+    'GITLAB.example.com/platform/team/app',
+    'gitlab.example.com/platform/team/app/-/issues/3',
+    'https://gitlab.example.com/platform/team/app',
+    'https://gitlab.example.com/platform/team/app/',
+    'https://gitlab.example.com/platform/team/app.git',
+    'https://gitlab.example.com/platform/team/app/-/merge_requests/12',
+    'https://gitlab.example.com/platform/team/app/-/merge_requests/12/diffs#note_7',
+    'https://gitlab.example.com/platform/team/app/-/tree/main/src?ref_type=heads',
+    'https://gitlab.example.com/platform/team/app#readme',
+    'http://gitlab.example.com:8080/platform/team/app',
+    'HTTPS://GitLab.Example.com/platform/team/app',
+    'git@gitlab.example.com:platform/team/app.git',
+    'git@gitlab.example.com:platform/team/app',
+    'ssh://git@gitlab.example.com/platform/team/app.git',
+    'ssh://git@gitlab.example.com:2222/platform/team/app.git',
+  ])('parses %s', (text) => {
+    expect(parseGitLabInput(text, gitlab)).toEqual(ok);
+  });
+
+  it('takes any depth of groups, and keeps dots, underscores and hyphens as typed', () => {
+    expect(parseGitLabInput('alice/app', gitlab)).toEqual({ path: 'alice/app' });
+    expect(parseGitLabInput('alice/corp.tools', gitlab)).toEqual({ path: 'alice/corp.tools' });
+    expect(parseGitLabInput('Platform/Team_2/sub-group/My.App', gitlab)).toEqual({ path: 'Platform/Team_2/sub-group/My.App' });
+  });
+
+  it('reads web URLs below the relative root, and keys and ssh addresses without it', () => {
+    const rooted = { host: 'code.example.com', baseUrl: 'https://code.example.com/gitlab/' };
+    expect(parseGitLabInput('https://code.example.com/gitlab/platform/team/app/-/merge_requests/1', rooted)).toEqual(ok);
+    expect(parseGitLabInput('https://code.example.com/gitlab/alice/app', rooted)).toEqual({ path: 'alice/app' });
+    expect(parseGitLabInput('code.example.com/alice/app', rooted)).toEqual({ path: 'alice/app' });
+    expect(parseGitLabInput('git@code.example.com:alice/app.git', rooted)).toEqual({ path: 'alice/app' });
+    // A URL outside the root isn't a page of this instance.
+    for (const text of ['https://code.example.com/alice/app', 'https://code.example.com/gitlab', 'https://code.example.com/gitlab/alice', 'https://code.example.com/gitlabx/alice/app']) {
+      expect(parseGitLabInput(text, rooted), text).toBeNull();
+    }
+  });
+
+  it.each([
+    '',
+    '   ',
+    'app', // a project needs its namespace
+    'alice/',
+    '/alice/app',
+    'alice//app',
+    'alice/app#3', // '#', '@', ',', '%', '?' and whitespace can't be in a key
+    'alice/app@abc1234',
+    'alice/app,bob/tool',
+    'alice/a%2Fb',
+    'alice/app?x=1',
+    'ali ce/app',
+    'alice/..',
+    './app',
+    'alice/.',
+    'alice/.git',
+    '-/profile',
+    'alice/-app',
+    'ünï/app',
+    'https://gitlab.example.com/alice',
+    'https://gitlab.example.com/-/profile',
+    'https://gitlab.example.com/',
+    'https://alice:secret@gitlab.example.com/alice/app', // an address carrying credentials
+    // Another host.
+    'https://gitlab.other.example/alice/app',
+    'https://gitlab.example.com.evil.example/alice/app',
+    'git@github.com:alice/app.git',
+    'https://github.com/alice/app',
+    'github.com/alice/app',
+  ])('rejects %j', (text) => {
+    expect(parseGitLabInput(text, gitlab)).toBeNull();
+  });
+});
+
+describe('inputHost and sourceForInput', () => {
+  it.each([
+    ['https://gitlab.example.com/gitlab/alice/app', 'gitlab.example.com'],
+    ['http://GitLab.Example.com:8080/alice/app', 'gitlab.example.com'],
+    ['git@GitLab.example.com:alice/app.git', 'gitlab.example.com'],
+    ['ssh://git@gitlab.example.com:2222/alice/app.git', 'gitlab.example.com'],
+    ['https://www.github.com/alice/app', 'github.com'],
+    ['github.com/alice/app', 'github.com'],
+    ['www.github.com/alice/app', 'github.com'],
+    ['alice/app', null],
+    ['platform/team/app', null],
+    ['gitlab.example.com/alice/app', null], // a key's host counts when it's a source's
+    ['not an address', null],
+  ])('%s names %s', (text, host) => {
+    expect(inputHost(text)).toBe(host);
+  });
+
+  it("reads a key's first segment as a host when it's a source's, or with guess when it reads like one", () => {
+    expect(inputHost('GITLAB.example.com/alice/app', ['gitlab.example.com'])).toBe('gitlab.example.com');
+    expect(inputHost('gitlab.example.com/alice/app', [], { guess: true })).toBe('gitlab.example.com');
+    expect(inputHost('gitlab.example.com/alice/app/-/issues', [], { guess: true })).toBe('gitlab.example.com');
+    // Two segments are a path: GitLab groups may have dots.
+    expect(inputHost('my.group/app', [], { guess: true })).toBeNull();
+    expect(inputHost('alice/team/app', [], { guess: true })).toBeNull();
+  });
+
+  it('picks the source an input names among those given', () => {
+    const sources = [{ host: 'github.com', id: 1 }, { host: 'gitlab.example.com', id: 2 }];
+    expect(sourceForInput('https://gitlab.example.com/gitlab/alice/app/-/merge_requests/3', sources)?.id).toBe(2);
+    expect(sourceForInput('GITLAB.EXAMPLE.COM/alice/app', sources)?.id).toBe(2);
+    expect(sourceForInput('git@github.com:alice/app.git', sources)?.id).toBe(1);
+    expect(sourceForInput('https://github.com/alice/app', sources)?.id).toBe(1);
+    expect(sourceForInput('alice/app', sources)).toBeNull();
+    expect(sourceForInput('https://gitlab.other.example/alice/app', sources)).toBeNull();
+  });
+
+  it("keeps GitHub's parser as parseGitHubInput", () => {
+    expect(parseGitHubInput).toBe(parseRepoInput);
   });
 });
 

@@ -26,7 +26,8 @@ export function targetTitle(db: Db, t: Pick<CommentThread, 'repo' | 'kind' | 'nu
 export interface ThreadOutOptions {
   kind: ProviderKind;
   title: string | null;
-  placement: Placement;
+  /** Left out when not looked for (a write's result). */
+  placement?: Placement;
   /** The whole conversation (else the last comment only). */
   comments: boolean;
   /** Longest snippet shown; null: all of it. */
@@ -50,7 +51,7 @@ export function threadOut(t: CommentThread, me: Principal, o: ThreadOutOptions) 
       ...(t.path !== null ? { path: t.path } : {}),
       ...(t.side !== null ? { side: t.side, startLine: t.startLine, endLine: t.endLine, snippet } : {}),
     },
-    placement: o.placement,
+    ...(o.placement ? { placement: o.placement } : {}),
     openedBy: byOf(t.comments[0]!.author, me),
     counts: { comments: t.comments.length },
     ...(o.comments

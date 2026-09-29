@@ -67,8 +67,26 @@ describe('the MCP SDK 1.x client', () => {
     expect(res.structuredContent).toMatchObject({ agent: { id: h.agent.id, name: 'Claude' } });
     expect(JSON.parse((res.content as { text: string }[])[0]!.text)).toEqual(res.structuredContent);
     const bad = await client.callTool({ name: 'get_thread', arguments: { id: 12345 } });
-    expect(bad).toMatchObject({ isError: true, content: [{ type: 'text', text: 'Thread 12345 not found' }] });
+    expect(bad).toMatchObject({ isError: true, content: [{ type: 'text', text: 'Thread not found' }] });
     await client.ping();
+    await client.close();
+  });
+
+  it("cancels a waiting call: the client's notifications/cancelled ends it on the server at once", async () => {
+    const { h, url, seen } = await serve();
+    const client = new Client({ name: 'interop', version: '1.0.0' });
+    await client.connect(new StreamableHTTPClientTransport(url, auth(h.token)));
+    const stop = new AbortController();
+    const started = Date.now();
+    const call = client.callTool({ name: 'wait_for_reply', arguments: { timeout_s: 30 } }, undefined, { signal: stop.signal });
+    await new Promise((r) => setTimeout(r, 50));
+    stop.abort('changed my mind');
+    await expect(call).rejects.toThrow();
+    // The client doesn't abort its POST: the server ends the call when the cancel arrives.
+    for (let i = 0; i < 100 && !seen.includes('POST tools/call 200'); i++) await new Promise((r) => setTimeout(r, 20));
+    expect(seen).toContain('POST notifications/cancelled 202');
+    expect(seen).toContain('POST tools/call 200');
+    expect(Date.now() - started).toBeLessThan(5000);
     await client.close();
   });
 

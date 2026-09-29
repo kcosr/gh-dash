@@ -1,33 +1,105 @@
 // list_threads, get_thread: gh-dash's comment threads on PRs and commits, placed on the current diff.
 
 import { z } from 'zod';
-import { getThread, threadRepo } from '../../db/comments';
+import { decodeCursor, encodeCursor } from '../../api/scope';
+import { SELF_PRINCIPAL_ID } from '../../db/comments';
+import { listThreadItems, type ThreadFilter } from '../../db/thread-list';
 import { HttpError } from '../../lib/errors';
-import { repoKinds } from '../../services/lists';
-import { idArg } from '../format';
+import * as comments from '../../services/comments';
+import { repoKinds, scopedQuery } from '../../services/lists';
+import { commitArg, idArg, limitArg, prArg, repoArg } from '../format';
 import { placeThreads } from '../placement';
-import { targetTitle, threadOut } from '../threads';
+import { LIST_SNIPPET_CHARS, targetTitle, threadOut } from '../threads';
 import { readTool } from '../tool';
+import { requireRepo } from './prs';
 
+const BY_DOC = '`by` is "me" (you), "you" (the user) or "agent:<name>".';
+const ANCHOR_DOC =
+  'The anchor is where the thread was made: the revision (commit), file (path), side (new: the head\'s lines, old: the ' +
+  "base's) and lines, with their text (snippet).";
 const PLACEMENT_DOC =
-  'placement is where the thread is on the current diff (the PR\'s head): line (startLine..endLine; relocated when made ' +
-  'on an earlier push and found again by its text), file, target (the whole PR or commit), outdated (its file or lines ' +
-  'are gone), or unknown (the diff couldn\'t be fetched).';
+  "placement is where it is on the current diff (a PR's head): line (startLine..endLine; relocated when it was made on an " +
+  'earlier push and found again by its text), file, target (the whole PR or commit), outdated (its file or lines are ' +
+  "gone), or unknown (the diff wasn't available).";
+
+export const listThreads = readTool({
+  name: 'list_threads',
+  title: 'List comment threads',
+  description:
+    'Comment threads in gh-dash, most recent activity first: everywhere, or on one repo, PR (repo and pr) or commit (repo ' +
+    'and commit), optionally one file or directory (path). waiting_on "me": open threads whose last comment isn\'t ' +
+    'yours, so someone (usually the user) is waiting for your answer; "you": open threads whose last comment isn\'t the ' +
+    "user's, so they wait on the user. author is who opened the thread (me, you: the user, agents). Items have the " +
+    `thread id, its target, status, anchor, placement and last comment (include_comments: the whole conversation). ${BY_DOC} ` +
+    `${ANCHOR_DOC} ${PLACEMENT_DOC} Pass cursor from nextCursor for the next page.`,
+  input: z
+    .object({
+      repo: repoArg.optional(),
+      pr: prArg.optional().describe('A PR (or MR) number of repo'),
+      commit: commitArg.optional().describe("A commit of repo (its own threads, not its PR's)"),
+      path: z.string().min(1).max(4096).optional().describe('A file, or a directory for the files under it'),
+      status: z.enum(['open', 'resolved', 'all']).default('open'),
+      author: z.enum(['me', 'you', 'agents', 'any']).default('any').describe('Who opened the thread'),
+      waiting_on: z.enum(['me', 'you']).optional().describe('Open threads whose last comment is not by me (this agent) / you (the user)'),
+      since: z.string().max(40).optional().describe('Only threads with activity since this ISO date or time'),
+      q: z.string().max(200).optional().describe('Words in any comment, or in the path'),
+      include_comments: z.boolean().default(false).describe('Every comment of each thread, not just the last'),
+      limit: limitArg(100, 20),
+      cursor: z.string().max(500).optional(),
+    })
+    .strict()
+    .refine((a) => a.repo !== undefined || (a.pr === undefined && a.commit === undefined), 'pr and commit need repo')
+    .refine((a) => a.pr === undefined || a.commit === undefined, 'give pr or commit, not both'),
+  run: async (args, { deps, principal, signal }) => {
+    const { db, config } = deps;
+    if (args.repo !== undefined) requireRepo(db, args.repo);
+    let since: string | undefined;
+    if (args.since !== undefined) {
+      const t = Date.parse(args.since);
+      if (Number.isNaN(t)) throw new HttpError(400, 'since: expected an ISO date or time, like 2026-09-28 or 2026-09-28T14:00:00Z');
+      since = new Date(t).toISOString();
+    }
+    const after = decodeCursor(args.cursor, 2);
+    if (after && (typeof after[0] !== 'string' || typeof after[1] !== 'number')) throw new HttpError(400, 'Invalid cursor');
+    const { scope, ctx } = scopedQuery(db, config, { repos: args.repo, q: args.q });
+    const filter: ThreadFilter = {
+      status: args.status,
+      kind: 'all',
+      sort: 'recent',
+      ...(args.author === 'me' ? { author: principal.id } : args.author === 'you' ? { author: 'self' } : args.author === 'agents' ? { author: 'agents' } : {}),
+      ...(args.waiting_on ? { waitingOn: args.waiting_on === 'me' ? principal.id : SELF_PRINCIPAL_ID } : {}),
+      ...(args.pr !== undefined ? { target: { pr: args.pr } } : args.commit !== undefined ? { target: { commit: args.commit } } : {}),
+      ...(args.path !== undefined ? { path: args.path } : {}),
+      ...(since ? { since } : {}),
+    };
+    const res = listThreadItems(db, ctx, scope, filter, { limit: args.limit, after });
+    const placements = await placeThreads(deps, res.items, signal);
+    const kindOf = repoKinds(db);
+    return {
+      items: res.items.map((t) =>
+        threadOut(t, principal, {
+          kind: kindOf(t.repo),
+          title: t.targetTitle,
+          placement: placements.get(t.id)!,
+          comments: args.include_comments,
+          snippetChars: LIST_SNIPPET_CHARS,
+        }),
+      ),
+      total: res.total,
+      counts: res.counts,
+      nextCursor: encodeCursor(res.nextCursor),
+    };
+  },
+});
 
 export const getThreadTool = readTool({
   name: 'get_thread',
   title: 'Get a comment thread',
-  description:
-    'One comment thread with its whole conversation. `by` is "me" (you), "you" (the user) or "agent:<name>". The anchor ' +
-    'is the revision (commit), file (path), side (new: the head\'s lines, old: the base\'s) and lines it was made on, with ' +
-    `their text (snippet). ${PLACEMENT_DOC}`,
+  description: `One comment thread with its whole conversation (comment ids for edit_comment and delete_comment). ${BY_DOC} ${ANCHOR_DOC} ${PLACEMENT_DOC}`,
   input: z.object({ id: idArg('Thread id') }).strict(),
   run: async ({ id }, { deps, principal, signal }) => {
-    const { db } = deps;
-    const owner = threadRepo(db, id);
-    if (!owner || owner.removed) throw new HttpError(404, `Thread ${id} not found`);
-    const t = getThread(db, id)!;
+    const t = comments.getThread(deps, id);
     const placement = (await placeThreads(deps, [t], signal)).get(t.id)!;
-    return threadOut(t, principal, { kind: repoKinds(db)(t.repo), title: targetTitle(db, t), placement, comments: true, snippetChars: null });
+    return threadOut(t, principal, { kind: repoKinds(deps.db)(t.repo), title: targetTitle(deps.db, t), placement, comments: true, snippetChars: null });
   },
 });

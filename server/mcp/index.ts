@@ -2,12 +2,17 @@
 
 import { McpCore } from './core';
 import type { McpDeps, Tool } from './tool';
+import { addComment, deleteComment, editComment, reopenThread, reply, resolveThread } from './tools/comments';
+import { show, waitForReply } from './tools/live';
 import { findPr, getPr, listPrs } from './tools/prs';
 import { listRepos, resolveRepo, whoami } from './tools/repos';
-import { getThreadTool } from './tools/threads';
+import { getThreadTool, listThreads } from './tools/threads';
 
 /** In the order tools/list gives them: finding things first, then reading threads, then writing and waiting. */
-export const TOOLS: readonly Tool[] = [whoami, listRepos, resolveRepo, listPrs, findPr, getPr, getThreadTool];
+export const TOOLS: readonly Tool[] = [
+  whoami, listRepos, resolveRepo, listPrs, findPr, getPr, listThreads, getThreadTool,
+  addComment, reply, editComment, deleteComment, resolveThread, reopenThread, waitForReply, show,
+];
 
 /** What initialize tells the agent about gh-dash (clients show it to the model once, with the tools). */
 export const INSTRUCTIONS = [

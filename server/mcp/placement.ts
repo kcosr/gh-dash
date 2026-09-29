@@ -25,7 +25,8 @@ export type Placement =
   | { kind: 'outdated'; reason: 'file' | 'lines' }
   | { kind: 'unknown'; reason: string };
 
-function compact(p: ThreadPlacement): Placement {
+/** A placement as tools report it (the anchor already says the path and side). */
+export function compactPlacement(p: ThreadPlacement): Placement {
   switch (p.kind) {
     case 'target':
       return { kind: 'target' };
@@ -71,7 +72,7 @@ export async function placeThreads(
       } else {
         try {
           const placer = createPlacer(await loadDiff(deps, target, signal, opts.waitMs ?? PLACEMENT_WAIT_MS));
-          place = (t) => compact(placer(t));
+          place = (t) => compactPlacement(placer(t));
         } catch (err) {
           if (!(err instanceof HttpError)) throw err;
           const reason = `no diff: ${err.message}`;

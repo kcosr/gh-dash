@@ -260,6 +260,6 @@ describe('get_thread', () => {
     h.code.commits.clear();
     const other = createThread(h.db, { repoId: app, kind: 'commit', oid: sha('d') }, { commitOid: sha('d'), baseOid: null, anchor: line, body: 'n' }, self);
     expect((await h.ok('get_thread', { id: other.id })).placement).toEqual({ kind: 'unknown', reason: expect.stringContaining('no diff: Commit') });
-    expect(await h.fails('get_thread', { id: 9999 })).toBe('Thread 9999 not found');
+    expect(await h.fails('get_thread', { id: 9999 })).toBe('Thread not found');
   });
 });

@@ -444,7 +444,7 @@ img.acct-av { width: 20px; height: 20px; border-radius: 50%; flex: none; backgro
 .src-notice { flex: none; display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 7px; padding: 7px 24px; border-bottom: 1px solid var(--border); background: var(--surface); font-size: 12.5px; line-height: 1.45; color: var(--muted); }
 .src-notice::before { content: ""; flex: none; align-self: center; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
 .src-notice.warn::before { background: var(--star); }
-.src-notice a { color: var(--accent-text); text-decoration: none; }
+.src-notice a { color: var(--accent-text); text-decoration: none; white-space: nowrap; }
 .src-notice a:hover { text-decoration: underline; }
 .setup-alt { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border); font-size: 13px; }
 .setup-alt p { margin: 0 0 8px; }
@@ -481,6 +481,8 @@ a.sync:hover .sync-text { color: var(--text); text-decoration: underline; text-u
   .app { height: 100dvh; grid-template-rows: auto minmax(0, 1fr); }
   .filter-toolbar { flex: none; padding: 4px 12px; gap: 0; max-height: 60dvh; overflow-y: auto; }
   .src-notice { padding: 6px 12px; }
+  /* The link wraps under the text on a phone: no separator left hanging at the end of the first line. */
+  .src-notice-sep { display: none; }
   .filter-toggle { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 44px; text-align: left; font-weight: 600; }
   .filter-toggle > svg { flex: none; }
   .filter-summary { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 400; color: var(--text-2); }

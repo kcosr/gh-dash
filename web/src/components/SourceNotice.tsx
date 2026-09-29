@@ -17,7 +17,7 @@ export function SourceNotice() {
   return (
     <div className={`src-notice${w.trouble ? ' warn' : ''}`} role="status">
       <span>{notice.text}</span>
-      <span aria-hidden="true">·</span>
+      <span className="src-notice-sep" aria-hidden="true">·</span>
       <Link to={sourceSettingsLink(w.host)}>{notice.setUp ? 'Set up in Settings → Sources' : 'Settings → Sources'}</Link>
     </div>
   );

@@ -4,11 +4,16 @@ const THEME_KEY = 'gh-dash:theme';
 const VISIT_KEY = 'gh-dash:lastVisit';
 const SIDEBAR_KEY = 'gh-dash:sidebarWidth';
 const SIDEBAR_HIDDEN_KEY = 'gh-dash:sidebarHidden';
+const DRAWER_KEY = 'gh-dash:drawerWidth';
 const DIFF_KEY = 'gh-dash:diffView';
 const ADD_SOURCE_KEY = 'gh-dash:addSource';
 export const SIDEBAR_MIN = 220;
 export const SIDEBAR_MAX = 480;
 export const SIDEBAR_DEFAULT = 268;
+export const DRAWER_MIN = 380;
+export const DRAWER_MAX = 900;
+/** The wide-window width; the stylesheet narrows it on smaller windows. */
+export const DRAWER_DEFAULT = 540;
 
 export type Theme = 'light' | 'dark';
 
@@ -19,6 +24,10 @@ function write(key: string, value: string) {
   try { localStorage.setItem(key, value); } catch { /* private mode */ }
 }
 
+function remove(key: string) {
+  try { localStorage.removeItem(key); } catch { /* private mode */ }
+}
+
 export function getSidebarWidth(): number {
   const value = Number(read(SIDEBAR_KEY));
   return Number.isFinite(value) && value >= SIDEBAR_MIN && value <= SIDEBAR_MAX ? Math.round(value) : SIDEBAR_DEFAULT;
@@ -26,6 +35,18 @@ export function getSidebarWidth(): number {
 
 export function setSidebarWidth(value: number) {
   write(SIDEBAR_KEY, String(value));
+}
+
+/** The details panel's width, or null when it was never resized (the responsive default applies). */
+export function getDrawerWidth(): number | null {
+  const value = Number(read(DRAWER_KEY));
+  return Number.isFinite(value) && value >= DRAWER_MIN && value <= DRAWER_MAX ? Math.round(value) : null;
+}
+
+/** null forgets the preference. */
+export function setDrawerWidth(value: number | null) {
+  if (value === null) remove(DRAWER_KEY);
+  else write(DRAWER_KEY, String(value));
 }
 
 /** Desktop only: narrow screens always start with the sidebar closed. */

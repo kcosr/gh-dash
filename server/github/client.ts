@@ -136,10 +136,11 @@ export class GitHubClient {
       this.opts.onRateLimit?.(rl);
     }
     const errors = body.errors ?? [];
+    const messages = errors.map((e) => e.message).join('; ');
+    // A rate limit stops the request wherever it is reported, optional fields included.
+    if (errors.some((e) => e.type === 'RATE_LIMITED')) throw new GitHubError('rate-limit', messages, { errors });
     const ok = (e: GqlError) => (e.type !== undefined && tolerated.has(e.type)) || (e.path !== undefined && optional.includes(String(e.path[0])));
     if (errors.length && !(body.data && errors.every(ok))) {
-      const messages = errors.map((e) => e.message).join('; ');
-      if (errors.some((e) => e.type === 'RATE_LIMITED')) throw new GitHubError('rate-limit', messages, { errors });
       if (/timeout|something went wrong/i.test(messages)) throw new RetryableError(messages, null);
       const kind = errors.every((e) => e.type === 'NOT_FOUND') ? 'not-found' : errors.some((e) => e.type === 'FORBIDDEN') ? 'forbidden' : 'graphql';
       throw new GitHubError(kind, messages, { errors });

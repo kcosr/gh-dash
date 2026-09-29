@@ -138,6 +138,12 @@ describe('GitHubClient', () => {
     await expect(client([reply]).c.queryPartial('query { x }')).rejects.toMatchObject({ kind: 'graphql' });
   });
 
+  it('queryPartial never tolerates a rate limit, not even under an optional field', async () => {
+    const errors = [{ type: 'RATE_LIMITED', path: ['prs'], message: 'API rate limit exceeded' }];
+    const reply = () => new Response(JSON.stringify({ data: { repository: { id: 'R' }, prs: null, rateLimit: RL }, errors }));
+    await expect(client([reply]).c.queryPartial('query { x }', {}, { optional: ['prs'] })).rejects.toMatchObject({ kind: 'rate-limit' });
+  });
+
   it('queryPartial still throws for other errors, and for no data at all', async () => {
     const other = () => new Response(JSON.stringify({ data: { nodes: [null] }, errors: [{ type: 'INTERNAL', message: 'boom' }, { type: 'NOT_FOUND', message: 'x' }] }));
     await expect(client([other]).c.queryPartial('query { x }')).rejects.toMatchObject({ kind: 'graphql', message: 'boom; x' });

@@ -1,0 +1,39 @@
+{
+  "project": {
+    "releases": {
+      "pageInfo": { "hasNextPage": true, "endCursor": "eyJyZWxlYXNlZF9hdCI6IjIwMjUifQ" },
+      "nodes": [
+        {
+          "tagName": "v2.0.0",
+          "name": "Two",
+          "description": "Coming soon",
+          "releasedAt": "2026-12-01T00:00:00Z",
+          "createdAt": "2026-09-24T10:00:00Z",
+          "upcomingRelease": true,
+          "author": { "username": "alice", "name": "Alice A", "avatarUrl": null },
+          "links": { "selfUrl": "https://gitlab.example.com/gitlab/alice/app/-/releases/v2.0.0" }
+        },
+        {
+          "tagName": "v1.1.0",
+          "name": "",
+          "description": null,
+          "releasedAt": "2026-09-23T15:00:00Z",
+          "createdAt": "2026-09-23T15:00:00Z",
+          "upcomingRelease": false,
+          "author": null,
+          "links": { "selfUrl": "https://gitlab.example.com/gitlab/alice/app/-/releases/v1.1.0" }
+        },
+        {
+          "tagName": "v1.0.0",
+          "name": "First",
+          "description": "First release",
+          "releasedAt": "2025-02-01T12:00:00Z",
+          "createdAt": "2026-09-20T09:00:00Z",
+          "upcomingRelease": false,
+          "author": { "username": "alice", "name": "Alice A", "avatarUrl": "/gitlab/uploads/-/system/user/avatar/2/avatar.png" },
+          "links": { "selfUrl": "https://gitlab.example.com/gitlab/alice/app/-/releases/v1.0.0" }
+        }
+      ]
+    }
+  }
+}

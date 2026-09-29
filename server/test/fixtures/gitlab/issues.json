@@ -1,0 +1,36 @@
+[
+  {
+    "id": 901,
+    "iid": 9,
+    "project_id": 11,
+    "title": "Dark mode",
+    "description": "Please add a dark mode.",
+    "state": "opened",
+    "created_at": "2026-09-25T10:00:00.000Z",
+    "updated_at": "2026-09-26T00:00:00.123Z",
+    "closed_at": null,
+    "closed_by": null,
+    "labels": [{ "id": 1, "name": "enhancement", "color": "#A2EEEF", "description": null, "text_color": "#333333" }],
+    "author": { "id": 4, "username": "dave", "name": "Dave D", "state": "active", "avatar_url": "https://gitlab.example.com/gitlab/uploads/-/system/user/avatar/4/avatar.png", "web_url": "https://gitlab.example.com/gitlab/dave" },
+    "type": "ISSUE",
+    "issue_type": "issue",
+    "web_url": "https://gitlab.example.com/gitlab/alice/app/-/issues/9"
+  },
+  {
+    "id": 903,
+    "iid": 3,
+    "project_id": 11,
+    "title": "Login broken",
+    "description": null,
+    "state": "closed",
+    "created_at": "2026-09-18T09:00:00.000Z",
+    "updated_at": "2026-09-21T10:00:06.000Z",
+    "closed_at": "2026-09-21T10:00:01.000Z",
+    "closed_by": { "id": 2, "username": "alice", "name": "Alice A", "state": "active", "avatar_url": null, "web_url": "https://gitlab.example.com/gitlab/alice" },
+    "labels": [],
+    "author": { "id": 3, "username": "bob", "name": "Bob B", "state": "active", "avatar_url": "https://secure.gravatar.com/avatar/b0b", "web_url": "https://gitlab.example.com/gitlab/bob" },
+    "type": "ISSUE",
+    "issue_type": "issue",
+    "web_url": "https://gitlab.example.com/gitlab/alice/app/-/issues/3"
+  }
+]

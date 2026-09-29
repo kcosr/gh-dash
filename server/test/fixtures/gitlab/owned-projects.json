@@ -1,0 +1,49 @@
+{
+  "projects": {
+    "pageInfo": { "hasNextPage": false, "endCursor": "eyJpZCI6IjEyIn0" },
+    "nodes": [
+      {
+        "id": "gid://gitlab/Project/11",
+        "path": "app",
+        "fullPath": "alice/app",
+        "namespace": { "fullPath": "alice" },
+        "description": "",
+        "webUrl": "https://gitlab.example.com/gitlab/alice/app",
+        "visibility": "public",
+        "archived": false,
+        "isForked": false,
+        "starCount": 2,
+        "forksCount": 1,
+        "createdAt": "2025-01-01T00:00:00Z",
+        "lastActivityAt": "2026-09-26T08:00:00Z",
+        "topics": ["dashboard"],
+        "languages": [
+          { "name": "TypeScript", "color": "#3178c6" },
+          { "name": "CSS", "color": "#563d7c" }
+        ],
+        "repository": {
+          "rootRef": "main",
+          "tree": { "lastCommit": { "sha": "3333333333333333333333333333333333333333", "committedDate": "2026-09-21T10:00:00Z" } }
+        }
+      },
+      {
+        "id": "gid://gitlab/Project/12",
+        "path": "corp.tools",
+        "fullPath": "alice/corp.tools",
+        "namespace": { "fullPath": "alice" },
+        "description": "Internal tooling",
+        "webUrl": "https://gitlab.example.com/gitlab/alice/corp.tools",
+        "visibility": "internal",
+        "archived": true,
+        "isForked": true,
+        "starCount": 0,
+        "forksCount": 0,
+        "createdAt": "2024-03-01T10:00:00Z",
+        "lastActivityAt": "2025-06-01T09:30:00Z",
+        "topics": [],
+        "languages": [],
+        "repository": { "rootRef": null, "tree": null }
+      }
+    ]
+  }
+}

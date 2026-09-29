@@ -1,0 +1,36 @@
+# GitLab fixtures
+
+Hand-built, **not recorded**: no GitLab instance was reachable when they were written. Their shapes follow GitLab
+19.3.3's GraphQL types and REST entities as read from GitLab's source at tag `v19.3.3` (the `gitlabhq/gitlabhq`
+mirror, which has no `ee/` directory). The values are made up; the tests pin the mapping, not GitLab's data.
+
+Timestamps follow what GitLab sends: GraphQL `Time` in UTC with `Z`, REST with milliseconds, and REST commit dates in
+the committer's own UTC offset. Uploaded avatars are paths on the instance in GraphQL (`avatarUrl`) and absolute URLs
+in REST (`avatar_url`).
+
+| File | Response of |
+| --- | --- |
+| `viewer.json` | GraphQL `Viewer` (`currentUser`) |
+| `owned-projects.json` | GraphQL `OwnedProjects` (`projects(personal: true)`) |
+| `project.json` | GraphQL `Project` (`project(fullPath:)` with probe fields) |
+| `probes.json` | GraphQL `Probes` (`projects(ids:)`) |
+| `merge-requests.json` | GraphQL `MergeRequests` (`project.mergeRequests`) |
+| `releases.json` | GraphQL `Releases` (`project.releases`) |
+| `issues.json` | REST `GET /projects/:id/issues?with_labels_details=true` |
+| `commits.json` | REST `GET /projects/:id/repository/commits?with_stats=true` |
+| `starrers.json` | REST `GET /projects/:id/starrers` |
+
+## Re-record against a real instance
+
+When one is available, capture the same queries (queries.ts) and endpoints with a `read_api` token, scrub names and
+URLs, and compare. Worth checking in particular:
+
+- `merge-requests.json`: `workItemRelations` (null unless the `explicit_mr_work_item_relations` flag is on), the order
+  of `commits` (expected newest first), `mergeUser` on an open MR with auto-merge set, `closedAt` on a merged MR, and
+  that `diffStatsSummary` is present for merged MRs whose source branch is gone.
+- `owned-projects.json` / `project.json`: `repository.tree.lastCommit` for a non-empty and an empty repository,
+  `languages` right after a push (empty until GitLab detects them), relative `avatarUrl`s under a relative root.
+- `probes.json`: `count` on the open merge request and issue connections, and `projects(ids:)` with archived projects.
+- `issues.json`: label objects with `with_labels_details=true` (3-digit colors?), `closed_by` on issues closed by an MR.
+- `commits.json`: the `stats` of merge commits, and the empty last page GitLab offers after a full one.
+- `starrers.json`: that the list is oldest first and leaves out private profiles, against `starCount`.

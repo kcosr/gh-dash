@@ -1,0 +1,38 @@
+[
+  {
+    "id": "3333333333333333333333333333333333333333",
+    "short_id": "33333333",
+    "created_at": "2026-09-21T12:00:00.000+02:00",
+    "parent_ids": ["4444444444444444444444444444444444444444", "aaaa000000000000000000000000000000000000"],
+    "title": "Merge branch 'fix' into 'main'",
+    "message": "Merge branch 'fix' into 'main'\n\nFix login flow\n\nSee merge request alice/app!5",
+    "author_name": "Alice A",
+    "author_email": "Alice@Example.com",
+    "authored_date": "2026-09-21T12:00:00.000+02:00",
+    "committer_name": "Alice A",
+    "committer_email": "alice@example.com",
+    "committed_date": "2026-09-21T12:00:00.000+02:00",
+    "trailers": {},
+    "extended_trailers": {},
+    "web_url": "https://gitlab.example.com/gitlab/alice/app/-/commit/3333333333333333333333333333333333333333",
+    "stats": { "additions": 12, "deletions": 3, "total": 15 }
+  },
+  {
+    "id": "4444444444444444444444444444444444444444",
+    "short_id": "44444444",
+    "created_at": "2026-09-20T23:30:00.000-04:00",
+    "parent_ids": ["5555555555555555555555555555555555555555"],
+    "title": "Tweak config",
+    "message": "Tweak config\n",
+    "author_name": "Alice (laptop)",
+    "author_email": "Alice@Work.Example",
+    "authored_date": "2026-09-20T23:30:00.000-04:00",
+    "committer_name": "Alice (laptop)",
+    "committer_email": "Alice@Work.Example",
+    "committed_date": "2026-09-20T23:30:00.000-04:00",
+    "trailers": {},
+    "extended_trailers": {},
+    "web_url": "https://gitlab.example.com/gitlab/alice/app/-/commit/4444444444444444444444444444444444444444",
+    "stats": { "additions": 1, "deletions": 1, "total": 2 }
+  }
+]

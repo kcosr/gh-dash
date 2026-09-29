@@ -23,30 +23,46 @@ const actorVals = (a: ActorRecord | null): Param[] => [a?.login ?? null, a?.name
 // Repos
 // ---------------------------------------------------------------------------
 
+// pinned and hidden are local preferences: never written here, so they survive every sync.
 const REPO_COLS = [
   'node_id', 'name', 'name_with_owner', 'owner', 'description', 'url', 'visibility', 'is_archived', 'is_fork',
-  'language_name', 'language_color', 'topics', 'default_branch', 'stars', 'forks', 'created_at', 'pushed_at', 'removed_at',
+  'language_name', 'language_color', 'topics', 'default_branch', 'stars', 'forks', 'created_at', 'pushed_at',
+  'removed_at', 'tracked_by', 'added_at', 'unavailable_at', 'unavailable_reason',
 ];
-const UPSERT_REPO = upsertSql('repos', REPO_COLS, ['node_id']);
+const UPSERT_OWNED = upsertSql('repos', REPO_COLS, ['node_id']);
 
-/** Upserts a repo by GitHub node id (so renames keep local prefs and data); returns the local id. */
-export function upsertRepo(db: Db, r: RepoRecord, now: string): number {
-  // A different repo (deleted, or renamed away) may still hold this name.
-  db.run(`UPDATE repos SET name = name || '~' || id, removed_at = coalesce(removed_at, ?) WHERE name = ? AND node_id <> ?`, [
+/**
+ * The provider says `key` (owner/name) now belongs to the repo `nodeId`, so any other live row holding it (a repo
+ * deleted, renamed or transferred away since) stops being live. Its data and name are kept. Returns the rows released.
+ */
+export function releaseKey(db: Db, key: string, nodeId: string, now: string): number {
+  return db.run('UPDATE repos SET removed_at = ? WHERE name_with_owner = ? COLLATE NOCASE AND node_id <> ? AND removed_at IS NULL', [
     now,
-    r.name,
-    r.nodeId,
-  ]);
-  const row = db.get<{ id: number }>(UPSERT_REPO, [
-    r.nodeId, r.name, r.nameWithOwner, r.owner, r.description, r.url, r.visibility, Number(r.isArchived), Number(r.isFork),
-    r.languageName, r.languageColor, JSON.stringify(r.topics), r.defaultBranch, r.stars, r.forks, r.createdAt, r.pushedAt, null,
-  ]);
-  return row!.id;
+    key,
+    nodeId,
+  ]).changes;
 }
 
+/**
+ * Upserts one of the viewer's own repos by node id (so renames keep local prefs and data): it is live and tracked as
+ * owned from now on, whatever it was before (removed, unavailable, or added by hand). Returns the local id.
+ */
+export function upsertOwned(db: Db, r: RepoRecord, now: string): number {
+  return db.tx(() => {
+    releaseKey(db, r.nameWithOwner, r.nodeId, now);
+    const row = db.get<{ id: number }>(UPSERT_OWNED, [
+      r.nodeId, r.name, r.nameWithOwner, r.owner, r.description, r.url, r.visibility, Number(r.isArchived), Number(r.isFork),
+      r.languageName, r.languageColor, JSON.stringify(r.topics), r.defaultBranch, r.stars, r.forks, r.createdAt, r.pushedAt,
+      null, 'owned', null, null, null,
+    ]);
+    return row!.id;
+  });
+}
+
+/** Marks owned repos the viewer no longer owns removed (repos added by hand are not in the owned list). */
 export function markReposRemoved(db: Db, keepNodeIds: string[], now: string): number {
   return db.run(
-    `UPDATE repos SET removed_at = ? WHERE removed_at IS NULL AND node_id NOT IN (SELECT value FROM json_each(?))`,
+    `UPDATE repos SET removed_at = ? WHERE removed_at IS NULL AND tracked_by = 'owned' AND node_id NOT IN (SELECT value FROM json_each(?))`,
     [now, JSON.stringify(keepNodeIds)],
   ).changes;
 }

@@ -3,7 +3,7 @@ import { setMeta } from '../db/meta';
 import type { ActorRecord, CommitRecord, IssueRecord, PrRecord, RepoRecord } from '../db/records';
 import { patchSettings } from '../db/settings';
 import { setRepoPrefs } from '../db/repos';
-import { upsertCommit, upsertIssue, upsertPr, upsertRelease, upsertRepo, upsertStar } from '../db/write';
+import { upsertCommit, upsertIssue, upsertPr, upsertRelease, upsertOwned, upsertStar } from '../db/write';
 
 export const actor = (login: string | null, email: string | null = null): ActorRecord => ({
   login,
@@ -93,11 +93,11 @@ export function seedDb(): Db {
   const db = openDb(':memory:');
   setMeta(db, 'viewer', { login: 'Alice', name: 'Alice A', avatarUrl: 'https://avatars.example/alice' });
   const now = '2026-09-27T12:00:00Z';
-  const app = upsertRepo(db, repo('app', { stars: 5 }), now);
-  const secret = upsertRepo(db, repo('secret', { visibility: 'private' }), now);
-  const old = upsertRepo(db, repo('old', { isArchived: true, stars: 1 }), now);
-  const fork = upsertRepo(db, repo('fork', { isFork: true }), now);
-  const hidden = upsertRepo(db, repo('hidden'), now);
+  const app = upsertOwned(db, repo('app', { stars: 5 }), now);
+  const secret = upsertOwned(db, repo('secret', { visibility: 'private' }), now);
+  const old = upsertOwned(db, repo('old', { isArchived: true, stars: 1 }), now);
+  const fork = upsertOwned(db, repo('fork', { isFork: true }), now);
+  const hidden = upsertOwned(db, repo('hidden'), now);
   setRepoPrefs(db, 'hidden', { hidden: true });
 
   upsertPr(db, app, pr(1, {

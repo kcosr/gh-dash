@@ -20,7 +20,7 @@ import {
   upsertIssue,
   upsertPr,
   upsertRelease,
-  upsertRepo,
+  upsertOwned,
   upsertStar,
 } from '../db/write';
 import { GitHubError, type GitHubClient } from '../github/client';
@@ -219,7 +219,7 @@ async function fetchOneRepo(deps: SyncDeps, name: string, nowIso: string): Promi
   const record = mapRepo(node);
   const probe = mapProbe(node);
   const id = deps.db.tx(() => {
-    const repoId = upsertRepo(deps.db, record, nowIso);
+    const repoId = upsertOwned(deps.db, record, nowIso);
     applyProbe(deps.db, repoId, probe);
     return repoId;
   });
@@ -239,7 +239,7 @@ async function fetchAllRepos(deps: SyncDeps, nowIso: string, errors: string[]): 
   } while (after);
 
   const ids = db.tx(() => {
-    const out = records.map((r) => upsertRepo(db, r, nowIso));
+    const out = records.map((r) => upsertOwned(db, r, nowIso));
     markReposRemoved(db, records.map((r) => r.nodeId), nowIso);
     return out;
   });

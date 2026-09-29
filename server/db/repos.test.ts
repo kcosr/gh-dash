@@ -2,13 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { seedDb } from '../test/seed';
 import { listRepos } from './repos';
 import { repoKey } from './repo-key';
-import { upsertRepo, upsertStar } from './write';
+import { upsertOwned, upsertStar } from './write';
 
 describe('listRepos lastActivityAt', () => {
   it('is the latest push / PR / issue / release activity; stars do not count', () => {
     const db = seedDb();
     // An inactive repository: last pushed in January, starred in September.
-    const dusty = upsertRepo(db, {
+    const dusty = upsertOwned(db, {
       nodeId: 'R_dusty', name: 'dusty', nameWithOwner: 'alice/dusty', owner: 'alice', description: null, url: 'https://github.com/alice/dusty',
       visibility: 'public', isArchived: false, isFork: false, languageName: null, languageColor: null, topics: [], defaultBranch: 'main',
       stars: 1, forks: 0, createdAt: '2025-01-01T00:00:00Z', pushedAt: '2026-01-29T01:03:25Z',

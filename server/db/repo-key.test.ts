@@ -5,7 +5,7 @@ import { addRepoScope, loadQueryCtx, type Scope, Where } from './filters';
 import { getPrDetail, listPrs } from './lists';
 import { REPO_IDS_FOR_KEYS, repoKey, repoKeySql, resolveRepo, resolveRepoIds } from './repo-key';
 import { createSet, getRepo, listRepos, listSets, setRepoPrefs, updateSet } from './repos';
-import { markReposRemoved, upsertRepo } from './write';
+import { markReposRemoved, upsertOwned } from './write';
 
 const idOf = (db: Db, name: string) => db.get<{ id: number }>('SELECT id FROM repos WHERE name = ?', [name])!.id;
 
@@ -161,7 +161,7 @@ describe('call sites', () => {
     const db = seedDb();
     // Inserted in the opposite order to their keys, with the same (old) activity and nothing else.
     for (const name of ['zeta', 'alpha']) {
-      upsertRepo(db, {
+      upsertOwned(db, {
         nodeId: `R_${name}`, name, nameWithOwner: `alice/${name}`, owner: 'alice', description: null, url: `https://github.com/alice/${name}`,
         visibility: 'public', isArchived: false, isFork: false, languageName: null, languageColor: null, topics: [], defaultBranch: 'main',
         stars: 0, forks: 0, createdAt: '2019-01-01T00:00:00Z', pushedAt: '2020-01-01T00:00:00Z',

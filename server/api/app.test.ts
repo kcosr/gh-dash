@@ -5,7 +5,7 @@ import { gunzipSync } from 'node:zlib';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import { type Config, loadConfig } from '../config';
 import { getMeta, setMeta } from '../db/meta';
-import { upsertCommit, upsertRepo } from '../db/write';
+import { upsertCommit, upsertOwned } from '../db/write';
 import { DiffCache } from '../diff/cache';
 import { DiffService } from '../diff/service';
 import { GitHubDiffSources } from '../github/diff-source';
@@ -88,7 +88,7 @@ describe('HTTP API', () => {
 
   it('takes GitHub Enterprise internal repositories as their own visibility', async () => {
     const db = seedDb();
-    const corp = upsertRepo(db, {
+    const corp = upsertOwned(db, {
       nodeId: 'R_corp', name: 'corp', nameWithOwner: 'alice/corp', owner: 'alice', description: null, url: 'https://github.com/alice/corp',
       visibility: 'internal', isArchived: false, isFork: false, languageName: null, languageColor: null, topics: [], defaultBranch: 'main',
       stars: 0, forks: 0, createdAt: '2025-01-01T00:00:00Z', pushedAt: '2026-09-25T00:00:00Z',

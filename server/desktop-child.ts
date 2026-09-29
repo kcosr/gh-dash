@@ -1,5 +1,6 @@
 import { DESKTOP_ENV, type MainToServer, type ServerToMain } from '../shared/desktop';
 import { loadServerConfig } from './config';
+import { deleteSource, testSourceDraft } from './services/sources';
 import { type RunningServer, startServer } from './start';
 
 /** Electron's `process.parentPort` in a utilityProcess, typed loosely so the server builds without Electron's types. */
@@ -12,24 +13,38 @@ export interface ParentPort {
 const FATAL_EXIT_DELAY_MS = 200;
 
 /**
- * Handles one message from main. `set-token` sets the token choice and, when `token` is present, the app token (null
- * forgets it), validates the result against GitHub and answers `token-result` (ok = no error: a valid token, or no
- * token because nothing is chosen). `reload-sources` re-reads config.json's sources and answers `sources-result`.
- * `shutdown` closes the listeners and databases, then exits 0.
+ * Handles one message from main (shared/desktop.ts has the protocol):
+ * - `set-token` sets github.com's token choice and, when `token` is present, its app token (null forgets it), validates
+ *   the result against GitHub and answers `token-result` (ok = no error: a valid token, or no token because nothing is
+ *   chosen). With `source`, it sets that GitLab source's app token instead and answers with its SourceAccount.
+ * - `reload-sources` re-reads config.json's sources and answers `sources-result`.
+ * - `test-source` validates a draft source with a throwaway credential (`source-test-result`); `delete-source` removes
+ *   an unconfigured source with its data (`source-deleted`); `sync-source` starts a source's sync (`sync-started`).
+ * - `shutdown` closes the listeners and databases, then exits 0.
+ * A request that fails is answered with `request-failed` and the reason, so main never waits for nothing.
  */
 export function mainMessageHandler(
-  server: Pick<RunningServer, 'tokens' | 'close'> & Partial<Pick<RunningServer, 'reloadSources'>>,
+  server: Pick<RunningServer, 'tokens' | 'close'> & Partial<Pick<RunningServer, 'reloadSources' | 'sources' | 'sync' | 'db' | 'diffs'>>,
   post: (message: ServerToMain) => void,
   exit: (code: number) => void,
 ): (message: unknown) => Promise<void> {
-  return async (message) => {
-    const msg = message as MainToServer | null | undefined;
-    if (msg?.type === 'set-token') {
+  const need = <K extends 'sources' | 'sync' | 'db' | 'diffs'>(key: K): NonNullable<RunningServer[K]> => {
+    const part = server[key];
+    if (!part) throw new Error("This server can't manage sources");
+    return part as NonNullable<RunningServer[K]>;
+  };
+  const handle = async (msg: MainToServer): Promise<void> => {
+    if (msg.type === 'set-token' && msg.source !== undefined) {
+      const runtime = need('sources').setAppToken(msg.source, msg.token);
+      if (!runtime) throw new Error(`${msg.source} isn't a GitLab source here.`);
+      const account = await runtime.tokens.check();
+      post({ type: 'token-result', id: msg.id, ok: account.error === null, account });
+    } else if (msg.type === 'set-token') {
       if (msg.token !== undefined) server.tokens.setAppToken(msg.token);
       server.tokens.setChoice(msg.choice);
       const account = await server.tokens.check();
       post({ type: 'token-result', id: msg.id, ok: account.error === null, account });
-    } else if (msg?.type === 'reload-sources') {
+    } else if (msg.type === 'reload-sources') {
       try {
         if (!server.reloadSources) throw new Error("This server can't reload its sources");
         const runtimes = server.reloadSources();
@@ -38,12 +53,31 @@ export function mainMessageHandler(
       } catch (err) {
         post({ type: 'sources-result', id: msg.id, ok: false, error: (err as Error).message, sources: [] });
       }
-    } else if (msg?.type === 'shutdown') {
+    } else if (msg.type === 'test-source') {
+      const check = await testSourceDraft({ sources: need('sources') }, msg.draft);
+      post({ type: 'source-test-result', id: msg.id, check });
+    } else if (msg.type === 'delete-source') {
+      const removed = deleteSource({ db: need('db'), sources: need('sources'), sync: need('sync'), diffs: need('diffs') }, msg.source);
+      post({ type: 'source-deleted', id: msg.id, repos: removed.repos });
+    } else if (msg.type === 'sync-source') {
+      const result = await need('sync').startOrQueue({ source: msg.source });
+      post({ type: 'sync-started', id: msg.id, result });
+    } else if (msg.type === 'shutdown') {
       try {
         await server.close();
       } finally {
         exit(0);
       }
+    }
+  };
+  return async (message) => {
+    const msg = message as MainToServer | null | undefined;
+    if (!msg || typeof msg !== 'object') return;
+    try {
+      await handle(msg);
+    } catch (err) {
+      if (!('id' in msg) || typeof msg.id !== 'number') throw err;
+      post({ type: 'request-failed', id: msg.id, message: (err as Error).message || 'Something went wrong' });
     }
   };
 }

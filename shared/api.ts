@@ -384,6 +384,23 @@ export interface Source {
   repos: { owned: number; added: number; hidden: number };
 }
 
+/**
+ * A GitLab source tested before it is added, or a new credential for one before it is used (the desktop app's
+ * test-source). Nothing was saved to test it. Never includes the token.
+ */
+export interface SourceCheck {
+  /** The token was found and GitLab accepted it, and nothing stands in the way of using it (`conflict`). */
+  ok: boolean;
+  /** The source's identity, from the URL: 'gitlab.example.com'. */
+  host: string;
+  /** The URL as it would be saved: relative root kept, no trailing slash. */
+  url: string;
+  /** Who the token is for, its scopes and expiry, the instance's version; or why there is no usable token (`error`). */
+  account: SourceAccount;
+  /** Why it can't be used as it is: already added, or this database's data on that host is another account's. */
+  conflict: string | null;
+}
+
 /** Where an instance setting's value came from. */
 export type ConfigSource = 'default' | 'file' | 'env';
 

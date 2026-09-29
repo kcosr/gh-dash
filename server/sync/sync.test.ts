@@ -6,7 +6,7 @@ import { DEFAULT_SETTINGS } from '../db/settings';
 import type { Settings } from '../../shared/api';
 import type { SyncStateRow } from '../db/write';
 import { GitHubClient } from '../github/client';
-import type { GqlIssue, GqlPullRequest } from '../github/types';
+import type { GqlIssue, GqlProbe, GqlPullRequest, GqlRepo } from '../github/types';
 import detailFixture from '../test/fixtures/repo-detail.json';
 import probesFixture from '../test/fixtures/repo-probes.json';
 import reposFixture from '../test/fixtures/viewer-repos.json';
@@ -22,6 +22,22 @@ interface Call {
 }
 
 type Item = (GqlPullRequest | GqlIssue) & { repository?: { nameWithOwner: string } };
+type Node = GqlRepo & GqlProbe;
+
+/** A repository of another owner as GitHub serves it (node id `R_<key>`, like addManualRepo's rows). */
+function otherRepo(key: string, over: Partial<Node> = {}): Node {
+  const [owner, name] = key.split('/') as [string, string];
+  const base = structuredClone(reposFixture.viewer.repositories.nodes[0]!) as unknown as Node;
+  // In step with what the fake's RepoDetail serves for it: one merged PR, nothing else.
+  const probe: Omit<GqlProbe, 'id'> = {
+    openPrs: { totalCount: 0 }, openIssues: { totalCount: 0 }, latestPr: { nodes: [{ updatedAt: '2026-09-21T10:00:05Z' }] },
+    latestIssue: { nodes: [] }, latestReleases: { nodes: [] }, latestStar: { edges: [{ starredAt: '2026-09-20T00:00:00Z' }] },
+  };
+  return {
+    ...base, ...probe, id: `R_${key}`, name, nameWithOwner: key, owner: { login: owner }, url: `https://github.com/${key}`,
+    description: `${key} upstream`, stargazerCount: 900, ...over,
+  };
+}
 
 /** A fake GitHub GraphQL endpoint serving (mutable copies of) the fixtures. */
 function fakeGitHub() {
@@ -39,6 +55,14 @@ function fakeGitHub() {
     historyPages: null as Record<string, { nodes: unknown[]; hasNextPage: boolean; endCursor: string | null }> | null,
     /** Cursors whose history request fails (GraphQL error) until removed. */
     failHistory: new Set<string>(),
+    /** Repositories of other owners, served by node id (ManualRepos, RepoNode) and by name (RepoDetail). */
+    others: [] as Node[],
+    /** GraphQL errors for a node id (ManualRepos, RepoNode, RepoProbes): the node comes back null. */
+    nodeErrors: {} as Record<string, { type: string; message: string }>,
+    /** RepoDetail errors by owner/name; a path of just ['repository'] nulls the whole repository. */
+    detailErrors: {} as Record<string, { type: string; message: string; path: (string | number)[] }>,
+    /** Called when RepoDetail is asked for owner/name (before it answers). */
+    onDetail: null as ((key: string) => void) | null,
   };
   const calls: Call[] = [];
   const conn = (nodes: unknown[]) => ({ pageInfo: { hasNextPage: false, endCursor: null }, nodes });
@@ -48,11 +72,47 @@ function fakeGitHub() {
     const probe = fx.probes.nodes.find((p) => p?.id === node?.id);
     return { viewer: { ...viewer, repository: node ? { ...node, ...probe } : null }, rateLimit: fx.repos.rateLimit };
   };
+  /** A node by id, with its probe fields: one of the viewer's (fixtures) or of `others`. */
+  const byId = (id: string): Node | null => {
+    const own = fx.repos.viewer.repositories.nodes.find((n) => n.id === id);
+    const probe = fx.probes.nodes.find((p) => p?.id === id);
+    return own ? ({ ...own, ...probe } as unknown as Node) : (fx.others.find((n) => n.id === id) ?? null);
+  };
+  /** Answers a lookup of `ids` at `path(i)`: null plus an error for a node that errs or doesn't exist. */
+  const nodesOf = (ids: string[], path: (i: number) => (string | number)[], pick: (id: string) => unknown) => {
+    const errors: object[] = [];
+    const nodes = ids.map((id, i) => {
+      const err = fx.nodeErrors[id];
+      const node = err ? null : pick(id);
+      if (!node) errors.push({ ...(err ?? { type: 'NOT_FOUND', message: `Could not resolve to a node with the global id of '${id}'` }), path: path(i) });
+      return node;
+    });
+    return { nodes, errors };
+  };
   const fetchImpl = (async (_url: string, init: RequestInit) => {
     const { query, variables } = JSON.parse(init.body as string) as { query: string; variables: Record<string, unknown> };
     const op = /query (\w+)/.exec(query)![1]!;
     calls.push({ op, vars: variables });
     const rateLimit = fx.repos.rateLimit;
+    const reply = (data: unknown, errors: object[] = []) => new Response(JSON.stringify({ data, ...(errors.length ? { errors } : {}) }));
+    if (op === 'ManualRepos' || op === 'RepoProbes') {
+      const ids = variables.ids as string[];
+      const pick = op === 'RepoProbes' ? (id: string) => fx.probes.nodes.find((p) => p?.id === id) ?? null : byId;
+      const { nodes, errors } = nodesOf(ids, (i) => ['nodes', i], pick);
+      return reply({ nodes, rateLimit }, errors);
+    }
+    if (op === 'RepoNode') {
+      const { nodes, errors } = nodesOf([String(variables.id)], () => ['node'], byId);
+      const { repositories: _, ...viewer } = fx.repos.viewer;
+      return reply({ viewer, node: nodes[0], rateLimit }, errors);
+    }
+    if (op === 'RepoDetail') {
+      const key = `${String(variables.owner)}/${String(variables.name)}`;
+      fx.onDetail?.(key);
+      const err = fx.detailErrors[key];
+      if (err?.path.length === 1) return reply({ repository: null, rateLimit }, [err]);
+      if (err) return reply(null, [err]);
+    }
     if (op === 'RecheckItems') {
       const aliases = [...query.matchAll(/(\w+): (?:pullRequest|issue)\(/g)].map((m) => m[1]!);
       const repository = Object.fromEntries(aliases.map((a) => [a, fx.recheck[a] ?? null]));
@@ -84,8 +144,13 @@ function fakeGitHub() {
           }
       : {
           repository: {
-            nameWithOwner: 'alice/corp', pullRequests: conn([]), issues: conn([]), openPrs: conn([]), openIssues: conn([]), releases: conn([]),
-            stargazers: { totalCount: 0, pageInfo: conn([]).pageInfo, edges: [] },
+            nameWithOwner: `${String(variables.owner)}/${String(variables.name)}`,
+            pullRequests: conn(variables.owner === 'alice' ? [] : [{ ...fx.detail.repository.pullRequests.nodes[1], number: 40, title: `Theirs (${String(variables.name)})` }]),
+            issues: conn([]), openPrs: conn([]), openIssues: conn([]), releases: conn([]),
+            // Stargazers of another owner's repo are served, but must never be asked for.
+            stargazers: variables.owner === 'alice'
+              ? { totalCount: 0, pageInfo: conn([]).pageInfo, edges: [] }
+              : { totalCount: 1, pageInfo: conn([]).pageInfo, edges: [{ starredAt: '2026-09-20T00:00:00Z', node: { login: 'zed', name: null, avatarUrl: null } }] },
           },
           rateLimit,
         };
@@ -128,23 +193,35 @@ describe('runSync', () => {
     });
   });
 
-  it('syncs one repo named by key, or by the short name of a repo you own', async () => {
+  it('syncs one tracked repo by node id, named by key or by the short name of a repo you own', async () => {
     for (const repo of ['alice/app', 'app', 'ALICE/App']) {
       gh.calls.length = 0;
       expect(await sync(NOW + HOUR, { repo }), repo).toMatchObject({ repos: 1, errors: [] });
-      expect(gh.calls.filter((c) => c.op === 'ViewerRepo').map((c) => c.vars.name), repo).toEqual(['app']);
+      expect(gh.calls.filter((c) => c.op === 'RepoNode').map((c) => c.vars.id), repo).toEqual(['R_app']);
     }
-    addManualRepo(db, 'bob/app');
+    // A bare name nothing tracks yet: one of the viewer's own, looked up by name (it may have just been created).
+    db.run(`DELETE FROM repos WHERE name = 'app'`);
     gh.calls.length = 0;
-    await expect(sync(NOW + HOUR, { repo: 'bob/app' })).rejects.toThrow('Only repositories you own can be synced on their own for now: bob/app');
+    expect(await sync(NOW + HOUR, { repo: 'app' })).toMatchObject({ repos: 1, errors: [] });
+    expect(gh.calls.map((c) => c.op).slice(0, 1)).toEqual(['ViewerRepo']);
+    // A repo added by hand, by its node id.
+    addManualRepo(db, 'bob/tool');
+    gh.fx.others.push(otherRepo('bob/tool'));
+    gh.calls.length = 0;
+    expect(await sync(NOW + HOUR, { repo: 'bob/tool' })).toMatchObject({ repos: 1, errors: [] });
+    expect(gh.calls.filter((c) => c.op === 'RepoNode').map((c) => c.vars.id)).toEqual(['R_bob/tool']);
+    expect(gh.calls.filter((c) => c.op === 'RepoDetail').map((c) => [c.vars.owner, c.vars.name, c.vars.withStars])).toEqual([['bob', 'tool', false]]);
+    gh.calls.length = 0;
     await expect(sync(NOW + HOUR, { repo: 'bob/nope' })).rejects.toThrow("Repository isn't tracked: bob/nope");
-    expect(gh.calls).toEqual([]);
+    await expect(sync(NOW + HOUR, { repo: 'tool' })).rejects.toThrow('Repository not found on GitHub: tool');
+    expect(gh.calls.map((c) => c.op)).toEqual(['ViewerRepo']);
   });
 
   it('keeps repos added by hand when the owned list no longer has them', async () => {
     const bob = addManualRepo(db, 'bob/app');
-    expect(await sync(NOW + HOUR, { full: true })).toMatchObject({ repos: 2, errors: [] });
-    expect(db.get('SELECT tracked_by, removed_at FROM repos WHERE id = ?', [bob])).toEqual({ tracked_by: 'manual', removed_at: null });
+    gh.fx.others.push(otherRepo('bob/app'));
+    expect(await sync(NOW + HOUR, { full: true })).toMatchObject({ repos: 3, errors: [] });
+    expect(db.get('SELECT tracked_by, removed_at, unavailable_at FROM repos WHERE id = ?', [bob])).toEqual({ tracked_by: 'manual', removed_at: null, unavailable_at: null });
     expect(db.all(`SELECT DISTINCT tracked_by FROM repos WHERE id <> ?`, [bob])).toEqual([{ tracked_by: 'owned' }]);
   });
 
@@ -317,6 +394,148 @@ describe('runSync', () => {
   });
 });
 
+describe('repos added by hand', () => {
+  let db: Db;
+  let gh: ReturnType<typeof fakeGitHub>;
+  const sync = (at: number, req = {}, tokenKind: 'classic' | null = null) =>
+    runSync({ db, client: new GitHubClient({ token: 't', fetchImpl: gh.fetchImpl }), settings: DEFAULT_SETTINGS, now: () => at, tokenKind }, req);
+  const row = (key: string) =>
+    db.get<{ id: number; description: string | null; stars: number; open_prs: number; unavailable_at: string | null; unavailable_reason: string | null; removed_at: string | null }>(
+      'SELECT id, description, stars, open_prs, unavailable_at, unavailable_reason, removed_at FROM repos WHERE name_with_owner = ?', [key]);
+  const prsOf = (key: string) => db.all<{ title: string }>('SELECT p.title FROM pull_requests p JOIN repos r ON r.id = p.repo_id WHERE r.name_with_owner = ?', [key]).map((p) => p.title);
+  const syncedAt = (key: string) => db.get<{ synced_at: string | null }>('SELECT s.synced_at FROM sync_state s JOIN repos r ON r.id = s.repo_id WHERE r.name_with_owner = ?', [key])?.synced_at ?? null;
+  const details = () => gh.calls.filter((c) => c.op === 'RepoDetail').map((c) => `${String(c.vars.owner)}/${String(c.vars.name)}`);
+
+  beforeEach(async () => {
+    db = openDb(':memory:');
+    gh = fakeGitHub();
+    await sync(NOW);
+    addManualRepo(db, 'bob/tool');
+    gh.fx.others.push(otherRepo('bob/tool'));
+    gh.calls.length = 0;
+  });
+
+  it('are refreshed by node id and synced in the same run as owned repos, without stargazers', async () => {
+    expect(await sync(NOW + HOUR)).toEqual({ repos: 3, newItems: 1, errors: [], forksSkipped: 0 });
+    expect(gh.calls.map((c) => c.op).slice(0, 3)).toEqual(['ViewerRepos', 'ManualRepos', 'RepoProbes']);
+    expect(gh.calls.find((c) => c.op === 'ManualRepos')!.vars).toEqual({ ids: ['R_bob/tool'] });
+    expect(row('bob/tool')).toMatchObject({ description: 'bob/tool upstream', stars: 900, open_prs: 0, unavailable_at: null });
+    expect(prsOf('bob/tool')).toEqual(['Theirs (tool)']);
+    expect(gh.calls.filter((c) => c.op === 'RepoDetail').map((c) => [c.vars.owner, c.vars.withStars])).toEqual([['bob', false]]);
+    expect(db.get<{ n: number }>(`SELECT count(*) AS n FROM stars s JOIN repos r ON r.id = s.repo_id WHERE r.tracked_by = 'manual'`)!.n).toBe(0);
+    expect(syncedAt('bob/tool')).not.toBeNull();
+  });
+
+  it('follow a rename on GitHub to a new key', async () => {
+    gh.fx.others[0] = otherRepo('bob/tool', { name: 'tool2', nameWithOwner: 'bob/tool2' });
+    await sync(NOW + HOUR);
+    expect(row('bob/tool2')).toMatchObject({ removed_at: null });
+    expect(row('bob/tool')).toBeUndefined();
+  });
+
+  it("that can't be read become unavailable: data kept, not synced, checked again every run", async () => {
+    await sync(NOW + HOUR);
+    gh.fx.nodeErrors['R_bob/tool'] = { type: 'NOT_FOUND', message: "Could not resolve to a node with the global id of 'R_bob/tool'" };
+    gh.calls.length = 0;
+    expect(await sync(NOW + 2 * HOUR)).toMatchObject({ repos: 2, errors: [] });
+    expect(details()).not.toContain('bob/tool');
+    const first = row('bob/tool')!;
+    expect(first).toMatchObject({
+      unavailable_at: '2026-09-27T14:00:00Z',
+      unavailable_reason: "GitHub doesn't show bob/tool to this token: it doesn't exist, or the token can't read it. Check the spelling, or ask for access.",
+    });
+    expect(prsOf('bob/tool')).toEqual(['Theirs (tool)']);
+
+    // Still unreadable: the first time is kept; the reason follows the latest answer.
+    gh.fx.nodeErrors['R_bob/tool'] = { type: 'FORBIDDEN', message: 'Resource protected by organization SAML enforcement. You must grant your token access to this organization.' };
+    await sync(NOW + 3 * HOUR, {}, 'classic');
+    expect(row('bob/tool')).toMatchObject({
+      unavailable_at: '2026-09-27T14:00:00Z',
+      unavailable_reason: 'bob requires SAML single sign-on. Authorize the token for bob (github.com/settings/tokens → Configure SSO).',
+    });
+
+    // Readable again: cleared and synced.
+    delete gh.fx.nodeErrors['R_bob/tool'];
+    gh.calls.length = 0;
+    expect(await sync(NOW + 4 * HOUR)).toMatchObject({ repos: 3, errors: [] });
+    expect(row('bob/tool')).toMatchObject({ unavailable_at: null, unavailable_reason: null });
+  });
+
+  it('become unavailable when the repository itself fails mid-run; a section the token may not read is an ordinary error', async () => {
+    gh.fx.detailErrors['bob/tool'] = { type: 'NOT_FOUND', message: "Could not resolve to a Repository with the name 'bob/tool'.", path: ['repository'] };
+    const res = await sync(NOW + HOUR);
+    expect(res.errors).toEqual([`bob/tool: unavailable: GitHub doesn't show bob/tool to this token: it doesn't exist, or the token can't read it. Check the spelling, or ask for access.`]);
+    expect(row('bob/tool')!.unavailable_at).toBe('2026-09-27T13:00:00Z');
+
+    db.run('UPDATE repos SET unavailable_at = NULL, unavailable_reason = NULL');
+    gh.fx.detailErrors['bob/tool'] = { type: 'FORBIDDEN', message: 'Resource not accessible by personal access token', path: ['repository', 'pullRequests'] };
+    const again = await sync(NOW + 2 * HOUR);
+    expect(again.errors).toEqual(['bob/tool: Resource not accessible by personal access token']);
+    expect(row('bob/tool')!.unavailable_at).toBeNull();
+  });
+
+  it('a manual chunk failing for another reason skips its repos this run, and marks nothing', async () => {
+    gh.fx.nodeErrors['R_bob/tool'] = { type: 'INTERNAL', message: 'Something broke' };
+    const res = await sync(NOW + HOUR);
+    expect(res).toMatchObject({ repos: 2, errors: ['manual repos: Something broke'] });
+    expect(details()).not.toContain('bob/tool');
+    expect(row('bob/tool')!.unavailable_at).toBeNull();
+  });
+
+  it('one repo failing with FORBIDDEN leaves the others to finish', async () => {
+    gh.fx.detailErrors['alice/app'] = { type: 'FORBIDDEN', message: 'Resource not accessible by integration', path: ['repository', 'pullRequests'] };
+    const res = await sync(NOW + HOUR, { full: true });
+    expect(res.errors).toEqual(['alice/app: Resource not accessible by integration']);
+    expect(details().sort()).toEqual(['alice/app', 'alice/corp', 'bob/tool']);
+    expect(syncedAt('bob/tool')).not.toBeNull();
+  });
+
+  it('a node the token may not read in a probe chunk costs only its own probe', async () => {
+    gh.fx.repos.viewer.repositories.nodes[1]!.isArchived = false; // corp syncs when it looks changed
+    await sync(NOW + HOUR);
+    gh.fx.nodeErrors['R_corp'] = { type: 'FORBIDDEN', message: 'Resource protected by organization SAML enforcement.' };
+    gh.calls.length = 0;
+    expect(await sync(NOW + 2 * HOUR)).toMatchObject({ errors: [] });
+    // corp, without a probe, is fetched as if changed; app's and bob/tool's probes match: nothing else.
+    expect(details()).toEqual(['alice/corp']);
+    expect(gh.calls.filter((c) => c.op === 'RepoProbes')).toHaveLength(1);
+  });
+
+  it('a repo removed while it syncs is dropped quietly and not brought back', async () => {
+    gh.fx.onDetail = (key) => {
+      if (key === 'bob/tool') db.run(`DELETE FROM repos WHERE name_with_owner = 'bob/tool'`);
+    };
+    const res = await sync(NOW + HOUR);
+    expect(res.errors).toEqual([]);
+    expect(row('bob/tool')).toBeUndefined();
+    expect(db.get<{ n: number }>(`SELECT count(*) AS n FROM sync_state WHERE repo_id NOT IN (SELECT id FROM repos)`)!.n).toBe(0);
+    gh.fx.onDetail = null;
+    await sync(NOW + 2 * HOUR);
+    expect(row('bob/tool')).toBeUndefined();
+  });
+
+  it('a single-repo sync of one that became unreadable marks it unavailable and syncs nothing', async () => {
+    gh.fx.nodeErrors['R_bob/tool'] = { type: 'FORBIDDEN', message: 'Although you appear to have the correct authorization credentials, the `bob` organization has enabled OAuth App access restrictions.' };
+    const res = await sync(NOW + HOUR, { repo: 'bob/tool' });
+    expect(res).toMatchObject({ repos: 0, errors: ['bob/tool: unavailable: Although you appear to have the correct authorization credentials, the `bob` organization has enabled OAuth App access restrictions.'] });
+    expect(details()).toEqual([]);
+    expect(row('bob/tool')!.unavailable_at).toBe('2026-09-27T13:00:00Z');
+  });
+
+  it('a single-repo sync never brings back a repo removed meanwhile', async () => {
+    const id = row('bob/tool')!.id;
+    // Removed after the request resolved it, before the answer is written.
+    gh.fx.others[0] = otherRepo('bob/tool');
+    const orig = gh.fetchImpl;
+    const res = await runSync({
+      db, settings: DEFAULT_SETTINGS, now: () => NOW + HOUR,
+      client: new GitHubClient({ token: 't', fetchImpl: async (u, init) => { db.run('DELETE FROM repos WHERE id = ?', [id]); return orig(u, init!); } }),
+    }, { repo: 'bob/tool' });
+    expect(res).toMatchObject({ repos: 0, errors: [] });
+    expect(row('bob/tool')).toBeUndefined();
+  });
+});
+
 describe('account guard', () => {
   const MISMATCH = 'This database belongs to @alice, but the GitHub token is for @mallory. Switch back to @alice, or use a different database.';
   function setup() {
@@ -338,7 +557,8 @@ describe('account guard', () => {
     gh.calls.length = 0;
     await expect(sync()).rejects.toThrow(MISMATCH);
     await expect(sync({ repo: 'app' })).rejects.toThrow(MISMATCH);
-    expect(gh.calls.map((c) => c.op)).toEqual(['ViewerRepos', 'ViewerRepo']);
+    await expect(sync({ repo: 'brand-new' })).rejects.toThrow(MISMATCH);
+    expect(gh.calls.map((c) => c.op)).toEqual(['ViewerRepos', 'RepoNode', 'ViewerRepo']);
     expect({ repos: repos(), viewer: getMeta(db, 'viewer') }).toEqual(before);
   });
 

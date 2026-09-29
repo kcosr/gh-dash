@@ -7,6 +7,13 @@ export interface GqlRateLimit {
   cost: number;
 }
 
+/** One entry of a GraphQL response's `errors`. `path` names the field that failed (its value is null in `data`). */
+export interface GqlError {
+  type?: string;
+  message: string;
+  path?: (string | number)[];
+}
+
 export interface GqlPageInfo {
   hasNextPage: boolean;
   endCursor: string | null;
@@ -48,7 +55,8 @@ export interface GqlRepo {
   isArchived: boolean;
   isFork: boolean;
   primaryLanguage: { name: string; color: string | null } | null;
-  repositoryTopics: { nodes: { topic: { name: string } }[] };
+  /** null when a partial read (queryPartial) was refused this field. */
+  repositoryTopics: { nodes: { topic: { name: string } }[] } | null;
   defaultBranchRef: { name: string } | null;
   stargazerCount: number;
   forkCount: number;
@@ -83,6 +91,49 @@ export interface ViewerRepoData {
 
 export interface ViewerData {
   viewer: GqlViewer;
+  rateLimit: GqlRateLimit;
+}
+
+export interface ManualReposData {
+  nodes: ((GqlRepo & GqlProbe) | null)[];
+  rateLimit: GqlRateLimit;
+}
+
+export interface RepoLookupData {
+  viewer: GqlViewer;
+  repository:
+    | (GqlRepo & GqlProbe & {
+        viewerPermission: string | null;
+        defaultBranchRef: { name: string; target: { history?: { totalCount: number } } | null } | null;
+        releases: { totalCount: number };
+      })
+    | null;
+  prs: { issueCount: number } | null;
+  issues: { issueCount: number } | null;
+  rateLimit: GqlRateLimit;
+}
+
+export interface GqlRepoSummary {
+  id: string;
+  name: string;
+  nameWithOwner: string;
+  owner: { login: string };
+  description: string | null;
+  visibility: 'PUBLIC' | 'PRIVATE' | 'INTERNAL';
+  isArchived: boolean;
+  isFork: boolean;
+  stargazerCount: number;
+  pushedAt: string | null;
+}
+
+export interface RepoSuggestionsData {
+  viewer: GqlViewer & { repositoriesContributedTo: { nodes: (GqlRepoSummary | null)[] } };
+  rateLimit: GqlRateLimit;
+}
+
+export interface RepoNodeData {
+  viewer: GqlViewer;
+  node: (GqlRepo & GqlProbe) | null;
   rateLimit: GqlRateLimit;
 }
 

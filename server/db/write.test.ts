@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { type Db, openDb } from './db';
 import type { RepoRecord } from './records';
-import { markReposRemoved, releaseKey, upsertOwned } from './write';
+import { addManual, markReposRemoved, markUnavailable, refreshManual, releaseKey, upsertOwned } from './write';
 
 const NOW = '2026-09-29T12:00:00Z';
 
@@ -115,5 +115,88 @@ describe('markReposRemoved', () => {
     manual(db, 'dlvhdr/gh-dash', 'R_theirs');
     expect(markReposRemoved(db, ['R_app'], NOW)).toBe(1);
     expect(live(db)).toEqual(['alice/app', 'dlvhdr/gh-dash']);
+  });
+});
+
+describe('refreshManual', () => {
+  it('updates a live repo added by hand and clears unavailable', () => {
+    const db = openDb(':memory:');
+    const id = manual(db, 'bob/tool', 'R_tool', { unavailable: true });
+    db.run('UPDATE repos SET pinned = 1, hidden = 1 WHERE id = ?', [id]);
+    expect(refreshManual(db, rec('bob/tool2', 'R_tool', { description: 'renamed' }), NOW)).toBe(id);
+    expect(row(db, id)).toMatchObject({ name_with_owner: 'bob/tool2', tracked_by: 'manual', unavailable_at: null, added_at: '2026-09-01T00:00:00Z', pinned: 1, hidden: 1 });
+  });
+
+  it('never inserts, and leaves removed or owned rows alone', () => {
+    const db = openDb(':memory:');
+    expect(refreshManual(db, rec('bob/new', 'R_new'), NOW)).toBeNull();
+    const gone = manual(db, 'bob/gone', 'R_gone');
+    db.run('UPDATE repos SET removed_at = ? WHERE id = ?', [NOW, gone]);
+    expect(refreshManual(db, rec('bob/gone', 'R_gone', { description: 'x' }), NOW)).toBeNull();
+    upsertOwned(db, rec('alice/app', 'R_app'), NOW);
+    expect(refreshManual(db, rec('alice/app', 'R_app', { description: 'x' }), NOW)).toBeNull();
+    expect(db.all('SELECT name_with_owner, description FROM repos ORDER BY id')).toEqual([
+      { name_with_owner: 'bob/gone', description: null }, { name_with_owner: 'alice/app', description: null },
+    ]);
+  });
+
+  it('releases the key from another live row holding it', () => {
+    const db = openDb(':memory:');
+    const stale = manual(db, 'bob/tool', 'R_old');
+    const id = manual(db, 'bob/tool-v1', 'R_tool');
+    expect(refreshManual(db, rec('bob/tool', 'R_tool'), NOW)).toBe(id);
+    expect(row(db, stale).removed_at).toBe(NOW);
+  });
+});
+
+describe('markUnavailable', () => {
+  it('keeps the first time and the latest reason, for live repos added by hand only', () => {
+    const db = openDb(':memory:');
+    const id = manual(db, 'bob/tool', 'R_tool');
+    markUnavailable(db, id, 'first', '2026-09-29T01:00:00Z');
+    markUnavailable(db, id, 'second', '2026-09-29T02:00:00Z');
+    expect(db.get('SELECT unavailable_at, unavailable_reason FROM repos WHERE id = ?', [id])).toEqual({ unavailable_at: '2026-09-29T01:00:00Z', unavailable_reason: 'second' });
+    const owned = upsertOwned(db, rec('alice/app', 'R_app'), NOW);
+    markUnavailable(db, owned, 'x', NOW);
+    expect(row(db, owned).unavailable_at).toBeNull();
+  });
+});
+
+describe('addManual', () => {
+  it('inserts a repo tracked by hand, hidden from the default selection if asked', () => {
+    const db = openDb(':memory:');
+    const res = addManual(db, rec('bob/tool', 'R_tool'), { hidden: true }, NOW);
+    expect(res).toEqual({ added: true, id: expect.any(Number) });
+    expect(row(db, (res as { id: number }).id)).toMatchObject({ tracked_by: 'manual', added_at: NOW, hidden: 1, removed_at: null });
+  });
+
+  it('reports a live repo with that node id instead of touching it', () => {
+    const db = openDb(':memory:');
+    const owned = upsertOwned(db, rec('alice/app', 'R_app'), NOW);
+    db.run('UPDATE repos SET hidden = 1 WHERE id = ?', [owned]);
+    expect(addManual(db, rec('alice/app', 'R_app'), { hidden: false }, NOW)).toEqual({ added: false, id: owned, trackedBy: 'owned', hidden: true });
+    const tool = manual(db, 'bob/tool', 'R_tool');
+    expect(addManual(db, rec('bob/tool', 'R_tool'), { hidden: true }, NOW)).toEqual({ added: false, id: tool, trackedBy: 'manual', hidden: false });
+    expect(row(db, tool).hidden).toBe(0);
+  });
+
+  it('revives a removed row with its earlier data (an owned repo transferred away, then added)', () => {
+    const db = openDb(':memory:');
+    const id = upsertOwned(db, rec('alice/lib', 'R_lib'), NOW);
+    db.run('UPDATE repos SET pinned = 1 WHERE id = ?', [id]);
+    db.run(`INSERT INTO pull_requests (repo_id, number, title, state, created_at, updated_at, activity_at, url) VALUES (?, 1, 'Old', 'open', 'x', 'x', 'x', 'u')`, [id]);
+    markReposRemoved(db, [], NOW);
+    const res = addManual(db, rec('carol/lib', 'R_lib'), { hidden: false }, '2026-09-30T00:00:00Z');
+    expect(res).toEqual({ added: true, id });
+    expect(row(db, id)).toMatchObject({ name_with_owner: 'carol/lib', tracked_by: 'manual', added_at: '2026-09-30T00:00:00Z', removed_at: null, pinned: 1 });
+    expect(db.get<{ n: number }>('SELECT count(*) AS n FROM pull_requests WHERE repo_id = ?', [id])!.n).toBe(1);
+  });
+
+  it('releases the key from another live row holding it', () => {
+    const db = openDb(':memory:');
+    const stale = manual(db, 'bob/tool', 'R_old');
+    addManual(db, rec('bob/tool', 'R_new'), { hidden: false }, NOW);
+    expect(row(db, stale).removed_at).toBe(NOW);
+    expect(live(db)).toEqual(['bob/tool']);
   });
 });

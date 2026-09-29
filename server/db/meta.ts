@@ -31,6 +31,8 @@ export interface SyncLockMeta {
   startedAt: string;
   heartbeatAt: string;
   progress: { done: number; total: number; current: string | null };
+  /** Key of the one repository a single-repo run syncs. */
+  repo?: string;
 }
 
 interface MetaTypes {
@@ -39,6 +41,8 @@ interface MetaTypes {
   rateLimit: RateLimitMeta;
   syncLock: SyncLockMeta;
   nextSyncAt: string;
+  /** When the last full (all repositories) sync finished: the schedule counts from it, not from single-repo runs. */
+  lastFullSyncAt: string;
   sessionSecret: string;
 }
 

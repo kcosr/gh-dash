@@ -58,6 +58,61 @@ query ViewerRepo($name: String!) {
 ${REPO_FIELDS}
 ${PROBE_FIELDS}`;
 
+/** Repos added by hand, by node id: their fields and probes, one request per chunk. Ones the token can't read come back null. */
+export const MANUAL_REPOS = `
+query ManualRepos($ids: [ID!]!) {
+  nodes(ids: $ids) { ... on Repository { ...RepoFields ...ProbeFields } }
+  ${RATE_LIMIT}
+}
+${REPO_FIELDS}
+${PROBE_FIELDS}`;
+
+/** One tracked repo by node id (a single-repo sync). The viewer comes along: it is claimed before anything is written. */
+export const REPO_NODE = `
+query RepoNode($id: ID!) {
+  viewer { id login name avatarUrl }
+  node(id: $id) { ... on Repository { ...RepoFields ...ProbeFields } }
+  ${RATE_LIMIT}
+}
+${REPO_FIELDS}
+${PROBE_FIELDS}`;
+
+/**
+ * Everything "Add repository" shows before adding one, in one request: the repository (or why the token can't read
+ * it), whether the viewer owns it, and the size of its first sync: default-branch commits and PRs / issues updated
+ * since the backfill start, and its releases. `search` answers issueCount without `first`, and `history(since:)`
+ * counts only commits since then (both checked against GitHub, 2026-09). The searches may fail on their own.
+ */
+export const REPO_LOOKUP = `
+query RepoLookup($owner: String!, $name: String!, $since: GitTimestamp!, $prQ: String!, $issueQ: String!) {
+  viewer { id login name avatarUrl }
+  repository(owner: $owner, name: $name) {
+    ...RepoFields ...ProbeFields viewerPermission
+    defaultBranchRef { target { ... on Commit { history(first: 1, since: $since) { totalCount } } } }
+    releases { totalCount }
+  }
+  prs: search(type: ISSUE, query: $prQ) { issueCount }
+  issues: search(type: ISSUE, query: $issueQ) { issueCount }
+  ${RATE_LIMIT}
+}
+${REPO_FIELDS}
+${PROBE_FIELDS}`;
+
+/** Repositories of others the viewer recently contributed to (suggestions for "Add repository"). */
+export const REPO_SUGGESTIONS = `
+query RepoSuggestions {
+  viewer {
+    id login name avatarUrl
+    repositoriesContributedTo(
+      first: 25, includeUserRepositories: false, contributionTypes: [COMMIT, PULL_REQUEST, PULL_REQUEST_REVIEW, ISSUE],
+      orderBy: { field: PUSHED_AT, direction: DESC }
+    ) {
+      nodes { id name nameWithOwner owner { login } description visibility isArchived isFork stargazerCount pushedAt }
+    }
+  }
+  ${RATE_LIMIT}
+}`;
+
 export const VIEWER = `
 query Viewer {
   viewer { id login name avatarUrl }

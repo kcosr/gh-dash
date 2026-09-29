@@ -151,6 +151,14 @@ export function setRepoPrefs(db: Db, key: string, prefs: { pinned?: boolean; hid
   return db.run(`UPDATE repos SET ${sets.join(', ')} WHERE id = ?`, [...params, ref.id]).changes > 0;
 }
 
+/**
+ * Stops tracking a repo: deletes its row, and with it (foreign keys, cascading) its sync state, pull requests and
+ * their commits, commits, issues, releases, stars and set memberships; the full-text index follows through triggers.
+ */
+export function removeRepo(db: Db, id: number): boolean {
+  return db.run('DELETE FROM repos WHERE id = ?', [id]).changes > 0;
+}
+
 // ---------------------------------------------------------------------------
 // Repo sets
 // ---------------------------------------------------------------------------

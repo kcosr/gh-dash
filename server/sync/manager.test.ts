@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { openDb } from '../db/db';
-import { getMeta, setMeta } from '../db/meta';
+import { deleteMeta, getMeta, setMeta } from '../db/meta';
+import { fakeGitHub } from '../test/github';
+import { fakeGraphQL, prNode, repoNode } from '../test/graphql';
+import { addManualRepo } from '../test/seed';
 import { supplyOf, testTokens } from '../test/tokens';
 import type { TokenSupply } from '../token';
 import { SyncManager } from './manager';
@@ -131,5 +134,122 @@ describe('ensureViewer', () => {
     const fetch = answerAs('U_mallory', 'mallory');
     await m.ensureViewer();
     expect(fetch).not.toHaveBeenCalled();
+  });
+});
+
+describe('syncing repos added by hand', () => {
+  /** A manager over its own database and a fake GitHub whose answers can be held back (a sync that keeps running). */
+  function setup(schedule = false) {
+    const own = openDb(':memory:');
+    const gql = fakeGraphQL();
+    gql.state.owned.push(repoNode('alice/app'));
+    const gh = fakeGitHub({ '/graphql': gql.handler });
+    let gate: Promise<void> | null = null;
+    let open = () => {};
+    const fetchImpl: typeof fetch = async (input, init) => {
+      if (gate) await gate;
+      return gh.fetchImpl(input, init);
+    };
+    const m = new SyncManager({ db: own, schedule, tokens: testTokens('t'), log: () => {}, fetchImpl });
+    managers.push(m);
+    const add = (key: string) => {
+      addManualRepo(own, key);
+      gql.state.others.push(repoNode(key));
+      gql.state.prs[key] = [prNode(key, 1, `${key} PR`)];
+    };
+    return {
+      db: own, gql, m, add,
+      hold: () => { gate = new Promise((r) => { open = () => { gate = null; r(); }; }); },
+      release: () => open(),
+      synced: (key: string) => !!own.get('SELECT 1 FROM sync_state s JOIN repos r ON r.id = s.repo_id WHERE r.name_with_owner = ? AND s.synced_at IS NOT NULL', [key]),
+      idle: () => vi.waitFor(() => expect(m.status().running).toBe(false)),
+    };
+  }
+
+  it('starts the first sync of a repo just added, naming it in the status', async () => {
+    const t = setup();
+    t.add('bob/tool');
+    t.hold();
+    expect(await t.m.startOrQueue({ repo: 'BOB/Tool' })).toBe('started');
+    expect(t.m.status()).toMatchObject({ running: true, trigger: 'manual', repo: 'bob/tool', progress: { total: 1 } });
+    t.release();
+    await t.idle();
+    expect(t.synced('bob/tool')).toBe(true);
+    expect(t.gql.state.ops).toEqual(['RepoNode:R_bob/tool', 'RepoDetail:bob/tool']);
+    expect(t.m.status().repo).toBeNull();
+    // A single-repo run doesn't count as the full sync the schedule waits for.
+    expect(getMeta(t.db, 'lastFullSyncAt')).toBeNull();
+    expect(getMeta(t.db, 'lastSync')).toMatchObject({ errors: [] });
+  });
+
+  it('queues behind the sync this process runs, once per repo, then runs it', async () => {
+    const t = setup();
+    t.add('bob/tool');
+    t.hold();
+    expect(await t.m.startOrQueue({ repo: 'bob/tool' })).toBe('started');
+    t.add('carol/lib');
+    expect(await t.m.startOrQueue({ repo: 'carol/lib' })).toBe('queued');
+    expect(await t.m.startOrQueue({ repo: 'carol/lib' })).toBe('queued');
+    t.release();
+    await vi.waitFor(() => expect(t.synced('carol/lib')).toBe(true));
+    await t.idle();
+    expect(t.gql.state.ops.filter((o) => o.startsWith('RepoNode'))).toEqual(['RepoNode:R_bob/tool', 'RepoNode:R_carol/lib']);
+  });
+
+  it("doesn't run a queued first sync that the full sync it waited for already did", async () => {
+    const t = setup();
+    t.hold();
+    expect(await t.m.start('manual')).toEqual({ ok: true });
+    t.add('bob/tool'); // before the full sync reads the repos added by hand
+    expect(await t.m.startOrQueue({ repo: 'bob/tool' })).toBe('queued');
+    t.release();
+    await vi.waitFor(() => expect(t.synced('bob/tool')).toBe(true));
+    await t.idle();
+    expect(t.gql.state.ops.filter((o) => o.startsWith('RepoNode'))).toEqual([]);
+    expect(getMeta(t.db, 'lastFullSyncAt')).not.toBeNull();
+  });
+
+  it('leaves it to the scheduler when another instance holds the lock', async () => {
+    const t = setup(true);
+    t.add('bob/tool');
+    setMeta(t.db, 'syncLock', { instance: 'other', pid: 1, trigger: 'scheduled', startedAt: new Date().toISOString(), heartbeatAt: new Date().toISOString(), progress: { done: 0, total: 1, current: null } });
+    expect(await t.m.startOrQueue({ repo: 'bob/tool' })).toBe('queued');
+    expect(t.gql.state.ops).toEqual([]);
+    // Lock gone, full sync not due: the scheduler still starts the never-synced repo's first sync.
+    deleteMeta(t.db, 'syncLock');
+    setMeta(t.db, 'lastFullSyncAt', new Date().toISOString());
+    t.m.startScheduler();
+    await vi.waitFor(() => expect(t.synced('bob/tool')).toBe(true));
+    await t.idle();
+    expect(t.gql.state.ops).toEqual(['RepoNode:R_bob/tool', 'RepoDetail:bob/tool']);
+  });
+
+  it("doesn't retry a failed first sync on every tick, and skips unavailable repos", async () => {
+    const t = setup(true);
+    t.add('bob/tool');
+    t.gql.state.errors['bob/tool'] = { type: 'INTERNAL', message: 'boom' };
+    t.add('carol/gone');
+    t.db.run(`UPDATE repos SET unavailable_at = '2026-09-29T00:00:00Z', unavailable_reason = 'x' WHERE name_with_owner = 'carol/gone'`);
+    setMeta(t.db, 'lastFullSyncAt', new Date().toISOString());
+    t.m.startScheduler();
+    await vi.waitFor(() => expect(t.gql.state.ops.length).toBeGreaterThan(0));
+    await t.idle();
+    t.m.reschedule();
+    t.m.reschedule();
+    await t.idle();
+    expect(t.gql.state.ops.filter((o) => o.startsWith('RepoNode'))).toEqual(['RepoNode:R_bob/tool']);
+  });
+
+  it('counts unavailable repos out of a full sync total', async () => {
+    const t = setup();
+    t.add('bob/tool');
+    t.add('carol/gone');
+    t.db.run(`UPDATE repos SET unavailable_at = '2026-09-29T00:00:00Z', unavailable_reason = 'x' WHERE name_with_owner = 'carol/gone'`);
+    t.db.run(`INSERT INTO repos (node_id, name, name_with_owner, owner, url, visibility, created_at) VALUES ('R_alice/app', 'app', 'alice/app', 'alice', 'u', 'public', 'x')`);
+    t.hold();
+    await t.m.start('manual');
+    expect(t.m.status()).toMatchObject({ repo: null, progress: { total: 2 } });
+    t.release();
+    await t.idle();
   });
 });

@@ -2,14 +2,18 @@
 // classification and retries with backoff.
 
 import { SourceError, type SourceErrorKind } from '../provider/errors';
+import type { GqlError } from './types';
 
 export type GitHubErrorKind = SourceErrorKind;
 
 /** A failed GitHub request: a SourceError, so provider-neutral code handles it by kind. */
 export class GitHubError extends SourceError {
-  constructor(kind: GitHubErrorKind, message: string, opts: { status?: number | null; resetAt?: string | null } = {}) {
+  /** A GraphQL response's errors, each with the path of the field that failed; empty for other failures. */
+  readonly errors: GqlError[];
+  constructor(kind: GitHubErrorKind, message: string, opts: { status?: number | null; resetAt?: string | null; errors?: GqlError[] } = {}) {
     super(kind, message, opts);
     this.name = 'GitHubError';
+    this.errors = opts.errors ?? [];
   }
 }
 
@@ -75,7 +79,8 @@ export interface RetryOptions {
 
 /** Runs `attempt` until it succeeds, retrying RetryableErrors; every error that escapes is redacted. */
 export async function withRetries<T>(opts: RetryOptions, attempt: () => Promise<T>): Promise<T> {
-  const clean = (err: GitHubError) => new GitHubError(err.kind, redact(opts.token, err.message), { status: err.status, resetAt: err.resetAt });
+  const clean = (err: GitHubError) =>
+    new GitHubError(err.kind, redact(opts.token, err.message), { status: err.status, resetAt: err.resetAt, errors: err.errors });
   for (let n = 1; ; n++) {
     try {
       return await attempt();

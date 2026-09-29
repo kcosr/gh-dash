@@ -31,6 +31,12 @@ const REPO_COLS = [
 ];
 const UPSERT_OWNED = upsertSql('repos', REPO_COLS, ['node_id']);
 
+/** The fields GitHub reports for a repo, in REPO_COLS order up to pushed_at. */
+const recordVals = (r: RepoRecord): Param[] => [
+  r.nodeId, r.name, r.nameWithOwner, r.owner, r.description, r.url, r.visibility, Number(r.isArchived), Number(r.isFork),
+  r.languageName, r.languageColor, JSON.stringify(r.topics), r.defaultBranch, r.stars, r.forks, r.createdAt, r.pushedAt,
+];
+
 /**
  * The provider says `key` (owner/name) now belongs to the repo `nodeId`, so any other live row holding it (a repo
  * deleted, renamed or transferred away since) stops being live. Its data and name are kept. Returns the rows released.
@@ -50,12 +56,58 @@ export function releaseKey(db: Db, key: string, nodeId: string, now: string): nu
 export function upsertOwned(db: Db, r: RepoRecord, now: string): number {
   return db.tx(() => {
     releaseKey(db, r.nameWithOwner, r.nodeId, now);
-    const row = db.get<{ id: number }>(UPSERT_OWNED, [
-      r.nodeId, r.name, r.nameWithOwner, r.owner, r.description, r.url, r.visibility, Number(r.isArchived), Number(r.isFork),
-      r.languageName, r.languageColor, JSON.stringify(r.topics), r.defaultBranch, r.stars, r.forks, r.createdAt, r.pushedAt,
-      null, 'owned', null, null, null,
-    ]);
+    const row = db.get<{ id: number }>(UPSERT_OWNED, [...recordVals(r), null, 'owned', null, null, null]);
     return row!.id;
+  });
+}
+
+const REFRESH_MANUAL = `UPDATE repos SET ${REPO_COLS.slice(1, REPO_COLS.indexOf('removed_at')).map((c) => `${c} = ?`).join(', ')},
+  unavailable_at = NULL, unavailable_reason = NULL WHERE id = ?`;
+
+/**
+ * Updates a live repo added by hand from what GitHub reports, and clears `unavailable_*` (it could be read). Never
+ * inserts: a repo removed (or claimed as owned) meanwhile stays as it is, and null is returned. Otherwise its id.
+ */
+export function refreshManual(db: Db, r: RepoRecord, now: string): number | null {
+  return db.tx(() => {
+    const row = db.get<{ id: number }>(`SELECT id FROM repos WHERE node_id = ? AND tracked_by = 'manual' AND removed_at IS NULL`, [r.nodeId]);
+    if (!row) return null;
+    releaseKey(db, r.nameWithOwner, r.nodeId, now);
+    db.run(REFRESH_MANUAL, [...recordVals(r).slice(1), row.id]);
+    return row.id;
+  });
+}
+
+/** A repo added by hand that the token can't read (any more): its data is kept, and the sync skips it until readable. */
+export function markUnavailable(db: Db, id: number, reason: string, now: string): void {
+  db.run(
+    `UPDATE repos SET unavailable_at = coalesce(unavailable_at, ?), unavailable_reason = ? WHERE id = ? AND tracked_by = 'manual' AND removed_at IS NULL`,
+    [now, reason, id],
+  );
+}
+
+const UPSERT_MANUAL = upsertSql('repos', [...REPO_COLS, 'hidden'], ['node_id']);
+
+export type AddManualResult =
+  | { added: true; id: number }
+  /** Already live: added by hand before, or one of the viewer's own. */
+  | { added: false; id: number; trackedBy: 'owned' | 'manual'; hidden: boolean };
+
+/**
+ * Tracks a repo by hand. A live row with its node id is left alone (reported back). A removed row is revived with
+ * its earlier data (an owned repo transferred away, then added by hand); otherwise the repo is inserted. `hidden`
+ * keeps it out of the default selection.
+ */
+export function addManual(db: Db, r: RepoRecord, opts: { hidden: boolean }, now: string): AddManualResult {
+  return db.tx(() => {
+    const live = db.get<{ id: number; tracked_by: string; hidden: number }>(
+      'SELECT id, tracked_by, hidden FROM repos WHERE node_id = ? AND removed_at IS NULL',
+      [r.nodeId],
+    );
+    if (live) return { added: false, id: live.id, trackedBy: live.tracked_by === 'manual' ? 'manual' : 'owned', hidden: !!live.hidden };
+    releaseKey(db, r.nameWithOwner, r.nodeId, now);
+    const row = db.get<{ id: number }>(UPSERT_MANUAL, [...recordVals(r), null, 'manual', now, null, null, Number(opts.hidden)]);
+    return { added: true, id: row!.id };
   });
 }
 

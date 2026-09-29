@@ -331,6 +331,68 @@ export interface SyncStatus {
   rateLimit: { limit: number; remaining: number; resetAt: string } | null;
   tokenSource: TokenSource;
   viewer: string | null;
+  /** Key of the one repository a single-repo sync is syncing (e.g. one just added); null for a full sync. */
+  repo?: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Adding and removing repositories
+// ---------------------------------------------------------------------------
+
+/** A repository the token can read, as offered by the Add dialog. */
+export interface RepoCandidate {
+  key: string;
+  owner: string;
+  name: string;
+  description: string | null;
+  visibility: Visibility;
+  isArchived: boolean;
+  isFork: boolean;
+  stars: number;
+  pushedAt: string | null;
+  /** How it is tracked already, or null when it isn't. */
+  tracked: TrackedBy | null;
+}
+
+/** GET /repo-candidates: the token's repositories of other owners, and ones the user recently contributed to. */
+export interface RepoCandidatesResponse {
+  /** Repositories you collaborate on or reach through an organization, most recently pushed first (at most 1000). */
+  items: RepoCandidate[];
+  /** Repositories of others you recently contributed to that aren't tracked yet. */
+  suggested: RepoCandidate[];
+  /** More repositories exist than `items` lists. */
+  truncated: boolean;
+  fetchedAt: string;
+}
+
+/**
+ * Why a repository can't be added (or synced): 'not-found' (doesn't exist, or the token can't see it), 'sso' (the
+ * organization requires SAML single sign-on), 'org-policy' (an organization policy refuses the token),
+ * 'permission' (the token sees the repository but not its pull requests, issues or code).
+ */
+export type AccessProblem = 'not-found' | 'sso' | 'org-policy' | 'permission';
+
+export interface RepoPreview extends RepoCandidate {
+  url: string;
+  openPrs: number;
+  openIssues: number;
+  /** The viewer owns it: tracked automatically, so Add is refused. */
+  owned: boolean;
+  /** When tracked: whether it is left out of the default selection. */
+  hidden: boolean | null;
+  /** What the first sync would fetch: items since `since` (null: unknown), and about how many GitHub requests. */
+  backfill: { since: string; commits: number | null; prs: number | null; issues: number | null; releases: number; requests: number | null };
+}
+
+/** GET /repo-lookup: whether the token can read a repository, with a preview when it can. */
+export type RepoLookup =
+  | { ok: true; repo: RepoPreview }
+  | { ok: false; key: string; problem: AccessProblem; message: string; hint: string | null };
+
+/** POST /repos: the repository as tracked now, and whether its first sync started or waits for the current one. */
+export interface AddRepoResponse {
+  repo: Repo;
+  sync: 'started' | 'queued';
 }
 
 // ---------------------------------------------------------------------------
@@ -551,6 +613,12 @@ export interface DiffCacheStats {
 // GET    /api/v1/repos          RepoQuery      -> { items: Repo[] }          (unfiltered: all repos incl. archived/hidden/forks)
 // GET    /api/v1/repos/:repo                   -> Repo      (:repo = key, URL-encoded: kcosr%2Fgh-dash; or an owned repo's short name)
 // PATCH  /api/v1/repos/:repo   {pinned?, hidden?} -> Repo
+// GET    /api/v1/repo-candidates {refresh?: '1'} -> RepoCandidatesResponse   (cached 5 min per token)
+// GET    /api/v1/repo-lookup   {repo}          -> RepoLookup   (400 when `repo` names no GitHub repository)
+// POST   /api/v1/repos         {repo, includeInDefault?} -> 201 AddRepoResponse
+//          400 bad input; 404/403 { details: { problem, hint } }; 409 { details: { key, trackedBy, hidden } } (you own it,
+//          or it's tracked already) or a token for another account; 429 rate limited; 503 no token.
+// DELETE /api/v1/repos/:repo                  -> 204   (409 for a repo you own; deletes its data from this dashboard)
 // GET    /api/v1/sets                          -> { items: RepoSet[] }
 // POST   /api/v1/sets          {name, repos}   -> RepoSet
 // PATCH  /api/v1/sets/:id      {name?, repos?} -> RepoSet
@@ -567,7 +635,8 @@ export interface DiffCacheStats {
 // GET    /api/v1/stars          ScopeQuery&PageQuery -> ListResponse<Star>
 // GET    /api/v1/stats          StatsQuery     -> StatsResponse
 // GET    /api/v1/sync/status                   -> SyncStatus
-// POST   /api/v1/sync           {repo?: string, full?: boolean} -> 202 SyncStatus (409 if already running, 503 no token)
+// POST   /api/v1/sync           {repo?: string, full?: boolean} -> 202 SyncStatus (409 if already running, 503 no token,
+//          404 when `repo` is a key nothing tracks)
 // GET    /api/v1/prs/:repo/:number/diff  {refresh?: '1'} -> Diff
 // GET    /api/v1/commits/:repo/:oid/diff {refresh?: '1'} -> Diff     (oid: 7-40 hex chars; need not be synced)
 //          Diff errors: 404 unknown repo/PR/commit, 503 no GitHub token, 429 GitHub rate limit, 502 other GitHub failure.

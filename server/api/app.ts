@@ -3,7 +3,7 @@ import { bodyLimit } from 'hono/body-limit';
 import type { Config } from '../config';
 import type { Db } from '../db/db';
 import type { DiffService } from '../diff/service';
-import { Tracking } from '../github/tracking';
+import { Tracking } from '../sync/tracking';
 import type { SourceRegistry } from '../sources/registry';
 import type { SyncManager } from '../sync/manager';
 import type { TokenProvider } from '../token';

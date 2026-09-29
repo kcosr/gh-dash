@@ -13,7 +13,7 @@ import { GitHubDiffSources } from '../github/diff-source';
 import { SyncManager } from '../sync/manager';
 import { fakeGitHub, page, type Reply, restFile, sha } from '../test/github';
 import { fakeGraphQL, prNode, repoNode } from '../test/graphql';
-import { Tracking } from '../github/tracking';
+import { Tracking } from '../sync/tracking';
 import { addManualRepo, GITHUB, seedDb, seedGitLab, setViewer } from '../test/seed';
 import { DESKTOP_SECRET_HEADER } from '../../shared/desktop';
 import { testTokens } from '../test/tokens';

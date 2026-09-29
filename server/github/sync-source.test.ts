@@ -19,7 +19,7 @@ import { supplyOf, testTokens } from '../test/tokens';
 import { GitHubClient } from './client';
 import { mapCommit, mapIssue, mapPullRequest, mapRelease, mapStar } from './map';
 import { GitHubSyncSource } from './sync-source';
-import { Tracking } from './tracking';
+import { Tracking } from '../sync/tracking';
 import type { Connection, RepoDetailData } from './types';
 
 const NOW = Date.parse('2026-09-27T12:00:00Z');

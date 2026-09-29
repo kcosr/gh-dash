@@ -63,7 +63,7 @@ export function repoRoutes({ db, config, tracking, diffs }: AppDeps): Hono {
   // Adding and removing repositories of other owners. The GETs spend the owner's GitHub quota: not for other sites.
   r.get('/repo-candidates', noCrossSiteReads, async (c) => {
     const { refresh } = parseWith(candidatesQuery, c.req.query());
-    return c.json(await tracking.candidates(!!refresh));
+    return c.json(await tracking.candidates({ refresh: !!refresh }));
   });
 
   r.get('/repo-lookup', noCrossSiteReads, async (c) => {

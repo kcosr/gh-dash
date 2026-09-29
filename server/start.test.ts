@@ -292,6 +292,16 @@ describe('startServer', () => {
     expect(await readUntil('never')).toBe(false);
   });
 
+  it('stops listening for a window whose connection goes', async () => {
+    const { server } = await start({}, { tcp: true });
+    const client = new AbortController();
+    const res = await fetch(`${server.apiUrl}/api/v1/stream`, { signal: client.signal });
+    await res.body!.getReader().read();
+    expect(server.bus.windows).toBe(1);
+    client.abort();
+    await vi.waitFor(() => expect(server.bus.windows).toBe(0));
+  });
+
   it("fetches a repo's diffs from the source it is on", async () => {
     const dir = temp();
     const env = { GITLAB_TOKEN: 'glpat-test-alice', GH_DASH_GITLAB_URL: BASE, GH_DASH_DB: join(dir, 'dash.db'), GH_DASH_SYNC: 'off' };

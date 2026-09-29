@@ -152,7 +152,7 @@ const COMMENT_VERB: Record<CommentEventKind, string> = {
 };
 
 /** What a comment event is on and where: `alice/app#2 (Title), src/a.ts:3–4`, or `alice/app@abc1234`. */
-export function commentPlace(e: Extract<ActivityEvent, { type: 'comment' }>, kindOf: KindOf): string {
+function commentPlace(e: Extract<ActivityEvent, { type: 'comment' }>, kindOf: KindOf): string {
   const { target, path, startLine, endLine } = e.comment;
   const ref = target.kind === 'pr' ? refText(kindOf(e.repo), e.repo, target.number, 'pr') : `${e.repo}@${target.oid.slice(0, 7)}`;
   const title = target.title ? ` (${escapeInline(target.title)})` : '';

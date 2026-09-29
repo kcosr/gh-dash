@@ -71,11 +71,13 @@ export class GitLabRestClient {
 }
 
 /**
- * A path segment for a GitLab URL: a project's full path ("group/sub/project") or a file path, as one segment with
- * slashes encoded. Dots are encoded too, as GitLab's docs do ("lib%2Fclass%2Erb"): the API would otherwise take a
- * trailing ".rb" or ".json" for a format suffix.
+ * A path segment for a GitLab URL: a project's full path ("group/sub/project"), a file path or a ref, as one segment
+ * with slashes encoded. Dots are encoded too, as GitLab's docs do ("lib%2Fclass%2Erb"): the API would otherwise take a
+ * trailing ".rb" or ".json" for a format suffix. "." and ".." components are refused: once a server or proxy decodes
+ * the segment they could climb out of the path they're in.
  */
 export function encodeSegment(value: string): string {
+  if (value.split('/').some((part) => part === '.' || part === '..')) throw new Error(`GitLab path with a "." or ".." component: ${value.slice(0, 100)}`);
   return encodeURIComponent(value).replace(/\./g, '%2E');
 }
 

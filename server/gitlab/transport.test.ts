@@ -60,6 +60,25 @@ describe('GitLab transport', () => {
     expect(calls).toHaveLength(0);
   });
 
+  it('checks where a URL really goes: dot segments, literal or encoded, cannot climb out of the API root', async () => {
+    const { transport, calls } = setup({});
+    for (const sneaky of [
+      `${BASE}/api/v4/../../x`,
+      `${BASE}/api/v4/projects/%2E%2E/%2E%2E/%2E%2E/x`,
+      `${BASE}/api/v4/projects/.%2e/%2e./%2E%2E/x`,
+      `${BASE}/api/./../x`,
+    ]) {
+      await expect(transport.send(sneaky, async () => 1)).rejects.toThrow(/Refusing/);
+    }
+    expect(calls).toHaveLength(0);
+  });
+
+  it('sends the URL it checked', async () => {
+    const { transport, calls } = setup({ '/api/v4/b': { body: {} } });
+    await transport.send(`${BASE}/api/v4/a/../b`, async () => 1);
+    expect(calls.map((c) => c.url.href)).toEqual([`${BASE}/api/v4/b`]);
+  });
+
   it('reports a redirect instead of following it', async () => {
     const { rest, calls } = setup({ '/api/v4/x': { status: 301, headers: { location: 'https://other.example/api/v4/x' } } });
     const err = await fail(rest.json('/x'));
@@ -194,7 +213,11 @@ describe('GitLab REST pagination', () => {
   it('encodes project and file paths as single segments, dots included', () => {
     expect(encodeSegment('group/sub/my.project')).toBe('group%2Fsub%2Fmy%2Eproject');
     expect(encodeSegment('lib/class.rb')).toBe('lib%2Fclass%2Erb');
-    expect(encodeSegment('../x y#?')).toBe('%2E%2E%2Fx%20y%23%3F');
+    expect(encodeSegment('x y#?/.env')).toBe('x%20y%23%3F%2F%2Eenv');
+  });
+
+  it('refuses paths with . or .. components, which a server or proxy could resolve after decoding', () => {
+    for (const bad of ['..', '.', '../x', 'a/../b', 'a/./b', 'a/..']) expect(() => encodeSegment(bad)).toThrow(/\.\./);
   });
 });
 

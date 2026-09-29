@@ -161,6 +161,22 @@ describe('GitLabDiffSource: commits', () => {
     expect(await source.commit(REPO, B, signal())).toMatchObject({ baseOid: null, totalFiles: 3, additions: 4, deletions: 2 });
   });
 
+  it('never builds a path out of the API root from what GitLab answered', async () => {
+    const { source, requests } = setup({
+      [`${PROJECT}/repository/commits/bbbbbbb`]: { body: { ...clone(commitFixture), id: '../../../../../../gitlab/x' } },
+      [`${PROJECT}/repository/commits/b%2Fc/diff`]: page([], null),
+    });
+    await expect(source.commit(REPO, 'bbbbbbb', signal())).rejects.toThrow(/\.\./);
+    expect(requests).toEqual([`${PROJECT}/repository/commits/bbbbbbb`]);
+    // An id that is merely odd stays one encoded segment.
+    const odd = setup({
+      [`${PROJECT}/repository/commits/bbbbbbb`]: { body: { ...clone(commitFixture), id: 'b/c' } },
+      [`${PROJECT}/repository/commits/b%2Fc/diff`]: page([], null),
+    });
+    await odd.source.commit(REPO, 'bbbbbbb', signal());
+    expect(odd.requests.at(-1)).toBe(`${PROJECT}/repository/commits/b%2Fc/diff?per_page=100&page=1`);
+  });
+
   it('reports an unknown commit as not-found', async () => {
     const { source } = setup({ [`${PROJECT}/repository/commits/${A}`]: { status: 404, body: { message: '404 Commit Not Found' } } });
     expect(await fail(source.commit(REPO, A, signal()))).toMatchObject({ kind: 'not-found', status: 404, message: expect.stringContaining('404 Commit Not Found') });

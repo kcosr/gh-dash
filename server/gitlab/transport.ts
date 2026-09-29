@@ -97,16 +97,14 @@ export class GitLabTransport {
    * redacted.
    */
   async send<T>(target: string, read: (res: Response) => Promise<T>, opts: SendOptions = {}): Promise<T> {
-    if (!target.startsWith(this.apiRoot)) {
-      throw new GitLabError('http', `Refusing to send the GitLab token outside ${this.apiRoot}: ${target.slice(0, 100)}`);
-    }
+    const url = this.inside(target);
     checkToken(this.token);
-    const what = new URL(target).pathname;
+    const what = url.pathname;
     const gaveUp = () => new GitLabError('transient', `Gave up waiting for GitLab (${what})`);
     for (let n = 1; ; n++) {
       if (opts.signal?.aborted) throw gaveUp();
       try {
-        return await this.attempt(target, what, read, opts);
+        return await this.attempt(url.href, what, read, opts);
       } catch (err) {
         if (!(err instanceof RetryableError)) throw err instanceof GitLabError ? this.clean(err) : err;
         if (opts.signal?.aborted) throw gaveUp();
@@ -118,6 +116,25 @@ export class GitLabTransport {
         await this.sleep(err.retryAfterMs ?? backoffMs(n));
       }
     }
+  }
+
+  /**
+   * `target` as the URL fetch will actually request, if that is under the API root. Checked on the parsed URL, not the
+   * string: dot segments ("..", "%2E%2E") are resolved by the URL parser, so "…/api/v4/%2E%2E/%2E%2E/x" would
+   * otherwise pass a prefix check and then leave a relative-root install's API.
+   */
+  private inside(target: string): URL {
+    let url: URL | null = null;
+    try {
+      url = new URL(target);
+    } catch {
+      // Refused below.
+    }
+    const root = new URL(this.apiRoot);
+    if (!url || url.origin !== root.origin || url.username || url.password || !url.pathname.startsWith(root.pathname)) {
+      throw new GitLabError('http', `Refusing to send the GitLab token outside ${this.apiRoot}: ${target.slice(0, 100)}`);
+    }
+    return url;
   }
 
   private clean(err: GitLabError): GitLabError {

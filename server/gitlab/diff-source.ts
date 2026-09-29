@@ -92,7 +92,7 @@ export class GitLabDiffSource implements DiffSource {
         (v) => v.head_commit_sha === rev.headOid && (v.base_commit_sha ?? v.start_commit_sha) === rev.baseOid && (!start || v.start_commit_sha === start),
       );
       if (version) {
-        const full = await this.rest.json<RestVersionFull>(`${mr}/versions/${version.id}`, { signal });
+        const full = await this.rest.json<RestVersionFull>(`${mr}/versions/${encodeSegment(String(version.id))}`, { signal });
         return { rev, files: full.diffs.slice(0, MAX_FILES).map(mapDiffFile) };
       }
       if (attempt >= REVISION_ATTEMPTS) throw new GitLabError('transient', `!${number} in ${repo.path} changed while its diff was being fetched; try again`);
@@ -107,7 +107,7 @@ export class GitLabDiffSource implements DiffSource {
   async commit(repo: DiffRepo, ref: string, signal: AbortSignal): Promise<CommitDiff> {
     const commits = `/projects/${encodeSegment(repo.path)}/repository/commits`;
     const c = await this.rest.json<RestCommit>(`${commits}/${encodeSegment(ref)}`, { signal });
-    const { items, total } = await this.rest.all<RestDiff>(`${commits}/${c.id}/diff`, MAX_FILES, { query: { per_page: 100 }, signal });
+    const { items, total } = await this.rest.all<RestDiff>(`${commits}/${encodeSegment(c.id)}/diff`, MAX_FILES, { query: { per_page: 100 }, signal });
     const files = items.map(mapDiffFile);
     return {
       title: messageParts(c.message ?? c.title).headline,

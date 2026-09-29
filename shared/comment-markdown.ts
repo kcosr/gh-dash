@@ -15,9 +15,13 @@ export interface ThreadsMarkdownOptions {
   placements?: ReadonlyMap<number, ThreadPlacement>;
 }
 
-/** A fence longer than any backtick run inside `code`, so the snippet can't close it early. */
+/**
+ * A fence longer than any backtick run inside `code`, so the snippet can't close it early. Counted in a loop: a
+ * snippet can hold ~100k runs, too many to spread into Math.max's arguments.
+ */
 function fence(code: string): string {
-  const longest = Math.max(0, ...(code.match(/`+/g) ?? []).map((run) => run.length));
+  let longest = 0;
+  for (const run of code.matchAll(/`+/g)) longest = Math.max(longest, run[0].length);
   return '`'.repeat(Math.max(3, longest + 1));
 }
 

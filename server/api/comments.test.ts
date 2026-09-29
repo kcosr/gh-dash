@@ -194,6 +194,12 @@ describe('comment threads API', () => {
     expect(await res.text()).toBe('# app#2\n\n### `src/a.ts` lines 3–4 (new)\n\n```ts\na\nb\n```\n\n- **You**: Why?\n');
     const commit = await send('GET', `/commits/app/${COMMIT}/threads?format=md`);
     expect(await commit.text()).toBe('# app@ccccccc\n');
+    // The largest snippet the API takes, all backtick runs.
+    const snippet = '`x'.repeat(128 * 1024);
+    expect((await json('POST', '/prs/app/3/threads', { ...lineThread, startLine: 1, endLine: 1, snippet })).status).toBe(200);
+    const big = await send('GET', '/prs/app/3/threads?format=md');
+    expect(big.status).toBe(200);
+    expect(await big.text()).toContain(`\`\`\`ts\n${snippet}\n\`\`\`\n`);
   });
 
   it('counts threads on PRs and filters the PR list by them', async () => {

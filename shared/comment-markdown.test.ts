@@ -42,6 +42,13 @@ describe('threadsMarkdown', () => {
     );
   });
 
+  it('fences a maximum-size snippet made of backtick runs', () => {
+    // 256 KiB, the API's cap: 131,000 one-backtick runs, one of five, and padding.
+    const snippet = ('`x'.repeat(131_000) + '`````').padEnd(256 * 1024, 'x');
+    const md = threadsMarkdown([thread({ path: 'a.md', side: 'new', startLine: 1, endLine: 1, snippet })]);
+    expect(md.startsWith(`### \`a.md\` line 1 (new)\n\n\`\`\`\`\`\`md\n${snippet}\n\`\`\`\`\`\`\n`)).toBe(true);
+  });
+
   it('shows where the diff on screen placed each thread', () => {
     const moved = thread({ path: 'a.ts', side: 'new', startLine: 3, endLine: 3, snippet: 'x' });
     const gone = thread({ kind: 'commit', number: null, path: 'b.ts', side: 'new', startLine: 5, endLine: 6, snippet: 'y\nz', status: 'resolved' });

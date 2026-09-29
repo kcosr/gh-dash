@@ -121,7 +121,8 @@ export class GitLabSyncSource implements SyncSource {
   private readonly rest: GitLabRestClient;
 
   constructor(opts: GitLabOptions) {
-    // The sync can wait out a throttle's Retry-After (GitLab's windows are a minute or so); a person isn't waiting.
+    // The sync can wait out a throttle's Retry-After (GitLab's windows are a minute or so); a person isn't waiting. The
+    // Add dialog's source, which a person is waiting on, passes fewer attempts and a short maxRetryWaitMs.
     this.transport = new GitLabTransport(opts, { maxAttempts: 5, maxRetryWaitMs: 120_000 });
     this.graphql = new GitLabClient(this.transport);
     this.rest = new GitLabRestClient(this.transport);

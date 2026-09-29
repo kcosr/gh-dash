@@ -5,9 +5,9 @@
 // Who uses what (the steps are the design's §11):
 // - tokens (CredentialProvider: TokenSupply + account() + check()): startup's check() here; the manager's per-source
 //   runs (5); tracking (6); diffs' 503 text (7); /sources and Settings → Sources (8, 11).
-// - syncSource(token): the neutral runSync (3c) and the multi-source manager (5); tracking's candidates() and
-//   lookup() (6). github.com's is null until GitHubSyncSource exists (3b); until then the manager syncs GitHub with
-//   its own GitHubClient, as before.
+// - syncSource(token, limits?): the neutral runSync (3c) and the multi-source manager (5); tracking's candidates() and
+//   lookup() (6), with few retries and short waits. github.com's is null until the manager builds GitHubSyncSource
+//   (3c/5); until then the manager syncs GitHub with its own GitHubClient, and tracking builds its own.
 // - diffs (DiffSources): the diff service, routed by the repo's source (7). github.com's is the GitHubDiffSources the
 //   diff service already uses.
 // - byHost / byId / list / configured: the manager (5), tracking (6), diffs (7), the API (8), the desktop child (11).
@@ -23,7 +23,7 @@ import type { DiffSources } from '../diff/service';
 import { gitlabSpec } from '../gitlab/credentials';
 import { GitLabDiffSources } from '../gitlab/diff-source';
 import { GitLabSyncSource } from '../gitlab/sync-source';
-import { defaultSleep } from '../provider/transport';
+import { defaultSleep, type RetryLimits } from '../provider/transport';
 import type { SyncSource } from '../provider/types';
 import type { SourceConfig, SourcesConfig } from './config';
 
@@ -47,10 +47,11 @@ export interface SourceRuntime {
   /** Where its token comes from. An unconfigured source's never has one, and says so. */
   readonly tokens: CredentialProvider;
   /**
-   * A sync client for one token. A 401 invalidates that token, so the next get() resolves again. null for github.com
-   * until GitHubSyncSource (step 3b).
+   * A sync client for one token. A 401 invalidates that token, so the next get() resolves again. `limits` replaces the
+   * client's retry defaults (the sync's: several attempts, long waits), for a person waiting on the answer. null for
+   * github.com until the manager builds GitHubSyncSource here (steps 3c/5).
    */
-  readonly syncSource: ((token: string) => SyncSource) | null;
+  readonly syncSource: ((token: string, limits?: RetryLimits) => SyncSource) | null;
   /** Its diff and file-content client for the current token. */
   readonly diffs: DiffSources;
 }
@@ -267,8 +268,9 @@ export class SourceRegistry {
       configured: config !== null,
       config,
       tokens,
-      syncSource: (token) =>
+      syncSource: (token, limits = {}) =>
         new GitLabSyncSource({
+          ...limits,
           baseUrl,
           token,
           // A 401 means the token was revoked or replaced: resolve it again before the next use.

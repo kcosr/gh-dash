@@ -12,7 +12,13 @@ export interface GitLabOptions {
   token: string;
   fetchImpl?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
+  /** Attempts per request (default: the client's own, e.g. 5 for the sync). */
   maxAttempts?: number;
+  /**
+   * A 429 asking for a longer wait fails as 'rate-limit' instead of sleeping (default: the client's own, e.g. 120 s for
+   * the sync). A client a person waits on (the Add dialog) passes a short one.
+   */
+  maxRetryWaitMs?: number;
 }
 
 /** A failed GitLab request: a SourceError, so provider-neutral code handles it by kind. */
@@ -92,7 +98,7 @@ export class GitLabTransport {
     this.fetchImpl = opts.fetchImpl ?? fetch;
     this.sleep = opts.sleep ?? defaultSleep;
     this.maxAttempts = opts.maxAttempts ?? defaults.maxAttempts;
-    this.maxRetryWaitMs = defaults.maxRetryWaitMs;
+    this.maxRetryWaitMs = opts.maxRetryWaitMs ?? defaults.maxRetryWaitMs;
   }
 
   /** `path` below the instance URL, e.g. "/api/v4/projects/1". */

@@ -6,7 +6,8 @@ import revisionFixture from '../test/fixtures/gitlab/mr-revision.json';
 import versionFixture from '../test/fixtures/gitlab/mr-version.json';
 import versionsFixture from '../test/fixtures/gitlab/mr-versions.json';
 import { BASE, fakeGitLab, graphql, page, sha, type Handler } from '../test/gitlab';
-import { GitLabDiffSource, MAX_FILES } from './diff-source';
+import { supplyOf } from '../test/tokens';
+import { GitLabDiffSource, GitLabDiffSources, MAX_FILES } from './diff-source';
 import type { GitLabError } from './transport';
 
 const REPO: DiffRepo = { key: 'api', owner: 'team/platform', name: 'api', path: 'team/platform/api' };
@@ -210,5 +211,37 @@ describe('GitLabDiffSource: file contents', () => {
     const { source } = setup({});
     expect([source.kind, source.rateLimit, source.requests]).toEqual(['gitlab', null, 0]);
     expect(source.authHint).toContain('read_api');
+  });
+});
+
+describe('GitLabDiffSources', () => {
+  it('makes one source per token on the instance, and forgets a rejected one', async () => {
+    const token = { value: 'glpat-one' as string | null };
+    const supply = supplyOf(() => token.value);
+    const invalidated: (string | undefined)[] = [];
+    const tokens = Object.assign(supply, {
+      invalidate: (t?: string) => void invalidated.push(t),
+      noTokenMessage: () => "No GitLab token for gitlab.example.com: it isn't configured on this server",
+    });
+    const api = fakeGitLab({ [`${PROJECT}/repository/files/README%2Emd/raw`]: { text: 'hi' } });
+    const sources = new GitLabDiffSources({ baseUrl: BASE, tokens, fetchImpl: api.fetchImpl, sleep: async () => {} });
+
+    const first = await sources.get();
+    expect(await sources.get()).toBe(first);
+    // It talks to the configured instance (relative root included) with the token it was made with.
+    await first.blob(REPO, B, 'README.md', 1000, signal());
+    expect(api.calls.map((c) => [c.url.href.startsWith(`${BASE}/api/v4/`), c.headers.Authorization])).toEqual([[true, 'Bearer glpat-one']]);
+
+    token.value = 'glpat-two';
+    const second = await sources.get();
+    expect(second).not.toBe(first);
+    sources.authFailed(first);
+    expect(invalidated).toEqual(['glpat-one']);
+    expect(await sources.get()).toBe(second);
+    sources.authFailed(second);
+    expect(await sources.get()).not.toBe(second);
+
+    token.value = null;
+    expect(await fail(sources.get())).toMatchObject({ kind: 'auth', message: "No GitLab token for gitlab.example.com: it isn't configured on this server" });
   });
 });

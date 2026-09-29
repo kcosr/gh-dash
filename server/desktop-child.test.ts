@@ -4,7 +4,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DESKTOP_ENV, type ServerToMain } from '../shared/desktop';
+import { writeConfigFile } from './config-file';
 import { mainMessageHandler, type ParentPort, runDesktopChild } from './desktop-child';
+import type { SourceRuntime } from './sources/registry';
 import type { RunningServer } from './start';
 import { fakeGitHub, type Reply } from './test/github';
 import { testTokens } from './test/tokens';
@@ -51,6 +53,18 @@ describe('main → server messages', () => {
     expect(posted[2]).toMatchObject({ id: 3, ok: true, account: { source: 'app', login: 'alice' } });
     await handle({ type: 'set-token', id: 4, choice: 'app', token: null });
     expect(posted[3]).toMatchObject({ id: 4, ok: false, account: { source: 'none', error: 'No token has been entered in the app' } });
+  });
+
+  it('reloads the sources from config.json and names the configured ones, or says why it could not', async () => {
+    const posted: ServerToMain[] = [];
+    const runtimes = [{ host: 'github.com', config: null }, { host: 'gitlab.example.com', config: {} }, { host: 'gitlab2.example.com', config: null }] as SourceRuntime[];
+    const reloadSources = vi.fn(() => runtimes);
+    const handle = mainMessageHandler({ tokens: testTokens(), close: async () => {}, reloadSources }, (m) => posted.push(m), vi.fn());
+    await handle({ type: 'reload-sources', id: 5 });
+    expect(posted).toEqual([{ type: 'sources-result', id: 5, ok: true, error: null, sources: ['gitlab.example.com'] }]);
+    reloadSources.mockImplementation(() => { throw new Error('config.json: sources.0.url: github.com is built in; configure it with tokenSource'); });
+    await handle({ type: 'reload-sources', id: 6 });
+    expect(posted[1]).toEqual({ type: 'sources-result', id: 6, ok: false, error: 'config.json: sources.0.url: github.com is built in; configure it with tokenSource', sources: [] });
   });
 
   it('closes everything and exits 0 on shutdown; ignores anything else', async () => {
@@ -103,6 +117,25 @@ describe('runDesktopChild', () => {
       { type: 'ready', apiUrl: null },
       { type: 'token-result', id: 7, ok: true, account: expect.objectContaining({ source: 'none', choice: null }) },
     ]);
+    send({ type: 'shutdown' });
+    await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(0));
+  });
+
+  it('adds a GitLab source main wrote to config.json, without a restart', async () => {
+    const { port, posted, send } = fakePort();
+    const exit = vi.fn();
+    const env = desktopEnv();
+    const server = (await runDesktopChild(port, env, exit))!;
+    running.push(server);
+    expect(server.sources.list().map((r) => r.host)).toEqual(['github.com']);
+    writeConfigFile(env[DESKTOP_ENV.config]!, { sources: [{ kind: 'gitlab', url: 'https://gitlab.example.com/gitlab' }] });
+    send({ type: 'reload-sources', id: 8 });
+    await vi.waitFor(() => expect(posted).toHaveLength(2));
+    expect(posted[1]).toEqual({ type: 'sources-result', id: 8, ok: true, error: null, sources: ['gitlab.example.com'] });
+    // The desktop app chooses the method later: nothing is chosen yet, so nothing is asked of GitLab.
+    const gl = server.sources.byHost('gitlab.example.com')!;
+    expect(gl.config).toMatchObject({ baseUrl: 'https://gitlab.example.com/gitlab', tokenChoice: null });
+    expect(await gl.tokens.get()).toMatchObject({ token: null, source: 'none', error: null });
     send({ type: 'shutdown' });
     await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(0));
   });

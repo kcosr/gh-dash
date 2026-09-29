@@ -6,6 +6,7 @@ import { parseEnv } from 'node:util';
 import type { ConfigSource, TokenChoice } from '../shared/api';
 import { DESKTOP_ENV } from '../shared/desktop';
 import { CONFIG_ENV, type ConfigFile, type LoadedConfigFile, readConfigFile } from './config-file';
+import { loadSources, type SourceConfig } from './sources/config';
 
 export type { TokenSource } from '../shared/api';
 
@@ -41,6 +42,14 @@ export interface Config {
   tokenFile: string | null;
   /** GH_DASH_GH_PATH: the gh executable, when it isn't on PATH or in a standard location. */
   ghPath: string | null;
+  /** GH_DASH_GLAB_PATH: the glab executable, when it isn't on PATH or in a standard location. */
+  glabPath: string | null;
+  /**
+   * The GitLab sources: config.json `sources`, and on a headless server the one GH_DASH_GITLAB_URL declares or
+   * overrides. github.com is built in (tokenChoice, tokenFile, ghPath). The desktop child's `reload-sources` replaces
+   * this and glabPath with a fresh read of config.json.
+   */
+  sourceConfigs: SourceConfig[];
   /** config.json that was read (whether or not it exists); null when none was. */
   configPath: string | null;
   /** Where each config.json-backed setting came from (for GET /api/v1/instance). */
@@ -204,6 +213,10 @@ export function loadConfig(env: NodeJS.ProcessEnv, file: LoadedConfigFile | null
   const tokenFile = layer('tokenFile', (raw) => (raw.trim() ? path('tokenFile', raw.trim()) : null), (v) => (v ? path('tokenFile', v) : null), () => null);
   const ghPath = layer('ghPath', (raw) => raw.trim() || null, (v) => v, () => null);
   if (ghPath && desktop && !isAbsolute(ghPath)) throw new Error(`${where('ghPath')} must be an absolute path: ${ghPath}`);
+  const gitlab = loadSources(env, file);
+  sources.glabPath = gitlab.from.glabPath;
+  sources.sources = gitlab.from.sources;
+  warnings.push(...gitlab.warnings);
   const listenSetting = layer('listen', (raw) => parseSwitch(raw, CONFIG_ENV.listen), (v) => !!v, () => false);
   if (!desktop && sources.listen !== 'default' && !listenSetting) warnings.push(`${where('listen')} is ignored: a headless server always listens`);
   const password = secret('password');
@@ -226,6 +239,8 @@ export function loadConfig(env: NodeJS.ProcessEnv, file: LoadedConfigFile | null
     tokenChoice,
     tokenFile,
     ghPath,
+    glabPath: gitlab.glabPath,
+    sourceConfigs: gitlab.sources,
     configPath: file?.path ?? null,
     sources,
     warnings,

@@ -4,11 +4,14 @@ import type { AddressInfo } from 'node:net';
 import { createAdaptorServer } from '@hono/node-server';
 import { type AppDeps, createApp } from './api/app';
 import type { Config } from './config';
+import { readConfigFile } from './config-file';
 import { type Db, openDb } from './db/db';
 import { GITHUB_SOURCE_ID, getSource } from './db/sources';
 import { type DiffCache, openDiffCache } from './diff/cache';
 import { DiffService } from './diff/service';
 import { GitHubDiffSources } from './github/diff-source';
+import { loadSources } from './sources/config';
+import { SourceRegistry, type SourceRegistryOptions, type SourceRuntime } from './sources/registry';
 import { SyncManager } from './sync/manager';
 import { TokenProvider, type TokenProviderOptions } from './token';
 
@@ -28,14 +31,24 @@ export interface StartOptions {
   log?: (line: string) => void;
   /** Test seams for the token provider (exec, fetchImpl, fs...). */
   tokenOptions?: Partial<TokenProviderOptions>;
+  /** Test seams for the GitLab sources' credential providers and clients. */
+  sourceOptions?: SourceRegistryOptions['seams'];
 }
 
 export interface RunningServer {
   config: Config;
   db: Db;
   tokens: TokenProvider;
+  /** Every source's runtime: github.com's (over `tokens`) and the GitLab sources'. */
+  sources: SourceRegistry;
   sync: SyncManager;
   diffs: DiffService;
+  /**
+   * Re-reads config.json's `sources` and `glabPath` (plus the environment's, headless) and applies them to `sources`,
+   * validating the tokens of the sources it (re)built in the background: the desktop app's `reload-sources`. Updates
+   * config.sourceConfigs and config.glabPath. Throws on a bad config.json, and then nothing changes.
+   */
+  reloadSources(): SourceRuntime[];
   /** The TCP listener's local URL (http://127.0.0.1:<port> even when bound to all interfaces); null without one. */
   apiUrl: string | null;
   /** The socket or pipe the desktop transport listens on; null without one. */
@@ -82,10 +95,14 @@ export async function startServer(opts: StartOptions): Promise<RunningServer> {
       tokenSettled = true;
     });
     const sync = new SyncManager({ db, schedule: config.syncEnabled, tokens, log });
-    const diffs = new DiffService({ db, cache, sources: new GitHubDiffSources({ tokens, log }), log });
+    const githubDiffs = new GitHubDiffSources({ tokens, log });
+    const diffs = new DiffService({ db, cache, sources: githubDiffs, log });
     diffs.evict();
+    const sources = new SourceRegistry({ db, env: opts.env, github: { tokens: tokens.credentials, diffs: githubDiffs }, log, seams: opts.sourceOptions });
+    // Checked in the background too; each logs who its token is for, an expiry close by, and write scopes.
+    const sourcesReady = sources.check(sources.apply({ glabPath: config.glabPath, sources: config.sourceConfigs }));
     const viewerReady = sync.ensureViewer().catch((err: Error) => log(`[startup] could not fetch GitHub viewer: ${err.message}`));
-    const deps: AppDeps = { db, config, sync, diffs, tokens };
+    const deps: AppDeps = { db, config, sync, diffs, tokens, sources };
 
     let apiUrl: string | null = null;
     let bound: string | null = null;
@@ -109,7 +126,7 @@ export async function startServer(opts: StartOptions): Promise<RunningServer> {
       if (process.platform !== 'win32') chmodSync(path, 0o600);
     }
 
-    await Promise.race([Promise.all([tokenReady, viewerReady]), new Promise((r) => setTimeout(r, STARTUP_WAIT_MS).unref())]);
+    await Promise.race([Promise.all([tokenReady, viewerReady, sourcesReady]), new Promise((r) => setTimeout(r, STARTUP_WAIT_MS).unref())]);
     const listeners = [bound, socketPath && (process.platform === 'win32' ? socketPath : `unix:${socketPath}`)].filter(Boolean);
     const fromFile = Object.values(config.sources).includes('file');
     log(
@@ -120,9 +137,19 @@ export async function startServer(opts: StartOptions): Promise<RunningServer> {
     );
     sync.startScheduler();
 
+    const reloadSources = () => {
+      const next = loadSources(opts.env, config.configPath ? readConfigFile(config.configPath) : null);
+      for (const warning of next.warnings) log(`[config] warning: ${warning}`);
+      const built = sources.apply(next);
+      config.glabPath = next.glabPath;
+      config.sourceConfigs = next.sources;
+      void sources.check(built);
+      return sources.list();
+    };
+
     let closing: Promise<void> | null = null;
     return {
-      config, db, tokens, sync, diffs, apiUrl, socketPath,
+      config, db, tokens, sources, sync, diffs, reloadSources, apiUrl, socketPath,
       close: () =>
         (closing ??= (async () => {
           await sync.shutdown();

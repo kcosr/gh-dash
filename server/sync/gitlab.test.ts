@@ -10,7 +10,7 @@ import { notFound } from '../gitlab/access';
 import { GitLabSyncSource } from '../gitlab/sync-source';
 import { reasonOf } from '../provider/access';
 import commitsFixture from '../test/fixtures/gitlab/commits.json';
-import { BASE, type Handler, page } from '../test/gitlab';
+import { BASE, graphqlErrors, type Handler, page } from '../test/gitlab';
 import { syncInstance } from '../test/gitlab-instance';
 import { addManualRepo } from '../test/seed';
 import { runSync, type SyncRequest } from './sync';
@@ -144,6 +144,40 @@ describe('a GitLab source', () => {
     await expect(sync({ repo: 'app' })).rejects.toThrow("Repository isn't tracked: app");
     await expect(sync({ repo: `${HOST}/alice/new` })).rejects.toThrow(`Repository isn't tracked: ${HOST}/alice/new`);
     expect(take()).toEqual([]);
+  });
+
+  it("keeps to its concurrency when rounds fail: a failed round's other requests end before another project starts", async () => {
+    const db = openDb(':memory:');
+    const gl = ensureSource(db, { kind: 'gitlab', host: HOST, baseUrl: BASE });
+    // Merge requests fail at once; commits answer late. Eight more projects like alice/app, unprobed: every section.
+    const more = Array.from({ length: 8 }, (_, i) => 101 + i);
+    const routes = Object.fromEntries(
+      more.flatMap((id) => [
+        [`/api/v4/projects/${id}/issues`, page([], null)],
+        [`/api/v4/projects/${id}/starrers`, page([], null, { 'x-total': '0' })],
+        [`/api/v4/projects/${id}/repository/commits`, page(commitsFixture, null)],
+      ]),
+    );
+    const fake = syncInstance(routes, { MergeRequests: () => graphqlErrors('Internal server error') });
+    const [app] = fake.owned.projects.nodes;
+    for (const id of more) fake.owned.projects.nodes.push({ ...structuredClone(app!), id: gid(id), path: `app${id}`, fullPath: `alice/app${id}` });
+    let open = 0;
+    let most = 0;
+    const fetchImpl: typeof fetch = async (input, init) => {
+      if (!String(input).includes('/repository/commits?')) return fake.fetchImpl(input, init);
+      most = Math.max(most, ++open);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      open--;
+      return fake.fetchImpl(input, init);
+    };
+    const source = new GitLabSyncSource({ baseUrl: BASE, token: 'glpat-test-token', fetchImpl, sleep: async () => {} });
+    const res = await runSync({ db, source, src: getSource(db, gl.id)!, settings: DEFAULT_SETTINGS, now: () => NOW, concurrency: 3 });
+    // Every project failed at its merge requests: alice/app, alice/corp.tools and the eight.
+    expect(res.errors).toHaveLength(10);
+    expect(res.errors.filter((e) => !e.endsWith(': Internal server error'))).toEqual([]);
+    // One commits request per project in the pool at most, and none left running.
+    expect(most).toBeLessThanOrEqual(3);
+    expect(open).toBe(0);
   });
 
   it('stops at a rejected token, like GitHub', async () => {

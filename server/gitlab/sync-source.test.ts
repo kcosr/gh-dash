@@ -15,7 +15,7 @@ import starrersFixture from '../test/fixtures/gitlab/starrers.json';
 import viewerAccountFixture from '../test/fixtures/gitlab/viewer-account.json';
 import viewerFixture from '../test/fixtures/gitlab/viewer.json';
 import { fakeInstance } from '../test/gitlab-instance';
-import { BASE, fakeGitLab, graphql, page, sha, type Handler } from '../test/gitlab';
+import { BASE, fakeGitLab, graphql, graphqlErrors, page, sha, type Handler } from '../test/gitlab';
 import { mapProject } from './map';
 import { GitLabSyncSource } from './sync-source';
 import type { GitLabError } from './transport';
@@ -398,6 +398,35 @@ describe('GitLabSyncSource: rounds', () => {
       { path: 'alice/app', after: 'eyJ1cGRhdGVkX2F0IjoiMjAyNi0wOS0xOSJ9', first: 25, state: 'all', sort: 'UPDATED_DESC' },
       { path: 'alice/app', after: null, first: 25, state: 'opened', sort: 'CREATED_DESC' },
     ]);
+  });
+
+  it('fails a round only once every section has settled, with a token problem ahead of an earlier failure', async () => {
+    const fake = fakeGitLab({
+      '/api/graphql': graphql({ MergeRequests: () => graphqlErrors('Internal server error') }),
+      '/api/v4/projects/11/issues': { status: 401, body: { message: '401 Unauthorized' } },
+      '/api/v4/projects/11/repository/commits': page(commitsFixture, null),
+    });
+    // The REST sections answer later than the merge requests, which fail at once.
+    let open = 0;
+    const fetchImpl: typeof fetch = async (input, init) => {
+      if (!String(input).includes('/api/v4/')) return fake.fetchImpl(input, init);
+      open++;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      open--;
+      return fake.fetchImpl(input, init);
+    };
+    const source = new GitLabSyncSource({ baseUrl: BASE, token: 'glpat-test-token', fetchImpl, sleep: async () => {} });
+    const err = await fail(source.round(APP, { commits: { after: null, since: '2025-09-29T00:00:00Z' }, prs: { after: null }, issues: { after: null } }));
+    expect(open).toBe(0);
+    expect(err).toMatchObject({ kind: 'auth', status: 401 });
+    expect(fake.requests).toHaveLength(3);
+
+    // Without a fatal one, the first failure.
+    fake.routes['/api/v4/projects/11/issues'] = page(issuesFixture, null);
+    expect(await fail(source.round(APP, { commits: { after: null, since: '2025-09-29T00:00:00Z' }, prs: { after: null }, issues: { after: null } }))).toMatchObject({
+      kind: 'graphql', message: expect.stringContaining('Internal server error'),
+    });
+    expect(open).toBe(0);
   });
 
   it('reads an empty page when merge requests are turned off, and fails for a project that is gone', async () => {

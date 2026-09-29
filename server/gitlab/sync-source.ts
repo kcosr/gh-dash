@@ -1,5 +1,5 @@
 import type { CommitRecord, IssueRecord, PrRecord, ReleaseRecord, RepoProbe, RepoRecord, StarRecord } from '../db/records';
-import { isFatalSourceError } from '../provider/errors';
+import { isFatalSourceError, SourceError } from '../provider/errors';
 import type {
   BackfillCounts,
   LookupRecord,
@@ -231,17 +231,29 @@ export class GitLabSyncSource implements SyncSource {
     return out;
   }
 
+  /**
+   * Every section's request settles before the round does, failed or not: the sync's pool starts another repo when a
+   * round ends, so a round that failed at its first error would leave its other requests (and their retries) running
+   * past the pool's cap. A failed round fails with a token problem first, then a rate limit (both stop the sync), else
+   * the first failure.
+   */
   async round(repo: RepoRecord, req: RoundRequest): Promise<RoundResult> {
     const out: RoundResult = {};
-    await Promise.all([
-      req.commits && this.commits(repo, req.commits.after, req.commits.since).then((p) => (out.commits = p)),
-      req.prs && this.mergeRequests(repo, req.prs.after, 'all', 'updated').then((p) => (out.prs = p)),
-      req.openPrs && this.mergeRequests(repo, req.openPrs.after, 'opened', 'created').then((p) => (out.openPrs = p)),
-      req.issues && this.issues(repo, req.issues.after, 'all', 'updated').then((p) => (out.issues = p)),
-      req.openIssues && this.issues(repo, req.openIssues.after, 'opened', 'created').then((p) => (out.openIssues = p)),
-      req.releases && this.releases(repo, req.releases.after).then((p) => (out.releases = p)),
-      req.stars && this.stars(repo, req.stars.after).then((p) => (out.stars = p)),
-    ]);
+    const failures: unknown[] = [];
+    await Promise.all(
+      [
+        req.commits && this.commits(repo, req.commits.after, req.commits.since).then((p) => (out.commits = p)),
+        req.prs && this.mergeRequests(repo, req.prs.after, 'all', 'updated').then((p) => (out.prs = p)),
+        req.openPrs && this.mergeRequests(repo, req.openPrs.after, 'opened', 'created').then((p) => (out.openPrs = p)),
+        req.issues && this.issues(repo, req.issues.after, 'all', 'updated').then((p) => (out.issues = p)),
+        req.openIssues && this.issues(repo, req.openIssues.after, 'opened', 'created').then((p) => (out.openIssues = p)),
+        req.releases && this.releases(repo, req.releases.after).then((p) => (out.releases = p)),
+        req.stars && this.stars(repo, req.stars.after).then((p) => (out.stars = p)),
+      ].map((section) => section && section.catch((err: unknown) => void failures.push(err))),
+    );
+    if (failures.length) {
+      throw failures.find((e) => e instanceof SourceError && e.kind === 'auth') ?? failures.find(isFatalSourceError) ?? failures[0];
+    }
     return out;
   }
 

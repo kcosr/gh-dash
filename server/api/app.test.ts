@@ -456,7 +456,8 @@ describe('adding and removing repositories', () => {
     expect(res.body!.repo.addedAt).toMatch(/^\d{4}-/);
     expect(t.sync.status()).toMatchObject({ running: true, repo: 'bob/tool' });
     await t.idle();
-    expect(t.gql.state.ops.slice(-2)).toEqual(['RepoNode:R_bob/tool', 'RepoDetail:bob/tool']);
+    // Its probe counts open items the sections don't list: the open passes take a second round.
+    expect(t.gql.state.ops.slice(-3)).toEqual(['RepoNode:R_bob/tool', 'RepoDetail:bob/tool', 'RepoDetail:bob/tool']);
     const prs = await t.call('GET', '/prs?repos=bob/tool&from=2026-09-01&to=2026-09-29&state=all');
     expect(prs.body!.items.map((p: { id: string }) => p.id)).toEqual(['bob/tool#7']);
     // Now it's tracked: adding it again is refused, with how it is tracked.
@@ -604,7 +605,8 @@ describe('adding and removing repositories', () => {
     expect(await t.call('POST', '/sync', { repo: 'bob/tool' })).toMatchObject({ status: 404, body: { error: "bob/tool isn't tracked. Add it first (POST /api/v1/repos)." } });
     expect(await t.call('POST', '/sync', { repo: 'APP' })).toMatchObject({ status: 202, body: { running: true, repo: 'alice/app' } });
     await t.idle();
-    expect(t.gql.state.ops.at(-2)).toBe('RepoNode:R_app');
+    // The stored open items aren't GitHub's: the open passes take a second round.
+    expect(t.gql.state.ops.slice(-3)).toEqual(['RepoNode:R_app', 'RepoDetail:alice/app', 'RepoDetail:alice/app']);
   });
 });
 

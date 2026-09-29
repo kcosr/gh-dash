@@ -1,12 +1,14 @@
-// GitHubSyncSource asks GitHub what today's sync (runSync) and tracking API (Tracking) ask, request for request, and
-// reads the answers as they do. Each case runs today's code on the GraphQL fake, then the source on the same fake in
-// the same state, and compares the requests (document and variables) and what each made of the answers: the proof
-// that the provider-neutral sync can swap the source in without changing a request count.
+// GitHubSyncSource asks GitHub what the sync (runSync) and the tracking API (Tracking) ask, request for request, and
+// reads the answers as they do. Each case runs the sync (or Tracking) on the GraphQL fake, then the source's methods on
+// the same fake in the same state, and compares the requests (document and variables) and what each made of the
+// answers. Written against the GitHub-only sync the neutral one replaced (step 3b), with the request counts it made:
+// they still hold, so the neutral sync over GitHubSyncSource asks GitHub what the old one did.
 
 import { describe, expect, it } from 'vitest';
 import { type Db, openDb } from '../db/db';
 import type { RepoRecord } from '../db/records';
 import { DEFAULT_SETTINGS } from '../db/settings';
+import { GITHUB_SOURCE_ID, getSource } from '../db/sources';
 import { DAY_MS, isoSec } from '../lib/time';
 import { accessLost, reasonOf } from '../provider/access';
 import type { LookupRecord, Page, RoundRequest, RoundResult, TrackedRepo } from '../provider/types';
@@ -16,7 +18,6 @@ import { fakeGitHub, page, type Handler, type Reply } from '../test/github';
 import { commitNode, fakeGraphQL, issueNode, prNode, releaseNode, repoNode, starEdge } from '../test/graphql';
 import { addManualRepo } from '../test/seed';
 import { supplyOf, testTokens } from '../test/tokens';
-import { GitHubClient } from './client';
 import { mapCommit, mapIssue, mapPullRequest, mapRelease, mapStar } from './map';
 import { GitHubSyncSource } from './sync-source';
 import { Tracking } from './tracking';
@@ -79,11 +80,11 @@ const asked = (sent: Sent[], ...ops: string[]) =>
 
 const count = (sent: Sent[]) => sent.reduce<Record<string, number>>((n, s) => ({ ...n, [s.op]: (n[s.op] ?? 0) + 1 }), {});
 
-/** Today's sync, as the manager runs it. */
-const today = (db: Db, w: Wire, req: SyncRequest = {}, now = NOW, tokenKind: 'classic' | null = null) =>
-  runSync({ db, client: new GitHubClient({ token: 't', fetchImpl: w.fetchImpl, sleep: async () => {} }), settings: DEFAULT_SETTINGS, now: () => now, tokenKind }, req);
-
 const sourceOn = (w: Wire, tokenKind: 'classic' | null = null) => new GitHubSyncSource({ token: 't', fetchImpl: w.fetchImpl, sleep: async () => {}, tokenKind });
+
+/** The sync, as the manager runs it: github.com's source, with a GitHubSyncSource of its own. */
+const syncOn = (db: Db, w: Wire, req: SyncRequest = {}, now = NOW, tokenKind: 'classic' | null = null) =>
+  runSync({ db, source: sourceOn(w, tokenKind), src: getSource(db, GITHUB_SOURCE_ID)!, settings: DEFAULT_SETTINGS, now: () => now }, req);
 
 /** The live repos added by hand, as the sync reads them (by id). */
 const manualRows = (db: Db): TrackedRepo[] =>
@@ -135,7 +136,7 @@ describe('GitHubSyncSource asks what the sync asks', () => {
     const { db, w } = manyRepos();
     const tracked = manualRows(db);
     const denied = storedRepoRecord(db, 'R_bob/m007')!;
-    await today(db, w, {}, NOW, 'classic');
+    await syncOn(db, w, {}, NOW, 'classic');
     const sync = w.take();
 
     const source = sourceOn(w, 'classic');
@@ -182,7 +183,7 @@ describe('GitHubSyncSource asks what the sync asks', () => {
         ? { body: { errors: [{ type: 'INTERNAL', message: 'Something broke' }] } }
         : null;
     const tracked = manualRows(db);
-    const res = await today(db, w);
+    const res = await syncOn(db, w);
     const sync = w.take();
     expect(res.errors.filter((e) => /^(probe|manual repos):/.test(e))).toEqual(['manual repos: Something broke', 'probe: Something broke']);
 
@@ -202,10 +203,11 @@ describe('GitHubSyncSource asks what the sync asks', () => {
     w.hooks.delay = (_op, { variables }) => (variables.ids?.includes('R_alice/r025') || variables.ids?.includes('R_bob/m025') ? 30 : 0);
     const tracked = manualRows(db);
 
-    await expect(today(db, w)).rejects.toMatchObject({ kind: 'rate-limit' });
+    await expect(syncOn(db, w)).rejects.toMatchObject({ kind: 'rate-limit' });
     const sync = w.take();
     expect(count(sync)).toEqual({ ViewerRepos: 16, ManualRepos: 4 });
-    // Today's sync writes the late chunk before rethrowing; refresh() returns nothing when it fails (see NOTES, 3c).
+    // The sync writes the late chunk before rethrowing (it calls refresh() per chunk); refresh() itself returns nothing
+    // when it fails.
     expect(db.get('SELECT description FROM repos WHERE node_id = ?', ['R_bob/m025'])).toEqual({ description: 'bob/m025 upstream' });
 
     const source = sourceOn(w);
@@ -230,9 +232,9 @@ describe('GitHubSyncSource asks what the sync asks', () => {
     const db = openDb(':memory:');
     const w = wire(gql);
     const source = sourceOn(w);
-    /** Today's single-repo sync `req`, then `mine`: the same one request to read the repo. */
+    /** The single-repo sync `req`, then `mine`: the same one request to read the repo. */
     const same = async <T>(req: SyncRequest, mine: () => Promise<T>): Promise<T> => {
-      await today(db, w, req).catch(() => {});
+      await syncOn(db, w, req).catch(() => {});
       const sync = w.take().filter((s) => s.op === 'RepoNode' || s.op === 'ViewerRepo');
       const out = await mine();
       expect(asked(w.take()), JSON.stringify(req)).toEqual(asked(sync));
@@ -244,7 +246,7 @@ describe('GitHubSyncSource asks what the sync asks', () => {
     const fresh = await same({ repo: 'fresh' }, () => source.repo('fresh'));
     expect(fresh.found!.record).toEqual(recordOf(db, 'alice/fresh'));
     expect(fresh.viewer).toEqual(ALICE);
-    await expect(today(db, w, { repo: 'nope' })).rejects.toThrow('Repository not found on GitHub: nope');
+    await expect(syncOn(db, w, { repo: 'nope' })).rejects.toThrow('Repository not found on GitHub: nope');
     w.take();
     expect((await same({ repo: 'nope' }, () => source.repo('nope'))).found).toBeNull();
 
@@ -259,7 +261,7 @@ describe('GitHubSyncSource asks what the sync asks', () => {
     expect(gone.viewer).toEqual(ALICE);
   });
 
-  it("a short name GitHub doesn't know: found null with the viewer (today's sync fails on GitHub's NOT_FOUND)", async () => {
+  it("a short name GitHub doesn't know: found null with the viewer (the sync then fails, after the claim)", async () => {
     const gql = fakeGraphQL();
     gql.state.owned.push(repoNode('alice/app'));
     const w = wire(gql);
@@ -268,7 +270,7 @@ describe('GitHubSyncSource asks what the sync asks', () => {
       op === 'ViewerRepo'
         ? { body: { data: { viewer: { ...gql.state.viewer, repository: null }, rateLimit: RATE }, errors: [{ type: 'NOT_FOUND', path: ['viewer', 'repository'], message: "Could not resolve to a Repository with the name 'alice/nope'." }] } }
         : null;
-    await expect(today(openDb(':memory:'), w, { repo: 'nope' })).rejects.toThrow("Could not resolve to a Repository with the name 'alice/nope'.");
+    await expect(syncOn(openDb(':memory:'), w, { repo: 'nope' })).rejects.toThrow('Repository not found on GitHub: nope');
     const sync = w.take();
     const source = sourceOn(w);
     expect(await source.repo('nope')).toEqual({ viewer: ALICE, found: null });
@@ -293,7 +295,11 @@ describe('GitHubSyncSource asks what the sync asks', () => {
       gql.state.viewer = op === 'ViewerRepos' && variables.after ? mallory : ALICE;
       return null;
     };
-    await expect(today(openDb(':memory:'), w)).rejects.toThrow(/@alice, but the (GitHub )?token is for @mallory/);
+    // The owned list fails as a whole, before the sync claims anything (the GitHub-only sync claimed after each page,
+    // and refused the second page's account as a mismatch).
+    const db = openDb(':memory:');
+    await expect(syncOn(db, w)).rejects.toMatchObject({ kind: 'auth', message: expect.stringContaining('(@alice, then @mallory)') });
+    expect(getSource(db, GITHUB_SOURCE_ID)!.viewer).toBeNull();
     const sync = w.take();
     await expect(sourceOn(w).ownedRepos()).rejects.toMatchObject({ kind: 'auth', message: expect.stringContaining('(@alice, then @mallory)') });
     expect(asked(w.take())).toEqual(asked(sync));
@@ -322,7 +328,7 @@ function read(v: Record<string, any>) {
   return out;
 }
 
-/** What today's sync reads from a REPO_DETAIL answer, section by section, with the mappers it uses. */
+/** What the GitHub-only sync read from a REPO_DETAIL answer, section by section, with the mappers it used. */
 function pagesOf(req: RoundRequest, r: NonNullable<RepoDetailData['repository']>): RoundResult {
   const pageOf = <N, T>(c: Connection<N>, map: (n: N) => T): Page<T> => ({ items: c.nodes.map(map), hasMore: c.pageInfo.hasNextPage, endCursor: c.pageInfo.endCursor });
   const out: RoundResult = {};
@@ -395,7 +401,7 @@ describe('GitHubSyncSource rounds and rechecks', () => {
     const w = wire(gql);
 
     // First sync: every section from the start, in rounds of two items; sections end in different rounds.
-    expect(await today(db, w)).toMatchObject({ errors: [] });
+    expect(await syncOn(db, w)).toMatchObject({ errors: [] });
     expect(await replayRounds(db, w, w.take())).toBe(3);
 
     // Incremental: a new PR, commit, release and star, and an unstar (the stars pass restarts as a full one).
@@ -404,13 +410,13 @@ describe('GitHubSyncSource rounds and rechecks', () => {
     gql.state.releases[app]!.unshift(releaseNode(app, 'v4', at(27)));
     gql.state.stars[app] = [starEdge('zed', at(27)), ...gql.state.stars[app]!.filter((s) => s.node.login !== 'erin')];
     gql.state.owned[0] = repoNode(app, probe());
-    expect(await today(db, w, {}, NOW + HOUR)).toMatchObject({ errors: [], newItems: 4 });
+    expect(await syncOn(db, w, {}, NOW + HOUR)).toMatchObject({ errors: [], newItems: 4 });
     const incremental = w.take();
     expect(incremental.filter((s) => s.op === 'RepoDetail').map((s) => [s.variables!.withStars, s.variables!.starsAfter])).toEqual([[true, null], [true, null], [true, '2']]);
     expect(await replayRounds(db, w, incremental)).toBe(3);
 
     // Full: open items listed from the start too.
-    expect(await today(db, w, { full: true }, NOW + 2 * HOUR)).toMatchObject({ errors: [] });
+    expect(await syncOn(db, w, { full: true }, NOW + 2 * HOUR)).toMatchObject({ errors: [] });
     const full = w.take();
     expect(full.find((s) => s.op === 'RepoDetail')!.variables).toMatchObject({ withOpenPrs: true, withOpenIssues: true });
     expect(await replayRounds(db, w, full)).toBe(3);
@@ -432,7 +438,7 @@ describe('GitHubSyncSource rounds and rechecks', () => {
     gql.state.owned.push(node, repoNode('alice/lib'));
     const db = openDb(':memory:');
     const w = wire(gql);
-    expect(await today(db, w)).toMatchObject({ errors: [] });
+    expect(await syncOn(db, w)).toMatchObject({ errors: [] });
     w.take();
 
     // Closed without an update GitHub's order shows; PR 7 moved to alice/lib; issue 62 deleted.
@@ -442,7 +448,7 @@ describe('GitHubSyncSource rounds and rechecks', () => {
     gql.state.moved[`${app}#7`] = 'alice/lib';
     gql.state.issues[app] = gql.state.issues[app]!.filter((i) => i.number !== 62).map((i) => ({ ...i, state: 'CLOSED' as const, closedAt: i.updatedAt }));
     gql.state.owned[0] = { ...node, openPrs: { totalCount: 0 }, openIssues: { totalCount: 0 } };
-    expect(await today(db, w, {}, NOW + HOUR)).toMatchObject({ errors: [] });
+    expect(await syncOn(db, w, {}, NOW + HOUR)).toMatchObject({ errors: [] });
     const sync = w.take().filter((s) => s.op === 'RecheckItems');
     expect(sync.map((s) => [s.query!.match(/\bpr\d+: /g)!.length, s.query!.match(/\bissue\d+: /g)!.length])).toEqual([[50, 50], [10, 3]]);
 
@@ -479,12 +485,12 @@ describe('GitHubSyncSource rounds and rechecks', () => {
     const gone = { type: 'NOT_FOUND', path: ['repository'], message: "Could not resolve to a Repository with the name 'bob/tool'." };
     const unavailable = "GitHub doesn't show bob/tool to this token: it doesn't exist, or the token can't read it. Check the spelling, or ask for access.";
     lose(gone);
-    expect((await today(db, w, { repo: 'bob/tool' })).errors).toEqual([`bob/tool: unavailable: ${unavailable}`]);
+    expect((await syncOn(db, w, { repo: 'bob/tool' })).errors).toEqual([`bob/tool: unavailable: ${unavailable}`]);
     const err = await source.round(record, { prs: { after: null } }).catch((e: unknown) => e);
     expect(err).toMatchObject({ kind: 'not-found', message: gone.message });
     expect(reasonOf(accessLost(err)!)).toBe(unavailable);
 
-    // SAML on the repository while rechecking: lost too (today's lostAccess reads the same errors the same way).
+    // SAML on the repository while rechecking: lost too (the GitHub-only sync's lostAccess read the same errors the same way).
     lose({ type: 'FORBIDDEN', path: ['repository'], message: 'Resource protected by organization SAML enforcement.' });
     const saml = await source.recheck(record, [1], []).catch((e: unknown) => e);
     expect(accessLost(saml)).toMatchObject({ problem: 'sso', message: 'bob requires SAML single sign-on.' });
@@ -493,28 +499,32 @@ describe('GitHubSyncSource rounds and rechecks', () => {
     db.run('UPDATE repos SET unavailable_at = NULL, unavailable_reason = NULL');
     const section = { type: 'FORBIDDEN', path: ['repository', 'pullRequests'], message: 'Resource not accessible by personal access token' };
     w.hooks.intercept = (op) => (op === 'RepoDetail' ? { body: { data: null, errors: [section] } } : null);
-    expect((await today(db, w, { repo: 'bob/tool' })).errors).toEqual([`bob/tool: ${section.message}`]);
+    expect((await syncOn(db, w, { repo: 'bob/tool' })).errors).toEqual([`bob/tool: ${section.message}`]);
     const denied = await source.round(record, { prs: { after: null } }).catch((e: unknown) => e);
     expect(denied).toMatchObject({ kind: 'forbidden', message: section.message, access: { problem: 'permission' } });
     expect(accessLost(denied)).toBeNull();
 
-    // No repository and no error: today's message, and nothing lost.
+    // No repository and no error: the same message as before, and nothing lost.
     w.hooks.intercept = (op) => (op === 'RepoDetail' ? { body: { data: { repository: null, rateLimit: RATE } } } : null);
-    expect((await today(db, w, { repo: 'bob/tool' })).errors).toEqual(['bob/tool: repository not found']);
+    expect((await syncOn(db, w, { repo: 'bob/tool' })).errors).toEqual(['bob/tool: repository not found']);
     const none = await source.round(record, { prs: { after: null } }).catch((e: unknown) => e);
     expect(none).toMatchObject({ kind: 'not-found', message: 'repository not found', access: null });
   });
 
-  // Today's syncRepo starts an open-items pass in the round that finishes the dated one (when the stored open count
-  // isn't the probe's, or there is no probe), then reads that section from the same answer: GitHub left it out, as it
-  // wasn't asked for, and the round fails with a TypeError. Lenient fakes answer it anyway (this file's by default,
-  // sync.test.ts's always), which is how the existing tests pass. 3c: read only the sections a round answered.
-  it.fails("today's sync: an open pass started mid-round reads a section GitHub didn't send", async () => {
+  // The GitHub-only sync started an open-items pass in the round that finished the dated one (when the stored open
+  // count isn't the probe's, or there is no probe), then read that section from the same answer: GitHub left it out,
+  // as it wasn't asked for, and the round failed with a TypeError. Lenient fakes answered it anyway (this file's by
+  // default, sync.test.ts's always). The neutral sync reads only the sections a round asked for: the open pass goes
+  // into the next round.
+  it('an open pass started mid-round waits for the next round (GitHub sends only the sections asked for)', async () => {
     const gql = fakeGraphQL();
     gql.state.strict = true;
     gql.state.owned.push(repoNode('alice/app', { openPrs: { totalCount: 1 } }));
-    const res = await today(openDb(':memory:'), wire(gql));
+    const w = wire(gql);
+    const res = await syncOn(openDb(':memory:'), w);
     expect(res.errors).toEqual([]);
+    const rounds = w.sent.filter((s) => s.op === 'RepoDetail').map((s) => SECTIONS.filter((sec) => s.variables![`with${cap(sec)}`]));
+    expect(rounds).toEqual([['commits', 'prs', 'issues', 'releases', 'stars'], ['openPrs']]);
   });
 });
 

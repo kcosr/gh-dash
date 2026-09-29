@@ -7,7 +7,7 @@ import { mapRepo } from '../github/map';
 import { DEFAULT_SETTINGS } from '../db/settings';
 import type { Settings } from '../../shared/api';
 import type { SyncStateRow } from '../db/write';
-import { GitHubClient } from '../github/client';
+import { GitHubSyncSource } from '../github/sync-source';
 import type { GqlIssue, GqlProbe, GqlPullRequest, GqlRepo } from '../github/types';
 import detailFixture from '../test/fixtures/repo-detail.json';
 import probesFixture from '../test/fixtures/repo-probes.json';
@@ -16,6 +16,9 @@ import { planRepo, runSync } from './sync';
 import { addManualRepo, setViewer } from '../test/seed';
 
 const viewerOf = (db: Db) => getSource(db, GITHUB_SOURCE_ID)!.viewer;
+/** The github.com source a run syncs, and its client for the fake. */
+const github = (db: Db) => getSource(db, GITHUB_SOURCE_ID)!;
+const on = (fetchImpl: typeof fetch, tokenKind: 'classic' | null = null) => new GitHubSyncSource({ token: 't', fetchImpl, tokenKind });
 
 const NOW = Date.parse('2026-09-27T12:00:00Z');
 const HOUR = 3_600_000;
@@ -176,7 +179,7 @@ describe('runSync', () => {
   let db: Db;
   let gh: ReturnType<typeof fakeGitHub>;
   const sync = (at: number, req = {}, settings: Settings = DEFAULT_SETTINGS) =>
-    runSync({ db, client: new GitHubClient({ token: 't', fetchImpl: gh.fetchImpl }), settings, now: () => at }, req);
+    runSync({ db, source: on(gh.fetchImpl), src: github(db), settings, now: () => at }, req);
   const detailCalls = () => gh.calls.filter((c) => c.op === 'RepoDetail');
   const state = (table: string, number: number) => db.get<{ state: string }>(`SELECT state FROM ${table} WHERE number = ?`, [number])?.state ?? null;
 
@@ -246,6 +249,9 @@ describe('runSync', () => {
     gh.fx.detail.repository.pullRequests.nodes.unshift(newPr);
     gh.fx.detail.repository.pullRequests.pageInfo.hasNextPage = true;
     gh.fx.probes.nodes[0]!.latestPr.nodes[0]!.updatedAt = '2026-09-27T08:00:00Z';
+    // The new PR is open: GitHub counts it, and lists it among the open ones.
+    gh.fx.probes.nodes[0]!.openPrs.totalCount = 2;
+    gh.fx.openPrs.unshift(newPr as unknown as Item);
 
     expect(await sync(NOW + HOUR)).toEqual({ repos: 2, newItems: 1, errors: [], forksSkipped: 0 });
     const details = gh.calls.filter((c) => c.op === 'RepoDetail');
@@ -409,7 +415,7 @@ describe('repos added by hand', () => {
   let db: Db;
   let gh: ReturnType<typeof fakeGitHub>;
   const sync = (at: number, req = {}, tokenKind: 'classic' | null = null) =>
-    runSync({ db, client: new GitHubClient({ token: 't', fetchImpl: gh.fetchImpl }), settings: DEFAULT_SETTINGS, now: () => at, tokenKind }, req);
+    runSync({ db, source: on(gh.fetchImpl, tokenKind), src: github(db), settings: DEFAULT_SETTINGS, now: () => at }, req);
   const row = (key: string) =>
     db.get<{ id: number; description: string | null; stars: number; open_prs: number; unavailable_at: string | null; unavailable_reason: string | null; removed_at: string | null }>(
       'SELECT id, description, stars, open_prs, unavailable_at, unavailable_reason, removed_at FROM repos WHERE name_with_owner = ?', [key]);
@@ -505,8 +511,8 @@ describe('repos added by hand', () => {
       if (ids.includes('R_bob/r24')) await new Promise((r) => setTimeout(r, 40));
       return gh.fetchImpl(input as string, init!);
     };
-    const client = new GitHubClient({ token: 't', fetchImpl: later as typeof fetch });
-    const err = await runSync({ db, client, settings: DEFAULT_SETTINGS, now: () => NOW + HOUR }).catch((e: unknown) => e);
+    const source = on(later as typeof fetch);
+    const err = await runSync({ db, source, src: github(db), settings: DEFAULT_SETTINGS, now: () => NOW + HOUR }).catch((e: unknown) => e);
     expect(err).toMatchObject({ kind: 'rate-limit' });
     const at = row('bob/r24');
     await new Promise((r) => setTimeout(r, 100));
@@ -547,8 +553,9 @@ describe('repos added by hand', () => {
     gh.fx.nodeErrors['R_corp'] = { type: 'FORBIDDEN', message: 'Resource protected by organization SAML enforcement.' };
     gh.calls.length = 0;
     expect(await sync(NOW + 2 * HOUR)).toMatchObject({ errors: [] });
-    // corp, without a probe, is fetched as if changed; app's and bob/tool's probes match: nothing else.
-    expect(details()).toEqual(['alice/corp']);
+    // corp, without a probe, is fetched as if changed (its open items in a second round, once the first has read the
+    // updatedAt passes); app's and bob/tool's probes match: nothing else.
+    expect(details()).toEqual(['alice/corp', 'alice/corp']);
     expect(gh.calls.filter((c) => c.op === 'RepoProbes')).toHaveLength(1);
   });
 
@@ -611,8 +618,8 @@ describe('repos added by hand', () => {
     gh.fx.others[0] = otherRepo('bob/tool');
     const orig = gh.fetchImpl;
     const res = await runSync({
-      db, settings: DEFAULT_SETTINGS, now: () => NOW + HOUR,
-      client: new GitHubClient({ token: 't', fetchImpl: async (u, init) => { db.run('DELETE FROM repos WHERE id = ?', [id]); return orig(u, init!); } }),
+      db, settings: DEFAULT_SETTINGS, now: () => NOW + HOUR, src: github(db),
+      source: on(async (u, init) => { db.run('DELETE FROM repos WHERE id = ?', [id]); return orig(u, init!); }),
     }, { repo: 'bob/tool' });
     expect(res).toMatchObject({ repos: 0, errors: [] });
     expect(row('bob/tool')).toBeUndefined();
@@ -624,7 +631,7 @@ describe('account guard', () => {
   function setup() {
     const db = openDb(':memory:');
     const gh = fakeGitHub();
-    const sync = (req = {}) => runSync({ db, client: new GitHubClient({ token: 't', fetchImpl: gh.fetchImpl }), settings: DEFAULT_SETTINGS, now: () => NOW }, req);
+    const sync = (req = {}) => runSync({ db, source: on(gh.fetchImpl), src: github(db), settings: DEFAULT_SETTINGS, now: () => NOW }, req);
     return { db, gh, sync };
   }
 
@@ -675,7 +682,7 @@ describe('other sources', () => {
     const project = { ...otherRepo('alice/app'), id: 'gid://gitlab/Project/5', url: 'https://gitlab.example.com/alice/app' };
     upsertOwned(db, gl, mapRepo(project), '2026-09-27T00:00:00Z');
     addManualRepo(db, 'platform/team/svc', { source: gl, nodeId: 'gid://gitlab/Project/9' });
-    const sync = (req = {}) => runSync({ db, client: new GitHubClient({ token: 't', fetchImpl: gh.fetchImpl }), settings: DEFAULT_SETTINGS, now: () => NOW }, req);
+    const sync = (req = {}) => runSync({ db, source: on(gh.fetchImpl), src: github(db), settings: DEFAULT_SETTINGS, now: () => NOW }, req);
 
     expect(await sync()).toMatchObject({ repos: 2, errors: [] });
     expect(JSON.stringify(gh.calls)).not.toContain('gid://gitlab');
@@ -698,7 +705,7 @@ describe('fork commit history', () => {
     const gh = fakeGitHub();
     gh.fx.repos.viewer.repositories.nodes[0]!.isFork = true;
     const sync = (at: number, includeForks: boolean) =>
-      runSync({ db, client: new GitHubClient({ token: 't', fetchImpl: gh.fetchImpl }), settings: { ...DEFAULT_SETTINGS, includeForks }, now: () => at });
+      runSync({ db, source: on(gh.fetchImpl), src: github(db), settings: { ...DEFAULT_SETTINGS, includeForks }, now: () => at });
     const commitsFetched = () => gh.calls.filter((c) => c.op === 'RepoDetail' && c.vars.withCommits).map((c) => c.vars.commitsAfter);
 
     expect(await sync(NOW, false)).toMatchObject({ forksSkipped: 1, errors: [] });

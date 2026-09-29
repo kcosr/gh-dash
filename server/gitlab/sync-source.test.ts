@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { RepoRecord } from '../db/records';
+import type { RoundResult } from '../provider/types';
 import commitsFixture from '../test/fixtures/gitlab/commits.json';
 import issuesFixture from '../test/fixtures/gitlab/issues.json';
 import mergeRequestsFixture from '../test/fixtures/gitlab/merge-requests.json';
@@ -28,20 +29,20 @@ function setup(routes: Record<string, Handler>) {
 
 /**
  * A project's starrers as GitLab pages them: oldest first, 100 a page, u1 … u<count>, one a minute. Without
- * `counted` there is no X-Total, as beyond 10,000.
+ * `counted` there is no X-Total, as beyond 10,000. `unstar(i)` takes u<i> out, shifting the pages after it.
  */
 function fakeStarrers(count: number, opts: { counted?: boolean } = {}) {
   const at = (i: number) => new Date(Date.UTC(2020, 0, 1) + i * 60_000).toISOString();
-  const pages = Math.ceil(count / 100);
+  const ids = Array.from({ length: count }, (_, i) => i + 1);
   const handler: Handler = (req) => {
     const p = Number(req.url.searchParams.get('page'));
-    const ids = Array.from({ length: Math.max(0, Math.min(100, count - (p - 1) * 100)) }, (_, i) => (p - 1) * 100 + i + 1);
-    const body = ids.map((i) => ({ starred_since: at(i), user: { username: `u${i}`, name: null, avatar_url: null } }));
-    return page(body, p < pages ? p + 1 : null, opts.counted === false ? {} : { 'x-total': String(count) });
+    const body = ids.slice((p - 1) * 100, p * 100).map((i) => ({ starred_since: at(i), user: { username: `u${i}`, name: null, avatar_url: null } }));
+    return page(body, p < Math.ceil(ids.length / 100) ? p + 1 : null, opts.counted === false ? {} : { 'x-total': String(ids.length) });
   };
+  const unstar = (i: number) => ids.splice(ids.indexOf(i), 1);
   /** Logins from `from` down to `to`. */
   const logins = (from: number, to: number) => Array.from({ length: from - to + 1 }, (_, i) => `u${from - i}`);
-  return { handler, logins };
+  return { handler, unstar, logins };
 }
 
 const fail = (p: Promise<unknown>) => p.then(() => { throw new Error('expected a failure'); }, (e: unknown) => e as GitLabError);
@@ -277,14 +278,37 @@ describe('GitLabSyncSource: rounds', () => {
     const repo = { ...APP, stars: 3050 };
     const first = (await source.round(repo, { stars: { after: null } })).stars!;
     expect(first.items.map((s) => s.login)).toEqual(stargazers.logins(3050, 3001));
-    expect(first).toMatchObject({ hasMore: true, endCursor: '30', totalCount: 3050 });
+    // The cursor: the next page, and the oldest star handed out so far (its time in ms, and who).
+    expect(first).toMatchObject({ hasMore: true, endCursor: `30:${Date.parse(first.items.at(-1)!.starredAt)}:u3001`, totalCount: 3050 });
     const next = (await source.round(repo, { stars: { after: first.endCursor } })).stars!;
     expect(next.items.map((s) => s.login)).toEqual(stargazers.logins(3000, 2901));
-    expect(next).toMatchObject({ hasMore: true, endCursor: '29', totalCount: 3050 });
+    expect(next).toMatchObject({ hasMore: true, endCursor: expect.stringMatching(/^29:\d+:u2901$/), totalCount: 3050 });
     const oldest = (await source.round(repo, { stars: { after: '1' } })).stars!;
     expect(oldest).toMatchObject({ hasMore: false, endCursor: null });
     expect(oldest.items.at(-1)!.login).toBe('u1');
     expect(requests).toEqual([1, 31, 30, 1].map((p) => `/api/v4/projects/11/starrers?per_page=100&page=${p}`));
+  });
+
+  it('never repeats a star in a later page when an older star goes mid-walk (the sync would stop at it)', async () => {
+    // Stored: u1 … u3000. New since: u3001 … u3200. The sync's incremental pass stops at the first star it knows.
+    const stargazers = fakeStarrers(3200);
+    const { source } = setup({ '/api/v4/projects/11/starrers': stargazers.handler });
+    const known = new Set(stargazers.logins(3000, 1));
+    const added: string[] = [];
+    let after: string | null = null;
+    for (let round = 1; round <= 5; round++) {
+      const stars: NonNullable<RoundResult['stars']> = (await source.round({ ...APP, stars: 3200 }, { stars: { after } })).stars!;
+      const fresh = stars.items.findIndex((s) => known.has(s.login));
+      for (const s of fresh === -1 ? stars.items : stars.items.slice(0, fresh)) {
+        known.add(s.login);
+        added.push(s.login);
+      }
+      // u1 unstars after the first round: every page shifts back by one, and page 31 would start with u3101 again.
+      if (round === 1) stargazers.unstar(1);
+      if (fresh !== -1 || !stars.hasMore) break;
+      after = stars.endCursor;
+    }
+    expect(added).toEqual(stargazers.logins(3200, 3001));
   });
 
   it('finds the newest starrers beyond 10,000, where GitLab stops counting, from the project star count', async () => {
@@ -293,7 +317,7 @@ describe('GitLabSyncSource: rounds', () => {
     const { source, requests } = setup({ '/api/v4/projects/11/starrers': stargazers.handler });
     const stars = (await source.round({ ...APP, stars: 10_250 }, { stars: { after: null } })).stars!;
     expect(stars.items.map((s) => s.login)).toEqual(stargazers.logins(10_050, 10_001));
-    expect(stars).toMatchObject({ hasMore: true, endCursor: '100', totalCount: 10_250 });
+    expect(stars).toMatchObject({ hasMore: true, endCursor: expect.stringMatching(/^100:\d+:u10001$/), totalCount: 10_250 });
     expect(requests).toEqual([1, 103, 102, 101].map((p) => `/api/v4/projects/11/starrers?per_page=100&page=${p}`));
     // A star count that lags behind: on along X-Next-Page.
     requests.length = 0;

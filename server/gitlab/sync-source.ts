@@ -216,9 +216,10 @@ export class GitLabSyncSource implements SyncSource {
    * - up to MAX_STARS: every page in this round, sorted here, as one page the sync can diff for unstars. Offset pages
    *   shift when someone unstars mid-listing, skipping a starrer whose star the sync would then delete, so a listing
    *   whose X-Total moved is read again (once; then 'transient');
-   * - beyond: one page a round from the last page backwards, the cursor being the next page to read. Reading
-   *   backwards, an unstar mid-way only shifts an already-read starrer into the next page (seen twice), and new stars
-   *   land after the pages being read.
+   * - beyond: one page a round from the last page backwards. New stars land after the pages still to read, but an
+   *   unstar further back shifts starrers already handed out into the next page, where the sync would stop at them as
+   *   known: the cursor ("<page>:<ms>:<login>") keeps the next page to read and the oldest star handed out, and
+   *   anything not older than that is left out.
    * `totalCount` is GitLab's count of that same list, which leaves out private profiles and blocked users, so it can
    * be below the project's star count; GitLab stops counting at 10,000, where the star count stands in.
    */
@@ -226,15 +227,15 @@ export class GitLabSyncSource implements SyncSource {
     const path = `/projects/${projectId(repo)}/starrers`;
     const read = (page: number) => this.rest.page<RestStarrer[]>(path, { query: { per_page: STAR_PAGE, page } });
     if (after) {
-      const n = pageCursor(after);
-      return this.starPage(repo, n, await read(n));
+      const cursor = starCursor(after);
+      return this.starPage(repo, cursor.page, await read(cursor.page), cursor.oldest);
     }
     for (let listing = 1; ; listing++) {
       const first = await read(1);
       const total = first.total;
       if (first.nextPage !== null && (total === null || total > MAX_STARS)) {
         const last = total === null ? await this.lastStarPage(repo, read) : { n: Math.ceil(total / STAR_PAGE), res: null };
-        return this.starPage(repo, last.n, last.res ?? (await read(last.n)));
+        return this.starPage(repo, last.n, last.res ?? (await read(last.n)), null);
       }
       const items = [...first.body];
       let steady = true;
@@ -249,10 +250,13 @@ export class GitLabSyncSource implements SyncSource {
     }
   }
 
-  /** Page `n` of the starrers, newest first; the next round reads page n - 1. */
-  private starPage(repo: RepoRecord, n: number, res: RestPage<RestStarrer[]>): StarsPage {
-    const items = newestFirst(res.body).map((s) => mapStar(s, this.base));
-    return { items, hasMore: n > 1, endCursor: n > 1 ? String(n - 1) : null, totalCount: res.total ?? repo.stars };
+  /** Page `n` of the starrers, newest first, without those `oldest` or newer (handed out already); the next round reads page n - 1. */
+  private starPage(repo: RepoRecord, n: number, res: RestPage<RestStarrer[]>, oldest: StarMark | null): StarsPage {
+    const fresh = newestFirst(res.body).filter((s) => !oldest || olderThan(s, oldest));
+    const last = fresh.at(-1);
+    const mark = last ? { at: Date.parse(last.starred_since), login: last.user.username } : oldest;
+    const endCursor = n > 1 ? `${n - 1}${mark ? `:${mark.at}:${mark.login}` : ''}` : null;
+    return { items: fresh.map((s) => mapStar(s, this.base)), hasMore: n > 1, endCursor, totalCount: res.total ?? repo.stars };
   }
 
   /**
@@ -276,6 +280,18 @@ export class GitLabSyncSource implements SyncSource {
  * the reverse of GitLab's order (it lists them oldest first). Sorted before mapping for that reason.
  */
 const newestFirst = (starrers: RestStarrer[]) => [...starrers].reverse().sort((a, b) => Date.parse(b.starred_since) - Date.parse(a.starred_since));
+
+/** A star handed out by a backward walk through the starrers: its full-precision time and who. */
+interface StarMark {
+  at: number;
+  login: string;
+}
+
+/** Whether `s` is older than `mark`; a star at the very same millisecond counts unless it is the marked one. */
+function olderThan(s: RestStarrer, mark: StarMark): boolean {
+  const at = Date.parse(s.starred_since);
+  return at < mark.at || (at === mark.at && s.user.username !== mark.login);
+}
 
 /** Issues proper (not incidents, tasks or test cases), with label colors; the same set the probe counts. */
 const ISSUE_FILTER = { issue_type: 'issue', with_labels_details: true } as const;
@@ -301,6 +317,12 @@ function projectId(repo: RepoRecord): string {
 function pageCursor(cursor: string): number {
   if (!/^\d+$/.test(cursor)) throw new Error(`Invalid page cursor: ${cursor}`);
   return Number(cursor);
+}
+
+function starCursor(cursor: string): { page: number; oldest: StarMark | null } {
+  const m = /^(\d+)(?::(\d+):(.+))?$/.exec(cursor);
+  if (!m) throw new Error(`Invalid stars cursor: ${cursor}`);
+  return { page: Number(m[1]), oldest: m[2] ? { at: Number(m[2]), login: m[3]! } : null };
 }
 
 function commitCursor(cursor: string): { page: number; head: string } {

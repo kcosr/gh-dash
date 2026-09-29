@@ -98,6 +98,10 @@ describe('GitLabSyncSource: account and projects', () => {
     expect(probes.size).toBe(25);
     expect(probes.get('gid://gitlab/Project/1')).toEqual({ openPrs: 0, openIssues: 0, latestPrUpdatedAt: null, latestIssueUpdatedAt: null, releaseTags: [], latestStarredAt: null });
     expect(probes.has('gid://gitlab/Project/26')).toBe(false);
+    // Why they're missing, for the sync's error list; each call starts afresh.
+    expect(source.probeErrors).toEqual(['projects 26-30 of 30: Internal server error']);
+    await source.probes(repos.slice(0, 25));
+    expect(source.probeErrors).toEqual([]);
   });
 
   it('stops probing on a token problem', async () => {

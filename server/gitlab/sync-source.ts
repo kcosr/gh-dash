@@ -51,6 +51,11 @@ export class GitLabSyncSource implements SyncSource {
   private readonly transport: GitLabTransport;
   private readonly graphql: GitLabClient;
   private readonly rest: GitLabRestClient;
+  /**
+   * Why the last probes() call left projects out, one line per failed chunk ("projects 26-50 of 60: …"), for the
+   * sync to report. Not part of SyncSource yet (see NOTES): probes() can only answer with the probes it got.
+   */
+  probeErrors: string[] = [];
 
   constructor(opts: GitLabOptions) {
     // The sync can wait out a throttle's Retry-After (GitLab's windows are a minute or so); a person isn't waiting.
@@ -91,9 +96,13 @@ export class GitLabSyncSource implements SyncSource {
     return project ? { record: mapProject(project, this.base), probe: mapProbe(project) } : null;
   }
 
-  /** A chunk that fails for a reason other than the token or a rate limit leaves its projects unprobed (absent). */
+  /**
+   * A chunk that fails for a reason other than the token or a rate limit leaves its projects unprobed (absent), and
+   * says why in probeErrors.
+   */
   async probes(repos: RepoRecord[]): Promise<Map<string, RepoProbe>> {
     const out = new Map<string, RepoProbe>();
+    this.probeErrors = [];
     for (let i = 0; i < repos.length; i += PROBE_CHUNK) {
       const ids = repos.slice(i, i + PROBE_CHUNK).map((r) => r.nodeId);
       try {
@@ -101,6 +110,7 @@ export class GitLabSyncSource implements SyncSource {
         for (const p of data.projects.nodes) out.set(p.id, mapProbe(p));
       } catch (err) {
         if (!(err instanceof GitLabError) || isFatalSourceError(err)) throw err;
+        this.probeErrors.push(`projects ${i + 1}-${i + ids.length} of ${repos.length}: ${err.message}`);
       }
     }
     return out;

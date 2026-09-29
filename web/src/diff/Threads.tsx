@@ -114,9 +114,11 @@ export function Composer({ draftKey, initial = '', placeholder, submitLabel, onS
     attempt();
     return () => cancelAnimationFrame(frame);
   }, [autoFocus, focusKey]);
+  // Back at the starting text (all of it deleted, or an edit undone) there's nothing to keep.
   const change = (v: string) => {
     setText(v);
-    if (v !== initial) setDraft(draftKey, v);
+    if (v === initial) clearDraft(draftKey);
+    else setDraft(draftKey, v);
   };
   const submit = async () => {
     if (!text.trim() || busy) return;

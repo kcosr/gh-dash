@@ -694,7 +694,7 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv, io: SmokeIo):
   });
 
   await step('owned projects', async (c) => {
-    st.owned = await sync.ownedRepos();
+    st.owned = (await sync.ownedRepos()).repos;
     for (const r of st.owned) {
       privacy.alias('project', r.nameWithOwner);
       checkRepo(c, r);
@@ -723,7 +723,7 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv, io: SmokeIo):
       c.fail('no project to check: pass --project group/project');
       return 'none';
     }
-    const found = await sync.repo(path);
+    const { found } = await sync.repo(path);
     if (!found) {
       c.fail('repo(path) returned null: the project does not exist or the token cannot see it');
       return privacy.alias('project', path);
@@ -740,8 +740,8 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv, io: SmokeIo):
 
   const repo = st.repo as RepoRecord | null;
   await step('probes', async (c) => {
-    const probes = await sync.probes([repo!]);
-    for (const e of sync.probeErrors) c.fail(`probe chunk failed: ${e}`);
+    const { probes, errors } = await sync.probes([repo!]);
+    for (const e of errors) c.fail(`probe chunk failed: ${e}`);
     const p = probes.get(repo!.nodeId);
     if (!p) {
       c.fail('no probe for the project');

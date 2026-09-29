@@ -1,6 +1,21 @@
 import type { CommitRecord, IssueRecord, PrRecord, ReleaseRecord, RepoProbe, RepoRecord, StarRecord } from '../db/records';
 import { isFatalSourceError } from '../provider/errors';
-import type { Page, RecheckResult, RoundRequest, RoundResult, SyncSource, ViewerInfo } from '../provider/types';
+import type {
+  BackfillCounts,
+  LookupRecord,
+  Page,
+  ProbeResult,
+  RecheckResult,
+  RefreshResult,
+  RepoCandidates,
+  RepoRead,
+  RoundRequest,
+  RoundResult,
+  SyncSource,
+  TrackedRepo,
+  ViewerAccount,
+  ViewerInfo,
+} from '../provider/types';
 import { GitLabClient } from './client';
 import { mapCommit, mapIssue, mapMergeRequest, mapProbe, mapProject, mapRelease, mapStar, mapViewer, releaseCreatedAt } from './map';
 import { MERGE_REQUESTS, OWNED_PROJECTS, PROBES, PROJECT, RECHECK_MERGE_REQUESTS, RELEASES, VIEWER } from './queries';
@@ -51,17 +66,20 @@ type StarsPage = Page<StarRecord> & { totalCount: number };
  * Syncs from a GitLab instance: GraphQL for projects, merge requests and releases; REST where GraphQL falls short
  * (commits with stats, issues with who closed them, starrers). A round's sections are fetched in parallel, one request
  * each (stars: one per 100 starrers).
+ *
+ * Repositories added by hand (refresh, repoByNode) and the Add dialog (candidates, lookup) aren't answered yet: those
+ * calls reject.
  */
 export class GitLabSyncSource implements SyncSource {
   readonly kind = 'gitlab';
+  readonly points = null;
+  /** Starrers are REST-only and listed oldest first: the probe can't tell the newest star (latestStarredAt is null). */
+  readonly probesStars = false;
+  /** A commit doesn't say which MR brought it (prNumber is null). */
+  readonly linksCommits = false;
   private readonly transport: GitLabTransport;
   private readonly graphql: GitLabClient;
   private readonly rest: GitLabRestClient;
-  /**
-   * Why the last probes() call left projects out, one line per failed chunk ("projects 26-50 of 60: …"), for the
-   * sync to report. Not part of SyncSource yet (see NOTES): probes() can only answer with the probes it got.
-   */
-  probeErrors: string[] = [];
 
   constructor(opts: GitLabOptions) {
     // The sync can wait out a throttle's Retry-After (GitLab's windows are a minute or so); a person isn't waiting.
@@ -74,49 +92,63 @@ export class GitLabSyncSource implements SyncSource {
     return this.transport.rateLimit;
   }
 
+  get requests(): number {
+    return this.transport.requests;
+  }
+
   private get base(): string {
     return this.transport.base;
   }
 
-  async viewer(): Promise<ViewerInfo> {
-    const data = await this.graphql.query<ViewerData>(VIEWER);
-    // GitLab answers a bad token with a 401, but never sync as nobody.
-    if (!data.currentUser) throw new GitLabError('auth', 'GitLab did not recognise the token (no current user)');
-    return mapViewer(data.currentUser, this.base);
+  /** The emails aren't read yet: none. */
+  async viewer(): Promise<ViewerAccount> {
+    return { ...(await this.currentUser()), emails: [] };
   }
 
-  /** Projects in the viewer's personal namespace; group projects are for explicit tracking, not "mine". */
-  async ownedRepos(): Promise<RepoRecord[]> {
-    const out: RepoRecord[] = [];
+  /**
+   * Projects in the viewer's personal namespace; group projects are for explicit tracking, not "mine". The viewer is
+   * read after the list, in a request of its own.
+   */
+  async ownedRepos(): Promise<{ viewer: ViewerInfo; repos: RepoRecord[] }> {
+    const repos: RepoRecord[] = [];
     let after: string | null = null;
     do {
       const data: OwnedProjectsData = await this.graphql.query<OwnedProjectsData>(OWNED_PROJECTS, { after, first: PROJECT_PAGE });
-      out.push(...data.projects.nodes.map((p) => mapProject(p, this.base)));
+      repos.push(...data.projects.nodes.map((p) => mapProject(p, this.base)));
       after = data.projects.pageInfo.hasNextPage ? data.projects.pageInfo.endCursor : null;
     } while (after);
-    return out;
+    return { viewer: await this.currentUser(), repos };
   }
 
-  async repo(path: string): Promise<{ record: RepoRecord; probe: RepoProbe } | null> {
+  refresh(_repos: TrackedRepo[]): Promise<RefreshResult> {
+    return unsupported('refresh repositories added by hand');
+  }
+
+  repoByNode(_repo: TrackedRepo): Promise<{ viewer: ViewerInfo; read: RepoRead }> {
+    return unsupported('read a repository by node id');
+  }
+
+  /** Any project by its full path, then the viewer in a request of its own. */
+  async repo(path: string): Promise<{ viewer: ViewerInfo; found: { record: RepoRecord; probe: RepoProbe } | null }> {
     const { project } = await this.graphql.query<ProjectData>(PROJECT, { path });
-    return project ? { record: mapProject(project, this.base), probe: mapProbe(project) } : null;
+    const found = project ? { record: mapProject(project, this.base), probe: mapProbe(project) } : null;
+    return { viewer: await this.currentUser(), found };
   }
 
   /**
    * A chunk that fails for a reason other than the token or a rate limit leaves its projects unprobed (absent), and
-   * says why in probeErrors.
+   * says why in `errors` ("projects 26-50 of 60: …").
    */
-  async probes(repos: RepoRecord[]): Promise<Map<string, RepoProbe>> {
-    const out = new Map<string, RepoProbe>();
-    this.probeErrors = [];
+  async probes(repos: RepoRecord[]): Promise<ProbeResult> {
+    const out: ProbeResult = { probes: new Map(), errors: [] };
     for (let i = 0; i < repos.length; i += PROBE_CHUNK) {
       const ids = repos.slice(i, i + PROBE_CHUNK).map((r) => r.nodeId);
       try {
         const data = await this.graphql.query<ProbesData>(PROBES, { ids, first: ids.length });
-        for (const p of data.projects.nodes) out.set(p.id, mapProbe(p));
+        for (const p of data.projects.nodes) out.probes.set(p.id, mapProbe(p));
       } catch (err) {
         if (!(err instanceof GitLabError) || isFatalSourceError(err)) throw err;
-        this.probeErrors.push(`projects ${i + 1}-${i + ids.length} of ${repos.length}: ${err.message}`);
+        out.errors.push(`projects ${i + 1}-${i + ids.length} of ${repos.length}: ${err.message}`);
       }
     }
     return out;
@@ -162,6 +194,26 @@ export class GitLabSyncSource implements SyncSource {
       }
     }
     return out;
+  }
+
+  candidates(): Promise<RepoCandidates> {
+    return unsupported('list repositories to add');
+  }
+
+  lookup(_path: string, _since: string): Promise<LookupRecord> {
+    return unsupported('look up a repository to add');
+  }
+
+  /** GitLab can't count a branch's commits cheaply (BackfillCounts.commits is null), so the size isn't known. */
+  requestsFor(_counts: BackfillCounts): number | null {
+    return null;
+  }
+
+  private async currentUser(): Promise<ViewerInfo> {
+    const data = await this.graphql.query<ViewerData>(VIEWER);
+    // GitLab answers a bad token with a 401, but never sync as nobody.
+    if (!data.currentUser) throw new GitLabError('auth', 'GitLab did not recognise the token (no current user)');
+    return mapViewer(data.currentUser, this.base);
   }
 
   /**
@@ -317,6 +369,9 @@ function markOf(fresh: RestStarrer[], previous: StarMark | null): StarMark {
   const kept = previous?.at === at ? previous.logins : [];
   return { at, logins: [...kept, ...logins].slice(-MAX_MARKED) };
 }
+
+/** The SyncSource calls GitLab doesn't answer yet. */
+const unsupported = (what: string): Promise<never> => Promise.reject(new Error(`GitLab sources can't ${what} yet`));
 
 /** Issues proper (not incidents, tasks or test cases), with label colors; the same set the probe counts. */
 const ISSUE_FILTER = { issue_type: 'issue', with_labels_details: true } as const;

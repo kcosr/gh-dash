@@ -60,6 +60,8 @@ function pr(number: number, over: Partial<PrRecord> & Pick<PrRecord, 'state' | '
     closingIssues: [],
     url: `https://github.com/alice/x/pull/${number}`,
     commits: [],
+    mergeCommitOid: null,
+    squashCommitOid: null,
     ...over,
   };
 }

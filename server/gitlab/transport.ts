@@ -1,7 +1,7 @@
 // Shared by the GraphQL client and the REST client: the instance's URL, the token, error classification, rate-limit
 // readings and retries with backoff.
 
-import { SourceError, type SourceErrorKind } from '../provider/errors';
+import { SourceError, type SourceErrorKind, type SourceErrorOptions } from '../provider/errors';
 import { backoffMs, defaultSleep, redact, RetryableError } from '../provider/transport';
 import type { RateLimitInfo } from '../provider/types';
 
@@ -17,7 +17,7 @@ export interface GitLabOptions {
 
 /** A failed GitLab request: a SourceError, so provider-neutral code handles it by kind. */
 export class GitLabError extends SourceError {
-  constructor(kind: SourceErrorKind, message: string, opts: { status?: number | null; resetAt?: string | null } = {}) {
+  constructor(kind: SourceErrorKind, message: string, opts: SourceErrorOptions = {}) {
     super(kind, message, opts);
     this.name = 'GitLabError';
   }
@@ -163,7 +163,7 @@ export class GitLabTransport {
   }
 
   private clean(err: GitLabError): GitLabError {
-    return new GitLabError(err.kind, redact(this.token, err.message), { status: err.status, resetAt: err.resetAt });
+    return new GitLabError(err.kind, redact(this.token, err.message), { status: err.status, resetAt: err.resetAt, access: err.access });
   }
 
   private async attempt<T>(target: string, what: string, read: (res: Response) => Promise<T>, opts: SendOptions): Promise<T> {

@@ -28,7 +28,7 @@ import {
 } from '../db/write';
 import { GitHubError, type GitHubClient } from '../github/client';
 import { mapCommit, mapIssue, mapProbe, mapPullRequest, mapRelease, mapRepo, mapStar } from '../github/map';
-import { type AccessFailure, accessFailure, notFound, reasonOf } from '../github/access';
+import { accessFailure, notFound } from '../github/access';
 import { MANUAL_REPOS, recheckQuery, REPO_DETAIL, REPO_NODE, REPO_PROBES, VIEWER_REPO, VIEWER_REPOS } from '../github/queries';
 import type {
   GqlError,
@@ -46,6 +46,7 @@ import type {
   ViewerReposData,
 } from '../github/types';
 import { DAY_MS, isoSec } from '../lib/time';
+import { type AccessFailure, reasonOf } from '../provider/access';
 
 /** Repos with more stars than this are never fully re-listed (unstar detection is skipped for them). */
 const FULL_STAR_DIFF_MAX = 3000;

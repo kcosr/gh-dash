@@ -1,7 +1,7 @@
 // Shared by the GraphQL client (sync) and the REST client (diffs): errors, token checks, rate-limit
 // classification and retries with backoff. The provider-neutral helpers (backoff, redaction) are in provider/transport.
 
-import { SourceError, type SourceErrorKind } from '../provider/errors';
+import { SourceError, type SourceErrorKind, type SourceErrorOptions } from '../provider/errors';
 import { backoffMs, redact, RetryableError } from '../provider/transport';
 import type { GqlError } from './types';
 
@@ -11,7 +11,7 @@ export type GitHubErrorKind = SourceErrorKind;
 export class GitHubError extends SourceError {
   /** A GraphQL response's errors, each with the path of the field that failed; empty for other failures. */
   readonly errors: GqlError[];
-  constructor(kind: GitHubErrorKind, message: string, opts: { status?: number | null; resetAt?: string | null; errors?: GqlError[] } = {}) {
+  constructor(kind: GitHubErrorKind, message: string, opts: SourceErrorOptions & { errors?: GqlError[] } = {}) {
     super(kind, message, opts);
     this.name = 'GitHubError';
     this.errors = opts.errors ?? [];
@@ -62,7 +62,7 @@ export interface RetryOptions {
 /** Runs `attempt` until it succeeds, retrying RetryableErrors; every error that escapes is redacted. */
 export async function withRetries<T>(opts: RetryOptions, attempt: () => Promise<T>): Promise<T> {
   const clean = (err: GitHubError) =>
-    new GitHubError(err.kind, redact(opts.token, err.message), { status: err.status, resetAt: err.resetAt, errors: err.errors });
+    new GitHubError(err.kind, redact(opts.token, err.message), { status: err.status, resetAt: err.resetAt, errors: err.errors, access: err.access });
   for (let n = 1; ; n++) {
     try {
       return await attempt();

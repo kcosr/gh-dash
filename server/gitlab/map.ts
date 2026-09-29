@@ -179,6 +179,9 @@ export function mapMergeRequest(m: GqlMergeRequest, base: string): PrRecord {
     ),
     url: m.webUrl ?? '',
     commits,
+    // Not read yet (MrFields has no mergeCommitSha / squashCommitSha).
+    mergeCommitOid: null,
+    squashCommitOid: null,
   };
 }
 

@@ -66,23 +66,23 @@ describe('GitLabSyncSource: account and projects', () => {
     first.projects.nodes = first.projects.nodes.slice(0, 1);
     const second = clone(ownedFixture);
     second.projects.nodes = second.projects.nodes.slice(1);
-    const { source, vars, calls } = setup({ '/api/graphql': graphql({ OwnedProjects: (v) => (v.after ? second : first) }) });
-    expect((await source.ownedRepos()).map((r) => r.nameWithOwner)).toEqual(['alice/app', 'alice/corp.tools']);
+    const { source, vars, calls } = setup({ '/api/graphql': graphql({ OwnedProjects: (v) => (v.after ? second : first), Viewer: () => viewerFixture }) });
+    expect((await source.ownedRepos()).repos.map((r) => r.nameWithOwner)).toEqual(['alice/app', 'alice/corp.tools']);
     expect(vars('OwnedProjects')).toEqual([{ after: null, first: 50 }, { after: 'cursor-1', first: 50 }]);
     expect((calls[0]!.body as { query: string }).query).toContain('projects(personal: true');
   });
 
   it('reads one project by its full path, with its probe; null when GitLab has none', async () => {
     const { source, vars } = setup({
-      '/api/graphql': graphql({ Project: (v) => (v.path === 'team/platform/api' ? projectFixture : { project: null }) }),
+      '/api/graphql': graphql({ Project: (v) => (v.path === 'team/platform/api' ? projectFixture : { project: null }), Viewer: () => viewerFixture }),
     });
-    const found = await source.repo('team/platform/api');
+    const { found } = await source.repo('team/platform/api');
     expect(found?.record).toMatchObject({ nodeId: 'gid://gitlab/Project/40', owner: 'team/platform', name: 'api' });
     expect(found?.probe).toEqual({
       openPrs: 3, openIssues: 7, latestPrUpdatedAt: '2026-09-27T09:20:00Z', latestIssueUpdatedAt: '2026-09-26T16:00:00Z',
       releaseTags: ['v2.1.0', 'v2.0.0'], latestStarredAt: null,
     });
-    expect(await source.repo('team/platform/gone')).toBeNull();
+    expect((await source.repo('team/platform/gone')).found).toBeNull();
     expect(vars('Project')).toEqual([{ path: 'team/platform/api' }, { path: 'team/platform/gone' }]);
   });
 
@@ -95,15 +95,14 @@ describe('GitLabSyncSource: account and projects', () => {
         return { body: { data: { projects: { nodes: ids.map((id) => ({ ...clone(probesFixture.projects.nodes[1]!), id })) } } } };
       },
     });
-    const probes = await source.probes(repos);
+    const { probes, errors } = await source.probes(repos);
     expect(vars('Probes').map((v) => [(v.ids as string[]).length, v.first])).toEqual([[25, 25], [5, 5]]);
     expect(probes.size).toBe(25);
     expect(probes.get('gid://gitlab/Project/1')).toEqual({ openPrs: 0, openIssues: 0, latestPrUpdatedAt: null, latestIssueUpdatedAt: null, releaseTags: [], latestStarredAt: null });
     expect(probes.has('gid://gitlab/Project/26')).toBe(false);
     // Why they're missing, for the sync's error list; each call starts afresh.
-    expect(source.probeErrors).toEqual(['projects 26-30 of 30: Internal server error']);
-    await source.probes(repos.slice(0, 25));
-    expect(source.probeErrors).toEqual([]);
+    expect(errors).toEqual(['projects 26-30 of 30: Internal server error']);
+    expect((await source.probes(repos.slice(0, 25))).errors).toEqual([]);
   });
 
   it('stops probing on a token problem', async () => {

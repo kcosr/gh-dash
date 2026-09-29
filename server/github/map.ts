@@ -110,6 +110,9 @@ export function mapPullRequest(p: GqlPullRequest): PrRecord {
       url: c.url,
       author: mapGitActor(c.author),
     })),
+    // Commits come with their PR number (associatedPullRequests): nothing to derive them from.
+    mergeCommitOid: null,
+    squashCommitOid: null,
   };
 }
 

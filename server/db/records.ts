@@ -79,6 +79,13 @@ export interface PrRecord {
   closingIssues: ClosingIssueRecord[];
   url: string;
   commits: PrCommitRecord[];
+  /**
+   * What a merge put on the target branch: the merge commit, and the squashed commit when the PR was squashed. Null when
+   * not merged, or when the provider doesn't say (GitHub, whose commits carry their PR number). A source that doesn't
+   * link commits (SyncSource.linksCommits false) fills them, and the sync links commits to PRs from them.
+   */
+  mergeCommitOid: string | null;
+  squashCommitOid: string | null;
 }
 
 export interface CommitRecord {

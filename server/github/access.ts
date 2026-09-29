@@ -1,15 +1,10 @@
-// Why the token can't read a repository, from the GraphQL errors of a read. Used by the repo lookup behind "Add
-// repository" (message plus a hint for this kind of token) and by the sync, which stores the same wording as the
-// reason a repo added by hand is unavailable.
+// Why the token can't read a repository, from the GraphQL errors of a read, as provider/access AccessFailures in
+// GitHub's words. Used by the repo lookup behind "Add repository" (message plus a hint for this kind of token) and by
+// the sync, which stores the same wording as the reason a repo added by hand is unavailable.
 
-import type { AccessProblem, TokenKind } from '../../shared/api';
+import type { TokenKind } from '../../shared/api';
+import type { AccessFailure } from '../provider/access';
 import type { GqlError } from './types';
-
-export interface AccessFailure {
-  problem: AccessProblem;
-  message: string;
-  hint: string | null;
-}
 
 /** What a denied field of a repository holds, in words. */
 const FIELD_WORDS: Record<string, string> = {
@@ -87,6 +82,3 @@ export function accessFailure(errors: readonly GqlError[], at: readonly (string 
   }
   return null;
 }
-
-/** One line for `unavailable_reason` and sync errors: the message, then what to do about it. */
-export const reasonOf = (f: AccessFailure): string => (f.hint ? `${f.message} ${f.hint}` : f.message);

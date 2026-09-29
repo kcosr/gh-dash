@@ -10,6 +10,16 @@ import { origin } from '../http';
 
 export const MCP_PATH = '/mcp';
 
+/**
+ * Where an MCP client configured without the token looks for OAuth after a 401 (RFC 9728 and RFC 8414 metadata, with
+ * or without the /mcp suffix). gh-dash has no OAuth: a JSON 404 says so, where the web app's index.html (or, with a
+ * password, the login page) would read as a broken server.
+ */
+const OAUTH_DISCOVERY = /^\/\.well-known\/(?:oauth-protected-resource|oauth-authorization-server|openid-configuration)(?:\/|$)/;
+
+/** Paths /mcp answers itself, with its own auth: exempt from the password and API-key gate (auth.ts). */
+export const isMcpPath = (path: string): boolean => path === MCP_PATH || OAUTH_DISCOVERY.test(path);
+
 export interface McpRouteOptions {
   core: McpCore;
   /** The agent a token belongs to; null for an unknown or revoked token. */
@@ -58,6 +68,11 @@ export function installMcp(app: Hono, { core, principalFor }: McpRouteOptions): 
   app.all(MCP_PATH, (c) => {
     c.header('Allow', 'POST');
     return rpcError(c, 405, `Method Not Allowed: ${c.req.method} ${MCP_PATH}; MCP clients POST JSON-RPC messages here`);
+  });
+
+  app.use('/.well-known/*', async (c, next) => {
+    if (!OAUTH_DISCOVERY.test(c.req.path)) return next();
+    return c.json({ error: `gh-dash has no OAuth: MCP clients ${AUTH_HINT}` }, 404);
   });
 }
 

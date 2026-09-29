@@ -6,7 +6,7 @@ import { DESKTOP_HOST, DESKTOP_SECRET_HEADER } from '../../shared/desktop';
 import type { Config } from '../config';
 import type { Db } from '../db/db';
 import { getMeta, setMeta } from '../db/meta';
-import { MCP_PATH } from './routes/mcp';
+import { isMcpPath } from './routes/mcp';
 
 const COOKIE = 'gh_dash_session';
 const SESSION_DAYS = 30;
@@ -160,11 +160,6 @@ function safeNext(next: unknown): string {
 
 /** Paths without data: health checks and the API reference work without credentials. */
 const OPEN_PATHS = new Set(['/api/health', '/api/docs', '/api/v1/openapi.json', '/login']);
-/**
- * Paths with their own authentication, which the password and API key neither guard nor unlock: /mcp takes an agent's
- * token only (a password would otherwise redirect it to /login, and key-only mode would hand it a session cookie).
- */
-const OWN_AUTH_PATHS = new Set([MCP_PATH]);
 
 /** Listen addresses only this machine can reach. */
 function isLoopbackAddress(host: string): boolean {
@@ -211,7 +206,9 @@ export function installAuth(app: Hono, db: Db, config: Config): void {
 
   app.use('*', async (c, next) => {
     const path = c.req.path;
-    if (OPEN_PATHS.has(path) || OWN_AUTH_PATHS.has(path)) return next();
+    // /mcp has its own auth, which the password and API key neither guard nor unlock: an agent's token only (a password
+    // would otherwise redirect it to /login, and key-only mode would hand it a session cookie).
+    if (OPEN_PATHS.has(path) || isMcpPath(path)) return next();
     const isApi = path === '/api' || path.startsWith('/api/');
     if (await hasSession(c, key)) return next();
     if (isApi) {

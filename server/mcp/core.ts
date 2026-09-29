@@ -5,7 +5,8 @@
 // The subset of the 2025 revisions gh-dash needs, stateless: initialize (version negotiation), ping, tools/list,
 // tools/call, and the notifications initialized (ignored) and cancelled (aborts a call in flight, such as a waiting
 // wait_for_reply). No sessions, resources, prompts, sampling or server-to-client requests. A 2026-07-28 client probing
-// with server/discover gets "method not found" and falls back to initialize, as that revision's clients do.
+// with server/discover is refused (over HTTP its MCP-Protocol-Version header already is; here the method isn't found),
+// and falls back to initialize, as that revision's clients do.
 
 import { HttpError, parseWith } from '../lib/errors';
 import { type CallContext, type McpDeps, type Tool, toolListing } from './tool';

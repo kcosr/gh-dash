@@ -87,6 +87,20 @@ const EXPAND_LINES = 20;
 const GAP = 12;
 /** Quiet time after a jump's last scroll event before the scroll position picks the file again. */
 const SETTLE_MS = 150;
+/**
+ * "Comment on new line 17": the gutter "+" for the line it sits on. A line is old when it's a deleted one or sits in
+ * a split view's left column; a unified view's context lines are numbered (and commented) on the new side.
+ */
+function namePlus(button: Element) {
+  const cell = button.closest('[data-column-number]');
+  if (!cell) return;
+  const type = cell.getAttribute('data-line-type');
+  const old = type === 'change-deletion' || (type !== 'change-addition' && cell.closest('[data-deletions]') !== null);
+  const label = `Comment on ${old ? 'old' : 'new'} line ${cell.getAttribute('data-column-number')}`;
+  button.setAttribute('aria-label', label);
+  button.setAttribute('title', label);
+}
+
 /** Keys that act while the compact comments column is open over the diff. */
 const COLUMN_KEYS = new Set(['c', 'n', 'p', 'r', 'e']);
 /** Keys that scroll the focused diff scroller (they end a jump's settling like a wheel does). */
@@ -403,9 +417,26 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
       for (const cell of scope.querySelectorAll(`[data-column-number][data-line-index="${line.getAttribute('data-line-index')}"]`)) cell.setAttribute('data-thread-line', '');
     }
   }, []);
+  // Pierre's gutter "+" is a bare icon button, created (or moved) under the pointer: it's named for its line as it
+  // lands, by an observer on each file's shadow root.
+  const namedRoots = useRef(new WeakSet<ShadowRoot>());
   const onPostRender = useCallback((node: HTMLElement, instance: unknown, phase: PostRenderPhase) => {
     expandControls.onPostRender(node, instance, phase);
-    if (phase !== 'unmount') paintThreadLines(node);
+    if (phase === 'unmount') return;
+    paintThreadLines(node);
+    const root = node.shadowRoot;
+    if (root && !namedRoots.current.has(root)) {
+      namedRoots.current.add(root);
+      new MutationObserver((records) => {
+        for (const r of records) {
+          for (const n of r.addedNodes) {
+            if (!(n instanceof Element)) continue;
+            const button = n.matches('[data-utility-button]') ? n : n.querySelector('[data-utility-button]');
+            if (button) namePlus(button);
+          }
+        }
+      }).observe(root, { childList: true, subtree: true });
+    }
   }, [expandControls.onPostRender, paintThreadLines]);
 
   const options = useMemo((): CodeViewOptions<Note, undefined> => ({

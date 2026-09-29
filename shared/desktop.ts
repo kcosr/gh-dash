@@ -180,8 +180,9 @@ export interface DesktopSource {
 
 /**
  * How to get a GitLab source's token, as the renderer asks for it. Never a path or a variable name: `file` is the file
- * last picked with chooseTokenFile() (main keeps it), and `env` is GITLAB_TOKEN, allowed only when it is set in the
- * app's environment. A pasted token goes to main once and is never read back.
+ * last picked with chooseTokenFile() for the same source (main keeps it), and `env` is GITLAB_TOKEN, allowed only when
+ * it is set in the app's environment and the user agrees, in main's own dialog, to send it to that host. A pasted
+ * token goes to main once and is never read back.
  */
 export type CredentialDraft =
   | { method: 'app'; token: string; remember: boolean }
@@ -245,8 +246,11 @@ export interface DesktopBridge {
    * config.json `glabPath` and the sources are reloaded (no restart). null when cancelled.
    */
   chooseGlabPath(): Promise<DesktopState | null>;
-  /** Native file picker for a GitLab token file. Main keeps the path for the next `file` credential; returned for display. null when cancelled. */
-  chooseTokenFile(): Promise<string | null>;
+  /**
+   * Native file picker for the GitLab token file of the source at `url` (named in the picker). Main keeps the path for
+   * that host's next `file` credential only; it's returned for display. null when cancelled.
+   */
+  chooseTokenFile(url: string): Promise<string | null>;
 }
 
 /** IPC channel names used by the preload script (ipcRenderer.invoke) and main (ipcMain.handle). */

@@ -27,7 +27,7 @@ const bridge: DesktopBridge = {
   signOutSource: (host) => call(DESKTOP_IPC.signOutSource, host),
   removeSource: (host) => call(DESKTOP_IPC.removeSource, host),
   chooseGlabPath: () => call(DESKTOP_IPC.chooseGlabPath),
-  chooseTokenFile: () => call(DESKTOP_IPC.chooseTokenFile),
+  chooseTokenFile: (url) => call(DESKTOP_IPC.chooseTokenFile, url),
 };
 
 contextBridge.exposeInMainWorld('ghDashDesktop', bridge);

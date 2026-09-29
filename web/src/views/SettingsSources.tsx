@@ -18,7 +18,7 @@ import { useToast } from '../components/Toasts';
 import { useUI } from '../components/ui';
 import { bridgeError, tokenExpiry, tokenKindLabel } from '../lib/account';
 import {
-  type CredentialForm, credentialOf, draftKey, draftOf, gitlabUrlInput, methodsFor, projectsLine, type RemoveMode, removeMode,
+  type CredentialForm, credentialOf, draftKey, draftOf, fileFor, gitlabUrlInput, methodsFor, projectsLine, type RemoveMode, removeMode,
   sourceMethodLabel, syncLine,
 } from '../lib/sources';
 import { fmtNum, plural, relLong } from '../lib/time';
@@ -103,8 +103,8 @@ function MethodPicker({ form, onChange, methods, target, desk, idPrefix }: {
   const { locateGlab, chooseTokenFile } = useSourceActions();
   const toast = useToast();
   const canRemember = desk.secureStorage === 'available';
-  const pickFile = () => chooseTokenFile.mutate(undefined, {
-    onSuccess: (file) => file && onChange({ ...form, method: 'file', file }),
+  const pickFile = () => target && chooseTokenFile.mutate(target.baseUrl, {
+    onSuccess: (file) => file && onChange({ ...form, method: 'file', file, fileHost: target?.host ?? null }),
     onError: (e) => toast(bridgeError(e), { error: true }),
   });
   const locate = () => locateGlab.mutate(undefined, {
@@ -146,8 +146,8 @@ function MethodPicker({ form, onChange, methods, target, desk, idPrefix }: {
       )}
       {form.method === 'file' && (
         <span className="src-file">
-          <button type="button" className="btn" onClick={pickFile} disabled={chooseTokenFile.isPending}>Choose file…</button>
-          {form.file ? <code className="path">{form.file}</code> : <span className="muted">No file chosen</span>}
+          <button type="button" className="btn" onClick={pickFile} disabled={!target || chooseTokenFile.isPending} title={target ? undefined : 'Enter the address first'}>Choose file…</button>
+          {target && fileFor(form, target.host) ? <code className="path">{form.file}</code> : <span className="muted">{target ? 'No file chosen' : 'Enter the address first'}</span>}
           <small className="muted">A file holding just the token, read again on every use. Only you should be able to read it.</small>
         </span>
       )}
@@ -160,7 +160,7 @@ function MethodPicker({ form, onChange, methods, target, desk, idPrefix }: {
   );
 }
 
-const newForm = (methods: SourceMethod[]): CredentialForm => ({ method: methods[0]!, token: '', remember: true, file: null });
+const newForm = (methods: SourceMethod[]): CredentialForm => ({ method: methods[0]!, token: '', remember: true, file: null, fileHost: null });
 
 /** Desktop: "Add GitLab", inline under the sources. Adding is enabled after a successful test of the same inputs. */
 function AddGitLab({ desk, open, onOpen, onClose }: { desk: DesktopState; open: boolean; onOpen: () => void; onClose: () => void }) {
@@ -303,7 +303,14 @@ function ManagedElsewhere({ mode }: { mode: RemoveMode }) {
 }
 
 /** One GitLab source: its account, how its token is found, the token's kind, expiry and scopes, its projects and sync. */
-function GitLabSource({ s, desk, desktopServer, from }: { s: Source; desk: DesktopState | undefined; desktopServer: boolean; from: ConfigSource | null }) {
+function GitLabSource({ s, app, desk, desktopServer, from }: {
+  s: Source;
+  /** In the desktop app (its state may still be loading). */
+  app: boolean;
+  desk: DesktopState | undefined;
+  desktopServer: boolean;
+  from: ConfigSource | null;
+}) {
   const check = useCheckSource();
   const del = useDeleteSource();
   const start = useStartSync();
@@ -432,7 +439,7 @@ function GitLabSource({ s, desk, desktopServer, from }: { s: Source; desk: Deskt
           quit gh-dash, unset <code>{a.env ?? 'GITLAB_TOKEN'}</code> and start it again.</span>
         </p>
       )}
-      {s.configured && <ManagedElsewhere mode={mode} />}
+      {s.configured && !app && <ManagedElsewhere mode={mode} />}
     </div>
   );
 }
@@ -476,7 +483,7 @@ export function SourcesSection({ rateLimit }: { rateLimit: SyncStatus['rateLimit
         <GitHubAccount rateLimit={rateLimit} />
       </div>
       {sources.isError && <p className="src-block muted">Couldn’t load the other sources: {(sources.error as Error).message}</p>}
-      {gitlab.map((s) => <GitLabSource key={s.host} s={s} desk={desk} desktopServer={desktopServer} from={fromOf(s.host)} />)}
+      {gitlab.map((s) => <GitLabSource key={s.host} s={s} app={!!bridge} desk={desk} desktopServer={desktopServer} from={fromOf(s.host)} />)}
       {bridge ? (desk && <AddGitLab desk={desk} open={adding} onOpen={() => setAdding(true)} onClose={() => setAdding(false)} />)
         : desktopServer ? <p className="set-foot muted">This server is run by the gh-dash desktop app: add GitLab in the app’s Settings.</p>
           : <HeadlessHelp />}

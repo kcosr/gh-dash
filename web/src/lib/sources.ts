@@ -91,9 +91,13 @@ export interface CredentialForm {
   method: SourceMethod;
   token: string;
   remember: boolean;
-  /** The file main's picker returned (display only: main keeps its own copy). */
+  /** The file main's picker returned (display only: main keeps its own copy), and the host it was picked for. */
   file: string | null;
+  fileHost?: string | null;
 }
+
+/** The picked file, if it was picked for `host` (main uses a file only for the host it was picked for). */
+export const fileFor = (f: Pick<CredentialForm, 'file' | 'fileHost'>, host: string | null) => (f.file && (f.fileHost ?? null) === host ? f.file : null);
 
 /** The credential to send, or why it can't be sent yet. */
 export function credentialOf(f: CredentialForm): CredentialDraft | { missing: string } {
@@ -110,7 +114,7 @@ export function draftOf(url: string, f: CredentialForm): SourceDraft | { missing
   const target = gitlabUrlInput(url);
   if (!target) return { missing: "Enter your GitLab's address." };
   if ('error' in target) return { missing: target.error };
-  const credential = credentialOf(f);
+  const credential = credentialOf({ ...f, file: f.fileHost === undefined ? f.file : fileFor(f, target.host) });
   if ('missing' in credential) return credential;
   return { kind: 'gitlab', url: target.baseUrl, ...credential };
 }

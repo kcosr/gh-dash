@@ -84,8 +84,10 @@ export function registerIpc(desktop: Desktop, window: () => BrowserWindow | null
     const file = await pickFile('Locate the GitLab CLI (glab)', 'Use this glab', 'glab.exe');
     return file ? desktop.setGlabPath(file) : null;
   });
-  handle(DESKTOP_IPC.chooseTokenFile, async () => {
-    const file = await pickFile('Choose the file holding the GitLab token', 'Use this file', null);
-    return file ? desktop.setTokenFile(file) : null;
+  // The picker names the host the file is for; main keeps the file for that host only.
+  handle(DESKTOP_IPC.chooseTokenFile, async (url) => {
+    const host = desktop.tokenFileHost(url);
+    const file = await pickFile(`Choose the file holding the GitLab token for ${host}`, 'Use this file', null);
+    return file ? desktop.setTokenFile(file, host) : null;
   });
 }

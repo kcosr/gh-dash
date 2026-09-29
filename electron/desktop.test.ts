@@ -280,6 +280,7 @@ describe('GitLab sources', () => {
   };
   let stores: Map<string, ReturnType<typeof fakeTokens>>;
   let env: NodeJS.ProcessEnv;
+  let confirmEnv: ReturnType<typeof vi.fn<(host: string) => Promise<boolean>>>;
   let gl: ReturnType<typeof glChild>;
   const glChild = () => ({
     calls: [] as string[],
@@ -299,6 +300,7 @@ describe('GitLab sources', () => {
         return stores.get(host)! as unknown as TokenStore;
       },
       env,
+      confirmEnv,
       findGlab: async (path) => path ?? '/usr/bin/glab',
       configPath,
       dataDir: join(dir, 'data'),
@@ -309,6 +311,7 @@ describe('GitLab sources', () => {
   beforeEach(() => {
     stores = new Map();
     env = {};
+    confirmEnv = vi.fn(async () => true);
     gl = glChild();
     desktop = make();
   });
@@ -357,19 +360,39 @@ describe('GitLab sources', () => {
     expect(gl.syncSource).not.toHaveBeenCalled();
   });
 
-  it("uses main's own file picker for a token file, never a path from the renderer", async () => {
-    await expect(desktop.addSource({ kind: 'gitlab', url: URL, method: 'file' })).rejects.toThrow('Choose the token file first.');
+  it("uses main's own file picker for a token file, for the host it was picked for only", async () => {
+    await expect(desktop.addSource({ kind: 'gitlab', url: URL, method: 'file' })).rejects.toThrow(`Choose the token file for ${HOST} first.`);
     await expect(desktop.addSource({ kind: 'gitlab', url: URL, method: 'file', tokenFile: '/etc/shadow' })).rejects.toThrow('Unexpected tokenFile.');
     const file = join(dir, 'gl-token');
     writeFileSync(file, 'glpat-in-a-file');
-    expect(() => desktop.setTokenFile('relative/path')).toThrow('Choose the token file.');
-    expect(() => desktop.setTokenFile(join(dir, 'missing'))).toThrow("missing isn't a file gh-dash can read.");
-    expect(desktop.setTokenFile(file)).toBe(file);
+    expect(desktop.tokenFileHost(`${URL}/`)).toBe(HOST);
+    expect(() => desktop.tokenFileHost('')).toThrow('Enter the address first.');
+    expect(() => desktop.tokenFileHost('https://github.com')).toThrow('github.com is built in');
+    expect(() => desktop.setTokenFile('relative/path', HOST)).toThrow('Choose the token file.');
+    expect(() => desktop.setTokenFile(join(dir, 'missing'), HOST)).toThrow("missing isn't a file gh-dash can read.");
+    expect(desktop.setTokenFile(file, HOST)).toBe(file);
+    // Picked for gitlab.example.com: the renderer can't send it to another address.
+    await expect(desktop.testSource({ kind: 'gitlab', url: 'https://evil.example', method: 'file' })).rejects.toThrow('Choose the token file for evil.example first.');
+    expect(gl.testSource).not.toHaveBeenCalled();
     await desktop.addSource({ kind: 'gitlab', url: URL, method: 'file' });
     expect(gl.testSource).toHaveBeenLastCalledWith({ url: URL, method: 'file', tokenFile: file });
     expect(readConfig().sources).toEqual([{ kind: 'gitlab', url: URL, tokenSource: 'file', tokenFile: file }]);
     // Used once: the next file must be picked again.
-    await expect(desktop.setSourceCredential(HOST, { method: 'file' })).rejects.toThrow('Choose the token file first.');
+    await expect(desktop.setSourceCredential(HOST, { method: 'file' })).rejects.toThrow(`Choose the token file for ${HOST} first.`);
+  });
+
+  it('sends GITLAB_TOKEN only to a host the user agreed to in main\'s dialog, asking once per host', async () => {
+    env.GITLAB_TOKEN = 'glpat-from-env';
+    confirmEnv.mockResolvedValueOnce(false);
+    await expect(desktop.testSource({ kind: 'gitlab', url: 'https://evil.example', method: 'env' })).rejects.toThrow("GITLAB_TOKEN wasn't sent to evil.example.");
+    expect(gl.testSource).not.toHaveBeenCalled();
+    await desktop.testSource({ kind: 'gitlab', url: URL, method: 'env' });
+    await desktop.addSource({ kind: 'gitlab', url: URL, method: 'env' });
+    expect(confirmEnv.mock.calls).toEqual([['evil.example'], [HOST]]);
+    expect(gl.testSource).toHaveBeenCalledTimes(2);
+    // Without a dialog (no window, a test), it is never sent.
+    const quiet = new Desktop({ child: { ...child, ...gl } as unknown as ServerChild, tokens: tokens as unknown as TokenStore, configPath: join(dir, 'other.json'), dataDir: dir, version: '1', restart, log: () => {}, env });
+    await expect(quiet.testSource({ kind: 'gitlab', url: URL, method: 'env' })).rejects.toThrow("GITLAB_TOKEN wasn't sent");
   });
 
   it('lets GITLAB_TOKEN sign a source in only when it is set, and never another way while it locks the source', async () => {

@@ -137,6 +137,6 @@ export function useSourceActions() {
       void qc.invalidateQueries({ queryKey: qk.sources });
     },
   });
-  const chooseTokenFile = useMutation({ mutationFn: () => need(bridge).chooseTokenFile() });
+  const chooseTokenFile = useMutation({ mutationFn: (url: string) => need(bridge).chooseTokenFile(url) });
   return { testSource, addSource, setCredential, signOut, remove, locateGlab, chooseTokenFile };
 }

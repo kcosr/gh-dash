@@ -2,7 +2,7 @@
  * Electron main process: owns the window, the app:// proxy to the server child, navigation rules, the keychain
  * and config.json. See local-notes' DESIGN.md "Desktop main" and shared/desktop.ts for the contract.
  */
-import { app, BrowserWindow, protocol, screen, session, shell } from 'electron';
+import { app, BrowserWindow, dialog, protocol, screen, session, shell } from 'electron';
 import { randomBytes } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, statfsSync } from 'node:fs';
 import { delimiter, isAbsolute, join } from 'node:path';
@@ -153,6 +153,20 @@ function run() {
     version: app.getVersion(),
     restart: () => child.restart(),
     log,
+    // The renderer names the address, so main asks the user itself before GITLAB_TOKEN goes there.
+    confirmEnv: async (host) => {
+      const options: Electron.MessageBoxOptions = {
+        type: 'question',
+        buttons: ['Use GITLAB_TOKEN', 'Cancel'],
+        defaultId: 1,
+        cancelId: 1,
+        message: `Send GITLAB_TOKEN to ${host}?`,
+        detail: `gh-dash signs in to ${host} with the token in GITLAB_TOKEN. Only go ahead if that is the GitLab it is for.`,
+      };
+      const win = mainWindow;
+      const { response } = win && !win.isDestroyed() ? await dialog.showMessageBox(win, options) : await dialog.showMessageBox(options);
+      return response === 0;
+    },
   });
   // The first start waits for the app to be ready and for the login shell's PATH (the child, and gh, need it);
   // requests that arrive before then wait for it too, rather than finding the child not started.

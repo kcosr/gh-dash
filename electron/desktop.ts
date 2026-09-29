@@ -47,6 +47,11 @@ export interface DesktopDeps {
   env?: NodeJS.ProcessEnv;
   /** Where glab is (see sources.ts findGlab); a seam for tests. */
   findGlab?: (glabPath: string | null) => Promise<string | null>;
+  /**
+   * Main's own dialog: may GITLAB_TOKEN be sent to `host`? The renderer names the URL, so it doesn't get to answer.
+   * Without one, GITLAB_TOKEN is never used for a new source.
+   */
+  confirmEnv?: (host: string) => Promise<boolean>;
 }
 
 export class Desktop {
@@ -57,8 +62,13 @@ export class Desktop {
   private queue: Promise<unknown> = Promise.resolve();
   /** GitLab sources' pasted tokens in use this session (remembered or not), by host: re-sent after every restart. */
   private readonly sourceAppTokens = new Map<string, string>();
-  /** The token file last picked for a GitLab source (chooseTokenFile): the next `file` credential's. */
-  private tokenFile: string | null = null;
+  /**
+   * The token file last picked (chooseTokenFile), and the source's host it was picked for: the next `file` credential
+   * of that host only, so the renderer can't send the file's token to another address.
+   */
+  private tokenFile: { path: string; host: string } | null = null;
+  /** Hosts the user let GITLAB_TOKEN go to, this session. */
+  private readonly envHosts = new Set<string>();
 
   constructor(private readonly d: DesktopDeps) {}
 
@@ -267,15 +277,28 @@ export class Desktop {
     }
   }
 
-  /** What the child tests: the token file and the variable are main's. */
-  private testDraft(url: string, credential: CredentialDraft): SourceTestDraft {
+  /** The file picked for `host`; a user-facing error when none was, or it was picked for another address. */
+  private fileFor(host: string): string {
+    if (!this.tokenFile || this.tokenFile.host !== host) throw new ConfigInputError(`Choose the token file for ${host} first.`);
+    return this.tokenFile.path;
+  }
+
+  /**
+   * What the child tests. The token file and the variable are main's, and each goes only where the user said: the file
+   * to the host it was picked for, GITLAB_TOKEN to a host the user agreed to in main's own dialog. (glab only ever
+   * answers for the URL's own host, and a pasted token is the user's to send.)
+   */
+  private async testDraft(url: string, host: string, credential: CredentialDraft): Promise<SourceTestDraft> {
     switch (credential.method) {
       case 'app':
         return { url, method: 'app', token: credential.token };
       case 'file':
-        if (!this.tokenFile) throw new ConfigInputError('Choose the token file first.');
-        return { url, method: 'file', tokenFile: this.tokenFile };
+        return { url, method: 'file', tokenFile: this.fileFor(host) };
       case 'env':
+        if (!this.envHosts.has(host)) {
+          if (!(await this.d.confirmEnv?.(host))) throw new ConfigInputError(`${GITLAB_TOKEN} wasn't sent to ${host}.`);
+          this.envHosts.add(host);
+        }
         return { url, method: 'env', tokenEnv: GITLAB_TOKEN };
       case 'glab':
         return { url, method: 'glab' };
@@ -314,9 +337,9 @@ export class Desktop {
   async testSource(input: unknown): Promise<SourceCheck> {
     const draft = parseSourceDraft(input);
     const config = this.editableConfig().data;
-    const { baseUrl } = draftTarget(draft.url);
+    const { baseUrl, host } = draftTarget(draft.url);
     this.checkMethod(config, null, draft.method);
-    return this.addConflict(await this.d.child.testSource(this.testDraft(baseUrl, draft)), config);
+    return this.addConflict(await this.d.child.testSource(await this.testDraft(baseUrl, host, draft)), config);
   }
 
   /**
@@ -328,11 +351,11 @@ export class Desktop {
     const draft = parseSourceDraft(input);
     return this.exclusive(async () => {
       const loaded = this.editableConfig();
-      const { baseUrl } = draftTarget(draft.url);
+      const { baseUrl, host } = draftTarget(draft.url);
       this.checkMethod(loaded.data, null, draft.method);
-      const check = this.addConflict(await this.d.child.testSource(this.testDraft(baseUrl, draft)), loaded.data);
+      const check = this.addConflict(await this.d.child.testSource(await this.testDraft(baseUrl, host, draft)), loaded.data);
       if (!check.ok) return { check, saved: false, remembered: false };
-      const entry = withMethod({ kind: 'gitlab', url: check.url }, draft.method, this.tokenFile);
+      const entry = withMethod({ kind: 'gitlab', url: check.url }, draft.method, draft.method === 'file' ? this.fileFor(host) : null);
       await this.applySources(loaded, addEntry(loaded.data, entry, this.env), `Adding ${check.host}`);
       let remembered = false;
       if (draft.method === 'app') {
@@ -363,10 +386,10 @@ export class Desktop {
       const locked = lockingEnv(loaded.data, i, this.env);
       if (locked && credential.method !== 'env') throw new ConfigInputError(`${locked} is set in the environment gh-dash was started from, so it is always this source's token.`);
       this.checkMethod(loaded.data, host, credential.method);
-      const check = await this.d.child.testSource(this.testDraft(sourceUrl(entry.url).baseUrl, credential));
+      const check = await this.d.child.testSource(await this.testDraft(sourceUrl(entry.url).baseUrl, host, credential));
       if (!check.ok) return { check, saved: false, remembered: false };
       const sources = [...loaded.data.sources!];
-      sources[i] = withMethod(entry, credential.method, this.tokenFile);
+      sources[i] = withMethod(entry, credential.method, credential.method === 'file' ? this.fileFor(host) : null);
       const next = { ...loaded.data, sources };
       if (!isDeepStrictEqual(next, loaded.data)) await this.applySources(loaded, next, `Changing ${host}'s token`);
       let remembered = false;
@@ -427,8 +450,14 @@ export class Desktop {
     return i;
   }
 
-  /** "Token file…": the picker's choice, kept for the next `file` credential. Returned for display. */
-  setTokenFile(path: string): string {
+  /** The host a token file is being picked for (chooseTokenFile's argument): checked before the picker opens. */
+  tokenFileHost(url: unknown): string {
+    if (typeof url !== 'string' || !url.trim()) throw new ConfigInputError('Enter the address first.');
+    return draftTarget(url.trim()).host;
+  }
+
+  /** "Token file…": the picker's choice for `host`, kept for that host's next `file` credential. Returned for display. */
+  setTokenFile(path: string, host: string): string {
     if (!isAbsolute(path)) throw new ConfigInputError('Choose the token file.');
     let file = false;
     try {
@@ -437,7 +466,7 @@ export class Desktop {
       /* reported below */
     }
     if (!file) throw new ConfigInputError(`${basename(path)} isn't a file gh-dash can read.`);
-    this.tokenFile = path;
+    this.tokenFile = { path, host };
     return path;
   }
 

@@ -32,6 +32,10 @@ beforeEach(() => {
     removeSource: vi.fn(async () => ({ sources: [] })),
     setGlabPath: vi.fn(async (path: string) => ({ glab: { path, chosen: true } })),
     setTokenFile: vi.fn((path: string) => path),
+    tokenFileHost: vi.fn((url: unknown) => {
+      if (url !== 'https://gitlab.example.com') throw new ConfigInputError('Enter the address first.');
+      return 'gitlab.example.com';
+    }),
   };
   registerIpc(desktop as unknown as Desktop, () => win as never, (line) => logs.push(line));
 });
@@ -55,13 +59,16 @@ describe('the GitLab sources over IPC', () => {
   });
 
   it('takes paths only from its own pickers', async () => {
+    // The picker is for one source: named in its title, and kept for that host only.
+    expect(await invoke(DESKTOP_IPC.chooseTokenFile, '/etc/shadow')).toEqual({ error: 'Enter the address first.' });
+    expect(electron.showOpenDialog).not.toHaveBeenCalled();
     electron.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: ['/home/alice/gl-token'] });
-    expect(await invoke(DESKTOP_IPC.chooseTokenFile, '/etc/shadow')).toEqual({ value: '/home/alice/gl-token' });
-    expect(desktop.setTokenFile).toHaveBeenCalledWith('/home/alice/gl-token');
+    expect(await invoke(DESKTOP_IPC.chooseTokenFile, 'https://gitlab.example.com')).toEqual({ value: '/home/alice/gl-token' });
+    expect(desktop.setTokenFile).toHaveBeenCalledWith('/home/alice/gl-token', 'gitlab.example.com');
     expect(electron.showOpenDialog.mock.calls[0]![0]).toBe(win);
-    expect(electron.showOpenDialog.mock.calls[0]![1]).toMatchObject({ title: 'Choose the file holding the GitLab token', properties: expect.arrayContaining(['openFile']) });
+    expect(electron.showOpenDialog.mock.calls[0]![1]).toMatchObject({ title: 'Choose the file holding the GitLab token for gitlab.example.com', properties: expect.arrayContaining(['openFile']) });
     electron.showOpenDialog.mockResolvedValueOnce({ canceled: true, filePaths: [] });
-    expect(await invoke(DESKTOP_IPC.chooseTokenFile)).toEqual({ value: null });
+    expect(await invoke(DESKTOP_IPC.chooseTokenFile, 'https://gitlab.example.com')).toEqual({ value: null });
     electron.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: ['/opt/homebrew/bin/glab'] });
     expect(await invoke(DESKTOP_IPC.chooseGlabPath, '/tmp/evil')).toEqual({ value: { glab: { path: '/opt/homebrew/bin/glab', chosen: true } } });
     expect(desktop.setGlabPath).toHaveBeenCalledWith('/opt/homebrew/bin/glab');

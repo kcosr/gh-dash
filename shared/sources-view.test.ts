@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Source } from './api';
-import { credentialOf, draftKey, draftOf, gitlabUrlInput, methodsFor, projectsLine, removeMode, sourceMethodLabel, syncLine } from '../web/src/lib/sources';
+import { credentialOf, draftKey, draftOf, fileFor, gitlabUrlInput, methodsFor, projectsLine, removeMode, sourceMethodLabel, syncLine } from '../web/src/lib/sources';
 
 const now = new Date(2026, 8, 29, 15, 0).getTime();
 const form = (over = {}) => ({ method: 'app' as const, token: '', remember: true, file: null, ...over });
@@ -30,6 +30,10 @@ describe('drafts', () => {
     expect(draftOf('gitlab.example.com', form({ token: ' glpat-x ', remember: false }))).toEqual({ kind: 'gitlab', url: 'https://gitlab.example.com', method: 'app', token: 'glpat-x', remember: false });
     expect(draftOf('gitlab.example.com', form({ method: 'file' }))).toEqual({ missing: 'Choose the token file.' });
     expect(draftOf('gitlab.example.com', form({ method: 'file', file: '/home/alice/gl-token' }))).toEqual({ kind: 'gitlab', url: 'https://gitlab.example.com', method: 'file' });
+    // A file picked for one address isn't used for another (main refuses it too).
+    expect(draftOf('gitlab.example.com', form({ method: 'file', file: '/a', fileHost: 'gitlab.example.com' }))).toMatchObject({ method: 'file' });
+    expect(draftOf('gitlab2.example.com', form({ method: 'file', file: '/a', fileHost: 'gitlab.example.com' }))).toEqual({ missing: 'Choose the token file.' });
+    expect(fileFor({ file: '/a', fileHost: 'gitlab.example.com' }, 'gitlab2.example.com')).toBeNull();
     expect(credentialOf(form({ method: 'env' }))).toEqual({ method: 'env' });
     expect(credentialOf(form({ method: 'glab', token: 'left over' }))).toEqual({ method: 'glab' });
   });

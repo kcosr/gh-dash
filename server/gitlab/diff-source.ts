@@ -1,6 +1,6 @@
 import type { DiffFile } from '../../shared/api';
 import type { ResolvedToken, TokenSupply } from '../credentials/types';
-import type { DiffSources } from '../diff/service';
+import type { SourceDiffSupply } from '../diff/service';
 import { defaultSleep } from '../provider/transport';
 import type { BlobResult, CommitDiff, DiffRepo, DiffSource, PrRevision } from '../provider/types';
 import { GitLabClient } from './client';
@@ -17,6 +17,9 @@ const VERSIONS_PAGE = 20;
 /** Revisions tried before giving up on an MR whose diff versions don't include its current one. */
 const REVISION_ATTEMPTS = 2;
 
+/** What follows a rejected token's error when the source's credentials say nothing better. */
+const DEFAULT_AUTH_HINT = 'check the GitLab token: it needs the read_api scope and must not have expired';
+
 /** What prRevision hands prFiles: the start SHA, which with head and base identifies a diff version. */
 interface Handle {
   startSha: string;
@@ -28,13 +31,15 @@ interface Handle {
  */
 export class GitLabDiffSource implements DiffSource {
   readonly kind = 'gitlab';
-  readonly authHint = 'check the GitLab token: it needs the read_api scope and must not have expired';
+  readonly authHint: string;
   readonly maxFiles = MAX_FILES;
   private readonly transport: GitLabTransport;
   private readonly rest: GitLabRestClient;
   private readonly graphql: GitLabClient;
 
-  constructor(opts: GitLabOptions) {
+  /** `authHint` is the source's credentials' (gitlabAuthHint: it names the host); the default stands alone. */
+  constructor({ authHint = DEFAULT_AUTH_HINT, ...opts }: GitLabOptions & { authHint?: string }) {
+    this.authHint = authHint;
     // Few attempts and short waits: a person is waiting for the response.
     this.transport = new GitLabTransport(opts, { maxAttempts: 3, maxRetryWaitMs: 10_000 });
     this.rest = new GitLabRestClient(this.transport);
@@ -140,6 +145,8 @@ export interface GitLabDiffSourcesOptions {
   baseUrl: string;
   /** The source's token (shared with its sync), and the 503 text when there is none. */
   tokens: TokenSupply & { noTokenMessage(resolved: ResolvedToken): string };
+  /** What to do when GitLab rejects the token, after its message (the source's credentials' authHint); a generic one by default. */
+  authHint?: string;
   fetchImpl?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
 }
@@ -148,7 +155,7 @@ export interface GitLabDiffSourcesOptions {
  * A GitLabDiffSource for one source's current token (which its provider caches): a new token gets a new source, and a
  * token GitLab rejected is resolved again before the next fetch. The GitHubDiffSources pattern, per GitLab source.
  */
-export class GitLabDiffSources implements DiffSources {
+export class GitLabDiffSources implements SourceDiffSupply {
   private readonly opts: GitLabDiffSourcesOptions;
   private current: GitLabDiffSource | null = null;
   /** The token each source was made with, to invalidate the one that was rejected (the current one may be newer). */
@@ -164,8 +171,8 @@ export class GitLabDiffSources implements DiffSources {
     if (!token) throw new GitLabError('auth', this.opts.tokens.noTokenMessage(resolved));
     if (this.current && this.tokens.get(this.current) === token) return this.current;
     // Explicit defaults: an undefined option would override the transport's own.
-    const { baseUrl, fetchImpl = fetch, sleep = defaultSleep } = this.opts;
-    this.current = new GitLabDiffSource({ baseUrl, token, fetchImpl, sleep });
+    const { baseUrl, authHint, fetchImpl = fetch, sleep = defaultSleep } = this.opts;
+    this.current = new GitLabDiffSource({ baseUrl, token, authHint, fetchImpl, sleep });
     this.tokens.set(this.current, token);
     return this.current;
   }

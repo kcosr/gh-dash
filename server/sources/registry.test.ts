@@ -179,6 +179,9 @@ describe('SourceRegistry', () => {
 
     const diffs = await gl!.diffs.get();
     expect(diffs.kind).toBe('gitlab');
+    // A rejected token's 503 names how to fix this source's: the credentials' hint, with the host.
+    expect(diffs.authHint).toBe(gl!.tokens.spec.authHint);
+    expect(diffs.authHint).toBe(`check the GitLab token in Settings → Sources, or run \`glab auth login --hostname ${HOST}\``);
     // Its provider knows the account this source's data belongs to.
     tryClaimViewer(db, gl!.id, { id: 'gid://gitlab/User/9', login: 'bob' });
     expect((await gl!.tokens.account()).dbLogin).toBe('bob');

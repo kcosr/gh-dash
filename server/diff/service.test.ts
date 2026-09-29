@@ -709,15 +709,18 @@ describe('with another source', () => {
       },
     };
     const failed: DiffSource[] = [];
+    /** Who the service asked for, per fetch: the repo's source (github.com here). */
+    const getCalls: unknown[] = [];
     const sources: DiffSources & { none: string | null } = {
       none: null,
-      async get() {
+      async get(repo) {
+        getCalls.push(repo);
         if (this.none) throw new SourceError('auth', this.none);
         return source;
       },
       authFailed: (s) => failed.push(s),
     };
-    return { source, sources, calls, repos, state, revision, failed };
+    return { source, sources, calls, repos, state, revision, failed, getCalls };
   }
 
   function setupAny() {
@@ -733,7 +736,7 @@ describe('with another source', () => {
   }
 
   it('builds, caches and revalidates PR diffs', async () => {
-    const { svc, asked, synced, state, revision, repos, logs, clock } = setupAny();
+    const { svc, asked, synced, state, revision, repos, logs, clock, getCalls } = setupAny();
     synced(2, { head_oid: A });
     const miss = await asked(() => diffOf(svc.prDiff('app', 2)));
     expect(miss.calls).toEqual(['revision !2', 'files !2']);
@@ -743,6 +746,8 @@ describe('with another source', () => {
       totalFiles: 1, additions: 1, deletions: 0, fetchedAt: new Date(clock.t).toISOString(), url: 'https://gitlab.example/alice/app/-/merge_requests/2/diffs',
     });
     expect(repos[0]).toEqual({ key: 'alice/app', owner: 'alice', name: 'app', path: 'alice/app' });
+    // The service says which source the repo is on; what to do with it is the DiffSources'.
+    expect(getCalls[0]).toEqual({ sourceId: 1 });
     expect(logs.at(-1)).toMatch(/^\[diff\] alice\/app#2: 2 GitLab requests in [\d.]+s$/);
     expect((await asked(() => svc.prDiff('app', 2))).calls).toEqual([]);
 

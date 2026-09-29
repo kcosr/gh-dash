@@ -2,7 +2,7 @@
 // raw file contents. The diff service decides when to ask and what the API answers; this only knows how to ask GitHub.
 
 import type { DiffFile, DiffFileStatus } from '../../shared/api';
-import type { DiffSources } from '../diff/service';
+import type { SourceDiffSupply } from '../diff/service';
 import { defaultSleep } from '../provider/transport';
 import type { BlobResult, CommitDiff, DiffRepo, DiffSource, PrRevision, RateLimitInfo } from '../provider/types';
 import { noTokenMessage, type TokenSupply } from '../token';
@@ -232,7 +232,7 @@ export interface GitHubDiffSourcesOptions {
  * A GitHubDiffSource for the current token (which the provider caches): a new token, e.g. after `gh auth switch`, gets
  * a new source, and a token GitHub rejected is resolved again before the next fetch.
  */
-export class GitHubDiffSources implements DiffSources {
+export class GitHubDiffSources implements SourceDiffSupply {
   private readonly opts: GitHubDiffSourcesOptions;
   private current: GitHubDiffSource | null = null;
   /** The token each source was made with, to invalidate the one that was rejected (the current one may be newer). */

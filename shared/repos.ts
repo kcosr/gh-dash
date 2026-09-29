@@ -1,7 +1,7 @@
-import type { Repo, RepoQuery } from './api';
+import { GITHUB_HOST, type Repo, type RepoQuery } from './api';
 
 /** What the helpers below need of a repo (the API's `Repo` has all of it). */
-export type RepoIdent = Pick<Repo, 'key' | 'name' | 'trackedBy'>;
+export type RepoIdent = Pick<Repo, 'key' | 'name' | 'trackedBy' | 'source'>;
 
 /** Repositories as a list, or as a map keyed by `Repo.key` (what the web's `useRepoMap` returns). */
 type RepoSource<R extends RepoIdent> = readonly R[] | ReadonlyMap<string, R>;
@@ -40,8 +40,9 @@ const list = <R extends RepoIdent>(repos: RepoSource<R>): readonly R[] => (repos
 /**
  * The resolution rule for a repo named in a URL, a saved list or a reference (docs section 2.2), over live repos:
  *  1. an exact key, case-insensitive; or
- *  2. an input without '/' naming an owned repo by its short name, case-insensitive.
- * Nothing else: a bare name that matches only a manually added repo resolves to null.
+ *  2. an input without '/' naming an owned github.com repo by its short name, case-insensitive (links from before keys
+ *     had owners were all GitHub; a short name isn't unique across sources).
+ * Nothing else: a bare name that matches only a manually added repo, or a repo on another source, resolves to null.
  * Returns the canonical key. (The server implements the same rule in SQL: REPO_IDS_FOR_KEYS.)
  */
 export function repoResolver<R extends RepoIdent>(repos: RepoSource<R>): (input: string) => string | null {
@@ -51,7 +52,7 @@ export function repoResolver<R extends RepoIdent>(repos: RepoSource<R>): (input:
     const k = r.key.toLowerCase();
     if (!byKey.has(k)) byKey.set(k, r.key);
     const n = r.name.toLowerCase();
-    if (r.trackedBy === 'owned' && !byOwnedName.has(n)) byOwnedName.set(n, r.key);
+    if (r.trackedBy === 'owned' && r.source === GITHUB_HOST && !byOwnedName.has(n)) byOwnedName.set(n, r.key);
   }
   return (input) => {
     const lower = input.toLowerCase();

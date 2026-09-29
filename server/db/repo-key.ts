@@ -1,5 +1,6 @@
 import type { TrackedBy } from '../../shared/api';
 import type { Db } from './db';
+import { GITHUB_SOURCE_ID } from './sources';
 
 // A repository's key is what the API and the web app call it: in URLs, `repos=` lists, sets, cursors and every
 // `repo` field. It is stored in `repos.key`, written by the upserts through `sourceKey` (db/sources.ts): the provider
@@ -10,9 +11,10 @@ import type { Db } from './db';
 //
 // Resolution (inputs from URLs, lists and request bodies), over live repos only:
 //  1. the key itself, case-insensitively; or
-//  2. an input without '/' naming one of the viewer's own repos by its short name, case-insensitively (the alias
-//     every link used before keys had owners).
-// Nothing else: a bare name that only a repo added by hand has resolves to nothing.
+//  2. an input without '/' naming one of the viewer's own github.com repos by its short name, case-insensitively (the
+//     alias every link used before keys had owners; those were all GitHub, and a short name isn't unique across
+//     sources).
+// Nothing else: a bare name that only a repo added by hand, or a repo on another source, has resolves to nothing.
 // shared/repos.ts `repoResolver` implements the same rule for the web app; repo-key.test.ts checks that both agree.
 
 /** SQL expression for the public key of the repos row aliased `alias`. */
@@ -26,7 +28,7 @@ export function repoKeySql(alias: string): string {
  */
 export const REPO_IDS_FOR_KEYS = `(SELECT x.id FROM repos x JOIN json_each(?) k
   ON x.key = k.value COLLATE NOCASE
-  OR (instr(k.value, '/') = 0 AND x.tracked_by = 'owned' AND x.name = k.value COLLATE NOCASE)
+  OR (instr(k.value, '/') = 0 AND x.source_id = ${GITHUB_SOURCE_ID} AND x.tracked_by = 'owned' AND x.name = k.value COLLATE NOCASE)
   WHERE x.removed_at IS NULL)`;
 
 /** Public key of a repos row read with `SELECT *`. */
@@ -61,7 +63,7 @@ interface RefRow {
 const RESOLVE = `SELECT id, source_id, key, name, name_with_owner, owner, node_id, tracked_by FROM repos
   WHERE id IN ${REPO_IDS_FOR_KEYS} ORDER BY id LIMIT 1`;
 
-/** The live repo an API key (or an owned repo's short name) names, or null. */
+/** The live repo an API key (or an owned github.com repo's short name) names, or null. */
 export function resolveRepo(db: Db, key: string): RepoRef | null {
   const row = db.get<RefRow>(RESOLVE, [JSON.stringify([key])]);
   return row

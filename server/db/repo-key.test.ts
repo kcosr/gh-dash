@@ -4,16 +4,29 @@ import { addManualRepo, GITHUB, seedDb } from '../test/seed';
 import type { Db } from './db';
 import { addRepoScope, loadQueryCtx, type Scope, Where } from './filters';
 import { getPrDetail, listPrs } from './lists';
+import type { RepoRecord } from './records';
 import { REPO_IDS_FOR_KEYS, repoKey, repoKeySql, resolveRepo, resolveRepoIds } from './repo-key';
 import { createSet, getRepo, listRepos, listSets, setRepoPrefs, updateSet } from './repos';
+import { ensureSource } from './sources';
 import { markReposRemoved, upsertOwned } from './write';
 
 const idOf = (db: Db, key: string) => db.get<{ id: number }>('SELECT id FROM repos WHERE key = ?', [key])!.id;
 
+/** A GitLab project as the GitLab source reports it (path = full path). */
+function project(path: string, over: Partial<RepoRecord> = {}): RepoRecord {
+  const i = path.lastIndexOf('/');
+  return {
+    nodeId: `gid://gitlab/Project/${path}`, name: path.slice(i + 1), nameWithOwner: path, owner: path.slice(0, i), description: null,
+    url: `https://gitlab.example.com/${path}`, visibility: 'private', isArchived: false, isFork: false, languageName: null, languageColor: null,
+    topics: [], defaultBranch: 'main', stars: 0, forks: 0, createdAt: '2025-01-01T00:00:00Z', pushedAt: '2026-09-20T00:00:00Z', ...over,
+  };
+}
+
 /**
  * seedDb (owned alice/app, secret, old, fork, hidden) with `old` and `hidden` marked removed, plus repos added by hand:
  * bob/app (a namesake of the owned app), carol/tool (alone under its name), grp/sub/proj (a nested path) and a
- * removed one, dave/gone.
+ * removed one, dave/gone. On a GitLab source, gitlab.example.com: the viewer's own alice/app (the same path as the
+ * GitHub repo) and alice/notes (a short name no GitHub repo has), and platform/team/svc added by hand (nested).
  */
 function fixture(): Db {
   const db = seedDb();
@@ -23,6 +36,10 @@ function fixture(): Db {
   addManualRepo(db, 'carol/tool');
   addManualRepo(db, 'grp/sub/proj');
   db.run(`UPDATE repos SET removed_at = '2026-09-28T00:00:00Z' WHERE id = ?`, [addManualRepo(db, 'dave/gone')]);
+  const gitlab = ensureSource(db, { kind: 'gitlab', host: 'gitlab.example.com', baseUrl: 'https://gitlab.example.com' });
+  upsertOwned(db, gitlab, project('alice/app'), '2026-09-27T12:00:00Z');
+  upsertOwned(db, gitlab, project('alice/notes'), '2026-09-27T12:00:00Z');
+  addManualRepo(db, 'platform/team/svc', { source: gitlab, nodeId: 'gid://gitlab/Project/9' });
   return db;
 }
 
@@ -57,6 +74,19 @@ const RESOLUTION: [input: string, key: string | null][] = [
   ['a%p', null], // no pattern matching
   ['_pp', null],
   ['alice/app,alice/secret', null],
+  // Another source: keys carry its host.
+  ['gitlab.example.com/alice/app', 'gitlab.example.com/alice/app'], // the GitLab namesake of alice/app
+  ['GITLAB.EXAMPLE.COM/Alice/APP', 'gitlab.example.com/alice/app'], // hosts in any case too
+  ['gitlab.example.com/platform/team/svc', 'gitlab.example.com/platform/team/svc'], // nested
+  ['Gitlab.Example.Com/PLATFORM/Team/Svc', 'gitlab.example.com/platform/team/svc'],
+  ['gitlab.example.com/alice/notes', 'gitlab.example.com/alice/notes'],
+  ['notes', null], // the short name of an owned GitLab project: the alias is github.com's only
+  ['svc', null],
+  ['alice/notes', null], // the path without the host is not the key
+  ['platform/team/svc', null],
+  ['gitlab.example.com', null],
+  ['gitlab.example.com/notes', null],
+  ['gitlab.example.com/app', null],
 ];
 
 describe('repoKeySql / repoKey', () => {
@@ -67,9 +97,11 @@ describe('repoKeySql / repoKey', () => {
   });
 
   it('agree with each other on a row', () => {
-    const db = seedDb();
-    const row = db.get<{ key: string; k: string }>(`SELECT r.*, ${repoKeySql('r')} AS k FROM repos r WHERE r.name = 'app'`)!;
-    expect(repoKey(row)).toBe(row.k);
+    const db = fixture();
+    for (const name of ['app', 'svc']) {
+      const row = db.get<{ key: string; k: string }>(`SELECT r.*, ${repoKeySql('r')} AS k FROM repos r WHERE r.name = ? ORDER BY r.id DESC`, [name])!;
+      expect(repoKey(row)).toBe(row.k);
+    }
   });
 });
 
@@ -101,6 +133,11 @@ describe('resolution', () => {
       id: idOf(db, 'bob/app'), sourceId: 1, key: 'bob/app', owner: 'bob', name: 'app', path: 'bob/app', nodeId: 'R_bob/app', trackedBy: 'manual',
     });
     expect(resolveRepo(db, 'grp/sub/proj')).toMatchObject({ owner: 'grp/sub', name: 'proj', path: 'grp/sub/proj' });
+    // On another source the key carries the host; the path, the owner and the name don't.
+    expect(resolveRepo(db, 'gitlab.example.com/platform/team/svc')).toEqual({
+      id: idOf(db, 'gitlab.example.com/platform/team/svc'), sourceId: 2, key: 'gitlab.example.com/platform/team/svc', owner: 'platform/team',
+      name: 'svc', path: 'platform/team/svc', nodeId: 'gid://gitlab/Project/9', trackedBy: 'manual',
+    });
   });
 
   it('selects every repo named in a list, once', () => {
@@ -109,6 +146,13 @@ describe('resolution', () => {
       [idOf(db, 'alice/app'), idOf(db, 'bob/app'), idOf(db, 'carol/tool')].sort((a, b) => a - b),
     );
     expect(idsFor(db, [])).toEqual([]);
+  });
+
+  it('selects repos of every source, a key of each of a namesake pair', () => {
+    const db = fixture();
+    expect(idsFor(db, ['app', 'gitlab.example.com/alice/app', 'notes'])).toEqual(
+      [idOf(db, 'alice/app'), idOf(db, 'gitlab.example.com/alice/app')].sort((a, b) => a - b),
+    );
   });
 
   it('looks keys up through the key index', () => {
@@ -167,6 +211,16 @@ describe('call sites', () => {
     expect(getRepo(db, 'old', 'UTC')).toBeNull();
     expect(listRepos(db, 'UTC', Date.now(), 'secret').map((r) => r.key)).toEqual(['alice/secret']);
     expect(listRepos(db, 'UTC').map((r) => r.key)).not.toContain('alice/old');
+  });
+
+  it('listRepos names every repo\'s source and provider', () => {
+    const db = fixture();
+    const byKey = new Map(listRepos(db, 'UTC').map((r) => [r.key, r]));
+    expect(byKey.get('alice/app')).toMatchObject({ source: 'github.com', provider: 'github', nameWithOwner: 'alice/app' });
+    expect(byKey.get('gitlab.example.com/alice/app')).toMatchObject({
+      source: 'gitlab.example.com', provider: 'gitlab', name: 'app', owner: 'alice', nameWithOwner: 'alice/app', trackedBy: 'owned',
+    });
+    expect(getRepo(db, 'GitLab.example.com/platform/team/svc', 'UTC')).toMatchObject({ key: 'gitlab.example.com/platform/team/svc', owner: 'platform/team' });
   });
 
   it('listRepos orders by activity, then by key', () => {

@@ -7,6 +7,8 @@ import { repoKey, repoKeySql, resolveRepo, resolveRepoIds } from './repo-key';
 interface RepoRow {
   id: number;
   key: string;
+  source_host: string;
+  source_kind: string;
   name: string;
   name_with_owner: string;
   owner: string;
@@ -37,14 +39,14 @@ interface RepoRow {
 
 // Stars are deliberately not activity: a star on an old repo must not bump it in the sidebar.
 const REPO_SELECT = `
-  SELECT r.*, ss.synced_at,
+  SELECT r.*, ss.synced_at, src.host AS source_host, src.kind AS source_kind,
     max(
       ifnull(r.pushed_at, ''),
       ifnull((SELECT max(updated_at) FROM pull_requests WHERE repo_id = r.id), ''),
       ifnull((SELECT max(updated_at) FROM issues WHERE repo_id = r.id), ''),
       ifnull((SELECT max(published_at) FROM releases WHERE repo_id = r.id), '')
     ) AS last_activity_at
-  FROM repos r LEFT JOIN sync_state ss ON ss.repo_id = r.id
+  FROM repos r JOIN sources src ON src.id = r.source_id LEFT JOIN sync_state ss ON ss.repo_id = r.id
   WHERE r.removed_at IS NULL`;
 
 const WEEKS = 12;
@@ -97,6 +99,8 @@ export function listRepos(db: Db, tz: string, now = Date.now(), onlyKey?: string
 
   return rows.map((r) => ({
     key: repoKey(r),
+    source: r.source_host,
+    provider: r.source_kind === 'gitlab' ? ('gitlab' as const) : ('github' as const),
     name: r.name,
     nameWithOwner: r.name_with_owner,
     owner: r.owner,

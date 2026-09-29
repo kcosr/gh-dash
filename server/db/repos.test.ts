@@ -33,7 +33,7 @@ describe('listRepos identity', () => {
     db.run(`UPDATE repos SET unavailable_at = '2026-09-29T00:00:00Z', unavailable_reason = 'Not found' WHERE id = ?`, [unavailable]);
     const repos = listRepos(db, 'UTC');
     // On github.com the key is the provider path.
-    for (const r of repos) expect(r.key).toBe(r.nameWithOwner);
+    for (const r of repos) expect(r).toMatchObject({ key: r.nameWithOwner, source: 'github.com', provider: 'github' });
     const byKey = new Map(repos.map((r) => [r.key, r]));
     expect(byKey.get('alice/app')).toMatchObject({ name: 'app', trackedBy: 'owned', addedAt: null, unavailable: null });
     expect(byKey.get('bob/app')).toMatchObject({ name: 'app', owner: 'bob', trackedBy: 'manual', addedAt: '2026-09-28T00:00:00Z', unavailable: null });

@@ -64,10 +64,14 @@ export interface RepoStats {
 
 export interface Repo {
   /**
-   * Identity everywhere in the API and in URLs (`repos=` lists, path params, every `repo` field): "owner/name"
-   * (GitLab later: "group/sub/project"). `name` is the short name.
+   * Identity everywhere in the API and in URLs (`repos=` lists, path params, every `repo` field): "owner/name" on
+   * github.com, "<host>/<full path>" on every other source (e.g. "gitlab.example.com/platform/team/app"). Opaque:
+   * read `source` for the host rather than parsing it. `name` is the short name.
    */
   key: string;
+  /** The source's host ("github.com", "gitlab.example.com"): which code host the repo is on. */
+  source: string;
+  provider: ProviderKind;
   name: string;
   nameWithOwner: string;
   owner: string;

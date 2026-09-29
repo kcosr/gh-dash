@@ -4,7 +4,7 @@ import { repoResolver } from './repos';
 import { canonicalRepoUrl } from '../web/src/lib/canonicalUrl';
 import { parseUrlState, patchSearch, viewFromPath, repoFromPath } from '../web/src/lib/urlState';
 
-const r = (key: string, trackedBy: TrackedBy = 'owned') => ({ key, name: key.slice(key.lastIndexOf('/') + 1), trackedBy });
+const r = (key: string, trackedBy: TrackedBy = 'owned') => ({ key, name: key.slice(key.lastIndexOf('/') + 1), trackedBy, source: 'github.com' });
 const repos = [r('kcosr/gh-dash'), r('kcosr/sedes'), r('dlvhdr/gh-dash', 'manual'), r('acme/only-manual', 'manual'), r('org/team/proj', 'manual')];
 const resolve = repoResolver(repos);
 const canon = (pathname: string, search = '') => canonicalRepoUrl(pathname, search, resolve);

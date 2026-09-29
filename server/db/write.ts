@@ -37,6 +37,22 @@ const recordVals = (r: RepoRecord): Param[] => [
   r.languageName, r.languageColor, JSON.stringify(r.topics), r.defaultBranch, r.stars, r.forks, r.createdAt, r.pushedAt,
 ];
 
+/** What the database has for the repo with this node id, as a record (null when there is none). */
+export function storedRepoRecord(db: Db, nodeId: string): RepoRecord | null {
+  const r = db.get<{
+    node_id: string; name: string; name_with_owner: string; owner: string; description: string | null; url: string; visibility: RepoRecord['visibility'];
+    is_archived: number; is_fork: number; language_name: string | null; language_color: string | null; topics: string; default_branch: string | null;
+    stars: number; forks: number; created_at: string; pushed_at: string | null;
+  }>('SELECT * FROM repos WHERE node_id = ?', [nodeId]);
+  return r
+    ? {
+        nodeId: r.node_id, name: r.name, nameWithOwner: r.name_with_owner, owner: r.owner, description: r.description, url: r.url, visibility: r.visibility,
+        isArchived: !!r.is_archived, isFork: !!r.is_fork, languageName: r.language_name, languageColor: r.language_color,
+        topics: JSON.parse(r.topics) as string[], defaultBranch: r.default_branch, stars: r.stars, forks: r.forks, createdAt: r.created_at, pushedAt: r.pushed_at,
+      }
+    : null;
+}
+
 /**
  * The provider says `key` (owner/name) now belongs to the repo `nodeId`, so any other live row holding it (a repo
  * deleted, renamed or transferred away since) stops being live. Its data and name are kept. Returns the rows released.

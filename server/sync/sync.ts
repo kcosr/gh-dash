@@ -12,6 +12,7 @@ import {
   markUnavailable,
   pruneCommits,
   refreshManual,
+  storedRepoRecord,
   releaseExists,
   starExists,
   storedOpenNumbers,
@@ -32,7 +33,9 @@ import { MANUAL_REPOS, recheckQuery, REPO_DETAIL, REPO_NODE, REPO_PROBES, VIEWER
 import type {
   GqlError,
   GqlIssue,
+  GqlProbe,
   GqlPullRequest,
+  GqlRepo,
   GqlViewer,
   ManualReposData,
   RecheckData,
@@ -147,6 +150,8 @@ interface RepoTarget {
   record: RepoRecord;
   probe: RepoProbe | null;
   trackedBy: TrackedBy;
+  /** Why this repo was only read in part (fields the token may not read): the run reports it as failed. */
+  problem: string | null;
 }
 
 type Section = 'commits' | 'prs' | 'issues' | 'openPrs' | 'openIssues' | 'releases' | 'stars';
@@ -198,8 +203,9 @@ export async function runSync(deps: SyncDeps, req: SyncRequest = {}): Promise<Sy
     try {
       // Await first: `newItems += await …` would read newItems before the await and lose concurrent updates.
       const added = await syncRepo(deps, t, { full, includeForks: settings.includeForks, backfillStart, nowMs, nowIso });
-      writeTx(db, t, () => updateSyncState(db, t.id, { synced_at: nowIso, last_error: null }));
+      writeTx(db, t, () => updateSyncState(db, t.id, t.problem ? { last_error: t.problem } : { synced_at: nowIso, last_error: null }));
       newItems += added;
+      if (t.problem) errors.push(`${key}: ${t.problem}`);
     } catch (err) {
       if (isFatal(err)) fatal = message(err);
       try {
@@ -296,7 +302,7 @@ async function fetchOneRepo(deps: SyncDeps, repo: string, nowIso: string, errors
       applyProbe(db, repoId, probe);
       return repoId;
     });
-    return [{ id, record, probe, trackedBy: 'owned' }];
+    return [{ id, record, probe, trackedBy: 'owned', problem: null }];
   }
 
   const { data, errors: gqlErrors } = await client.queryPartial<RepoNodeData>(REPO_NODE, { id: ref.nodeId });
@@ -309,15 +315,13 @@ async function fetchOneRepo(deps: SyncDeps, repo: string, nowIso: string, errors
     errors.push(`${ref.key}: unavailable: ${reasonOf(failure)}`);
     return [];
   }
-  const record = mapRepo(node);
-  // A section the token may not read leaves its probe incomplete: sync without one (the section's error follows).
-  const probe = gqlErrors.length ? null : mapProbe(node);
+  const { record, probe, problem } = readNode(db, node, gqlErrors, ['node'], ref.key, deps.tokenKind ?? null);
   const id = db.tx(() => {
     const repoId = ref.trackedBy === 'owned' ? upsertOwned(db, record, nowIso) : refreshManual(db, record, nowIso);
     if (repoId !== null && probe) applyProbe(db, repoId, probe);
     return repoId;
   });
-  return id === null ? [] : [{ id, record, probe, trackedBy: ref.trackedBy }];
+  return id === null ? [] : [{ id, record, probe, trackedBy: ref.trackedBy, problem }];
 }
 
 async function fetchAllRepos(deps: SyncDeps, nowIso: string, errors: string[]): Promise<RepoTarget[]> {
@@ -358,10 +362,36 @@ async function fetchAllRepos(deps: SyncDeps, nowIso: string, errors: string[]): 
     records.map((record, i) => {
       const probe = probes.get(record.nodeId) ?? null;
       if (probe) applyProbe(db, ids[i]!, probe);
-      return { id: ids[i]!, record, probe, trackedBy: 'owned' as const };
+      return { id: ids[i]!, record, probe, trackedBy: 'owned' as const, problem: null };
     }),
   );
   return [...owned, ...manual];
+}
+
+/** RepoRecord fields a repository field fills: the ones kept from the database when GitHub denies that field. */
+const RECORD_FIELDS: Record<string, (keyof RepoRecord)[]> = {
+  description: ['description'], visibility: ['visibility'], isArchived: ['isArchived'], isFork: ['isFork'],
+  primaryLanguage: ['languageName', 'languageColor'], repositoryTopics: ['topics'], defaultBranchRef: ['defaultBranch'],
+  stargazerCount: ['stars'], forkCount: ['forks'], createdAt: ['createdAt'], pushedAt: ['pushedAt'],
+};
+
+/**
+ * A repository node read with queryPartial, at `at` in the response. Fields the token may not read come back null:
+ * they keep what the database has (a denied defaultBranchRef is not an empty repository), the probe is left out, and
+ * the refusal becomes the repo's problem for this run, so it is reported as failed rather than synced.
+ */
+function readNode(db: Db, node: GqlRepo & GqlProbe, errors: GqlError[], at: (string | number)[], key: string, kind: TokenKind | null) {
+  const inside = errors.filter((e) => !!e.path && e.path.length > at.length && at.every((x, i) => e.path![i] === x));
+  const record = mapRepo(node);
+  if (!inside.length) return { record, probe: mapProbe(node), problem: null };
+  const stored = storedRepoRecord(db, record.nodeId);
+  const kept = inside.flatMap((e) => RECORD_FIELDS[String(e.path![at.length])] ?? []);
+  const failure = accessFailure(errors, at, key, kind);
+  return {
+    record: stored ? { ...record, ...Object.fromEntries(kept.map((f) => [f, stored[f]])) } : record,
+    probe: null,
+    problem: failure ? reasonOf(failure) : inside.map((e) => e.message).join('; '),
+  };
 }
 
 const chunked = <T>(items: T[], size: number): T[][] =>
@@ -396,13 +426,11 @@ async function fetchManualRepos(deps: SyncDeps, nowIso: string, errors: string[]
           markUnavailable(db, row.id, row.node_id, reasonOf(failure), nowIso);
           return;
         }
-        const record = mapRepo(node);
-        const partial = res.errors.some((e) => e.path?.[0] === 'nodes' && e.path[1] === i);
-        const probe = partial ? null : mapProbe(node);
+        const { record, probe, problem } = readNode(db, node, res.errors, at, row.key, deps.tokenKind ?? null);
         const id = refreshManual(db, record, nowIso);
         if (id === null) return;
         if (probe) applyProbe(db, id, probe);
-        targets.set(row.id, { id, record, probe, trackedBy: 'manual' });
+        targets.set(row.id, { id, record, probe, trackedBy: 'manual', problem });
       }),
     );
   });

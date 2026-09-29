@@ -59,6 +59,8 @@ function fakeGitHub() {
     others: [] as Node[],
     /** GraphQL errors for a node id (ManualRepos, RepoNode, RepoProbes): the node comes back null. */
     nodeErrors: {} as Record<string, { type: string; message: string }>,
+    /** A field of a node the token may not read (ManualRepos, RepoNode): just that field is null, with its error. */
+    fieldErrors: {} as Record<string, { field: string; type: string; message: string }>,
     /** RepoDetail errors by owner/name; a path of just ['repository'] nulls the whole repository. */
     detailErrors: {} as Record<string, { type: string; message: string; path: (string | number)[] }>,
     /** Called when RepoDetail is asked for owner/name (before it answers). */
@@ -85,6 +87,11 @@ function fakeGitHub() {
       const err = fx.nodeErrors[id];
       const node = err ? null : pick(id);
       if (!node) errors.push({ ...(err ?? { type: 'NOT_FOUND', message: `Could not resolve to a node with the global id of '${id}'` }), path: path(i) });
+      const denied = node ? fx.fieldErrors[id] : undefined;
+      if (denied) {
+        errors.push({ type: denied.type, message: denied.message, path: [...path(i), denied.field] });
+        return { ...(node as object), [denied.field]: null };
+      }
       return node;
     });
     return { nodes, errors };
@@ -501,6 +508,25 @@ describe('repos added by hand', () => {
     await new Promise((r) => setTimeout(r, 100));
     expect(row('bob/r24')).toEqual(at);
     expect(at!.description).toBe('bob/r24 upstream');
+  });
+
+  it('keep what they had for a field the token may not read, and report the repo as failed', async () => {
+    await sync(NOW + HOUR);
+    const before = db.get<{ default_branch: string; language_name: string; synced_at: string }>(
+      `SELECT r.default_branch, r.language_name, s.synced_at FROM repos r JOIN sync_state s ON s.repo_id = r.id WHERE r.name_with_owner = 'bob/tool'`)!;
+    expect(before).toMatchObject({ default_branch: 'main', language_name: 'TypeScript' });
+    const reason = 'The token can see bob/tool but not its code history. Grant read access to Pull requests, Issues and Contents.';
+    gh.fx.fieldErrors['R_bob/tool'] = { field: 'defaultBranchRef', type: 'FORBIDDEN', message: 'Resource not accessible by personal access token' };
+    for (const req of [{}, { repo: 'bob/tool' }]) {
+      const res = await sync(NOW + 2 * HOUR, req);
+      expect(res.errors, JSON.stringify(req)).toEqual([`bob/tool: ${reason}`]);
+      expect(db.get(`SELECT r.default_branch, r.language_name, s.synced_at, s.last_error FROM repos r JOIN sync_state s ON s.repo_id = r.id WHERE r.name_with_owner = 'bob/tool'`))
+        .toEqual({ ...before, last_error: reason });
+      expect(row('bob/tool')!.unavailable_at).toBeNull();
+    }
+    gh.fx.fieldErrors['R_bob/tool'] = { field: 'primaryLanguage', type: 'FORBIDDEN', message: 'no' };
+    await sync(NOW + 3 * HOUR);
+    expect(db.get(`SELECT language_name, language_color FROM repos WHERE name_with_owner = 'bob/tool'`)).toEqual({ language_name: 'TypeScript', language_color: '#3178c6' });
   });
 
   it('one repo failing with FORBIDDEN leaves the others to finish', async () => {

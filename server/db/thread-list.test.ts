@@ -77,6 +77,27 @@ describe('thread list', () => {
   it('is empty with no threads', () => {
     expect(list()).toEqual({ items: [], nextCursor: null, total: 0, counts: { open: 0, resolved: 0 } });
   });
+
+  it("filters by who opened a thread and by whose turn it is, from any principal's side", () => {
+    const other = getPrincipal(db, db.run("INSERT INTO principals (kind, name, created_at) VALUES ('agent', 'Other', ?)", [at(0)]).lastInsertRowid)!;
+    const mine = add(pr('alice/app', 2), 'Mine', 1);
+    const theirs = add(pr('alice/app', 2), 'Theirs', 2, general, agent);
+    const others = add(commit('alice/app', C1), 'Others', 3, general, other);
+    addComment(db, mine.id, agent, 'Answer', at(4));
+    addComment(db, theirs.id, me, 'Reply', at(5));
+    // The opener counts, not who wrote last.
+    expect(ids(list({ author: 'self' }))).toEqual([mine.id]);
+    expect(ids(list({ author: 'agents' }))).toEqual([theirs.id, others.id]);
+    expect(ids(list({ author: agent.id }))).toEqual([theirs.id]);
+    expect(ids(list({ author: me.id }))).toEqual([mine.id]);
+    // Waiting on the dashboard user: the last word is someone else's. On an agent (MCP's waiting_on me): not the agent's.
+    expect(ids(list({ waitingOn: me.id }))).toEqual([mine.id, others.id]);
+    expect(ids(list({ waitingOn: agent.id }))).toEqual([theirs.id, others.id]);
+    setThreadStatus(db, others.id, 'resolved', me, at(6));
+    expect(list({ waitingOn: me.id })).toMatchObject({ total: 1, counts: { open: 1, resolved: 0 } });
+    expect(list({ author: 'agents' })).toMatchObject({ total: 1, counts: { open: 1, resolved: 1 } });
+    expect(ids(list({ author: 'agents', waitingOn: me.id, status: 'all' }))).toEqual([]);
+  });
 });
 
 describe('thread list scope', () => {

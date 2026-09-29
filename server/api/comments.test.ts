@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { CommentThread, ThreadListResponse } from '../../shared/api';
 import { loadConfig } from '../config';
-import { createThread, getPrincipal, SELF_PRINCIPAL_ID, type ThreadTarget } from '../db/comments';
+import { createAgent } from '../db/agents';
+import { addComment, createThread, getPrincipal, SELF_PRINCIPAL_ID, setThreadStatus, type ThreadTarget } from '../db/comments';
 import type { Db } from '../db/db';
 import { DiffCache } from '../diff/cache';
 import { DiffService } from '../diff/service';
@@ -361,12 +362,13 @@ describe('comment threads API', () => {
     const doc = await openApi();
     type Documented = Op & { parameters: { name: string; in: string; schema: { enum?: string[]; default?: unknown } }[]; description: string };
     const op = doc.paths['/api/v1/threads']!.get! as Documented;
-    expect(op.parameters.map((param) => param.name)).toEqual(['status', 'kind', 'sort', 'repos', 'source', 'visibility', 'ownership', 'q', 'limit', 'cursor', 'format']);
+    expect(op.parameters.map((param) => param.name)).toEqual(['status', 'kind', 'sort', 'author', 'waiting', 'repos', 'source', 'visibility', 'ownership', 'q', 'limit', 'cursor', 'format']);
     expect(op.parameters.every((param) => param.in === 'query')).toBe(true);
     const param = (name: string) => op.parameters.find((x) => x.name === name)!.schema;
     expect(param('status')).toMatchObject({ enum: ['open', 'resolved', 'all'], default: 'open' });
     expect(param('kind')).toMatchObject({ enum: ['pr', 'commit', 'all'], default: 'all' });
     expect(param('sort')).toMatchObject({ enum: ['recent', 'oldest'], default: 'recent' });
+    expect(param('waiting').enum).toEqual(['you']);
     expect(param('format').enum).toEqual(['json', 'md']);
     // who, from, to, range and tz are accepted, not documented as parameters.
     expect(op.description).toContain('`who`, `from`, `to`, `range` and `tz` are accepted and ignored');
@@ -527,6 +529,43 @@ describe('GET /threads', () => {
     expect(idsOf(await get(app, '?q=+why+'))).toEqual([ids.line]);
     expect(idsOf(await get(app, `?q=${encodeURIComponent('%')}`))).toEqual([]);
     expect((await get(app, '?q=nothing')).body).toMatchObject({ items: [], total: 0, counts: { open: 0, resolved: 0 } });
+  });
+
+  it('filters by who opened the thread and by whether it waits on you, and counts follow', async () => {
+    const { db, id, ids } = targetsDb();
+    const app = makeApp(db);
+    const me = getPrincipal(db, SELF_PRINCIPAL_ID)!;
+    const agent = (name: string) => getPrincipal(db, createAgent(db, name).agent.id)!;
+    const [claude, codex] = [agent('Claude'), agent('Codex')];
+    const general = { path: null, side: null, startLine: null, endLine: null, snippet: null };
+    const byClaude = createThread(db, { repoId: id('alice/app'), kind: 'pr', number: 2 }, { commitOid: HEAD, baseOid: null, anchor: general, body: 'Rename?' }, claude, at(6)).id;
+    const byCodex = createThread(db, { repoId: id('alice/app'), kind: 'commit', oid: C1 }, { commitOid: C1, baseOid: null, anchor: general, body: 'Typo' }, codex, at(7)).id;
+    addComment(db, ids.line, claude, 'Because of b.', at(8));
+    addComment(db, byClaude, me, 'Done.', at(9));
+    setThreadStatus(db, byCodex, 'resolved', me, at(10));
+
+    expect(idsOf(await get(app, '?author=self'))).toEqual([ids.line, ids.orphan, ids.general, ids.commit, ids.mr]);
+    expect(idsOf(await get(app, '?author=1'))).toEqual([ids.line, ids.orphan, ids.general, ids.commit, ids.mr]);
+    expect((await get(app, '?author=agents')).body).toMatchObject({ total: 1, counts: { open: 1, resolved: 1 } });
+    expect(idsOf(await get(app, '?author=agents&status=all'))).toEqual([byCodex, byClaude]);
+    expect(idsOf(await get(app, `?author=${claude.id}&status=all`))).toEqual([byClaude]);
+    expect(idsOf(await get(app, `?author=${codex.id}`))).toEqual([]);
+    // Waiting on you: open, and the last word isn't yours.
+    expect((await get(app, '?waiting=you')).body).toMatchObject({ total: 1, counts: { open: 1, resolved: 0 } });
+    expect(idsOf(await get(app, '?waiting=you&status=all'))).toEqual([ids.line]);
+    expect(idsOf(await get(app, '?waiting=you&author=agents'))).toEqual([]);
+    expect(idsOf(await get(app, '?waiting=you&kind=commit'))).toEqual([]);
+
+    for (const query of ['author=bogus', 'author=0', 'author=-1', 'author=1.5', 'author=', 'waiting=me', 'waiting=']) {
+      const res = await get(app, `?${query}`);
+      expect([query, res.status, typeof res.body.error]).toEqual([query, 400, 'string']);
+    }
+    expect((await get(app, '?author=999')).body.error).toBe('author: there is no agent with id 999');
+
+    const md = async (query: string) => (await app.send('GET', `/threads?format=md&${query}`)).text();
+    expect((await md('author=agents&waiting=you')).split('\n')[0]).toBe('# Comments · unresolved · by agents · waiting on you');
+    expect((await md(`author=${claude.id}&status=all`)).split('\n')[0]).toBe('# Comments · all · by Claude');
+    expect((await md('author=self&q=why')).split('\n')[0]).toBe('# Comments · unresolved · by you · matching "why"');
   });
 
   it('pages with an opaque cursor in both sorts, and refuses a cursor made under the other sort', async () => {

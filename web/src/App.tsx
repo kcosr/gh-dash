@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider, useIsFetching, useQueryClient } from '@tanstack/react-query';
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import { Navigate, Outlet, RouterProvider, createBrowserRouter, useLocation, useRouteError } from 'react-router';
-import { qk, refetchAfterSync, useRepos, useSyncStatus } from './api/hooks';
+import { qk, refetchAfterSync, usePresentSources, useRepos, useSyncStatus } from './api/hooks';
 import { CommandPalette } from './components/CommandPalette';
 import { DiffView } from './components/DiffView';
 import { PrDrawer } from './components/Drawer';
@@ -18,7 +18,7 @@ import { TopBar, useContextSync, useSyncNow, useTheme } from './components/TopBa
 import { UIProvider, useUI } from './components/ui';
 import { hasBlockingLayer, isTypingTarget, topLayer } from './lib/layers';
 import { useCanonicalRepoUrl } from './lib/canonicalUrl';
-import { homePlace, presentSources, readPlaces, useContextMemory } from './lib/contexts';
+import { homePlace, readPlaces, useContextMemory } from './lib/contexts';
 import { sourceStatuses } from './lib/sources';
 import { getSidebarHidden, setSidebarHidden } from './lib/storage';
 import { plural } from './lib/time';
@@ -94,11 +94,11 @@ function useSyncWatcher() {
 
   useEffect(() => {
     if (!st) return;
-    // The token changed on the server (gh auth login, a new token file, the desktop app): refresh the account.
-    const token = `${st.tokenSource}:${st.viewer ?? ''}`;
+    // A token changed on the server (gh auth login, glab auth login, a new token file, the desktop app), or a source
+    // came or went: refresh the accounts (GitHub's, and every source's).
+    const token = JSON.stringify([st.tokenSource, st.viewer, ...(st.sources ?? []).map((x) => [x.source, x.tokenSource, x.viewer, x.problem])]);
     if (lastToken.current !== null && lastToken.current !== token) {
-      void qc.invalidateQueries({ queryKey: qk.account });
-      void qc.invalidateQueries({ queryKey: qk.me });
+      for (const queryKey of [qk.account, qk.me, qk.sources]) void qc.invalidateQueries({ queryKey });
     }
     lastToken.current = token;
     const prev = wasRunning.current;
@@ -163,8 +163,9 @@ function Shell() {
   useSyncWatcher();
   usePreloadWhenIdle();
   const { settled } = useCanonicalRepoUrl();
-  // The contexts to keep places for, from the same repo list `settled` was judged on.
-  const hosts = useMemo(() => (repos.data ? presentSources(repos.data).map((x) => x.host) : null), [repos.data]);
+  // The contexts to keep places for, once every source present is known (the same list `settled` was judged on).
+  const present = usePresentSources();
+  const hosts = useMemo(() => (present?.complete ? present.sources.map((x) => x.host) : null), [present]);
   useContextMemory(settled, hosts);
   const repoKey = repoFromPath(useLocation().pathname);
   const name = repoKey && repoLabel(repoKey, repos.data ?? []);

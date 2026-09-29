@@ -7,9 +7,11 @@
 import { GITHUB_HOST } from '../../../shared/api';
 import type { ConfigSource, ProviderKind, Repo, Source, SourceAccount, SourceSyncStatus, SyncStatus } from '../../../shared/api';
 import type { CredentialDraft, DesktopState, SourceDraft, SourceMethod } from '../../../shared/desktop';
-import { sourceRootUrl } from '../../../shared/provider';
+import { PROVIDERS } from '../../../shared/provider';
+import { presentSources } from './contexts';
 import type { SourceInfo } from './contexts';
 import { fmtNum, plural, relLong } from './time';
+
 /** The kind of code host a host name is: github.com is GitHub, any other source is a GitLab (the only other kind so far). */
 export const kindOfHost = (host: string): ProviderKind => (host === GITHUB_HOST ? 'github' : 'gitlab');
 
@@ -23,58 +25,72 @@ export function sourceStatuses(st: SyncStatus | undefined): SourceSyncStatus[] {
   }];
 }
 
-/**
- * Whether this instance's config has the source. github.com always does. `SourceSyncStatus` says it in its problem
- * ("GitLab (gitlab.example.com) isn't configured on this server") and by having no token; until `/sources` says it
- * outright, that is where it is read from.
- */
-export function isConfigured(s: SourceSyncStatus): boolean {
-  return s.source === GITHUB_HOST || s.tokenSource !== 'none' || !/isn't configured on this server/.test(s.problem ?? '');
-}
-
 /** What stands in the way of a source syncing: it isn't in this instance's config, it has no token, or the token is another account's. */
 export type Trouble = 'not-configured' | 'no-token' | 'mismatch';
 
-export function troubleOf(s: SourceSyncStatus): Trouble | null {
-  if (!s.problem) return s.tokenSource === 'none' && s.source === GITHUB_HOST ? 'no-token' : null;
-  if (!isConfigured(s)) return 'not-configured';
-  return s.tokenSource === 'none' ? 'no-token' : 'mismatch';
+/**
+ * What stands in a source's way, from `/sources` (`configured`, its account) and its live sync status (polled, so
+ * fresher than the account for a token that just appeared or went).
+ */
+export function troubleOf(src: Pick<Source, 'configured' | 'account'>, live: Pick<SourceSyncStatus, 'tokenSource' | 'problem'>): Trouble | null {
+  if (!src.configured) return 'not-configured';
+  if (live.tokenSource === 'none' && (src.account?.source ?? 'none') === 'none') return 'no-token';
+  if (src.account?.mismatch) return 'mismatch';
+  // A configured source with a token has one other problem the sync reports: its account isn't this database's.
+  return live.problem && live.tokenSource !== 'none' ? 'mismatch' : null;
 }
 
 /** A source the app works with: how the switcher names it, where it lives, and what stands in its way. */
 export interface WorkSource extends SourceInfo {
-  /** Its web URL with any relative root ("https://gitlab.example.com/gitlab"), what pasted addresses are read against. */
+  /** `Source.url`: its web URL with any relative root ("https://gitlab.example.com/gitlab"), what pasted addresses are read against. */
   baseUrl: string;
+  /** Its part of the sync, live (the polled sync status), else as `/sources` last said. */
   status: SourceSyncStatus;
   trouble: Trouble | null;
+  /** Set up and able to sync, but nothing synced from it yet: no repos, no last sync. */
+  awaitingFirstSync: boolean;
 }
 
+const githubStatus = (st: readonly SourceSyncStatus[]): SourceSyncStatus =>
+  st.find((s) => s.source === GITHUB_HOST) ?? {
+    source: GITHUB_HOST, running: false, progress: null, lastSyncAt: null, lastResult: null, rateLimit: null, tokenSource: 'none', viewer: null, problem: null,
+  };
+
 /**
- * The sources worth showing: those with live repos, with a token, or (other than github.com) configured here. A
- * GitLab-only user never sees an empty GitHub source, and a GitLab in the database that this instance doesn't have
- * shows only while it has repos. Never empty: github.com stands in when nothing else qualifies. github.com first,
- * then by host. `githubMismatch`: the GitHub account check says the token is another account's (its `/account`
- * answers this without waiting for a sync).
+ * The sources worth showing: the sources present (see `presentSources`: those with live repos, and those set up here),
+ * each with its live status and what stands in its way. Never empty once anything is known: github.com stands in when
+ * nothing else qualifies (a fresh install). `sources`: GET /sources, null while it loads; until then github.com alone
+ * is known, from its sync status. `githubMismatch`: the GitHub account check says the token is another account's
+ * (its `/account` answers this without waiting for a sync).
  */
 export function workSources(
+  sources: readonly Source[] | null,
   statuses: readonly SourceSyncStatus[],
-  repos: readonly Pick<Repo, 'source' | 'url' | 'nameWithOwner'>[],
+  repos: readonly Pick<Repo, 'source' | 'provider'>[],
   opts: { githubMismatch?: boolean } = {},
 ): WorkSource[] {
+  if (!sources) {
+    if (!statuses.length) return [];
+    const status = githubStatus(statuses);
+    return [{
+      host: GITHUB_HOST, kind: 'github', name: 'GitHub', baseUrl: 'https://github.com', status, awaitingFirstSync: false,
+      trouble: opts.githubMismatch ? 'mismatch' : status.tokenSource === 'none' ? 'no-token' : null,
+    }];
+  }
+  const present = presentSources(repos, sources);
+  const chosen = present.length ? present : presentSources([{ source: GITHUB_HOST, provider: 'github' }]);
   const withRepos = new Set(repos.map((r) => r.source));
-  const wanted = statuses.filter((s) => withRepos.has(s.source) || s.tokenSource !== 'none' || (s.source !== GITHUB_HOST && isConfigured(s)));
-  const chosen = wanted.length ? wanted : statuses.filter((s) => s.source === GITHUB_HOST);
-  const sorted = [...chosen].sort((a, b) => Number(b.source === GITHUB_HOST) - Number(a.source === GITHUB_HOST) || a.source.localeCompare(b.source));
-  const gitlabs = sorted.filter((s) => kindOfHost(s.source) === 'gitlab').length;
-  return sorted.map((status) => {
-    const host = status.source;
-    const kind = kindOfHost(host);
-    const home = repos.find((r) => r.source === host);
+  return chosen.map((info) => {
+    const src = sources.find((s) => s.host === info.host);
+    const status = statuses.find((s) => s.source === info.host) ?? src?.sync ?? githubStatus(statuses);
+    const trouble = info.host === GITHUB_HOST && opts.githubMismatch ? 'mismatch'
+      : src ? troubleOf(src, status) : status.tokenSource === 'none' ? 'no-token' : null;
     return {
-      host, kind, name: kind === 'github' ? 'GitHub' : gitlabs > 1 ? host : 'GitLab',
-      baseUrl: home ? sourceRootUrl(home) : `https://${host}`,
+      ...info,
+      baseUrl: src?.url ?? `https://${info.host}`,
       status,
-      trouble: host === GITHUB_HOST && opts.githubMismatch ? 'mismatch' : troubleOf(status),
+      trouble,
+      awaitingFirstSync: !trouble && !withRepos.has(info.host) && !status.lastSyncAt && !(src && src.repos.owned + src.repos.added),
     };
   });
 }
@@ -92,6 +108,24 @@ export function hostNames(sources: readonly Pick<WorkSource, 'kind'>[]): string 
 export function troubleLabel(w: Pick<WorkSource, 'name' | 'trouble'>, named: boolean): string {
   const text = w.trouble === 'mismatch' ? 'account mismatch' : w.trouble === 'not-configured' ? 'not configured' : 'no token';
   return named ? `${w.name}: ${text}` : text[0]!.toUpperCase() + text.slice(1);
+}
+
+/** Where Settings → Sources shows a source: GitHub's block, or the GitLab source's own. */
+export const sourceSettingsLink = (host: string) => (host === GITHUB_HOST ? '/settings#account' : `/settings#source-${host}`);
+
+/** "GitHub", "GitLab (gitlab.example.com)": a source named with its host where the kind alone could be several. */
+export const sourceLabel = (w: Pick<WorkSource, 'host' | 'kind'>) => (w.kind === 'github' ? PROVIDERS.github.name : `${PROVIDERS[w.kind].name} (${w.host})`);
+
+/** What the notice says about a source, or null when there is nothing to say. */
+export function noticeText(w: Pick<WorkSource, 'host' | 'kind' | 'trouble' | 'awaitingFirstSync' | 'status'>): { text: string; setUp: boolean } | null {
+  const who = sourceLabel(w);
+  switch (w.trouble) {
+    case 'no-token': return { text: `${who} has no token`, setUp: true };
+    case 'not-configured': return { text: `${who} isn't configured here, so it isn't synced`, setUp: false };
+    case 'mismatch': return { text: `${who}'s token is for another account, so it isn't synced`, setUp: false };
+  }
+  if (!w.awaitingFirstSync) return null;
+  return { text: w.status.running ? `${who}: first sync in progress` : `${who} hasn't synced yet`, setUp: false };
 }
 
 /** The source the Add dialog starts on: the context's; in All, the last one used, else GitHub; else the first. */

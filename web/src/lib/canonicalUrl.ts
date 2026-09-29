@@ -9,8 +9,7 @@ import { useEffect, useMemo } from 'react';
 import { useLocation, useNavigate } from 'react-router';
 import { type RepoResolver, rewriteRepoParams, rewriteRepoPath } from '../../../shared/query';
 import { repoResolver } from '../../../shared/repos';
-import { useRepos } from '../api/hooks';
-import { presentSources } from './contexts';
+import { usePresentSources, useRepos } from '../api/hooks';
 import { parseDiffId, parseUrlState, patchSearch, repoFromPath, viewFromPath } from './urlState';
 import type { UrlPatch } from './urlState';
 
@@ -27,15 +26,26 @@ export function canonicalRepoUrl(pathname: string, search: string, resolve: Repo
   return { pathname: nextPath, search: nextQuery === query ? search : `?${nextQuery}` };
 }
 
-/** What the context rules know: the sources present, and each repo's source (by key). */
+/**
+ * What the context rules know: the sources present, and each repo's source (by key). `complete`: every source present
+ * is known (GET /sources has answered); until then a source missing from `hosts` may yet be one (set up, no repos yet).
+ */
 export interface ContextFacts {
   hosts: readonly string[];
+  complete?: boolean;
   sourceOf: (key: string) => string | undefined;
+}
+
+/** The URL names a source that isn't known yet, and may still turn out to be one: wait before judging it. */
+export function contextPending(search: string, facts: ContextFacts): boolean {
+  const source = new URLSearchParams(search).get('source')?.trim().toLowerCase();
+  return !!source && facts.complete === false && !facts.hosts.includes(source);
 }
 
 /**
  * The query with the context made canonical (keys must be canonical already), or null when it is:
- *  1. a `source` that names no source present is dropped (All); one in another case is lower-cased;
+ *  1. a `source` that names no source present is dropped (All), once every source is known; one in another case is
+ *     lower-cased;
  *  2. in a source's context, a URL that opens a repo of another source (its page, the diff, the drawer, or a single
  *     `repos=` entry, in that order: the first known repo decides) takes the context to that repo's source. `repos=`
  *     keeps only that source's entries, or goes back to the default selection when none are left, so the list behind
@@ -50,7 +60,7 @@ export function contextRewrite(pathname: string, search: string, facts: ContextF
     const next = patchSearch(search, view, patch);
     return next === search ? null : next;
   };
-  if (!s.source || !facts.hosts.includes(s.source)) return done({ source: null });
+  if (!s.source || !facts.hosts.includes(s.source)) return contextPending(search, facts) ? null : done({ source: null });
   const diff = parseDiffId(s.diff);
   const named = [repoFromPath(pathname), diff?.repo, s.pr ? s.pr.slice(0, s.pr.lastIndexOf('#')) : undefined, s.repos?.length === 1 ? s.repos[0] : undefined];
   for (const key of named) {
@@ -73,14 +83,15 @@ export function contextRewrite(pathname: string, search: string, facts: ContextF
  */
 export function useCanonicalRepoUrl(): { settled: boolean } {
   const { data } = useRepos();
+  const present = usePresentSources();
   const { pathname, search, hash } = useLocation();
   const navigate = useNavigate();
   const resolve = useMemo(() => (data ? repoResolver(data) : null), [data]);
   const facts = useMemo<ContextFacts | null>(() => {
-    if (!data) return null;
+    if (!data || !present) return null;
     const byKey = new Map(data.map((r) => [r.key, r.source]));
-    return { hosts: presentSources(data).map((s) => s.host), sourceOf: (key) => byKey.get(key) };
-  }, [data]);
+    return { hosts: present.sources.map((s) => s.host), complete: present.complete, sourceOf: (key) => byKey.get(key) };
+  }, [data, present]);
   const next = useMemo(() => {
     if (!resolve || !facts) return null;
     const legacy = canonicalRepoUrl(pathname, search, resolve);
@@ -92,5 +103,5 @@ export function useCanonicalRepoUrl(): { settled: boolean } {
   useEffect(() => {
     if (next) navigate({ ...next, hash }, { replace: true });
   }, [next, hash, navigate]);
-  return { settled: !!resolve && !next };
+  return { settled: !!resolve && !next && !!facts && !contextPending(search, facts) };
 }

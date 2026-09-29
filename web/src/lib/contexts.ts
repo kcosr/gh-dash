@@ -5,7 +5,7 @@
  */
 import { useCallback, useEffect } from 'react';
 import { useLocation, useNavigate } from 'react-router';
-import { GITHUB_HOST, type ProviderKind, type Repo } from '../../../shared/api';
+import { GITHUB_HOST, type ProviderKind, type Repo, type Source } from '../../../shared/api';
 import { viewFromPath } from './urlState';
 
 /** A source as the switcher shows it. */
@@ -17,12 +17,21 @@ export interface SourceInfo {
 }
 
 /**
- * The sources present: those with a live repo, github.com first, then by host. (A source added but not synced yet has
- * no repos; it joins once its first repos land.)
+ * The sources present (design §7.1): each source with a live repo, and each one `/sources` says is set up here, so a
+ * source added a moment ago is there before its first repos land: a GitLab this server configures, github.com while it
+ * has a token. (github.com with neither stays out: a GitLab-only user never sees an empty GitHub.) github.com first,
+ * then by host. `sources`: GET /sources, or null while it loads (the repos alone decide until then).
  */
-export function presentSources(repos: readonly Pick<Repo, 'source' | 'provider'>[]): SourceInfo[] {
+export function presentSources(
+  repos: readonly Pick<Repo, 'source' | 'provider'>[],
+  sources: readonly Pick<Source, 'host' | 'kind' | 'configured' | 'account'>[] | null = null,
+): SourceInfo[] {
   const kinds = new Map<string, ProviderKind>();
   for (const r of repos) if (!kinds.has(r.source)) kinds.set(r.source, r.provider);
+  for (const s of sources ?? []) {
+    const setUp = s.kind === 'github' ? !!s.account && s.account.source !== 'none' : s.configured;
+    if (setUp && !kinds.has(s.host)) kinds.set(s.host, s.kind);
+  }
   const hosts = [...kinds.keys()].sort((a, b) => Number(b === GITHUB_HOST) - Number(a === GITHUB_HOST) || a.localeCompare(b));
   const gitlabs = hosts.filter((h) => kinds.get(h) === 'gitlab').length;
   return hosts.map((host) => {

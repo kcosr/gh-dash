@@ -11,7 +11,7 @@ import { inputHost, repoLabel as labelOf, repoPath, resolveRepoKey, sourceForInp
 import { ApiError } from '../api/client';
 import { qk, useAccount, useAddRepo, usePatchRepo, useRepoCandidates, useRepoLookup, useWorkSources } from '../api/hooks';
 import { useFocusTrap, useLayer } from '../lib/layers';
-import { addDefault } from '../lib/sources';
+import { addDefault, sourceSettingsLink } from '../lib/sources';
 import type { WorkSource } from '../lib/sources';
 import { getAddSource, setAddSource } from '../lib/storage';
 import { fmtNum } from '../lib/time';
@@ -41,7 +41,7 @@ const WORDS: Record<ProviderKind, { one: string; many: string; placeholder: stri
 
 /** Until the sync status has said which sources there are: github.com, as the dialog always was. */
 const GITHUB: WorkSource = {
-  host: GITHUB_HOST, kind: 'github', name: 'GitHub', baseUrl: 'https://github.com', trouble: null,
+  host: GITHUB_HOST, kind: 'github', name: 'GitHub', baseUrl: 'https://github.com', trouble: null, awaitingFirstSync: false,
   status: { source: GITHUB_HOST, running: false, progress: null, lastSyncAt: null, lastResult: null, rateLimit: null, tokenSource: 'gh-cli', viewer: null, problem: null },
 };
 
@@ -228,16 +228,16 @@ export function AddRepoDialog({ onClose }: { onClose: () => void }) {
     out = (
       <Note icon={<Icon name="alert" />} tone="warn">
         {blocked === 'token'
-          ? <p>gh-dash reads {words.many} with a {source.name} token, and none is set{github ? '' : <> for <b>{source.host}</b></>}. Connect {github ? 'an account' : 'one'} in <Link to={github ? '/settings' : '/settings#sources'} onClick={onClose}>Settings</Link>.</p>
+          ? <p>gh-dash reads {words.many} with a {source.name} token, and none is set{github ? '' : <> for <b>{source.host}</b></>}. Connect {github ? 'an account' : 'one'} in <Link to={github ? '/settings' : sourceSettingsLink(source.host)} onClick={onClose}>Settings</Link>.</p>
           : github && account?.mismatch
             ? <p>The token is for <b>{account.login ?? 'another account'}</b>, but this database belongs to <b>{account.dbLogin ?? 'another account'}</b>. Adding repositories is paused until they match (<Link to="/settings" onClick={onClose}>Settings</Link>).</p>
-            : <p>{refused ?? source.status.problem} Adding {words.many} is paused until they match (<Link to={github ? '/settings' : '/settings#sources'} onClick={onClose}>Settings</Link>).</p>}
+            : <p>{refused ?? source.status.problem} Adding {words.many} is paused until they match (<Link to={github ? '/settings' : sourceSettingsLink(source.host)} onClick={onClose}>Settings</Link>).</p>}
       </Note>
     );
   } else if (stray) {
     out = (
       <Note icon={<Icon name="alert" />} tone="warn">
-        <p><b>{stray}</b> isn't a source; add it in <Link to="/settings#sources" onClick={onClose}>Settings → Sources</Link>.</p>
+        <p><b>{stray}</b> isn't a source; add it in <Link to="/settings#add-gitlab" onClick={onClose}>Settings → Sources</Link>.</p>
       </Note>
     );
   } else if (pending) {

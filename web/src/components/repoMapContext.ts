@@ -42,7 +42,7 @@ export function useProviderOf(): (key: string) => Provider {
 
 /** The sources and the context (design §7.1), provided with the repo map by RepoMapProvider. */
 export interface SourceContext {
-  /** The sources present (see `presentSources`), github.com first. */
+  /** The sources present (see `presentSources`: with repos, or set up here), github.com first. */
   sources: SourceInfo[];
   byHost: ReadonlyMap<string, SourceInfo>;
   /** Two or more sources: the switcher shows, and All marks each repo with its source. */

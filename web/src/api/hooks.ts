@@ -25,6 +25,8 @@ import { GITHUB_HOST } from '../../../shared/api';
 import { ApiError, api, isClientError, isUnreachable } from './client';
 import { resolveApiBase } from '../lib/account';
 import { defaultRepoScope } from '../../../shared/repos';
+import { presentSources } from '../lib/contexts';
+import type { SourceInfo } from '../lib/contexts';
 import { sourceStatuses, workSources } from '../lib/sources';
 import type { WorkSource } from '../lib/sources';
 import { parseDiffId } from '../lib/urlState';
@@ -219,14 +221,27 @@ export function useSyncStatus() {
 }
 
 /**
+ * The sources present (see `presentSources`), from the repos and GET /sources. `complete`: /sources has answered (or
+ * failed, and the repos alone decide), so a source missing from `sources` isn't one. Null until the repos load.
+ */
+export function usePresentSources(): { sources: SourceInfo[]; complete: boolean } | null {
+  const repos = useRepos().data;
+  const all = useSources();
+  const loaded = all.data ?? null;
+  const failed = all.isError;
+  return useMemo(() => (repos ? { sources: presentSources(repos, loaded), complete: !!loaded || failed } : null), [repos, loaded, failed]);
+}
+
+/**
  * The sources the app works with (see `workSources`): each one's sync status, problem and where it lives. Empty until
- * the sync status has loaded.
+ * the sync status has loaded; github.com alone until /sources has.
  */
 export function useWorkSources(): WorkSource[] {
   const st = useSyncStatus().data;
+  const sources = useSources().data ?? null;
   const repos = useRepos().data;
   const githubMismatch = !!useAccount().data?.mismatch;
-  return useMemo(() => workSources(sourceStatuses(st), repos ?? [], { githubMismatch }), [st, repos, githubMismatch]);
+  return useMemo(() => workSources(sources, sourceStatuses(st), repos ?? [], { githubMismatch }), [sources, st, repos, githubMismatch]);
 }
 
 /** The default selection: not archived, not hidden, not a fork (unless includeForks). */
@@ -237,14 +252,14 @@ export function defaultScope(repos: Repo[], settings?: Settings): string[] {
 // ---------------------------------------------------------------- lists
 
 /**
- * Whether a list in a source's context may be asked for: once the repos show that source is here. The API refuses a
- * host that isn't a source (400); the address bar drops such a `source` as soon as the repos are known
- * (useCanonicalRepoUrl), so the list waits for that rather than failing first. The repos come first on a cold load
- * only (they're cached after), and only when the URL names a source.
+ * Whether a list in a source's context may be asked for: once that source is known to be present (it has repos, or
+ * /sources says it is set up here). The API refuses a host that isn't a source (400); the address bar drops such a
+ * `source` once the sources are known (useCanonicalRepoUrl), so the list waits for that rather than failing first.
+ * The repos (and /sources) come first on a cold load only (they're cached after), and only when the URL names a source.
  */
 export function useSourceReady(source: string | undefined): boolean {
-  const { data } = useRepos();
-  return useMemo(() => !source || !!data?.some((r) => r.source === source), [source, data]);
+  const present = usePresentSources();
+  return useMemo(() => !source || !!present?.sources.some((s) => s.host === source), [source, present]);
 }
 
 /** PR lists for 30–90 days are small; fetch up to 1000 in one go. */

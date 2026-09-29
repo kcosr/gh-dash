@@ -19,7 +19,7 @@ function ConnectGitLab({ desktop }: { desktop: boolean }) {
     <div className="setup-alt">
       {gitlab.map((s) => <p key={s.host} className="muted small">{s.status.problem}</p>)}
       {desktop ? (
-        <p>Using GitLab? <Link to="/settings#sources">Connect GitLab instead</Link>.</p>
+        <p>Using GitLab? <Link to="/settings#add-gitlab">Connect GitLab instead</Link>.</p>
       ) : (
         <details>
           <summary>Connect GitLab instead</summary>

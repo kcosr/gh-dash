@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { Repo } from './api';
-import { canonicalRepoUrl, contextRewrite } from '../web/src/lib/canonicalUrl';
+import type { Repo, Source, SourceAccount } from './api';
+import { canonicalRepoUrl, contextPending, contextRewrite } from '../web/src/lib/canonicalUrl';
 import { ALL, ctxOf, homePlace, parsePlaces, placeFor, presentSources, recordPlace } from '../web/src/lib/contexts';
 import type { Places } from '../web/src/lib/contexts';
 import { activityParams, exportTarget, repoListParams, scopeParams } from '../web/src/lib/apiQuery';
@@ -32,6 +32,32 @@ describe('present sources', () => {
 
   it('names GitLab sources by host while there are several, like the server', () => {
     expect(presentSources([gl('gitlab2.example.com'), gh, gl()]).map((s) => s.name)).toEqual(['GitHub', GL, 'gitlab2.example.com']);
+  });
+
+  // GET /sources: a source set up here is present before its first repos land.
+  type S = Pick<Source, 'host' | 'kind' | 'configured' | 'account'>;
+  const acct = (source: SourceAccount['source']) => ({ source }) as SourceAccount;
+  const github = (source: SourceAccount['source']): S => ({ host: 'github.com', kind: 'github', configured: true, account: acct(source) });
+  const gitlab = (configured: boolean, host = GL): S => ({ host, kind: 'gitlab', configured, account: configured ? acct('none') : null });
+
+  it('adds a GitLab this server configures, with or without a token, before it has repos', () => {
+    expect(presentSources([gh], [github('gh-cli'), gitlab(true)]).map((s) => s.host)).toEqual(['github.com', GL]);
+    expect(presentSources([], [github('none'), gitlab(true)]).map((s) => s.host)).toEqual([GL]);
+  });
+
+  it('adds github.com while it has a token, and never an empty GitHub nobody set up', () => {
+    expect(presentSources([gl()], [github('gh-cli'), gitlab(true)]).map((s) => s.host)).toEqual(['github.com', GL]);
+    expect(presentSources([gl()], [github('none'), gitlab(true)]).map((s) => s.host)).toEqual([GL]);
+  });
+
+  it('leaves out a GitLab another server configures unless it has repos here', () => {
+    expect(presentSources([gh], [github('gh-cli'), gitlab(false)]).map((s) => s.host)).toEqual(['github.com']);
+    expect(presentSources([gh, gl()], [github('gh-cli'), gitlab(false)]).map((s) => s.host)).toEqual(['github.com', GL]);
+  });
+
+  it('names by the sources present, whichever list they came from', () => {
+    expect(presentSources([gh, gl()], [github('gh-cli'), gitlab(true), gitlab(true, 'gitlab2.example.com')]).map((s) => s.name))
+      .toEqual(['GitHub', GL, 'gitlab2.example.com']);
   });
 });
 
@@ -93,6 +119,20 @@ describe('context rules on the address bar', () => {
     expect(rw('/prs', '?source=gone.example.com&who=everyone')).toBe('?who=everyone');
     expect(rw('/prs', '?source=')).toBe('');
     expect(rw('/insights', '?source=GitLab.Example.com&range=ytd')).toBe(`?source=${GL}&range=ytd`);
+  });
+
+  it('waits for every source to be known before dropping one it hasn\'t seen (set up, no repos yet)', () => {
+    const early = { ...facts, hosts: ['github.com'], complete: false };
+    expect(contextRewrite('/prs', `?source=${GL}&who=everyone`, early)).toBeNull();
+    expect(contextPending(`?source=${GL}&who=everyone`, early)).toBe(true);
+    expect(contextPending(`?source=GitLab.Example.com`, early)).toBe(true);
+    // Known already, or no source named: nothing to wait for.
+    expect(contextPending('?source=github.com', early)).toBe(false);
+    expect(contextPending('?who=me', early)).toBe(false);
+    // Once complete, a source nobody has is dropped.
+    const done = { ...early, complete: true };
+    expect(contextPending(`?source=${GL}`, done)).toBe(false);
+    expect(contextRewrite('/prs', `?source=${GL}&who=everyone`, done)).toBe('?who=everyone');
   });
 
   it('follows the repo a URL opens: its page, the diff, the drawer, a single repos= entry', () => {

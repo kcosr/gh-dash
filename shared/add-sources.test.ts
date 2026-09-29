@@ -1,8 +1,9 @@
 // Step 12: the Add dialog per source, and the top bar's per-source status. The helpers are the web's, pure.
 import { describe, expect, it } from 'vitest';
-import type { RepoCandidate, SourceSyncStatus, SyncStatus } from './api';
+import type { RepoCandidate, Source, SourceAccount, SourceSyncStatus, SyncStatus } from './api';
 import { PROVIDERS } from './provider';
-import { addDefault, firstTrouble, hostNames, isConfigured, sourceStatuses, troubleLabel, troubleOf, workSources } from '../web/src/lib/sources';
+import { addDefault, firstTrouble, hostNames, noticeText, sourceLabel, sourceSettingsLink, sourceStatuses, troubleLabel, troubleOf, workSources } from '../web/src/lib/sources';
+import type { WorkSource } from '../web/src/lib/sources';
 import { backfillLine, inputKeyOn, matchCandidates } from '../web/src/lib/tracking';
 
 const GL = 'gitlab.example.com';
@@ -76,29 +77,57 @@ describe('the first-sync line', () => {
 const status = (over: Partial<SourceSyncStatus> = {}): SourceSyncStatus => ({
   source: 'github.com', running: false, progress: null, lastSyncAt: null, lastResult: null, rateLimit: null, tokenSource: 'gh-cli', viewer: 'kcosr', problem: null, ...over,
 });
+const account = (over: Partial<SourceAccount> = {}): SourceAccount => ({
+  source: 'gh-cli', choice: 'auto', locked: false, env: null, login: 'kcosr', name: null, avatarUrl: null, dbLogin: 'kcosr', mismatch: false,
+  kind: 'oauth', expiresAt: null, scopes: null, canWrite: null, repos: null, cli: null, tokenFile: null, instance: null, error: null, checkedAt: null, ...over,
+});
+/** A `/sources` entry: its live status is `sync`, its account `account` (null: not configured here). */
+const source = (sync: SourceSyncStatus, over: Partial<Source> = {}): Source => {
+  const github = sync.source === 'github.com';
+  return {
+    host: sync.source, kind: github ? 'github' : 'gitlab', name: github ? 'GitHub' : 'GitLab', url: github ? 'https://github.com' : `https://${sync.source}/gitlab`,
+    configured: true, removable: false, viewer: null, account: account({ source: sync.tokenSource }), sync, repos: { owned: 0, added: 0, hidden: 0 }, ...over,
+  };
+};
 const ghOk = status();
-const glOk = status({ source: GL, tokenSource: 'env', viewer: 'alice' });
+const glOk = status({ source: GL, tokenSource: 'env', viewer: 'alice', lastSyncAt: '2026-09-29T10:00:00Z' });
 const glNoToken = status({ source: GL, tokenSource: 'none', problem: `No GitLab token for ${GL}: glab has no login` });
 const glMismatch = status({ source: GL, tokenSource: 'env', problem: "This database's GitLab account is @alice, but the token is for @carol." });
 const glGone = status({ source: GL, tokenSource: 'none', problem: `GitLab (${GL}) isn't configured on this server` });
 const ghNoToken = status({ tokenSource: 'none', problem: 'No GitHub token: gh is not signed in' });
-const repo = (source: string, path: string) => ({ source, nameWithOwner: path, url: source === 'github.com' ? `https://github.com/${path}` : `https://${source}/gitlab/${path}` });
+const S = {
+  ghOk: source(ghOk),
+  glOk: source(glOk),
+  glNoToken: source(glNoToken),
+  glMismatch: source(glMismatch, { account: account({ source: 'env', login: 'carol', dbLogin: 'alice', mismatch: true }) }),
+  glGone: source(glGone, { configured: false, removable: true, account: null }),
+  ghNoToken: source(ghNoToken),
+};
+const repo = (source: string, _path: string) => ({ source, provider: source === 'github.com' ? 'github' as const : 'gitlab' as const });
+/** The sources and their live statuses, as the hook passes them. */
+const work = (sources: Source[], repos: ReturnType<typeof repo>[] = [], opts: { githubMismatch?: boolean } = {}) =>
+  workSources(sources, sources.map((s) => s.sync), repos, opts);
 
 describe('what stands in a source\'s way', () => {
-  it('reads the server\'s problem', () => {
-    expect(troubleOf(ghOk)).toBeNull();
-    expect(troubleOf(glOk)).toBeNull();
-    expect(troubleOf(glNoToken)).toBe('no-token');
-    expect(troubleOf(glMismatch)).toBe('mismatch');
-    expect(troubleOf(glGone)).toBe('not-configured');
-    expect(troubleOf(ghNoToken)).toBe('no-token');
-    // A server without per-source problems: no token is still no token.
-    expect(troubleOf(status({ tokenSource: 'none' }))).toBe('no-token');
+  it('reads /sources: configured, the account, and the live status', () => {
+    expect(troubleOf(S.ghOk, ghOk)).toBeNull();
+    expect(troubleOf(S.glOk, glOk)).toBeNull();
+    expect(troubleOf(S.glNoToken, glNoToken)).toBe('no-token');
+    expect(troubleOf(S.glMismatch, glMismatch)).toBe('mismatch');
+    expect(troubleOf(S.glGone, glGone)).toBe('not-configured');
+    expect(troubleOf(S.ghNoToken, ghNoToken)).toBe('no-token');
   });
 
-  it('knows which sources this server has', () => {
-    expect([ghOk, glOk, glNoToken, glMismatch, ghNoToken].map(isConfigured)).toEqual([true, true, true, true, true]);
-    expect(isConfigured(glGone)).toBe(false);
+  it('never reads the problem\'s words', () => {
+    // A configured source whose problem text happens to say "isn't configured" is still configured.
+    expect(troubleOf(S.glNoToken, { ...glNoToken, problem: "glab isn't configured on this server" })).toBe('no-token');
+    // An unconfigured source is so whatever its problem says, or with none.
+    expect(troubleOf(S.glGone, { ...glGone, problem: null })).toBe('not-configured');
+  });
+
+  it('takes a token that just appeared in the live status, or one the account resolved, as a token', () => {
+    expect(troubleOf(S.glNoToken, { ...glNoToken, tokenSource: 'glab', problem: null })).toBeNull();
+    expect(troubleOf(source(glNoToken, { account: account({ source: 'glab' }) }), glNoToken)).toBeNull();
   });
 
   it('words it for the top bar', () => {
@@ -112,51 +141,103 @@ describe('what stands in a source\'s way', () => {
 
 describe('the sources worth working with', () => {
   it('lists github.com, then the others, with their names and where they live', () => {
-    const ws = workSources([glOk, ghOk], [repo('github.com', 'kcosr/sedes'), repo(GL, 'platform/team/api')]);
+    const ws = work([S.glOk, S.ghOk], [repo('github.com', 'kcosr/sedes'), repo(GL, 'platform/team/api')]);
     expect(ws.map((w) => [w.host, w.kind, w.name])).toEqual([['github.com', 'github', 'GitHub'], [GL, 'gitlab', 'GitLab']]);
     expect(ws[1]!.baseUrl).toBe(`https://${GL}/gitlab`);
     expect(ws[0]!.baseUrl).toBe('https://github.com');
   });
 
-  it('falls back to the host for a GitLab with no repos, and names several GitLabs by host', () => {
+  it('reads pasted addresses against the source\'s URL, relative root included, before it has any repos', () => {
+    const ws = work([S.ghOk, S.glOk], []);
+    expect(ws[1]!.baseUrl).toBe(`https://${GL}/gitlab`);
+    expect(inputKeyOn(ws[1]!, `https://${GL}/gitlab/platform/team/svc`)).toBe(`${GL}/platform/team/svc`);
+  });
+
+  it('names several GitLabs by host', () => {
     const other = status({ source: 'gitlab2.example.com', tokenSource: 'file', viewer: 'bob' });
-    const ws = workSources([ghOk, glOk, other], []);
+    const ws = work([S.ghOk, S.glOk, source(other, { url: 'https://gitlab2.example.com' })]);
     expect(ws.map((w) => w.name)).toEqual(['GitHub', GL, 'gitlab2.example.com']);
     expect(ws[2]!.baseUrl).toBe('https://gitlab2.example.com');
   });
 
   it('leaves out a GitHub nobody set up, and a GitLab this server does not have unless it has repos', () => {
-    expect(workSources([ghNoToken, glOk], []).map((w) => w.host)).toEqual([GL]);
-    expect(workSources([ghNoToken, glOk], [repo('github.com', 'kcosr/sedes')]).map((w) => w.host)).toEqual(['github.com', GL]);
-    expect(workSources([ghOk, glGone], []).map((w) => w.host)).toEqual(['github.com']);
-    expect(workSources([ghOk, glGone], [repo(GL, 'a/b')]).map((w) => [w.host, w.trouble])).toEqual([['github.com', null], [GL, 'not-configured']]);
+    expect(work([S.ghNoToken, S.glOk]).map((w) => w.host)).toEqual([GL]);
+    expect(work([S.ghNoToken, S.glOk], [repo('github.com', 'kcosr/sedes')]).map((w) => w.host)).toEqual(['github.com', GL]);
+    expect(work([S.ghOk, S.glGone]).map((w) => w.host)).toEqual(['github.com']);
+    expect(work([S.ghOk, S.glGone], [repo(GL, 'a/b')]).map((w) => [w.host, w.trouble])).toEqual([['github.com', null], [GL, 'not-configured']]);
   });
 
   it('keeps a configured GitLab that has no token yet, so its problem shows', () => {
-    const ws = workSources([ghOk, glNoToken], []);
-    expect(ws.map((w) => [w.host, w.trouble])).toEqual([['github.com', null], [GL, 'no-token']]);
+    expect(work([S.ghOk, S.glNoToken]).map((w) => [w.host, w.trouble])).toEqual([['github.com', null], [GL, 'no-token']]);
+  });
+
+  it('says which source is waiting for its first sync', () => {
+    const fresh = status({ source: GL, tokenSource: 'glab', viewer: null });
+    const ws = work([S.ghOk, source(fresh)], [repo('github.com', 'kcosr/sedes')]);
+    expect(ws.map((w) => [w.host, w.awaitingFirstSync])).toEqual([['github.com', false], [GL, true]]);
+    // Synced once, or with repos, or in trouble: not waiting.
+    expect(work([S.glOk]).map((w) => w.awaitingFirstSync)).toEqual([false]);
+    expect(work([source(fresh)], [repo(GL, 'a/b')]).map((w) => w.awaitingFirstSync)).toEqual([false]);
+    expect(work([S.glNoToken]).map((w) => w.awaitingFirstSync)).toEqual([false]);
   });
 
   it('is never empty: github.com stands in', () => {
-    expect(workSources([ghNoToken, glGone], []).map((w) => [w.host, w.trouble])).toEqual([['github.com', 'no-token']]);
-    expect(workSources([], [])).toEqual([]);
+    expect(work([S.ghNoToken, S.glGone]).map((w) => [w.host, w.trouble])).toEqual([['github.com', 'no-token']]);
+    expect(workSources([], [], []).map((w) => [w.host, w.trouble])).toEqual([['github.com', 'no-token']]);
+    expect(workSources(null, [], [])).toEqual([]);
+  });
+
+  it('knows github.com alone, from its sync status, until /sources answers', () => {
+    expect(workSources(null, [ghNoToken, glOk], []).map((w) => [w.host, w.trouble])).toEqual([['github.com', 'no-token']]);
+    expect(workSources(null, [ghOk, glOk], []).map((w) => [w.host, w.trouble])).toEqual([['github.com', null]]);
   });
 
   it('takes the account check\'s word for a GitHub mismatch', () => {
-    expect(workSources([ghOk], [], { githubMismatch: true })[0]!.trouble).toBe('mismatch');
+    expect(work([S.ghOk], [], { githubMismatch: true })[0]!.trouble).toBe('mismatch');
+    expect(workSources(null, [ghOk], [], { githubMismatch: true })[0]!.trouble).toBe('mismatch');
   });
 
   it('names the first source in trouble', () => {
-    const ws = workSources([ghOk, glNoToken], []);
-    expect(firstTrouble(ws)?.host).toBe(GL);
-    expect(firstTrouble(workSources([ghOk, glOk], []))).toBeNull();
+    expect(firstTrouble(work([S.ghOk, S.glNoToken]))?.host).toBe(GL);
+    expect(firstTrouble(work([S.ghOk, S.glOk]))).toBeNull();
   });
 
   it('names the code hosts once each', () => {
-    expect(hostNames(workSources([ghOk, glOk], []))).toBe('GitHub and GitLab');
-    expect(hostNames(workSources([glOk], []))).toBe('GitLab');
+    expect(hostNames(work([S.ghOk, S.glOk]))).toBe('GitHub and GitLab');
+    expect(hostNames(work([S.glOk]))).toBe('GitLab');
     expect(hostNames([{ kind: 'gitlab' }, { kind: 'gitlab' }])).toBe('GitLab');
     expect(hostNames([])).toBe('');
+  });
+});
+
+describe('the notice on a source\'s context', () => {
+  const at = (w: WorkSource | undefined) => (w ? noticeText(w)?.text ?? null : null);
+  const gitlabOf = (sync: SourceSyncStatus, over: Partial<Source> = {}) => work([S.ghOk, source(sync, over)], [repo('github.com', 'kcosr/sedes')]).find((w) => w.host === GL);
+
+  it('says what stands in the way, naming the host', () => {
+    expect(at(gitlabOf(glNoToken))).toBe(`GitLab (${GL}) has no token`);
+    expect(noticeText(gitlabOf(glNoToken)!)?.setUp).toBe(true);
+    expect(at(gitlabOf(glMismatch, { account: account({ source: 'env', mismatch: true }) }))).toBe(`GitLab (${GL})'s token is for another account, so it isn't synced`);
+    expect(at(work([S.ghOk, S.glGone], [repo(GL, 'a/b')])[1])).toBe(`GitLab (${GL}) isn't configured here, so it isn't synced`);
+    expect(at(work([S.ghNoToken, S.glOk], [repo('github.com', 'kcosr/sedes')])[0])).toBe('GitHub has no token');
+  });
+
+  it('says a source is waiting for its first sync, or running it', () => {
+    const fresh = status({ source: GL, tokenSource: 'glab', viewer: null });
+    expect(at(gitlabOf(fresh))).toBe(`GitLab (${GL}) hasn't synced yet`);
+    expect(at(gitlabOf({ ...fresh, running: true }))).toBe(`GitLab (${GL}): first sync in progress`);
+  });
+
+  it('says nothing when all is well', () => {
+    expect(at(gitlabOf(glOk))).toBeNull();
+    expect(at(work([S.ghOk], [repo('github.com', 'kcosr/sedes')])[0])).toBeNull();
+  });
+
+  it('links to the source\'s own block in Settings → Sources', () => {
+    expect(sourceSettingsLink(GL)).toBe(`/settings#source-${GL}`);
+    expect(sourceSettingsLink('github.com')).toBe('/settings#account');
+    expect(sourceLabel({ host: GL, kind: 'gitlab' })).toBe(`GitLab (${GL})`);
+    expect(sourceLabel({ host: 'github.com', kind: 'github' })).toBe('GitHub');
   });
 });
 

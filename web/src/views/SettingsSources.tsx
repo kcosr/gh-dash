@@ -444,10 +444,13 @@ function GitLabSource({ s, app, desk, desktopServer, from }: {
   );
 }
 
-/** Headless: where GitLab sources come from (the README names every key). */
+/** Headless: where GitLab sources come from (the README names every key). `#add-gitlab` opens it (links to adding one). */
 function HeadlessHelp() {
+  const { hash } = useLocation();
+  const box = useRef<HTMLDetailsElement>(null);
+  useEffect(() => { if (hash === '#add-gitlab' && box.current) box.current.open = true; }, [hash]);
   return (
-    <details className="help">
+    <details ref={box} className="help" id="add-gitlab">
       <summary>How to add a GitLab source</summary>
       <p>Add it to this server’s <code>config.json</code> and restart the server:</p>
       <pre className="code">{`"sources": [
@@ -485,7 +488,7 @@ export function SourcesSection({ rateLimit }: { rateLimit: SyncStatus['rateLimit
       {sources.isError && <p className="src-block muted">Couldn’t load the other sources: {(sources.error as Error).message}</p>}
       {gitlab.map((s) => <GitLabSource key={s.host} s={s} app={!!bridge} desk={desk} desktopServer={desktopServer} from={fromOf(s.host)} />)}
       {bridge ? (desk && <AddGitLab desk={desk} open={adding} onOpen={() => setAdding(true)} onClose={() => setAdding(false)} />)
-        : desktopServer ? <p className="set-foot muted">This server is run by the gh-dash desktop app: add GitLab in the app’s Settings.</p>
+        : desktopServer ? <p className="set-foot muted" id="add-gitlab">This server is run by the gh-dash desktop app: add GitLab in the app’s Settings.</p>
           : <HeadlessHelp />}
     </section>
   );

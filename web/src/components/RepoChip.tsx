@@ -1,14 +1,14 @@
 import { useMemo } from 'react';
 import type { ReactNode } from 'react';
 import { useLocation, useNavigate } from 'react-router';
-import { useRepoMap } from '../api/hooks';
+import { usePresentSources, useRepoMap } from '../api/hooks';
 import { Icon } from './Icon';
 import { RepoName } from './RepoName';
 import { RepoMapCtx, ReposCtx, SourceCtx, useRepoMapCtx, useSourceCtx } from './repoMapContext';
 import type { SourceContext } from './repoMapContext';
 import { SourceBadge } from './SourceBadge';
 import { repoLabel } from '../../../shared/repos';
-import { ALL, ctxOf, presentSources, readPlaces } from '../lib/contexts';
+import { ALL, ctxOf, readPlaces } from '../lib/contexts';
 import { OVERLAY_KEYS, keepRepoInScope, parseUrlState, patchSearch, viewFromPath } from '../lib/urlState';
 
 /** Provides the repo map and the sources (with the context) once for the whole app shell (see RepoMapCtx, SourceCtx). */
@@ -17,7 +17,8 @@ export function RepoMapProvider({ children }: { children: ReactNode }) {
   const location = useLocation();
   const navigate = useNavigate();
   const view = viewFromPath(location.pathname);
-  const sources = useMemo(() => presentSources([...repos.values()]), [repos]);
+  const present = usePresentSources();
+  const sources = useMemo(() => present?.sources ?? [], [present]);
   // Settings is context-free: it keeps showing the context you came from, and its tabs lead back to it.
   const ctx = view === 'settings' ? readPlaces().last : ctxOf(location.search);
   const sourceCtx = useMemo<SourceContext>(() => {

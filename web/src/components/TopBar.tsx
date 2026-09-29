@@ -10,7 +10,7 @@ import type { Theme } from '../lib/storage';
 import { fmtNum, fmtTime, relFuture, relLong } from '../lib/time';
 import { ALL, useSwitchContext } from '../lib/contexts';
 import { GITHUB_HOST } from '../../../shared/api';
-import { firstTrouble, hostNames, troubleLabel } from '../lib/sources';
+import { firstTrouble, hostNames, sourceSettingsLink, troubleLabel } from '../lib/sources';
 import { carrySearch, viewFromPath } from '../lib/urlState';
 import { useNow } from '../lib/util';
 import { MOD_K } from './bits';
@@ -218,7 +218,7 @@ function SyncIndicator() {
         // In All the last sync is the run's; the source's own problem is what needs saying.
         : [bad.status.problem, named && lastSyncAt ? `Last synced ${relLong(lastSyncAt, now)}` : null].filter(Boolean).join(' · ');
     return (
-      <SyncStatus label={troubleLabel(bad, named)} title={title} to={github ? '/settings' : '/settings#sources'}>
+      <SyncStatus label={troubleLabel(bad, named)} title={title} to={github ? '/settings' : sourceSettingsLink(bad.host)}>
         <span className="dot warn" />
       </SyncStatus>
     );

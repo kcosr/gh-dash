@@ -20,7 +20,10 @@ const obj = (properties: Record<string, Schema>, optional: string[] = []): Schem
   required: Object.keys(properties).filter((k) => !optional.includes(k)),
 });
 
+/** github.com's credential (AccountStatus, Me, SyncStatus): gh or a token file, never glab. */
 const TOKEN_SOURCE = enumOf('env', 'file', 'gh-cli', 'app', 'none');
+/** Any source's credential (SourceAccount, SourceSyncStatus): glab is for GitLab sources. */
+const SOURCE_TOKEN_SOURCE = enumOf('env', 'file', 'gh-cli', 'glab', 'app', 'none');
 /** An instance setting with where it came from. */
 const setting = (value: Schema): Schema => obj({ value, source: enumOf('default', 'file', 'env') });
 
@@ -135,12 +138,48 @@ const schemas: Record<string, Schema> = {
     lastSyncAt: { ...nullable(dateTime), description: 'When its last sync (all its repositories, or one) ended' },
     lastResult: nullable(obj({ newItems: int(), errors: arr(str()) })),
     rateLimit: nullable(obj({ limit: int(), remaining: int(), resetAt: dateTime })),
-    tokenSource: enumOf('env', 'file', 'gh-cli', 'glab', 'app', 'none'),
+    tokenSource: SOURCE_TOKEN_SOURCE,
     viewer: { ...nullable(str()), description: 'The account its data belongs to' },
     problem: {
       ...nullable(str()),
       description: "Why it isn't syncing: not configured on this server, no token (and why), or a token for another account than its data's; null when nothing stands in the way",
     },
+  }),
+  SourceAccount: obj({
+    source: { ...SOURCE_TOKEN_SOURCE, description: 'Where the token comes from right now' },
+    choice: { ...nullable(enumOf('auto', 'gh', 'glab', 'file', 'app')), description: 'The configured choice; null = nothing chosen yet (desktop app) or nothing configured' },
+    locked: { ...bool, description: "`env` is set in the environment: it is always used, and the choice can't be changed from the app" },
+    env: { ...nullable(str()), description: 'The variable that locks this source (GITHUB_TOKEN, a GitLab source\'s tokenEnv); null when none does' },
+    login: nullable(str('Account the token belongs to (from the last validation)')),
+    name: nullable(str()),
+    avatarUrl: nullable(str()),
+    dbLogin: nullable(str('The account this database was synced for, on this source; null before its first sync')),
+    mismatch: { ...bool, description: 'The token is for another account than the source\'s data; syncs of it are refused' },
+    kind: nullable(enumOf('fine-grained', 'classic', 'oauth', 'app', 'personal', 'unknown')),
+    expiresAt: nullable({ ...dateTime, description: "When the token stops working; null if it doesn't or it's unknown (GitLab OAuth tokens)" }),
+    scopes: nullable({ ...arr(str()), description: 'GitHub classic and OAuth tokens; GitLab personal access tokens. null when unknown' }),
+    canWrite: { ...nullable(bool), description: 'GitLab: the scopes include api or write_repository, which gh-dash never needs. null for GitHub, or unknown' },
+    repos: {
+      ...nullable(obj({ total: int(), private: nullable(int()) })),
+      description: 'GitHub: owned repositories (total / private). GitLab: projects in the personal namespace (private unknown)',
+    },
+    cli: { ...nullable(obj({ name: enumOf('gh', 'glab'), available: bool, path: nullable(str()), login: nullable(str("gh's active login (from its hosts.yml); not read for glab")) })), description: "The provider's command-line tool" },
+    tokenFile: nullable(str('Configured token file (never its contents)')),
+    instance: { ...nullable(obj({ version: str(), enterprise: bool })), description: "The GitLab instance's version; null for GitHub, or before a validation" },
+    error: nullable(str('Why there is no usable token, or why validation failed')),
+    checkedAt: nullable(dateTime),
+  }),
+  Source: obj({
+    host: str("Identity: github.com, or a GitLab host. Also `Repo.source` and `SourceSyncStatus.source`, and the id in /sources/{source}"),
+    kind: enumOf('github', 'gitlab'),
+    name: str("Display name: 'GitHub', 'GitLab', or the host when there are several GitLab sources"),
+    url: str('Base URL of the instance, relative root included'),
+    configured: { ...bool, description: "This server syncs it: github.com always, a GitLab source when this server's config (config.json / the environment) names it" },
+    removable: { ...bool, description: 'DELETE would remove it now: not github.com, and not while it is configured on this server' },
+    viewer: { ...nullable(obj({ login: str(), name: nullable(str()), avatarUrl: nullable(str()) })), description: 'The account its data belongs to (claimed by its first sync); null before that' },
+    account: { anyOf: [ref('SourceAccount'), { type: 'null' }], description: "Its credential as this server holds it, never the token; null when the source isn't configured here" },
+    sync: ref('SourceSyncStatus'),
+    repos: { ...obj({ owned: int(), added: int(), hidden: int() }), description: 'Live repositories on it: tracked automatically, added by hand, and (of both) hidden from the default selection' },
   }),
   RepoCandidate: obj({
     key: str('Repo key: owner/name on github.com, <host>/<path> on other sources'), owner: str('Owner, or GitLab namespace path'), name: str(), description: nullable(str()), visibility: enumOf('public', 'private', 'internal'),
@@ -212,6 +251,11 @@ const schemas: Record<string, Schema> = {
       allowedHosts: setting(arr(str())),
       tokenFile: setting(nullable(str())),
       defaultTz: setting(str()),
+      glabPath: { ...setting(nullable(str())), description: "The glab executable, when it isn't on PATH or in a standard location (GitLab sources)" },
+      sources: {
+        ...arr(obj({ host: str(), from: enumOf('default', 'file', 'env') })),
+        description: 'The GitLab sources this server is configured with, and where each came from: config.json (file), or GH_DASH_GITLAB_URL (env)',
+      },
     }),
   }),
   Tile: obj({ value: nullable(num), previous: nullable(num), spark: { ...arr(num), description: '12 equal slices of the range' } }),
@@ -282,7 +326,11 @@ const q = (name: string, description: string, schema: Schema = str(), example?: 
   name, in: 'query', description, schema, ...(example ? { example } : {}),
 });
 const p = (name: string, description: string, schema: Schema = str()): ParamDoc => ({ name, in: 'path', description, schema, required: true });
-const REPO = { ...p('repo', 'Repo key `owner/name`, URL-encoded as one segment (`owner%2Fname`); a bare name selects the repository of that name you own.'), example: 'kcosr%2Fgh-dash' };
+const REPO = {
+  ...p('repo', 'Repo key, URL-encoded as one segment: `owner/name` on github.com (`owner%2Fname`), `<host>/<path>` on other sources (`gitlab.example.com%2Fgroup%2Fproject`). A bare name selects the github.com repository of that name you own.'),
+  example: 'kcosr%2Fgh-dash',
+};
+const SOURCE_PATH = { ...p('source', "The source's host: github.com, or a GitLab host such as gitlab.example.com (case-insensitive)"), example: 'gitlab.example.com' };
 
 const SOURCE = q('source', "The source to look on, by its host; default github.com. A GitLab source must be configured on this server.", str(), 'gitlab.example.com');
 
@@ -334,7 +382,35 @@ export const ENDPOINTS: EndpointDoc[] = [
     response: { status: 200, schema: ref('InstanceInfo') },
   },
   {
-    method: 'get', path: '/api/v1/prs', tag: 'Lists', summary: 'Pull requests',
+    method: 'get', path: '/api/v1/sources', tag: 'Sources', summary: 'The code hosts repositories are tracked on',
+    description:
+      'github.com first, then the GitLab sources this database knows, including ones this server does not configure (`configured: false`, `account: null`). ' +
+      'Never calls a provider: the credential is shown as last resolved and validated (a new token is validated in the background). ' +
+      'Sources are added, and their credentials changed, in config.json or the environment (headless) or in the desktop app: not over HTTP. Tokens are never included.',
+    response: { status: 200, schema: obj({ items: arr(ref('Source')) }) },
+  },
+  {
+    method: 'get', path: '/api/v1/sources/{source}', tag: 'Sources', summary: 'One source',
+    description: "404 when the host isn't a source here. Never calls a provider.",
+    params: [SOURCE_PATH], response: { status: 200, schema: ref('Source') },
+  },
+  {
+    method: 'post', path: '/api/v1/sources/{source}/check', tag: 'Sources', summary: "Resolve a source's token again and validate it now",
+    description:
+      'github.com: 1 GraphQL point. GitLab: 2 requests. Answers with the source, whose `account` says who the token is for, its scopes and expiry, or why it was rejected (200). ' +
+      "404 when the host isn't a source here. 503 when there is no token to check (a source this server doesn't configure has none): the message says why, and `details` is the source.",
+    params: [SOURCE_PATH], response: { status: 200, schema: ref('Source') },
+  },
+  {
+    method: 'delete', path: '/api/v1/sources/{source}', tag: 'Sources', summary: 'Remove a source and everything tracked on it',
+    description:
+      "Deletes its repositories with their pull requests, issues, commits, releases and stars, its set memberships and its cached diffs; nothing changes on the code host. " +
+      "404 when the host isn't a source here. 409 for github.com (built in), and for a source this server still has configured: remove it in Settings (desktop app), " +
+      'from config.json or by unsetting GH_DASH_GITLAB_URL first (`removable` says whether DELETE would succeed).',
+    params: [SOURCE_PATH], response: { status: 204, description: 'Removed' },
+  },
+  {
+    method: 'get', path: '/api/v1/prs', tag: 'Lists', summary: 'Pull requests (merge requests on GitLab)',
     description: 'Filtered and sorted on activityAt desc (tie-break repo, number). facets.byRepo ignores the repos filter.',
     params: [
       ...SCOPE,

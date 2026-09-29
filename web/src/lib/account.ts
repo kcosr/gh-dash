@@ -85,8 +85,11 @@ export function resolveApiBase(instance: Pick<InstanceInfo, 'apiUrl'> | undefine
   return desktop ? null : origin;
 }
 
+/** The InstanceInfo settings that are one value with the place it came from (all but the list of GitLab sources). */
+export type SettingKey = Exclude<keyof InstanceInfo['settings'], 'sources'>;
+
 /** Environment variable behind each InstanceInfo setting (the env overrides config.json). */
-export const SETTING_ENV: Record<keyof InstanceInfo['settings'], string> = {
+export const SETTING_ENV: Record<SettingKey, string> = {
   host: 'HOST',
   port: 'PORT',
   dbPath: 'GH_DASH_DB',
@@ -95,10 +98,11 @@ export const SETTING_ENV: Record<keyof InstanceInfo['settings'], string> = {
   allowedHosts: 'GH_DASH_ALLOWED_HOSTS',
   tokenFile: 'GITHUB_TOKEN_FILE',
   defaultTz: 'TZ',
+  glabPath: 'GH_DASH_GLAB_PATH',
 };
 
 /** "default", "config.json", or the environment variable that set it. */
-export function settingSource(key: keyof InstanceInfo['settings'], source: ConfigSource): string {
+export function settingSource(key: SettingKey, source: ConfigSource): string {
   return source === 'default' ? 'default' : source === 'file' ? 'config.json' : SETTING_ENV[key];
 }
 

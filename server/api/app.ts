@@ -3,8 +3,9 @@ import { bodyLimit } from 'hono/body-limit';
 import type { Config } from '../config';
 import type { Db } from '../db/db';
 import type { DiffService } from '../diff/service';
+import { GitHubDiffSources } from '../github/diff-source';
 import { Tracking } from '../sync/tracking';
-import type { SourceRegistry } from '../sources/registry';
+import { SourceRegistry } from '../sources/registry';
 import type { SyncManager } from '../sync/manager';
 import type { TokenProvider } from '../token';
 import { desktopOnly, hostAllowlist, installAuth, sameOriginWrites } from './auth';
@@ -16,6 +17,7 @@ import { diffRoutes } from './routes/diffs';
 import { instanceRoutes } from './routes/instance';
 import { listRoutes } from './routes/lists';
 import { repoRoutes } from './routes/repos';
+import { sourceRoutes } from './routes/sources';
 import { statsRoutes } from './routes/stats';
 import { systemRoutes } from './routes/system';
 import { installStatic } from './static';
@@ -29,7 +31,7 @@ export interface AppDeps {
   tokens: TokenProvider;
   /**
    * Every source's runtime (github.com's tokens are `tokens.credentials`). startServer always passes it; without it
-   * (tests that don't need it) github.com is the only source the tracking API knows.
+   * (tests that don't need it) github.com is the only source the tracking API and /sources know.
    */
   sources?: SourceRegistry;
   /**
@@ -52,6 +54,10 @@ export function createApp(input: AppDeps): Hono {
     tracking: input.tracking ?? new Tracking({ db: input.db, tokens: input.tokens, sources: input.sources, sync: input.sync, tz: input.config.defaultTz }),
   };
   const { config } = deps;
+  // The sources API needs a registry; without one (tests) github.com is the only source it knows.
+  const sources =
+    input.sources ??
+    new SourceRegistry({ db: input.db, env: {}, github: { tokens: input.tokens.credentials, diffs: new GitHubDiffSources({ tokens: input.tokens }) }, log: () => {} });
   const transport: AppTransport = deps.transport ?? { kind: 'tcp' };
   const app = new Hono();
 
@@ -79,6 +85,7 @@ export function createApp(input: AppDeps): Hono {
   app.route('/api/v1', statsRoutes(deps));
   app.route('/api/v1', diffRoutes(deps));
   app.route('/api/v1', accountRoutes(deps));
+  app.route('/api/v1', sourceRoutes({ ...deps, sources }));
   app.route('/api/v1', instanceRoutes(deps));
   app.get('/api/v1/openapi.json', (c) => c.json(openApiDocument(config.version)));
   app.get('/api/docs', (c) =>

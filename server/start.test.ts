@@ -219,6 +219,31 @@ describe('startServer', () => {
     expect(server.config.glabPath).toBe('/opt/glab');
   });
 
+  it('says where the glab path and the sources came from again after a reload', async () => {
+    const dir = temp();
+    const configPath = join(dir, 'config.json');
+    writeConfigFile(configPath, {});
+    const env = { GH_DASH_DB: join(dir, 'dash.db'), GH_DASH_SYNC: 'off' };
+    const config = { ...loadConfig(env, readConfigFile(configPath)), webDir: '/nonexistent', port: 0 };
+    const logs: string[] = [];
+    const server = await startServer({
+      config,
+      env,
+      log: (line) => logs.push(line),
+      tokenOptions: { fs: noFiles, exec: async () => { throw new Error('gh must not run in tests'); }, fetchImpl: async () => { throw new Error('no network in tests'); } },
+      sourceOptions: { fs: noFiles, exec: async () => { throw new Error('glab must not run in tests'); }, fetchImpl: async () => { throw new Error('no network in tests'); }, sleep: async () => {} },
+    });
+    running.push(server);
+    expect(server.config).toMatchObject({ glabPath: null, sourceConfigs: [], sources: { glabPath: 'default', sources: 'default' } });
+
+    writeConfigFile(configPath, { glabPath: '/opt/glab', sources: [{ kind: 'gitlab', url: BASE, tokenSource: 'glab' }] });
+    server.reloadSources();
+    expect(server.config).toMatchObject({ glabPath: '/opt/glab', sources: { glabPath: 'file', sources: 'file' } });
+    expect(server.config.sourceConfigs.map((c) => [c.host, c.from])).toEqual([['gitlab.example.com', 'file']]);
+    // The rebuilt source's token check runs in the background: let it finish before the server closes.
+    await vi.waitFor(() => expect(logs.some((line) => line.startsWith('[token gitlab.example.com] no token'))).toBe(true));
+  });
+
   it("fetches a repo's diffs from the source it is on", async () => {
     const dir = temp();
     const env = { GITLAB_TOKEN: 'glpat-test-alice', GH_DASH_GITLAB_URL: BASE, GH_DASH_DB: join(dir, 'dash.db'), GH_DASH_SYNC: 'off' };

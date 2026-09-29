@@ -346,6 +346,36 @@ export interface SourceAccount {
   checkedAt: string | null;
 }
 
+/**
+ * GET /api/v1/sources, /sources/:source: one code host this database tracks repositories on (github.com, or a GitLab
+ * instance). Never includes a token. Sources are added and their credentials changed in config.json / the environment
+ * (headless) or in the desktop app's Settings, never over HTTP; the API lists them, re-checks their credential and
+ * removes an unconfigured one with its data.
+ */
+export interface Source {
+  /** Identity: 'github.com', 'gitlab.example.com'. Also `Repo.source`, `SourceSyncStatus.source`, and the id in the paths. */
+  host: string;
+  kind: ProviderKind;
+  /** Display name: 'GitHub', 'GitLab', or the host when there are several GitLab sources. */
+  name: string;
+  /** Base URL of the instance, relative root included ('https://github.com', 'https://gitlab.example.com'). */
+  url: string;
+  /**
+   * This server syncs it: github.com always, a GitLab source when this server's config (config.json / the environment)
+   * names it. A source in the database that another server configured is listed with `configured: false`.
+   */
+  configured: boolean;
+  /** DELETE would remove it now: not github.com, and not while it is configured on this server. */
+  removable: boolean;
+  /** The account its data belongs to (claimed by its first sync); null before that. */
+  viewer: { login: string; name: string | null; avatarUrl: string | null } | null;
+  /** Its credential as this server holds it; null when the source isn't configured here. */
+  account: SourceAccount | null;
+  sync: SourceSyncStatus;
+  /** Live repositories on it: tracked automatically, added by hand, and (of both) hidden from the default selection. */
+  repos: { owned: number; added: number; hidden: number };
+}
+
 /** Where an instance setting's value came from. */
 export type ConfigSource = 'default' | 'file' | 'env';
 
@@ -372,6 +402,10 @@ export interface InstanceInfo {
     allowedHosts: { value: string[]; source: ConfigSource };
     tokenFile: { value: string | null; source: ConfigSource };
     defaultTz: { value: string; source: ConfigSource };
+    /** The glab executable when it isn't on PATH or in a standard location (GitLab sources); null when unset. */
+    glabPath: { value: string | null; source: ConfigSource };
+    /** The GitLab sources this server is configured with, and where each came from (config.json, or GH_DASH_GITLAB_URL). */
+    sources: { host: string; from: ConfigSource }[];
   };
 }
 
@@ -706,7 +740,15 @@ export interface DiffCacheStats {
 // ---------------------------------------------------------------------------
 //
 // GET    /api/health                           -> { ok: true, version: string }
-// GET    /api/v1/me                            -> Me
+// GET    /api/v1/me                            -> Me         (the github.com account; other sources' accounts: /sources)
+// GET    /api/v1/sources                       -> { items: Source[] }   (github.com first; includes sources this server doesn't
+//          configure. Never calls a provider. Tokens are never included.)
+// GET    /api/v1/sources/:source               -> Source    (:source = the host, any case; 404 when it isn't a source here)
+// POST   /api/v1/sources/:source/check         -> Source    (re-resolve and re-validate its token now: github.com 1 GraphQL point, GitLab
+//          2 requests. 404 unknown source; 503 when there is no token to check, with the reason as the message and the Source as `details`.)
+// DELETE /api/v1/sources/:source               -> 204       (removes the source and all its data, and its cached diffs. 404 unknown source;
+//          409 for github.com, and while this server still has the source configured: remove it in Settings (desktop app) or from
+//          config.json / GH_DASH_GITLAB_URL first. Nothing adds a source or writes a credential over HTTP.)
 // GET    /api/v1/repos          RepoQuery      -> { items: Repo[] }          (unfiltered: all repos incl. archived/hidden/forks)
 // GET    /api/v1/repos/:repo                   -> Repo      (:repo = key, URL-encoded: kcosr%2Fgh-dash; or an owned repo's short name)
 // PATCH  /api/v1/repos/:repo   {pinned?, hidden?} -> Repo

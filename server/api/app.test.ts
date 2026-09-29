@@ -1245,6 +1245,8 @@ describe('account and instance', () => {
         allowedHosts: { value: ['dash.example.com'], source: 'env' },
         tokenFile: { value: null, source: 'default' },
         defaultTz: { value: config.defaultTz, source: 'default' },
+        glabPath: { value: null, source: 'default' },
+        sources: [],
       },
     });
     // Behind a reverse proxy: the public origin.
@@ -1252,6 +1254,37 @@ describe('account and instance', () => {
       headers: { authorization: 'Bearer k3y-secret', 'x-forwarded-proto': 'https', 'x-forwarded-host': 'dash.example.com' },
     });
     expect((await proxied.json()).apiUrl).toBe('https://dash.example.com');
+  });
+
+  it('lists the GitLab sources and the glab path this server is configured with, and where each came from', async () => {
+    const config = loadConfig(
+      { GH_DASH_GITLAB_URL: 'https://gitlab2.example.com/root' },
+      {
+        path: '/etc/gh-dash/config.json',
+        exists: true,
+        unknownKeys: [],
+        data: { glabPath: '/opt/glab', sources: [{ kind: 'gitlab', url: 'https://gitlab.example.com', tokenSource: 'glab' }] },
+      },
+    );
+    // The app's own config object, which the desktop app's reload-sources updates in place.
+    const tokens = testTokens();
+    const db = seedDb();
+    const sync = new SyncManager({ db, schedule: false, tokens, log: () => {} });
+    const diffs = new DiffService({ db, cache: new DiffCache(':memory:'), sources: new GitHubDiffSources({ tokens }), log: () => {} });
+    const app = createApp({ db, config, sync, diffs, tokens });
+    const info = await (await app.request('http://127.0.0.1:4780/api/v1/instance')).json();
+    expect(info.settings).toMatchObject({
+      glabPath: { value: '/opt/glab', source: 'file' },
+      sources: [{ host: 'gitlab.example.com', from: 'file' }, { host: 'gitlab2.example.com', from: 'env' }],
+    });
+    // Secrets and credential settings stay out: only the hosts.
+    expect(JSON.stringify(info)).not.toContain('tokenEnv');
+    // After the desktop app's reload-sources the server's config is replaced in place, and the answer follows.
+    config.sourceConfigs = [];
+    config.glabPath = null;
+    config.sources.glabPath = 'default';
+    const after = await (await app.request('http://127.0.0.1:4780/api/v1/instance')).json();
+    expect(after.settings).toMatchObject({ glabPath: { value: null, source: 'default' }, sources: [] });
   });
 
   it("gives the desktop app the Local API's address, or null while it's off", async () => {

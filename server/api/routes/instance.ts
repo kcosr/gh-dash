@@ -26,6 +26,9 @@ export function instanceRoutes({ config, transport, localApiUrl }: AppDeps): Hon
         allowedHosts: { value: config.allowedHosts, source: s.allowedHosts },
         tokenFile: { value: config.tokenFile, source: s.tokenFile },
         defaultTz: { value: config.defaultTz, source: s.timezone },
+        glabPath: { value: config.glabPath, source: s.glabPath },
+        // Read on each request: the desktop app's reload-sources replaces config.sourceConfigs.
+        sources: config.sourceConfigs.map((c) => ({ host: c.host, from: c.from })),
       },
     };
     return c.json(info);

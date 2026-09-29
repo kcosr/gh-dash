@@ -147,6 +147,9 @@ export async function startServer(opts: StartOptions): Promise<RunningServer> {
       const built = sources.apply(next);
       config.glabPath = next.glabPath;
       config.sourceConfigs = next.sources;
+      // GET /instance shows where each came from.
+      config.sources.glabPath = next.from.glabPath;
+      config.sources.sources = next.from.sources;
       void sources.check(built);
       return sources.list();
     };

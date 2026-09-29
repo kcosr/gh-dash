@@ -21,6 +21,7 @@ function paramRows(params: ParamDoc[]): string {
 function curl(e: EndpointDoc, origin: string): string {
   const path = e.path
     .replace('{repo}', 'gh-dash')
+    .replace('{source}', 'github.com')
     .replace('{number}', '1')
     .replace('{name}', 'gh-dash')
     .replace('{id}', '1')

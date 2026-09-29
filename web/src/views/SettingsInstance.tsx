@@ -14,10 +14,10 @@ import { useToast } from '../components/Toasts';
 import {
   SETTING_ENV, authLabel, bridgeError, instanceForm, instancePatch, instanceProblems, parseHosts, settingSource,
 } from '../lib/account';
-import type { InstanceForm } from '../lib/account';
+import type { InstanceForm, SettingKey } from '../lib/account';
 import { copyText, cx } from '../lib/util';
 
-type Key = keyof InstanceInfo['settings'];
+type Key = SettingKey;
 
 function Src({ k, source }: { k: Key; source: ConfigSource }) {
   const title = source === 'default' ? 'Default value' : source === 'file' ? 'Set in config.json' : `Set by the ${SETTING_ENV[k]} environment variable`;

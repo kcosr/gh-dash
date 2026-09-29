@@ -2,10 +2,13 @@
 // fresh check of its credential, and removing an unconfigured one with its data. Sources are added, and their
 // credentials changed, elsewhere (config.json / the environment, or the desktop app), never through here (design §1.6).
 
-import { GITHUB_HOST, type Source } from '../../shared/api';
+import { GITHUB_HOST, type Source, type SourceCheck, type TokenChoice } from '../../shared/api';
+import type { SourceTestDraft } from '../../shared/desktop';
+import { sourceUrl } from '../config-file';
 import type { Db } from '../db/db';
 import { GITHUB_SOURCE_ID, removeSource } from '../db/sources';
 import type { DiffService } from '../diff/service';
+import { GITLAB_TOKEN_ENV } from '../gitlab/credentials';
 import { HttpError } from '../lib/errors';
 import type { SourceRegistry, SourceRuntime } from '../sources/registry';
 import type { SyncManager } from '../sync/manager';
@@ -104,4 +107,45 @@ export function deleteSource(deps: SourceDeps, host: string): { repos: number } 
   deps.sources.apply();
   deps.diffs.evict();
   return removed;
+}
+
+/** The credential settings each desktop method stands for (what the source's config.json entry will say). */
+function draftCredential(draft: SourceTestDraft): { tokenChoice: TokenChoice | null; tokenFile: string | null; tokenEnv: string | null } {
+  switch (draft.method) {
+    case 'app':
+      return { tokenChoice: 'app', tokenFile: null, tokenEnv: null };
+    case 'glab':
+      return { tokenChoice: 'glab', tokenFile: null, tokenEnv: null };
+    case 'file':
+      if (!draft.tokenFile) throw new HttpError(400, 'Choose the token file first.');
+      return { tokenChoice: 'file', tokenFile: draft.tokenFile, tokenEnv: null };
+    case 'env':
+      return { tokenChoice: null, tokenFile: null, tokenEnv: draft.tokenEnv || GITLAB_TOKEN_ENV };
+    default:
+      throw new HttpError(400, `Unknown sign-in method: ${String((draft as { method?: unknown }).method)}`);
+  }
+}
+
+/**
+ * Tests a GitLab source that isn't configured yet, or a new credential for one that is (the desktop app's
+ * test-source): resolves the token the draft describes with a throwaway provider and validates it (2 requests), then
+ * compares the account with the one this database has for that host. Nothing is saved, and the running source (if
+ * any) is left alone. `ok` when GitLab accepted the token and nothing conflicts; a rejected token, a missing scope or
+ * no token at all is `account.error`. A URL that can't be a source is a 400.
+ */
+export async function testSourceDraft(deps: { sources: Pick<SourceRegistry, 'draft'> }, draft: SourceTestDraft): Promise<SourceCheck> {
+  let target: { baseUrl: string; host: string };
+  try {
+    target = sourceUrl(draft.url);
+  } catch (err) {
+    throw new HttpError(400, (err as Error).message);
+  }
+  if (target.host === GITHUB_HOST) throw new HttpError(400, `${GITHUB_HOST} is built in: connect it under GitHub.`);
+  const tokens = deps.sources.draft({ host: target.host, baseUrl: target.baseUrl, ...draftCredential(draft) });
+  if (draft.method === 'app') tokens.setAppToken(draft.token ?? null);
+  const account = await tokens.check();
+  const conflict = account.mismatch
+    ? `This dashboard's data from ${target.host} belongs to ${account.dbLogin ?? 'another account'}, but this token is for ${account.login ?? 'another account'}.`
+    : null;
+  return { ok: account.error === null && account.login !== null && conflict === null, host: target.host, url: target.baseUrl, account, conflict };
 }

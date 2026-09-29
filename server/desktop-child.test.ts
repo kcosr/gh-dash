@@ -5,10 +5,16 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DESKTOP_ENV, type ServerToMain } from '../shared/desktop';
 import { writeConfigFile } from './config-file';
+import { openDb } from './db/db';
+import { listSources, tryClaimViewer } from './db/sources';
 import { mainMessageHandler, type ParentPort, runDesktopChild } from './desktop-child';
-import type { SourceRuntime } from './sources/registry';
+import { GitHubDiffSources } from './github/diff-source';
+import { SourceRegistry, type SourceRuntime } from './sources/registry';
 import type { RunningServer } from './start';
+import type { SyncManager } from './sync/manager';
+import { fakeExec, fakeFs } from './test/credentials';
 import { fakeGitHub, type Reply } from './test/github';
+import { BASE, fakeGitLab, graphql } from './test/gitlab';
 import { testTokens } from './test/tokens';
 
 const dirs: string[] = [];
@@ -75,6 +81,103 @@ describe('main → server messages', () => {
     await handle({ type: 'shutdown' });
     expect(server.close).toHaveBeenCalledOnce();
     expect(exit).toHaveBeenCalledWith(0);
+  });
+});
+
+describe('main → server messages for GitLab sources', () => {
+  const HOST = 'gitlab.example.com';
+  const PAT = 'glpat-test-alice';
+  const SELF = '/api/v4/personal_access_tokens/self';
+  const user = { id: 'gid://gitlab/User/2', username: 'alice', name: 'Alice A', avatarUrl: null, publicEmail: null, commitEmail: null, emails: { nodes: [] } };
+
+  function setup() {
+    const db = openDb(':memory:');
+    const api = fakeGitLab({
+      '/api/graphql': graphql({ CredentialCheck: () => ({ currentUser: user, metadata: { version: '19.3.3-ee', enterprise: true }, personal: { count: 3 } }) }),
+      [SELF]: (req) =>
+        req.headers.Authorization === `Bearer ${PAT}`
+          ? { body: { id: 7, name: 'gh-dash', revoked: false, active: true, scopes: ['api'], user_id: 2, created_at: '2026-01-01T00:00:00.000Z', last_used_at: null, expires_at: '2026-12-31' } }
+          : { status: 401, body: { message: '401 Unauthorized' } },
+    });
+    const glab = fakeExec(() => '');
+    const tokens = testTokens();
+    const sources = new SourceRegistry({
+      db,
+      env: { HOME: '/home/alice', PATH: '/usr/bin' },
+      github: { tokens: tokens.credentials, diffs: new GitHubDiffSources({ tokens, log: () => {} }) },
+      log: () => {},
+      seams: { fetchImpl: api.fetchImpl, sleep: async () => {}, exec: glab.exec, fs: fakeFs({ '/usr/bin/glab': { exec: true } }), platform: 'linux' },
+    });
+    const sync = { startOrQueue: vi.fn(async () => 'started' as const) } as unknown as SyncManager;
+    const diffs = { evict: vi.fn() } as unknown as RunningServer['diffs'];
+    const posted: ServerToMain[] = [];
+    const handle = mainMessageHandler({ tokens, close: async () => {}, sources, sync, db, diffs }, (m) => posted.push(m), vi.fn());
+    return { db, api, glab, sources, sync, diffs, posted, handle };
+  }
+  const configured = (tokenChoice: 'app' | 'glab') => ({ glabPath: null, sources: [{ kind: 'gitlab' as const, host: HOST, baseUrl: BASE, tokenChoice, tokenFile: null, tokenEnv: null, from: 'file' as const }] });
+
+  it('tests a draft source with a pasted token, saving nothing', async () => {
+    const { handle, posted, sources, db, api } = setup();
+    await handle({ type: 'test-source', id: 1, draft: { url: `${BASE}/`, method: 'app', token: PAT } });
+    expect(posted).toEqual([{
+      type: 'source-test-result', id: 1,
+      check: {
+        ok: true, host: HOST, url: BASE, conflict: null,
+        account: expect.objectContaining({ source: 'app', login: 'alice', kind: 'personal', scopes: ['api'], canWrite: true, expiresAt: '2026-12-31T00:00:00.000Z', instance: { version: '19.3.3-ee', enterprise: true }, error: null }),
+      },
+    }]);
+    expect(api.requests).toEqual(['graphql CredentialCheck', SELF]);
+    expect(sources.list().map((r) => r.host)).toEqual(['github.com']);
+    expect(listSources(db)).toHaveLength(1);
+    // A rejected token and a missing one are answers, not failures.
+    await handle({ type: 'test-source', id: 2, draft: { url: BASE, method: 'app', token: 'glpat-wrong-token' } });
+    expect(posted[1]).toMatchObject({ id: 2, check: { ok: false, account: { error: expect.stringContaining('401') } } });
+    await handle({ type: 'test-source', id: 3, draft: { url: BASE, method: 'glab' } });
+    expect(posted[2]).toMatchObject({ id: 3, check: { ok: false, account: { source: 'none', error: expect.stringContaining(`glab has no token for ${HOST}`) } } });
+  });
+
+  it('says when the data on that host is another account\'s, and refuses what can\'t be a GitLab source', async () => {
+    const { handle, posted, sources, db } = setup();
+    sources.apply(configured('app'));
+    tryClaimViewer(db, sources.byHost(HOST)!.id, { id: 'gid://gitlab/User/9', login: 'bob', name: null, avatarUrl: null, emails: [] });
+    await handle({ type: 'test-source', id: 1, draft: { url: BASE, method: 'app', token: PAT } });
+    expect(posted[0]).toMatchObject({ check: { ok: false, conflict: `This dashboard's data from ${HOST} belongs to bob, but this token is for alice.` } });
+    await handle({ type: 'test-source', id: 2, draft: { url: 'https://github.com', method: 'glab' } });
+    await handle({ type: 'test-source', id: 3, draft: { url: 'gitlab.example.com', method: 'glab' } });
+    await handle({ type: 'test-source', id: 4, draft: { url: BASE, method: 'file' } });
+    expect(posted.slice(1)).toEqual([
+      { type: 'request-failed', id: 2, message: 'github.com is built in: connect it under GitHub.' },
+      { type: 'request-failed', id: 3, message: 'Invalid GitLab URL: expected something like https://gitlab.example.com' },
+      { type: 'request-failed', id: 4, message: 'Choose the token file first.' },
+    ]);
+  });
+
+  it('sets a source\'s app token and answers with its account; an unknown source is a failure', async () => {
+    const { handle, posted, sources } = setup();
+    sources.apply(configured('app'));
+    await handle({ type: 'set-token', id: 1, source: HOST, token: PAT });
+    expect(posted[0]).toEqual({ type: 'token-result', id: 1, ok: true, account: expect.objectContaining({ source: 'app', login: 'alice', canWrite: true }) });
+    expect(await sources.byHost(HOST)!.tokens.get()).toMatchObject({ token: PAT, source: 'app' });
+    await handle({ type: 'set-token', id: 2, source: HOST, token: null });
+    expect(posted[1]).toMatchObject({ id: 2, ok: false, account: { source: 'none', error: 'No token has been entered in the app' } });
+    await handle({ type: 'set-token', id: 3, source: 'nowhere.example.com', token: PAT });
+    expect(posted[2]).toEqual({ type: 'request-failed', id: 3, message: "nowhere.example.com isn't a GitLab source here." });
+  });
+
+  it('deletes a source main took out of config.json, refuses a configured one, and starts a sync', async () => {
+    const { handle, posted, sources, db, diffs, sync } = setup();
+    sources.apply(configured('glab'));
+    await handle({ type: 'delete-source', id: 1, source: HOST });
+    expect(posted[0]).toEqual({ type: 'request-failed', id: 1, message: `GitLab (${HOST}) is still configured on this server. Remove it in Settings (desktop app) or from config.json first.` });
+    sources.apply({ glabPath: null, sources: [] });
+    await handle({ type: 'delete-source', id: 2, source: HOST });
+    expect(posted[1]).toEqual({ type: 'source-deleted', id: 2, repos: 0 });
+    expect(sources.byHost(HOST)).toBeNull();
+    expect(listSources(db).map((r) => r.host)).toEqual(['github.com']);
+    expect(diffs.evict).toHaveBeenCalled();
+    await handle({ type: 'sync-source', id: 3, source: HOST });
+    expect(posted[2]).toEqual({ type: 'sync-started', id: 3, result: 'started' });
+    expect(sync.startOrQueue).toHaveBeenCalledWith({ source: HOST });
   });
 });
 

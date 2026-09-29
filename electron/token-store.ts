@@ -1,18 +1,19 @@
 /**
- * A pasted GitHub token, remembered in <userData>/github-token.enc, encrypted with the OS keychain through
- * Electron's safeStorage. Only the async API (the sync one is deprecated in Electron 45).
+ * Pasted tokens remembered on this device, encrypted with the OS keychain through Electron's safeStorage (only the
+ * async API: the sync one is deprecated in Electron 45). github.com's is <userData>/github-token.enc, as it always was;
+ * each GitLab source's is <userData>/tokens/<host>.enc (design §8). Source hosts are [a-z0-9.-], so they are safe file
+ * names.
  */
 import { safeStorage } from 'electron';
-import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import type { SecureStorage } from '../shared/desktop';
 
-export class TokenStore {
+/** Whether safeStorage has a real keychain: asked once, and shared by every store. */
+export class Keychain {
   private availability: Promise<SecureStorage> | null = null;
 
-  constructor(
-    private readonly file: string,
-    private readonly log: (line: string) => void,
-  ) {}
+  constructor(private readonly log: (line: string) => void) {}
 
   /**
    * "available" only with a real keychain: macOS Keychain, Windows DPAPI, or libsecret/KWallet on Linux. Linux's
@@ -36,6 +37,20 @@ export class TokenStore {
       return available ? 'available' : 'unavailable';
     })();
     return this.availability;
+  }
+}
+
+/** One remembered token in one file. */
+export class TokenStore {
+  constructor(
+    private readonly file: string,
+    private readonly log: (line: string) => void,
+    private readonly keychain: Keychain = new Keychain(log),
+  ) {}
+
+  /** See Keychain.secureStorage. */
+  secureStorage(): Promise<SecureStorage> {
+    return this.keychain.secureStorage();
   }
 
   has(): boolean {
@@ -61,11 +76,40 @@ export class TokenStore {
   async save(token: string): Promise<boolean> {
     if ((await this.secureStorage()) !== 'available') return false;
     const encrypted = await safeStorage.encryptStringAsync(token);
+    mkdirSync(dirname(this.file), { recursive: true, mode: 0o700 });
     writeFileSync(this.file, encrypted, { mode: 0o600 });
     return true;
   }
 
   remove(): void {
     rmSync(this.file, { force: true });
+  }
+}
+
+const HOST = /^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/;
+
+/** github.com's store and one per GitLab source, in the app's userData folder, sharing one keychain check. */
+export class TokenStores {
+  readonly github: TokenStore;
+  private readonly keychain: Keychain;
+  private readonly sources = new Map<string, TokenStore>();
+
+  constructor(
+    private readonly dir: string,
+    private readonly log: (line: string) => void,
+  ) {
+    this.keychain = new Keychain(log);
+    this.github = new TokenStore(join(dir, 'github-token.enc'), log, this.keychain);
+  }
+
+  /** The store for the GitLab source at `host`: <dir>/tokens/<host>.enc. Throws for anything but a host name. */
+  source(host: string): TokenStore {
+    if (!HOST.test(host) || host.includes('..') || host.length > 253) throw new Error(`Not a source host: ${host}`);
+    let store = this.sources.get(host);
+    if (!store) {
+      store = new TokenStore(join(this.dir, 'tokens', `${host}.enc`), this.log, this.keychain);
+      this.sources.set(host, store);
+    }
+    return store;
   }
 }

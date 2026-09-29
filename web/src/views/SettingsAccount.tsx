@@ -1,4 +1,7 @@
-/** Settings → GitHub account: who the token belongs to, its kind and expiry, and (in the desktop app) choosing it. */
+/**
+ * Settings → Sources → GitHub: who the token belongs to, its kind and expiry, and (in the desktop app) choosing it.
+ * SettingsSources.tsx puts it under its heading, as the github.com source.
+ */
 import { useState } from 'react';
 import type { AccountStatus, SyncStatus } from '../../../shared/api';
 import { useDesktop, useDesktopActions } from '../api/desktop';
@@ -50,7 +53,7 @@ function MismatchNote({ a, desktop }: { a: AccountStatus; desktop: boolean }) {
   );
 }
 
-export function AccountSection({ rateLimit }: { rateLimit: SyncStatus['rateLimit'] | undefined }) {
+export function GitHubAccount({ rateLimit }: { rateLimit: SyncStatus['rateLimit'] | undefined }) {
   const account = useAccount();
   const check = useCheckAccount();
   const instance = useInstance();
@@ -78,8 +81,7 @@ export function AccountSection({ rateLimit }: { rateLimit: SyncStatus['rateLimit
   };
 
   return (
-    <section className="card set-sec" id="account">
-      <h2>GitHub account</h2>
+    <>
       {!a ? (
         account.isError ? <p className="muted">Couldn't load the account: {(account.error as Error).message}</p> : <p className="muted">Loading…</p>
       ) : (
@@ -158,6 +160,6 @@ export function AccountSection({ rateLimit }: { rateLimit: SyncStatus['rateLimit
           )}
         </>
       )}
-    </section>
+    </>
   );
 }

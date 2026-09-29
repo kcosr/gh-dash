@@ -24,6 +24,7 @@ import type {
   SavedView,
   ScopeQuery,
   Settings,
+  Source,
   Star,
   StatsQuery,
   StatsResponse,
@@ -147,6 +148,14 @@ export const api = {
   /** How this server runs: version, API URL, auth mode and instance settings with their sources. */
   instance: () => get<InstanceInfo>('/api/v1/instance'),
 
+  /** Every source (github.com first) with its account, sync state and repository counts. Calls no code host. */
+  sources: () => get<{ items: Source[] }>('/api/v1/sources'),
+  source: (host: string) => get<Source>(`/api/v1/sources/${enc(host)}`),
+  /** Resolve the source's token again and validate it now. 503 (the Source in `details`) when there is no token. */
+  checkSource: (host: string) => request<Source>('POST', `/api/v1/sources/${enc(host)}/check`),
+  /** Remove a source this server no longer configures, and everything synced from it (nothing changes on the host). */
+  deleteSource: (host: string) => request<void>('DELETE', `/api/v1/sources/${enc(host)}`),
+
   repos: () => get<{ items: Repo[] }>('/api/v1/repos'),
   repo: (key: string) => get<Repo>(`/api/v1/repos/${enc(key)}`),
   patchRepo: (key: string, body: { pinned?: boolean; hidden?: boolean }) => request<Repo>('PATCH', `/api/v1/repos/${enc(key)}`, body),
@@ -177,7 +186,8 @@ export const api = {
   stats: (q: StatsQuery) => get<StatsResponse>(apiUrl('stats', { ...q })),
 
   syncStatus: () => get<SyncStatus>('/api/v1/sync/status'),
-  sync: (body: { repo?: string; full?: boolean } = {}) => request<SyncStatus>('POST', '/api/v1/sync', body),
+  /** `source`: sync that source only (a host). */
+  sync: (body: { repo?: string; full?: boolean; source?: string } = {}) => request<SyncStatus>('POST', '/api/v1/sync', body),
 
   /** refresh re-checks GitHub for the PR's current head instead of the last synced one. */
   prDiff: (repo: string, number: number, refresh = false) =>

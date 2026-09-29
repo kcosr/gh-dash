@@ -263,6 +263,22 @@ export class SourceRegistry {
     return runtime;
   }
 
+  /**
+   * A throwaway credential provider for a source as `draft` would configure it: the desktop app tests a source with it
+   * before adding it, and a new method before switching to it. Built as apply() would build it (this registry's
+   * environment, glab path and seams), and compared with the account this database has on that host, if any. Not
+   * applied and not kept: nothing else ever sees it.
+   */
+  draft(draft: Pick<SourceConfig, 'host' | 'baseUrl' | 'tokenChoice' | 'tokenFile' | 'tokenEnv'>): CredentialProvider {
+    const { fetchImpl = fetch, sleep = defaultSleep, ...seams } = this.seams;
+    const db = this.db;
+    const viewer = () => {
+      const row = sourceByHost(db, draft.host);
+      return row && row.kind === 'gitlab' ? row.viewer : null;
+    };
+    return gitlabCredentials(draft, this.current.glabPath, { env: this.env, viewer, log: this.log, fetchImpl, sleep, ...seams });
+  }
+
   /** Called when any source's token or its origin changes, including in providers built later. */
   onChange(listener: (runtime: SourceRuntime, token: ResolvedToken) => void): () => void {
     this.listeners.add(listener);

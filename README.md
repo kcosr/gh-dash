@@ -178,6 +178,11 @@ gh-dash only reads, so a token with the `read_api` scope is enough. It warns whe
 also change things on GitLab (the `api` scope, which the token that `glab` holds normally has)
 and when it expires within two weeks; the token's scopes and expiry are shown with the source.
 
+**Settings → Sources** shows each source's account, how its token is found, the token's scopes
+and expiry (with a link to create a read-only token), its projects and its last sync. On a
+headless server it is read-only: check a token again, sync a source, or remove one that is no
+longer configured.
+
 `GET /api/v1/sources` lists the sources with their account, sync state and repository counts,
 and never contains a token. `POST /api/v1/sources/<host>/check` validates a source's token
 again. `DELETE /api/v1/sources/<host>` removes a source that is no longer configured, together
@@ -264,7 +269,7 @@ headless server, it ignores `HOST`, `PORT`, `GH_DASH_*` and the other configurat
 from its environment, so Settings always shows what's in effect; `GITHUB_TOKEN` still applies.
 Logs, including the server's, are in `logs/main.log`.
 
-**GitHub account.** In **Settings → GitHub account**, either use the GitHub CLI (`gh auth token`;
+**GitHub account.** In **Settings → Sources**, under GitHub, either use the GitHub CLI (`gh auth token`;
 run `gh auth login` first) or paste a token. Apps opened from Finder, the Dock or a desktop launcher
 don't get your shell's `PATH`, so at startup the app asks your login shell for it (macOS and Linux)
 and also looks in the usual install folders. If `gh` still isn't found, use **Locate gh…** to pick it. **Remember on this device** stores a pasted token
@@ -273,6 +278,18 @@ on Linux). Without a keychain, as on Linux desktops that have neither, the token
 until you quit. On macOS, an unsigned build may ask for keychain access after each update; if
 you deny it, the app forgets the token and asks again. `GITHUB_TOKEN` in the app's environment
 overrides both.
+
+**GitLab.** **Settings → Sources → Add GitLab** takes the instance's address (with its path, if
+GitLab is served under one) and a way to sign in: a pasted token (remembered as above, in
+`tokens/<host>.enc`), the token `glab` holds for that host (**Locate glab…** when the app can't
+find it), or a token file you pick. **Create a read-only token** opens GitLab's token page with
+the name `gh-dash` and only the `read_api` scope filled in. **Test connection** shows the account,
+the GitLab version, the token's scopes and expiry, and warns about scopes that can change things;
+the source is added only after a successful test, and its first sync starts without a restart.
+Each source can be checked again, switched to another token (tested first), or removed with its
+data. `GITLAB_TOKEN` in the app's environment is the token of the only GitLab source, as
+`GITHUB_TOKEN` is GitHub's; the app asks before sending it to an address the first time. The app writes the sources to its `config.json`; the tokens themselves
+never go there, nor to the database.
 
 **Local API.** Turn it on in **Settings** to reach the API from browsers, curl and scripts
 (`/api/docs`). It listens on `127.0.0.1` only, unless you allow other devices on the network,

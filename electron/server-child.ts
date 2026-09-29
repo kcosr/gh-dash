@@ -1,10 +1,11 @@
 /**
  * The server child (dist/server/desktop.mjs in a utilityProcess): start, ready/fatal, restart with backoff after
- * crashes, graceful shutdown, and the set-token round trip. Protocol: shared/desktop.ts (MainToServer/ServerToMain).
+ * crashes, graceful shutdown, and the request/answer round trips (set-token, the GitLab sources' messages). Protocol:
+ * shared/desktop.ts (MainToServer/ServerToMain).
  */
 import { utilityProcess, type UtilityProcess } from 'electron';
-import type { AccountStatus, TokenChoice } from '../shared/api';
-import type { MainToServer, ServerToMain } from '../shared/desktop';
+import type { AccountStatus, SourceAccount, SourceCheck, TokenChoice } from '../shared/api';
+import type { MainToServer, ServerToMain, SourceTestDraft } from '../shared/desktop';
 
 export type ChildStatus = 'idle' | 'starting' | 'running' | 'stopping' | 'failed';
 export type StartResult = { ok: true; apiUrl: string | null } | { ok: false; message: string };
@@ -12,6 +13,20 @@ export interface TokenResult {
   ok: boolean;
   account: AccountStatus;
 }
+export interface SourceTokenResult {
+  ok: boolean;
+  account: SourceAccount;
+}
+export interface ReloadResult {
+  ok: boolean;
+  error: string | null;
+  sources: string[];
+}
+
+/** A request main sends (every message but shutdown), without the id the round trip adds. */
+type Request = MainToServer extends infer M ? (M extends { id: number } ? Omit<M, 'id'> : never) : never;
+/** An answer to a request. */
+type Answer = Extract<ServerToMain, { id: number }>;
 
 export interface ServerChildOptions {
   script: string;
@@ -28,7 +43,10 @@ export interface ServerChildOptions {
 const MAX_CRASHES = 4;
 const CRASH_WINDOW_MS = 5 * 60_000;
 const BACKOFF_MS = [500, 1_000, 3_000, 8_000];
-/** gh may wait on a keyring prompt (60 s in the server); leave room for the GitHub check after it. */
+/**
+ * gh may wait on a keyring prompt (60 s in the server) and glab 15 s; leave room for the provider's check after it.
+ * Every request gets as long.
+ */
 const TOKEN_TIMEOUT_MS = 90_000;
 
 type Outcome = { kind: 'ready'; apiUrl: string | null } | { kind: 'fatal'; message: string } | { kind: 'exit'; message: string };
@@ -54,7 +72,7 @@ export class ServerChild {
   private crashes: number[] = [];
   private waiters: (() => void)[] = [];
   private nextId = 1;
-  private pending = new Map<number, { resolve: (r: TokenResult) => void; reject: (e: Error) => void; timer: NodeJS.Timeout; proc: UtilityProcess | null }>();
+  private pending = new Map<number, { resolve: (r: Answer) => void; reject: (e: Error) => void; timer: NodeJS.Timeout; proc: UtilityProcess | null }>();
 
   constructor(private readonly opts: ServerChildOptions) {}
 
@@ -111,21 +129,68 @@ export class ServerChild {
 
   /** Sends set-token once the child is running, and waits for the matching token-result. */
   async setToken(choice: TokenChoice | null, token?: string | null): Promise<TokenResult> {
-    if ((await this.whenSettled()) !== 'running') throw new Error(this.lastError ?? 'The gh-dash server is not running.');
+    await this.running();
     return this.sendSetToken(choice, token);
   }
 
   /** Sends set-token right away (from onReady, before any request is forwarded). */
-  sendSetToken(choice: TokenChoice | null, token?: string | null): Promise<TokenResult> {
+  async sendSetToken(choice: TokenChoice | null, token?: string | null): Promise<TokenResult> {
+    const answer = expect(await this.request(token === undefined ? { type: 'set-token', choice } : { type: 'set-token', choice, token }), 'token-result');
+    return { ok: answer.ok === true, account: answer.account as AccountStatus };
+  }
+
+  /** A GitLab source's app token (null forgets it), once the child is running; answered with the source's account. */
+  async setSourceToken(source: string, token: string | null): Promise<SourceTokenResult> {
+    await this.running();
+    return this.sendSetSourceToken(source, token);
+  }
+
+  /** setSourceToken right away (from onReady). */
+  async sendSetSourceToken(source: string, token: string | null): Promise<SourceTokenResult> {
+    const answer = expect(await this.request({ type: 'set-token', source, token }), 'token-result');
+    return { ok: answer.ok === true, account: answer.account as SourceAccount };
+  }
+
+  /** config.json's sources changed: the child applies them without a restart. */
+  async reloadSources(): Promise<ReloadResult> {
+    await this.running();
+    const { ok, error, sources } = expect(await this.request({ type: 'reload-sources' }), 'sources-result');
+    return { ok, error, sources };
+  }
+
+  /** Resolves and validates a draft GitLab source in the child; nothing is kept there. */
+  async testSource(draft: SourceTestDraft): Promise<SourceCheck> {
+    await this.running();
+    return expect(await this.request({ type: 'test-source', draft }), 'source-test-result').check;
+  }
+
+  /** Deletes an unconfigured source with its data (main has taken it out of config.json and reloaded). */
+  async deleteSource(source: string): Promise<{ repos: number }> {
+    await this.running();
+    return { repos: expect(await this.request({ type: 'delete-source', source }), 'source-deleted').repos };
+  }
+
+  /** Starts a source's sync, or queues it behind the one running. */
+  async syncSource(source: string): Promise<'started' | 'queued'> {
+    await this.running();
+    return expect(await this.request({ type: 'sync-source', source }), 'sync-started').result;
+  }
+
+  private async running(): Promise<void> {
+    if ((await this.whenSettled()) !== 'running') throw new Error(this.lastError ?? 'The gh-dash server is not running.');
+  }
+
+  /** Sends a request and waits for its answer: rejects on `request-failed`, a timeout, or the child going away. */
+  private request(message: Request): Promise<Answer> {
     const id = this.nextId++;
-    return new Promise<TokenResult>((resolve, reject) => {
+    return new Promise<Answer>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error('The gh-dash server did not answer in time.'));
       }, TOKEN_TIMEOUT_MS);
       this.pending.set(id, { resolve, reject, timer, proc: this.proc });
       try {
-        this.send(token === undefined ? { type: 'set-token', id, choice } : { type: 'set-token', id, choice, token });
+        this.send({ ...message, id } as MainToServer);
       } catch (error) {
         clearTimeout(timer);
         this.pending.delete(id);
@@ -241,12 +306,14 @@ export class ServerChild {
         } else if (message?.type === 'fatal') {
           fatal = String(message.message);
           done({ kind: 'fatal', message: fatal });
-        } else if (message?.type === 'token-result') {
-          const entry = this.pending.get(message.id);
+        } else if (message && typeof (message as { id?: unknown }).id === 'number') {
+          const answer = message as Answer;
+          const entry = this.pending.get(answer.id);
           if (!entry) return;
-          this.pending.delete(message.id);
+          this.pending.delete(answer.id);
           clearTimeout(entry.timer);
-          entry.resolve({ ok: message.ok === true, account: message.account });
+          if (answer.type === 'request-failed') entry.reject(new Error(String(answer.message)));
+          else entry.resolve(answer);
         }
       });
       proc.once('exit', (code) => {
@@ -273,4 +340,10 @@ export class ServerChild {
       });
     });
   }
+}
+
+/** The answer of the expected type; another one means the two sides disagree on the protocol. */
+function expect<T extends Answer['type']>(answer: Answer, type: T): Extract<Answer, { type: T }> {
+  if (answer.type !== type) throw new Error(`The gh-dash server answered ${answer.type} instead of ${type}.`);
+  return answer as Extract<Answer, { type: T }>;
 }

@@ -301,6 +301,41 @@ describe('SourceRegistry', () => {
     expect(api.requests).toHaveLength(6);
   });
 
+  it('builds a throwaway provider for a draft, compared with the account the database has there, and keeps nothing', async () => {
+    const { db, registry, glab, api } = setup({ env: { GITLAB_TOKEN: 'glpat-from-env', HOME: '/home/alice', PATH: '/usr/bin' } });
+    registry.apply({ glabPath: GLAB, sources: [] });
+    // glab, from the registry's glab path; GITLAB_TOKEN doesn't lock a draft that names no variable.
+    const viaGlab = registry.draft({ host: HOST, baseUrl: BASE, tokenChoice: 'glab', tokenFile: null, tokenEnv: null });
+    expect(await viaGlab.check()).toMatchObject({ source: 'glab', locked: false, login: 'alice', mismatch: false, dbLogin: null, error: null, instance: { version: '19.3.3-ee' } });
+    expect(glab.calls.map((c) => [c.file, ...c.args])).toEqual([[GLAB, 'config', 'get', 'token', '--host', HOST]]);
+    expect(api.requests).toEqual(['graphql CredentialCheck', SELF]);
+    // Nothing was added: no row, no runtime.
+    expect(registry.list().map((r) => r.host)).toEqual(['github.com']);
+    expect(listSources(db).map((r) => r.host)).toEqual(['github.com']);
+
+    // A pasted token, on a host whose data belongs to someone else.
+    const row = ensureSource(db, { kind: 'gitlab', host: HOST, baseUrl: BASE });
+    tryClaimViewer(db, row.id, { id: 'gid://gitlab/User/9', login: 'bob', name: null, avatarUrl: null, emails: [] });
+    const pasted = registry.draft({ host: HOST, baseUrl: BASE, tokenChoice: 'app', tokenFile: null, tokenEnv: null });
+    pasted.setAppToken(PAT);
+    expect(await pasted.check()).toMatchObject({ source: 'app', login: 'alice', dbLogin: 'bob', mismatch: true });
+    // The variable, when the draft names it.
+    const viaEnv = registry.draft({ host: HOST, baseUrl: BASE, tokenChoice: null, tokenFile: null, tokenEnv: 'GITLAB_TOKEN' });
+    expect(await viaEnv.get()).toMatchObject({ token: 'glpat-from-env', source: 'env' });
+  });
+
+  it("forgets a removed source's app token, so adding it again starts without one", async () => {
+    const { db, registry } = setup();
+    const config = { glabPath: null, sources: [gitlab(HOST, { tokenChoice: 'app' })] };
+    const [gl] = registry.apply(config);
+    registry.setAppToken(HOST, PAT);
+    registry.apply({ glabPath: null, sources: [] });
+    removeSource(db, gl!.id);
+    registry.apply();
+    const [again] = registry.apply(config);
+    expect(await again!.tokens.get()).toMatchObject({ token: null, error: 'No token has been entered in the app' });
+  });
+
   it('refuses a host stored for another kind, and changes nothing', () => {
     const { db, registry } = setup();
     registry.apply({ glabPath: null, sources: [gitlab('gitlab2.example.com')] });

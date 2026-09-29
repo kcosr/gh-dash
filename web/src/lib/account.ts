@@ -15,6 +15,7 @@ export function tokenSourceLabel(source: TokenSource, opts: { desktop?: boolean;
     case 'env': return opts.desktop ? 'GITHUB_TOKEN environment variable' : 'GITHUB_TOKEN (environment or env file)';
     case 'file': return 'Token file';
     case 'gh-cli': return 'GitHub CLI (gh auth token)';
+    case 'glab': return 'GitLab CLI (glab)';
     case 'app': return opts.remembered ? 'Pasted token, saved in the OS keychain' : 'Pasted token, kept until gh-dash quits';
     case 'none': return opts.desktop && opts.chosen === false ? 'Not connected' : 'No token found';
   }
@@ -26,6 +27,7 @@ export function tokenKindLabel(kind: TokenKind): string {
     case 'classic': return 'Classic personal access token';
     case 'oauth': return 'OAuth token';
     case 'app': return 'GitHub App token';
+    case 'personal': return 'Personal access token';
     case 'unknown': return 'Token';
   }
 }
@@ -41,7 +43,7 @@ export function tokenAccess(scopes: string[] | null): 'full' | 'public' | null {
 }
 
 /** Tokens that expire when GitHub says nothing (personal access tokens have an expiry unless created without one). */
-const PAT_KINDS: ReadonlySet<TokenKind> = new Set(['fine-grained', 'classic']);
+const PAT_KINDS: ReadonlySet<TokenKind> = new Set(['fine-grained', 'classic', 'personal']);
 /** Warn this long before a token expires. */
 export const EXPIRY_WARN_DAYS = 14;
 

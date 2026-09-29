@@ -335,9 +335,9 @@ const SOURCE_PATH = { ...p('source', "The source's host: github.com, or a GitLab
 const SOURCE = q('source', "The source to look on, by its host; default github.com. A GitLab source must be configured on this server.", str(), 'gitlab.example.com');
 
 const SCOPE: ParamDoc[] = [
-  q('repos', 'Comma-separated repo keys (owner/name; the short name of a repo you own also works). Omitted: the default selection (non-archived, non-hidden, non-fork unless includeForks). Empty (`repos=`): no repos.', str(), 'kcosr/gh-dash,kcosr/tools'),
+  q('repos', 'Comma-separated repo keys (owner/name on github.com, <host>/<path> on other sources; the short name of a github.com repo you own also works). Omitted: the default selection (non-archived, non-hidden, non-fork unless includeForks). Empty (`repos=`): no repos.', str(), 'kcosr/gh-dash,kcosr/tools'),
   q('source', 'Comma-separated source hosts: only repos on those sources (the app\'s context switcher). Omitted or empty: every source. Narrows `repos` and the default selection alike. 400 for a host that isn\'t a source.', str(), 'gitlab.example.com'),
-  q('visibility', 'Repo visibility filter (internal: GitHub Enterprise).', { ...enumOf('all', 'public', 'private', 'internal'), default: 'all' }),
+  q('visibility', 'Repo visibility filter (internal: GitHub Enterprise, and GitLab projects visible to every signed-in user).', { ...enumOf('all', 'public', 'private', 'internal'), default: 'all' }),
   q('ownership', 'mine: repositories you own (tracked automatically); others: repositories added by hand.', { ...enumOf('all', 'mine', 'others'), default: 'all' }),
   q('who', "'me' = the authenticated user of each item's own source (its account's login or commit emails, plus settings.myEmails or GH_DASH_MY_EMAILS on every source); stars are always by others.", { ...enumOf('me', 'others', 'everyone'), default: 'everyone' }, 'me'),
   q('from', 'Start: YYYY-MM-DD (in tz), ISO datetime, or relative offset like -7d / -12w / -3m. Default: 29 days before today.', str(), '-30d'),
@@ -448,12 +448,12 @@ export const ENDPOINTS: EndpointDoc[] = [
     response: { status: 200, schema: ref('StatsResponse') }, example: 'from=-90d&tz=UTC',
   },
   { method: 'get', path: '/api/v1/repos', tag: 'Repos', summary: 'Repository inventory or a filtered selection', params: [
-    q('repos', 'Comma-separated repo keys (or short names of repos you own); explicit empty selects nothing. Overrides scope.'),
+    q('repos', 'Comma-separated repo keys (or short names of github.com repos you own); explicit empty selects nothing. Overrides scope.'),
     q('scope', 'all (default) returns the inventory; default returns the default selection, which leaves out archived and hidden repos, and forks unless enabled in settings.', enumOf('all', 'default')),
     q('source', 'Comma-separated source hosts: only repos on those sources. Omitted or empty: every source. 400 for a host that isn\'t a source.', str(), 'gitlab.example.com'),
-    q('visibility', 'Repository visibility (internal: GitHub Enterprise)', enumOf('all', 'public', 'private', 'internal')),
+    q('visibility', 'Repository visibility (internal: GitHub Enterprise, and GitLab projects visible to every signed-in user)', enumOf('all', 'public', 'private', 'internal')),
     q('ownership', 'mine: repositories you own; others: repositories added by hand', enumOf('all', 'mine', 'others')),
-    q('q', 'Case-insensitive substring in owner/name, description, topics or language'),
+    q('q', 'Case-insensitive substring in the repo key, description, topics or language'),
     q('sort', 'Sort within pinned/hidden groups; default activity', enumOf('activity', 'stars', 'open', 'name')),
   ], response: { status: 200, schema: obj({ items: arr(ref('Repo')) }) } },
   { method: 'get', path: '/api/v1/repos/{repo}', tag: 'Repos', summary: 'One repo', params: [REPO], response: { status: 200, schema: ref('Repo') } },

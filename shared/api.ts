@@ -540,9 +540,9 @@ export interface AddRepoResponse {
 
 /**
  * Scope shared by every list/stats endpoint.
- *  - repos: comma-separated repo keys ("owner/name"; an owned repo's short name also works). Omitted => the
- *    default selection: all repos that are not archived, not hidden, and (unless settings.includeForks) not forks.
- *    An explicitly empty value (`repos=`) means "no repos" and returns nothing.
+ *  - repos: comma-separated repo keys ("owner/name" on github.com, "<host>/<path>" elsewhere; a github.com repo you own
+ *    also works by its short name). Omitted => the default selection: all repos that are not archived, not hidden, and
+ *    (unless settings.includeForks) not forks. An explicitly empty value (`repos=`) means "no repos" and returns nothing.
  *  - source: comma-separated source hosts ("github.com", "gitlab.example.com"): only repos on those sources. Omitted
  *    (or empty) => every source. It narrows `repos` and the default selection alike. A host that isn't a source is a
  *    400.
@@ -594,14 +594,14 @@ export interface IssueQuery extends ScopeQuery, PageQuery {
 
 /** Repository inventory by default; scope=default narrows it to the default selection. */
 export interface RepoQuery {
-  /** Explicit repo keys (or an owned repo's short name) override scope; an empty string selects nothing. */
+  /** Explicit repo keys (or a github.com repo you own by its short name) override scope; an empty string selects nothing. */
   repos?: string;
   scope?: 'all' | 'default';
   /** Comma-separated source hosts: only repos on those sources (omitted: every source; a host that isn't one: 400). */
   source?: string;
   visibility?: VisibilityFilter;
   ownership?: Ownership;
-  /** Case-insensitive substring of owner/name, description, topics or language. */
+  /** Case-insensitive substring of the repo key, description, topics or language. */
   q?: string;
   sort?: 'activity' | 'stars' | 'open' | 'name';
 }

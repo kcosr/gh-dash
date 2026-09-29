@@ -372,6 +372,9 @@ describe('thread list targets', () => {
     expect(byId.get(mr.id)).toMatchObject({ targetTitle: null, targetUrl: `https://${GITLAB_HOST}/platform/app/-/merge_requests/99` });
     expect(byId.get(sha.id)).toMatchObject({ targetTitle: null, targetUrl: `https://${GITLAB_HOST}/platform/app/-/commit/${UNSYNCED}` });
     expect(byId.get(synced.id)).toMatchObject({ targetTitle: 'Rework config', targetUrl: 'https://github.com/alice/x/pull/2' });
+    // A synced merge request stored without a url (GitLab's webUrl is nullable, mapped to ''): built as well.
+    db.run("UPDATE pull_requests SET url = '' WHERE repo_id = ? AND number = 2", [gl]);
+    expect(list({}, { source: [GITLAB_HOST] }).items.find((i) => i.id === synced.id)).toMatchObject({ targetTitle: 'Rework config', targetUrl: `https://${GITLAB_HOST}/platform/app/-/merge_requests/2` });
     // A trailing slash on the repo's url doesn't double up.
     db.run("UPDATE repos SET url = url || '/' WHERE id = ?", [gl]);
     expect(list({}, { source: [GITLAB_HOST] }).items.find((i) => i.id === mr.id)!.targetUrl).toBe(`https://${GITLAB_HOST}/platform/app/-/merge_requests/99`);

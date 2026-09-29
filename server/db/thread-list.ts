@@ -24,7 +24,7 @@ export interface ThreadListResult {
 
 interface ThreadListRow extends ThreadRow {
   target_title: string | null;
-  /** The synced PR's or commit's own url. */
+  /** The synced PR's or commit's own url; null when not synced, or synced without one (GitLab's webUrl can be null). */
   target_url: string | null;
   pr_state: PrState | null;
   pr_head_oid: string | null;
@@ -46,7 +46,7 @@ const PR_COMMIT_HEADLINE =
      WHERE t.pr_number IS NULL AND q.repo_id = t.repo_id AND pc.oid = t.commit_oid ORDER BY q.number DESC LIMIT 1)`;
 const SELECT =
   `t.*, ${repoKeySql('r')} AS repo, r.url AS repo_url, s.kind AS source_kind, ` +
-  `COALESCE(p.title, c.headline, ${PR_COMMIT_HEADLINE}) AS target_title, COALESCE(p.url, c.url) AS target_url, ` +
+  `COALESCE(p.title, c.headline, ${PR_COMMIT_HEADLINE}) AS target_title, COALESCE(NULLIF(p.url, ''), NULLIF(c.url, '')) AS target_url, ` +
   'p.state AS pr_state, p.head_oid AS pr_head_oid';
 
 /** The scope (as /prs applies it) and the filters; `status` 'all' leaves the status out (for `counts`). */

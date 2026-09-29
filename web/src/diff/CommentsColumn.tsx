@@ -13,7 +13,7 @@ import { useToast } from '../components/Toasts';
 import { plainPreview } from '../lib/markdown';
 import { plural } from '../lib/time';
 import { copyText, cx } from '../lib/util';
-import { getDraft } from './drafts';
+import { getDraft, type NewThreadDraft } from './drafts';
 import { baseName } from './model';
 import { Composer, ThreadCard, threadWhere, useThreadsState } from './Threads';
 
@@ -38,7 +38,9 @@ function ThreadLink({ t, p, onJump }: { t: CommentThread; p: ThreadPlacement | u
   );
 }
 
-export const CommentsColumn = memo(function CommentsColumn({ threads, order, title, kind, error, onRetry, onJump, onClose, onCreateGeneral }: {
+export const CommentsColumn = memo(function CommentsColumn({
+  threads, order, title, kind, error, onRetry, onJump, onClose, onCreateGeneral, unsent, headOid, onResume, onDiscardDraft,
+}: {
   /** In n/p order: general, then by file (file-list order) and line. */
   threads: CommentThread[];
   /** File ids in file-list order, to group the in-diff entries. */
@@ -52,6 +54,12 @@ export const CommentsColumn = memo(function CommentsColumn({ threads, order, tit
   onJump: (id: number) => void;
   onClose: () => void;
   onCreateGeneral: (body: string) => Promise<unknown>;
+  /** New-thread drafts set aside (not the open one), to resume or discard. */
+  unsent: NewThreadDraft[];
+  /** The diff's head, to tell drafts started on an earlier push. */
+  headOid: string;
+  onResume: (key: string) => void;
+  onDiscardDraft: (key: string) => void;
 }) {
   const s = useThreadsState();
   const toast = useToast();
@@ -99,6 +107,24 @@ export const CommentsColumn = memo(function CommentsColumn({ threads, order, tit
             )
             : <button type="button" className="dth-reply dcc-start" onClick={() => setComposing(true)}>Comment on this {what}…</button>}
         </section>
+        {unsent.length > 0 && (
+          <section className="dcc-sec">
+            <h4 title="New comments you set aside (Esc): resume one to finish it">Unsent <span className="n">{unsent.length}</span></h4>
+            {unsent.map((d) => {
+              const a = d.anchor;
+              const lines = a.startLine === a.endLine ? `${a.startLine}` : `${a.startLine}–${a.endLine}`;
+              const earlier = a.commitOid !== headOid;
+              return (
+                <div key={d.key} className="dcc-unsent" title={`${a.path}:${lines} (${a.side})${earlier ? ` · started on ${a.commitOid.slice(0, 7)}` : ''}`}>
+                  <span className="dcc-where"><span className="name">{baseName(a.path)}</span><span className="ln">:{lines}</span></span>
+                  <span className="dcc-text">{plainPreview(d.body, 120)}</span>
+                  <button type="button" className="dth-btn" onClick={() => onResume(d.key)}>Resume</button>
+                  <button type="button" className="dth-btn" onClick={() => onDiscardDraft(d.key)}>Discard</button>
+                </div>
+              );
+            })}
+          </section>
+        )}
         {placed.length > 0 && (
           <section className="dcc-sec">
             <h4>In this diff <span className="n">{placed.length}</span></h4>

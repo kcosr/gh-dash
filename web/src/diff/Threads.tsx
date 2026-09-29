@@ -15,7 +15,7 @@ import { useLayer } from '../lib/layers';
 import { plainPreview } from '../lib/markdown';
 import { fmtDateTime, plural, rel } from '../lib/time';
 import { copyText, cx } from '../lib/util';
-import { clearDraft, getDraft, setDraft } from './drafts';
+import { getDraft, loadNewDraft, setDraft, setNewDraftBody } from './drafts';
 import type { DraftAnchor, DraftSpot } from './threadModel';
 
 export type ThreadActions = ReturnType<typeof useThreadActions>;
@@ -34,9 +34,12 @@ export interface ThreadsState {
   setExpanded: (id: number, open: boolean) => void;
   /** Prefix for this diff's draft keys. */
   draftScope: string;
-  /** The new thread being written, if any (one at a time), and where it shows now. */
+  /** The new thread being written, if any (one at a time): its record's key, its anchor, and where it shows now. */
+  draftKey: string | null;
   draft: DraftAnchor | null;
   draftSpot: DraftSpot;
+  /** Cancel: the draft goes (Esc, closeDraft, only sets it aside). */
+  discardDraft: () => void;
   submitDraft: (body: string) => Promise<unknown>;
   closeDraft: () => void;
   /** Files whose Outdated block is open. */
@@ -72,23 +75,36 @@ function Author({ c }: { c: ThreadComment }) {
   );
 }
 
+/** Where a composer keeps its unsent text. */
+export interface TextStore {
+  load: () => string;
+  /** '' when there's nothing to keep. */
+  save: (text: string) => void;
+}
+
+/** The default: sessionStorage under a key (drafts.ts). */
+const keyStore = (key: string): TextStore => ({ load: () => getDraft(key), save: (text) => setDraft(key, text) });
+
 /**
- * A markdown textarea with Comment / Cancel. Its text is a draft under `draftKey` until sent, so scrolling the
- * composer away (the viewer is virtualized) or reloading loses nothing. Mod+Enter sends; Esc closes it and keeps
- * the draft, Cancel discards it.
+ * A markdown textarea with Comment / Cancel. Its text is a draft (under `draftKey`, or in `store`) until sent, so
+ * scrolling the composer away (the viewer is virtualized) or reloading loses nothing. Mod+Enter sends; Esc closes
+ * it and keeps the draft, Cancel discards it (`onDiscard`, when discarding is more than forgetting the text).
  */
-export function Composer({ draftKey, initial = '', placeholder, submitLabel, onSubmit, onClose, autoFocus = true, focusKey = 0 }: {
-  draftKey: string;
+export function Composer({ draftKey, store: given, initial = '', placeholder, submitLabel, onSubmit, onClose, onDiscard, autoFocus = true, focusKey = 0 }: {
+  draftKey?: string;
+  store?: TextStore;
   initial?: string;
   placeholder: string;
   submitLabel: string;
   onSubmit: (body: string) => Promise<unknown>;
   onClose: () => void;
+  onDiscard?: () => void;
   autoFocus?: boolean;
   /** A change focuses the textarea again (`r` on a thread whose reply box is already open). */
   focusKey?: number;
 }) {
-  const [text, setText] = useState(() => getDraft(draftKey) || initial);
+  const [store] = useState(() => given ?? keyStore(draftKey!));
+  const [text, setText] = useState(() => store.load() || initial);
   const [busy, setBusy] = useState(false);
   const area = useRef<HTMLTextAreaElement>(null);
   const toast = useToast();
@@ -118,15 +134,14 @@ export function Composer({ draftKey, initial = '', placeholder, submitLabel, onS
   // Back at the starting text (all of it deleted, or an edit undone) there's nothing to keep.
   const change = (v: string) => {
     setText(v);
-    if (v === initial) clearDraft(draftKey);
-    else setDraft(draftKey, v);
+    store.save(v === initial ? '' : v);
   };
   const submit = async () => {
     if (!text.trim() || busy) return;
     setBusy(true);
     try {
       await onSubmit(text);
-      clearDraft(draftKey);
+      store.save('');
       onClose();
     } catch (e) {
       toast(`Couldn't save: ${(e as Error).message}`, { error: true });
@@ -154,7 +169,7 @@ export function Composer({ draftKey, initial = '', placeholder, submitLabel, onS
       <div className="dth-composer-bar">
         <span className="dth-hint">Markdown · <kbd>{/Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl'}</kbd> <kbd>Enter</kbd></span>
         <span className="spacer" />
-        <button type="button" className="dth-btn" onClick={() => { clearDraft(draftKey); onClose(); }} disabled={busy}>Cancel</button>
+        <button type="button" className="dth-btn" onClick={() => { if (onDiscard) onDiscard(); else { store.save(''); onClose(); } }} disabled={busy}>Cancel</button>
         <button type="button" className="dth-btn primary" onClick={() => void submit()} disabled={busy || !text.trim()}>{submitLabel}</button>
       </div>
     </div>
@@ -349,7 +364,8 @@ export function DraftComposer() {
   const s = useThreadsState();
   const d = s.draft;
   const at = s.draftSpot;
-  if (!d || !at) return null;
+  const key = s.draftKey;
+  if (!d || !at || key === null) return null;
   const lines = at.at === 'line' ? lineRange(at.startLine, at.endLine) : lineRange(d.startLine, d.endLine);
   return (
     <div className="dth dth-new">
@@ -362,12 +378,13 @@ export function DraftComposer() {
       </div>
       {at.at === 'file' && <pre className="dth-snippet">{d.snippet}</pre>}
       <Composer
-        key={`${d.path}|${d.side}|${d.startLine}-${d.endLine}`}
-        draftKey={`${s.draftScope}|new|${d.path}|${d.side}|${d.startLine}-${d.endLine}`}
+        key={key}
+        store={{ load: () => loadNewDraft(key)?.body ?? '', save: (text) => setNewDraftBody(key, text) }}
         placeholder={`Comment on ${lines}`}
         submitLabel="Comment"
         onSubmit={s.submitDraft}
         onClose={s.closeDraft}
+        onDiscard={s.discardDraft}
       />
     </div>
   );

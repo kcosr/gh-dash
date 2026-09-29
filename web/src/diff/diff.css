@@ -238,3 +238,6 @@ a.dvh-note:hover, .dvh-note.link:hover { color: var(--accent-text); }
 /* Compact: cards take the width a phone has. */
 .diff-viewer.compact .dth, .diff-viewer.compact .dth-outdated { margin-left: 8px; margin-right: 8px; }
 .diff-viewer.compact .dth-btn, .diff-viewer.compact .dth-reply { height: 32px; }
+.dcc-unsent { display: flex; align-items: baseline; gap: 6px; padding: 3px 6px; border-radius: 5px; }
+.dcc-unsent:hover { background: var(--surface-2); }
+.dcc-unsent .dth-btn { align-self: center; height: 22px; font-size: 11.5px; }

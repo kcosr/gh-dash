@@ -21,7 +21,9 @@ import type { FileFilter } from '../lib/urlState';
 import { cx } from '../lib/util';
 import { CommentsColumn } from './CommentsColumn';
 import { FileHeader, HEADER_HEIGHT } from './FileHeader';
-import { getDraftAnchor, setDraftAnchor } from './drafts';
+import {
+  getOpenNewDraft, listNewDrafts, loadNewDraft, newDraftsVersion, type NewThreadDraft, openNewDraft, removeNewDraft, setOpenNewDraft, subscribeNewDrafts,
+} from './drafts';
 import { createCurrentFile, FileList, type CurrentFile } from './FileList';
 import { buildFiles, parseFiles, type ViewerFile } from './model';
 import { DraftComposer, FileNotes, LineThreads, ThreadsCtx, type ThreadsState } from './Threads';
@@ -256,18 +258,35 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
     else next.delete(path);
     return next;
   }), []);
-  // The new thread being written survives a reload (with its text: drafts.ts), like the rest of the reader's place.
-  // It shows where placement puts it in the diff on screen, which may have moved on since it was started.
-  // A draft opened on expanded context shows under its lines while the context stays expanded: Pierre keeps it for
-  // this revision until the viewer goes (a reload folds it away again).
+  // The new thread being written: its record (drafts.ts: anchor and text together), open again after a reload like the
+  // rest of the reader's place. It shows where placement puts it in the diff on screen, which may have moved on since
+  // it was started. A draft opened on expanded context shows under its lines while the context stays expanded: Pierre
+  // keeps it for this revision until the viewer goes (a reload folds it away again).
   const rev = `${diff.baseOid}..${diff.headOid}`;
-  const [draft, setDraftState] = useState<DraftAnchor | null>(() => getDraftAnchor(comments.key));
+  const scope = comments.key;
+  const [open, setOpen] = useState<{ key: string; anchor: DraftAnchor } | null>(() => {
+    const d = getOpenNewDraft(scope);
+    return d && { key: d.key, anchor: d.anchor };
+  });
+  const draft = open?.anchor ?? null;
   const [draftOpenedAt, setDraftOpenedAt] = useState<string | null>(null);
-  const setDraft = useCallback((d: DraftAnchor | null, openedAt: string | null = null) => {
-    setDraftState(d);
+  const showDraft = useCallback((d: NewThreadDraft | null, openedAt: string | null = null) => {
+    setOpen(d && { key: d.key, anchor: d.anchor });
     setDraftOpenedAt(openedAt);
-    setDraftAnchor(comments.key, d);
-  }, [comments.key]);
+    setOpenNewDraft(scope, d?.key ?? null);
+  }, [scope]);
+  const openRef = useRef(open);
+  openRef.current = open;
+  /** The open draft steps aside (Esc, another one opening): kept, with its text, unless it has none. */
+  const setAside = useCallback(() => {
+    const cur = openRef.current;
+    if (cur && !loadNewDraft(cur.key)?.body.trim()) removeNewDraft(cur.key);
+  }, []);
+  // The drafts set aside (on this revision or an earlier one): the comments column lists them to resume or discard.
+  const draftsVersion = useSyncExternalStore(subscribeNewDrafts, newDraftsVersion);
+  const openKey = open?.key;
+  // draftsVersion: storage, read here, changed.
+  const unsent = useMemo(() => listNewDrafts(scope).filter((d) => d.key !== openKey && d.body.trim() !== ''), [scope, openKey, draftsVersion]);
   const spot = useMemo(() => {
     if (!draft) return null;
     const visible = (side: 'old' | 'new', line: number) => draftOpenedAt === rev || shown(draft.path, side, line);
@@ -357,8 +376,14 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
     if (!vf) return;
     const lines = selectionAnchor(id, vf.file.patch, range);
     const snippet = draftSnippet(vf.file.patch, contents.get(id), lines);
-    if (snippet === null) toast("Couldn't read these lines: expand the context around them and select them again", { error: true });
-    else setDraft({ ...lines, commitOid: diff.headOid, baseOid: diff.baseOid, snippet }, rev);
+    if (snippet === null) {
+      toast("Couldn't read these lines: expand the context around them and select them again", { error: true });
+      return;
+    }
+    // The draft for these lines at this revision: the one set aside earlier, or a new one.
+    const d = openNewDraft(scope, { ...lines, commitOid: diff.headOid, baseOid: diff.baseOid, snippet });
+    if (d.key !== openRef.current?.key) setAside();
+    showDraft(d, rev);
   };
   // A plain click's line is let go at once (while any selection stands, Pierre parks the "+" at its end instead of
   // following the pointer; an open composer keeps its own lines selected). It's remembered instead, marked on its
@@ -612,7 +637,6 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
     if (id !== null && opts.scroll) jumpToThread(id);
   }, [jumpToThread]);
 
-
   // The composer's lines (where they are now) stay selected, also when it comes back after a reload (Pierre keeps the
   // selection of a file that isn't rendered yet and paints it when it is).
   const draftLines = draft && spot?.at === 'line' ? { path: draft.path, ...spot } : null;
@@ -630,9 +654,15 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
     if (draftSel && (indexOf.get(path) ?? Infinity) < count) selectDraft(draftSel);
   }, [draftSel, count, indexOf, selectDraft]);
   const closeDraft = useCallback(() => {
-    setDraft(null);
+    setAside();
+    showDraft(null);
     view.current?.clearSelectedLines();
-  }, [setDraft]);
+  }, [setAside, showDraft]);
+  const discardDraft = useCallback(() => {
+    if (openRef.current) removeNewDraft(openRef.current.key);
+    showDraft(null);
+    view.current?.clearSelectedLines();
+  }, [showDraft]);
   // Focus moved (or its thread moved): repaint the files on screen; the rest paint as they render.
   const focusedPlace = focused === null ? undefined : placements.get(focused);
   const tint = focusedPlace?.kind === 'line' ? `${focusedPlace.path}\0${focusedPlace.side}\0${focusedPlace.startLine}\0${focusedPlace.endLine}` : '';
@@ -641,8 +671,6 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
     threadLines.current = tint ? { path: path!, side: side as 'old' | 'new', start: Number(start), end: Number(end) } : null;
     for (const host of scroller.current?.querySelectorAll<HTMLElement>('diffs-container') ?? []) paintThreadLines(host);
   }, [tint, paintThreadLines]);
-  const draftRef = useRef(draft);
-  draftRef.current = draft;
   dropClickRef.current = () => {
     view.current?.clearSelectedLines();
     selectDraft(draftSel);
@@ -651,12 +679,27 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
   const { actions } = comments;
   // As it was started (see DraftAnchor), whatever the diff shows now.
   const submitDraft = useCallback(async (body: string) => {
-    const d = draftRef.current;
-    if (!d) return;
-    const { path, side, startLine, endLine, commitOid, baseOid: base, snippet } = d;
+    const cur = openRef.current;
+    if (!cur) return;
+    const { path, side, startLine, endLine, commitOid, baseOid: base, snippet } = cur.anchor;
     const t = await actions.create({ commitOid, baseOid: base, path, side, startLine, endLine, snippet, body });
+    removeNewDraft(cur.key);
     focusThread(t.id);
   }, [actions, focusThread]);
+  // A draft set aside, open again where it shows now.
+  const resumeDraft = useCallback((key: string) => {
+    const d = loadNewDraft(key);
+    if (!d) return;
+    if (key !== openRef.current?.key) setAside();
+    showDraft(d);
+    const l = live.current;
+    const at = draftSpot(d.anchor, diff.kind, createPlacer({ files: diffFiles, headOid, baseOid }), (side, line) => l.shown(d.anchor.path, side, line));
+    const vf = l.byId.get(d.anchor.path);
+    if (!vf || !at) return;
+    if (l.compact) setColumnOpen(false);
+    if (l.isCollapsed(vf)) toggleCollapsed(vf.id);
+    goTo(vf.id, at.at === 'line' ? { type: 'line', id: vf.id, lineNumber: at.endLine, side: pierreSide(at.side), align: 'center' } : { type: 'item', id: vf.id, align: 'start' });
+  }, [setAside, showDraft, diff.kind, diffFiles, headOid, baseOid, goTo, toggleCollapsed]);
   const createGeneral = useCallback(async (body: string) => {
     const t = await actions.create({ commitOid: diff.headOid, baseOid: diff.baseOid, body });
     focusThread(t.id);
@@ -682,8 +725,12 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
 
   const threadsState = useMemo((): ThreadsState => ({
     byId: threadById, placements, actions, me: comments.me, focused, focus: focusThread, expanded, setExpanded,
-    draftScope: comments.key, draft, draftSpot: spot, submitDraft, closeDraft, outdatedOpen, setOutdatedOpen, replyRequest, takeReply,
-  }), [threadById, placements, actions, comments.me, focused, focusThread, expanded, setExpanded, comments.key, draft, spot, submitDraft, closeDraft, outdatedOpen, setOutdatedOpen, replyRequest, takeReply]);
+    draftScope: comments.key, draftKey: openKey ?? null, draft, draftSpot: spot, submitDraft, closeDraft, discardDraft, outdatedOpen, setOutdatedOpen,
+    replyRequest, takeReply,
+  }), [
+    threadById, placements, actions, comments.me, focused, focusThread, expanded, setExpanded, comments.key, openKey, draft, spot, submitDraft, closeDraft,
+    discardDraft, outdatedOpen, setOutdatedOpen, replyRequest, takeReply,
+  ]);
 
   // Threads render from ThreadsCtx: this stays the same function, so Pierre doesn't re-render every file for them.
   const renderAnnotation = useCallback((a: Annotation, item: Item) => {
@@ -855,7 +902,8 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
           {showColumn && (
             <LayerParent.Provider value={columnLayer.id}>
               <CommentsColumn threads={ordered} order={indexOf} title={title} kind={diff.kind} error={comments.error} onRetry={comments.retry}
-                onJump={(id) => focusThread(id, { scroll: true })} onClose={() => setColumn(false)} onCreateGeneral={createGeneral} />
+                onJump={(id) => focusThread(id, { scroll: true })} onClose={() => setColumn(false)} onCreateGeneral={createGeneral}
+                unsent={unsent} headOid={diff.headOid} onResume={resumeDraft} onDiscardDraft={removeNewDraft} />
             </LayerParent.Provider>
           )}
           {compact && columnOpen && <div className="dvr-scrim" onClick={() => setColumnOpen(false)} />}

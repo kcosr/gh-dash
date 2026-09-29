@@ -19,7 +19,7 @@ import { createProxy } from './proxy';
 import { ServerChild } from './server-child';
 import { mergePath, resolveShellPath } from './shell-path';
 import { cleanupStaleSocketDirs, createSocketLocation } from './socket';
-import { TokenStore } from './token-store';
+import { TokenStores } from './token-store';
 import { loadWindowState, MIN_HEIGHT, MIN_WIDTH, saveWindowState } from './window-state';
 
 const APP_ID = 'io.github.kcosr.gh-dash';
@@ -131,7 +131,8 @@ function run() {
     };
   };
 
-  const tokens = new TokenStore(join(userData, 'github-token.enc'), log);
+  // github.com's pasted token in github-token.enc (as before); each GitLab source's in tokens/<host>.enc.
+  const tokens = new TokenStores(userData, log);
   // Assigned right below; the callbacks only run once the child starts.
   let desktop!: Desktop;
   const child = new ServerChild({
@@ -143,7 +144,16 @@ function run() {
       desktop.onChildReady();
     },
   });
-  desktop = new Desktop({ child, tokens, configPath, dataDir, version: app.getVersion(), restart: () => child.restart(), log });
+  desktop = new Desktop({
+    child,
+    tokens: tokens.github,
+    sourceTokens: (host) => tokens.source(host),
+    configPath,
+    dataDir,
+    version: app.getVersion(),
+    restart: () => child.restart(),
+    log,
+  });
   // The first start waits for the app to be ready and for the login shell's PATH (the child, and gh, need it);
   // requests that arrive before then wait for it too, rather than finding the child not started.
   let appReady!: () => void;

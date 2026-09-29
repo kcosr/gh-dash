@@ -1,18 +1,35 @@
 /**
  * What the bridge methods do: token choices (persisted as config.json `tokenSource`), the keychain, and config.json
- * edits that restart the server child. Mutations run one at a time.
+ * edits that restart the server child; GitLab sources (config.json `sources`, a keychain file per source, reloaded in
+ * the child without a restart). Mutations run one at a time.
  */
 import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { accessSync, constants, mkdirSync, rmSync } from 'node:fs';
+import { accessSync, constants, mkdirSync, rmSync, statSync } from 'node:fs';
 import { basename, isAbsolute } from 'node:path';
 import { isDeepStrictEqual, promisify } from 'node:util';
-import { type ConfigFile, readConfigFile, writeConfigFile } from '../server/config-file';
-import type { AccountStatus, TokenChoice } from '../shared/api';
-import type { DesktopConfigPatch, DesktopState, DesktopTokenResult } from '../shared/desktop';
+import { type ConfigFile, type LoadedConfigFile, readConfigFile, sourceUrl, writeConfigFile } from '../server/config-file';
+import type { AccountStatus, SourceAccount, SourceCheck, TokenChoice } from '../shared/api';
+import type { CredentialDraft, DesktopConfigPatch, DesktopSourceResult, DesktopState, DesktopTokenResult, SourceMethod, SourceTestDraft } from '../shared/desktop';
 import { applyDesktopPatch, ConfigInputError, parseDesktopPatch, toDesktopConfig } from './config';
 import type { ServerChild, StartResult } from './server-child';
+import {
+  addEntry,
+  draftTarget,
+  findGlab,
+  gitlabEnvState,
+  lockingEnv,
+  parseCredentialDraft,
+  parseHostInput,
+  parseSourceDraft,
+  removeEntry,
+  sourceIndex,
+  withMethod,
+} from './sources';
 import type { TokenStore } from './token-store';
+
+/** The variable a GitLab source may sign in with (design §8: only this one, and only when it is set). */
+const GITLAB_TOKEN = 'GITLAB_TOKEN';
 
 export interface DesktopDeps {
   child: ServerChild;
@@ -24,6 +41,12 @@ export interface DesktopDeps {
   /** Restarts the child (dropping the proxy's kept-alive connections first). */
   restart: () => Promise<StartResult>;
   log: (line: string) => void;
+  /** The keychain file for a GitLab source's pasted token (TokenStores.source). */
+  sourceTokens?: (host: string) => TokenStore;
+  /** The app's environment, for GITLAB_TOKEN. Default: process.env. */
+  env?: NodeJS.ProcessEnv;
+  /** Where glab is (see sources.ts findGlab); a seam for tests. */
+  findGlab?: (glabPath: string | null) => Promise<string | null>;
 }
 
 export class Desktop {
@@ -32,8 +55,21 @@ export class Desktop {
   /** Why the last config change was rolled back. */
   private configError: string | null = null;
   private queue: Promise<unknown> = Promise.resolve();
+  /** GitLab sources' pasted tokens in use this session (remembered or not), by host: re-sent after every restart. */
+  private readonly sourceAppTokens = new Map<string, string>();
+  /** The token file last picked for a GitLab source (chooseTokenFile): the next `file` credential's. */
+  private tokenFile: string | null = null;
 
   constructor(private readonly d: DesktopDeps) {}
+
+  private get env(): NodeJS.ProcessEnv {
+    return this.d.env ?? process.env;
+  }
+
+  private store(host: string): TokenStore {
+    if (!this.d.sourceTokens) throw new Error('No keychain for GitLab sources');
+    return this.d.sourceTokens(host);
+  }
 
   /** Serializes mutations: two quick clicks must not interleave restarts and token pushes. */
   private exclusive<T>(fn: () => Promise<T>): Promise<T> {
@@ -62,6 +98,12 @@ export class Desktop {
 
   async state(): Promise<DesktopState> {
     const running = this.d.child.status === 'running';
+    const config = this.configOrEmpty();
+    const sources = (config.sources ?? []).map((entry) => {
+      const { host, baseUrl } = sourceUrl(entry.url);
+      return { host, url: baseUrl, tokenRemembered: this.d.sourceTokens ? this.store(host).has() : false };
+    });
+    const glabPath = config.glabPath ?? null;
     return {
       version: this.d.version,
       platform: process.platform,
@@ -71,6 +113,9 @@ export class Desktop {
       tokenRemembered: this.d.tokens.has(),
       apiUrl: running ? this.d.child.apiUrl : null,
       serverError: this.d.child.lastError ?? this.configError,
+      sources,
+      glab: { path: await (this.d.findGlab ?? findGlab)(glabPath).catch(() => null), chosen: glabPath !== null },
+      gitlabEnv: gitlabEnvState(config, this.env),
     };
   }
 
@@ -85,17 +130,44 @@ export class Desktop {
    */
   restoreToken(): Promise<void> {
     return this.exclusive(async () => {
-      if (this.configOrEmpty().tokenSource !== 'app' || !this.d.tokens.has()) return;
-      this.appToken = await this.d.tokens.load();
-      this.d.log(`[token] remembered token ${this.appToken ? 'restored' : 'dropped'}`);
-      // If the child is already up, onChildReady ran without the token.
-      if (this.appToken && this.d.child.status === 'running') this.pushToken();
+      const config = this.configOrEmpty();
+      if (config.tokenSource === 'app' && this.d.tokens.has()) {
+        this.appToken = await this.d.tokens.load();
+        this.d.log(`[token] remembered token ${this.appToken ? 'restored' : 'dropped'}`);
+        // If the child is already up, onChildReady ran without the token.
+        if (this.appToken && this.d.child.status === 'running') this.pushToken();
+      }
+      // Then each GitLab source that signs in with a pasted token.
+      for (const host of this.appSources(config)) {
+        const store = this.store(host);
+        if (!store.has()) continue;
+        const token = await store.load();
+        this.d.log(`[token] ${host}: remembered token ${token ? 'restored' : 'dropped'}`);
+        if (!token) continue;
+        this.sourceAppTokens.set(host, token);
+        if (this.d.child.status === 'running') this.pushSourceToken(host);
+      }
     });
   }
 
-  /** ServerChild.onReady: runs before requests are let through, so the first page load already has the token. */
+  /** ServerChild.onReady: runs before requests are let through, so the first page load already has the tokens. */
   onChildReady(): void {
-    if (this.appToken && this.configOrEmpty().tokenSource === 'app') this.pushToken();
+    const config = this.configOrEmpty();
+    if (this.appToken && config.tokenSource === 'app') this.pushToken();
+    for (const host of this.appSources(config)) if (this.sourceAppTokens.has(host)) this.pushSourceToken(host);
+  }
+
+  /** The GitLab sources config.json signs in with a pasted token. */
+  private appSources(config: ConfigFile): string[] {
+    if (!this.d.sourceTokens) return [];
+    return (config.sources ?? []).filter((e) => e.tokenSource === 'app').map((e) => sourceUrl(e.url).host);
+  }
+
+  private pushSourceToken(host: string) {
+    this.d.child
+      .sendSetSourceToken(host, this.sourceAppTokens.get(host) ?? null)
+      .then((r) => this.d.log(`[token] ${host}: app token ${r.ok ? `accepted (@${r.account.login})` : `rejected: ${r.account.error}`}`))
+      .catch((error: Error) => this.d.log(`[token] ${host}: could not hand over the app token: ${error.message}`));
   }
 
   private pushToken() {
@@ -156,6 +228,238 @@ export class Desktop {
       this.writeTokenSource(null);
       const result = await this.d.child.setToken(null, null);
       return result.account;
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // GitLab sources (design §8). The renderer sends a URL and a method; the token file is main's picker's, the variable
+  // is GITLAB_TOKEN, and a pasted token goes to the child (and the keychain) but never back.
+  // -------------------------------------------------------------------------
+
+  /** config.json for an edit: a broken one is reported, never overwritten. */
+  private editableConfig(): LoadedConfigFile {
+    try {
+      return readConfigFile(this.d.configPath);
+    } catch (error) {
+      throw new ConfigInputError(`Fix or remove ${this.d.configPath} first: ${(error as Error).message}`);
+    }
+  }
+
+  /** Writes `next`, has the child apply it, and puts `loaded` back if it can't (the child then keeps what it had). */
+  private async applySources(loaded: LoadedConfigFile, next: ConfigFile, what: string): Promise<void> {
+    writeConfigFile(this.d.configPath, next);
+    const result = await this.d.child.reloadSources();
+    if (result.ok) return;
+    this.d.log(`[sources] ${what} failed (${result.error}); restoring config.json`);
+    if (loaded.exists) writeConfigFile(this.d.configPath, loaded.data);
+    else rmSync(this.d.configPath, { force: true });
+    throw new ConfigInputError(`${what} failed: ${result.error}`);
+  }
+
+  /** Whether `method` can sign in the source at `host` (null: a new one), given GITLAB_TOKEN. */
+  private checkMethod(config: ConfigFile, host: string | null, method: SourceMethod) {
+    const env = gitlabEnvState(config, this.env, host);
+    if (method === 'env' && env !== 'locks' && env !== 'offered') {
+      throw new ConfigInputError(env === 'in-use' ? `${GITLAB_TOKEN} is already another GitLab source's token.` : `${GITLAB_TOKEN} isn't set in the environment gh-dash was started from.`);
+    }
+    if (method !== 'env' && env === 'locks') {
+      throw new ConfigInputError(`${GITLAB_TOKEN} is set in the environment gh-dash was started from, so it is always this source's token. To sign in another way, quit gh-dash, unset ${GITLAB_TOKEN} and start it again.`);
+    }
+  }
+
+  /** What the child tests: the token file and the variable are main's. */
+  private testDraft(url: string, credential: CredentialDraft): SourceTestDraft {
+    switch (credential.method) {
+      case 'app':
+        return { url, method: 'app', token: credential.token };
+      case 'file':
+        if (!this.tokenFile) throw new ConfigInputError('Choose the token file first.');
+        return { url, method: 'file', tokenFile: this.tokenFile };
+      case 'env':
+        return { url, method: 'env', tokenEnv: GITLAB_TOKEN };
+      case 'glab':
+        return { url, method: 'glab' };
+    }
+  }
+
+  /** A source already in config.json can't be added again. */
+  private addConflict(check: SourceCheck, config: ConfigFile): SourceCheck {
+    if (sourceIndex(config, check.host) < 0) return check;
+    return { ...check, ok: false, conflict: `${check.host} is already a source here: change its token under it instead.` };
+  }
+
+  /** Keeps a pasted token in the keychain when asked and possible, else makes sure no older one stays there. */
+  private async remember(host: string, token: string, remember: boolean): Promise<boolean> {
+    const store = this.store(host);
+    let remembered = false;
+    if (remember) {
+      try {
+        remembered = await store.save(token);
+      } catch (error) {
+        this.d.log(`[keychain] ${host}: could not store the token: ${(error as Error).message}`);
+      }
+    }
+    if (!remembered) store.remove();
+    return remembered;
+  }
+
+  /** Forgets a source's pasted token, this session's and the keychain's; true when there was one in use. */
+  private forgetSourceToken(host: string): boolean {
+    const had = this.sourceAppTokens.delete(host);
+    if (this.d.sourceTokens) this.store(host).remove();
+    return had;
+  }
+
+  /** Test connection: the account, instance, scopes and expiry the draft would give, or why not. Saves nothing. */
+  async testSource(input: unknown): Promise<SourceCheck> {
+    const draft = parseSourceDraft(input);
+    const config = this.editableConfig().data;
+    const { baseUrl } = draftTarget(draft.url);
+    this.checkMethod(config, null, draft.method);
+    return this.addConflict(await this.d.child.testSource(this.testDraft(baseUrl, draft)), config);
+  }
+
+  /**
+   * Add GitLab: tests the draft again (the renderer's own test isn't trusted), then writes config.json, has the child
+   * load it (no restart), hands over a pasted token (and keeps it in the keychain when asked), and starts the source's
+   * first sync. Nothing is saved when the test fails.
+   */
+  async addSource(input: unknown): Promise<DesktopSourceResult> {
+    const draft = parseSourceDraft(input);
+    return this.exclusive(async () => {
+      const loaded = this.editableConfig();
+      const { baseUrl } = draftTarget(draft.url);
+      this.checkMethod(loaded.data, null, draft.method);
+      const check = this.addConflict(await this.d.child.testSource(this.testDraft(baseUrl, draft)), loaded.data);
+      if (!check.ok) return { check, saved: false, remembered: false };
+      const entry = withMethod({ kind: 'gitlab', url: check.url }, draft.method, this.tokenFile);
+      await this.applySources(loaded, addEntry(loaded.data, entry, this.env), `Adding ${check.host}`);
+      let remembered = false;
+      if (draft.method === 'app') {
+        this.sourceAppTokens.set(check.host, draft.token);
+        remembered = await this.remember(check.host, draft.token, draft.remember);
+        const r = await this.d.child.setSourceToken(check.host, draft.token);
+        if (!r.ok) this.d.log(`[token] ${check.host}: app token rejected after the test passed: ${r.account.error}`);
+      } else if (draft.method === 'file') {
+        this.tokenFile = null;
+      }
+      this.d.log(`[sources] added ${check.host} (${draft.method})`);
+      this.d.child
+        .syncSource(check.host)
+        .then((result) => this.d.log(`[sources] ${check.host}: first sync ${result}`))
+        .catch((error: Error) => this.d.log(`[sources] ${check.host}: could not start its first sync: ${error.message}`));
+      return { check, saved: true, remembered };
+    });
+  }
+
+  /** Change token: tests the new credential, then switches the source to it. Nothing changes when the test fails. */
+  async setSourceCredential(hostInput: unknown, input: unknown): Promise<DesktopSourceResult> {
+    const host = parseHostInput(hostInput);
+    const credential = parseCredentialDraft(input);
+    return this.exclusive(async () => {
+      const loaded = this.editableConfig();
+      const i = this.appSource(loaded.data, host);
+      const entry = loaded.data.sources![i]!;
+      const locked = lockingEnv(loaded.data, i, this.env);
+      if (locked && credential.method !== 'env') throw new ConfigInputError(`${locked} is set in the environment gh-dash was started from, so it is always this source's token.`);
+      this.checkMethod(loaded.data, host, credential.method);
+      const check = await this.d.child.testSource(this.testDraft(sourceUrl(entry.url).baseUrl, credential));
+      if (!check.ok) return { check, saved: false, remembered: false };
+      const sources = [...loaded.data.sources!];
+      sources[i] = withMethod(entry, credential.method, this.tokenFile);
+      const next = { ...loaded.data, sources };
+      if (!isDeepStrictEqual(next, loaded.data)) await this.applySources(loaded, next, `Changing ${host}'s token`);
+      let remembered = false;
+      if (credential.method === 'app') {
+        this.sourceAppTokens.set(host, credential.token);
+        remembered = await this.remember(host, credential.token, credential.remember);
+        await this.d.child.setSourceToken(host, credential.token);
+      } else {
+        // The server keeps a source's app token across reloads: it goes too.
+        if (this.forgetSourceToken(host)) await this.d.child.setSourceToken(host, null);
+        if (credential.method === 'file') this.tokenFile = null;
+      }
+      this.d.log(`[sources] ${host}: now signs in with ${credential.method}`);
+      return { check, saved: true, remembered };
+    });
+  }
+
+  /** Sign out: the source stays (with its data), without a way to get a token until one is chosen again. */
+  async signOutSource(hostInput: unknown): Promise<SourceAccount> {
+    const host = parseHostInput(hostInput);
+    return this.exclusive(async () => {
+      const loaded = this.editableConfig();
+      const i = this.appSource(loaded.data, host);
+      const locked = lockingEnv(loaded.data, i, this.env);
+      if (locked) throw new ConfigInputError(`${locked} is set in the environment gh-dash was started from, so it is always this source's token.`);
+      const sources = [...loaded.data.sources!];
+      sources[i] = withMethod(sources[i]!, null, null);
+      await this.applySources(loaded, { ...loaded.data, sources }, `Signing out of ${host}`);
+      this.forgetSourceToken(host);
+      this.d.log(`[sources] ${host}: signed out`);
+      return (await this.d.child.setSourceToken(host, null)).account;
+    });
+  }
+
+  /** Remove: out of config.json first (so it isn't synced again), then deleted with all its data in the child. */
+  async removeSource(hostInput: unknown): Promise<DesktopState> {
+    const host = parseHostInput(hostInput);
+    return this.exclusive(async () => {
+      const loaded = this.editableConfig();
+      const i = this.appSource(loaded.data, host);
+      await this.applySources(loaded, removeEntry(loaded.data, i), `Removing ${host}`);
+      this.forgetSourceToken(host);
+      try {
+        const { repos } = await this.d.child.deleteSource(host);
+        this.d.log(`[sources] removed ${host} and its ${repos} repositories`);
+      } catch (error) {
+        this.d.log(`[sources] ${host} is out of config.json, but deleting its data failed: ${(error as Error).message}`);
+        throw new ConfigInputError(`${host} was taken out of the app's sources, but its data wasn't deleted: ${(error as Error).message}`);
+      }
+      return this.state();
+    });
+  }
+
+  /** The index of an entry the app can change; a user-facing error for a host config.json doesn't name. */
+  private appSource(config: ConfigFile, host: string): number {
+    const i = sourceIndex(config, host);
+    if (i < 0) throw new ConfigInputError(`${host} isn't one of this app's GitLab sources.`);
+    return i;
+  }
+
+  /** "Token file…": the picker's choice, kept for the next `file` credential. Returned for display. */
+  setTokenFile(path: string): string {
+    if (!isAbsolute(path)) throw new ConfigInputError('Choose the token file.');
+    let file = false;
+    try {
+      file = statSync(path).isFile();
+    } catch {
+      /* reported below */
+    }
+    if (!file) throw new ConfigInputError(`${basename(path)} isn't a file gh-dash can read.`);
+    this.tokenFile = path;
+    return path;
+  }
+
+  /**
+   * "Locate glab": the chosen file must be the GitLab CLI (`--version` prints "glab version 1.x" or "glab 1.x"), then
+   * it becomes config.json `glabPath` and the child reloads its sources (no restart).
+   */
+  async setGlabPath(path: string): Promise<DesktopState> {
+    if (!isAbsolute(path)) throw new ConfigInputError('Choose the glab executable.');
+    let version = '';
+    try {
+      version = (await execFileAsync(path, ['--version'], { timeout: 10_000, windowsHide: true, encoding: 'utf8' })).stdout;
+    } catch {
+      /* not runnable: reported below */
+    }
+    if (!/^glab(?: version)? v?\d/m.test(version)) throw new ConfigInputError(`${basename(path)} isn't the GitLab CLI: it didn't answer --version like glab does.`);
+    return this.exclusive(async () => {
+      const loaded = this.editableConfig();
+      if (loaded.data.glabPath === path) return this.state();
+      await this.applySources(loaded, { ...loaded.data, glabPath: path }, 'Setting glab');
+      this.d.log(`[config] glabPath set to ${path}; sources reloaded`);
+      return this.state();
     });
   }
 

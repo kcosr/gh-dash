@@ -154,6 +154,51 @@ export interface DesktopState {
   apiUrl: string | null;
   /** Last server start error (config problem, port in use...), shown in Settings. */
   serverError: string | null;
+  /** The GitLab sources in config.json (the app adds them in Settings → Sources). */
+  sources: DesktopSource[];
+  /**
+   * The GitLab CLI: config.json's glabPath when set (`chosen`), else where it was found on PATH or in the usual install
+   * folders; null when it wasn't found (or the chosen one is gone).
+   */
+  glab: { path: string | null; chosen: boolean };
+  /**
+   * GITLAB_TOKEN in the app's environment, for a new GitLab source: `unset`; `locks` (there's no GitLab source yet, so
+   * a new one is the only one, and the variable is always its token); `offered` (one of the ways to sign in);
+   * `in-use` (it is another source's token).
+   */
+  gitlabEnv: 'unset' | 'locks' | 'offered' | 'in-use';
+}
+
+/** A GitLab source in the app's config.json. */
+export interface DesktopSource {
+  host: string;
+  /** Its URL, relative root included. */
+  url: string;
+  /** A pasted token for it is stored in the OS keychain. */
+  tokenRemembered: boolean;
+}
+
+/**
+ * How to get a GitLab source's token, as the renderer asks for it. Never a path or a variable name: `file` is the file
+ * last picked with chooseTokenFile() (main keeps it), and `env` is GITLAB_TOKEN, allowed only when it is set in the
+ * app's environment. A pasted token goes to main once and is never read back.
+ */
+export type CredentialDraft =
+  | { method: 'app'; token: string; remember: boolean }
+  | { method: 'glab' }
+  | { method: 'file' }
+  | { method: 'env' };
+
+/** A GitLab source to test or add: its URL (with any relative root) and a credential. */
+export type SourceDraft = { kind: 'gitlab'; url: string } & CredentialDraft;
+
+export interface DesktopSourceResult {
+  /** The test that decided: the account, instance, scopes and expiry, or the error or conflict. */
+  check: SourceCheck;
+  /** Added (addSource) or switched to the new credential (setSourceCredential). When false, nothing changed. */
+  saved: boolean;
+  /** The pasted token was stored in the OS keychain. */
+  remembered: boolean;
 }
 
 export interface DesktopTokenResult {
@@ -182,6 +227,26 @@ export interface DesktopBridge {
    * must answer `--version` like gh; it's saved as config.json `ghPath` and the server restarts. null when cancelled.
    */
   chooseGhPath(): Promise<DesktopState | null>;
+  /** Tests a GitLab source before adding it: the account, instance, scopes and expiry, or why not. Saves nothing. */
+  testSource(draft: SourceDraft): Promise<SourceCheck>;
+  /**
+   * Tests the source again, then adds it to config.json (the pasted token to the OS keychain when asked and possible),
+   * loads it without a restart and starts its first sync. Nothing is saved when the test fails.
+   */
+  addSource(draft: SourceDraft): Promise<DesktopSourceResult>;
+  /** Tests a new credential for a GitLab source the app added, then uses it; nothing changes when the test fails. */
+  setSourceCredential(host: string, credential: CredentialDraft): Promise<DesktopSourceResult>;
+  /** Forgets a GitLab source's credential (a pasted token, keychain included). The source and its data stay. */
+  signOutSource(host: string): Promise<SourceAccount>;
+  /** Takes a GitLab source out of config.json, then deletes it and everything synced from it (not on GitLab). */
+  removeSource(host: string): Promise<DesktopState>;
+  /**
+   * Native file picker for glab when it isn't found. The file must answer `--version` like glab; it's saved as
+   * config.json `glabPath` and the sources are reloaded (no restart). null when cancelled.
+   */
+  chooseGlabPath(): Promise<DesktopState | null>;
+  /** Native file picker for a GitLab token file. Main keeps the path for the next `file` credential; returned for display. null when cancelled. */
+  chooseTokenFile(): Promise<string | null>;
 }
 
 /** IPC channel names used by the preload script (ipcRenderer.invoke) and main (ipcMain.handle). */
@@ -194,6 +259,13 @@ export const DESKTOP_IPC = {
   chooseDataDir: 'gh-dash:choose-data-dir',
   generateApiKey: 'gh-dash:generate-api-key',
   chooseGhPath: 'gh-dash:choose-gh-path',
+  testSource: 'gh-dash:test-source',
+  addSource: 'gh-dash:add-source',
+  setSourceCredential: 'gh-dash:set-source-credential',
+  signOutSource: 'gh-dash:sign-out-source',
+  removeSource: 'gh-dash:remove-source',
+  chooseGlabPath: 'gh-dash:choose-glab-path',
+  chooseTokenFile: 'gh-dash:choose-token-file',
 } as const;
 
 declare global {

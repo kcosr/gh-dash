@@ -60,4 +60,32 @@ export function registerIpc(desktop: Desktop, window: () => BrowserWindow | null
     const file = result.canceled ? null : (result.filePaths[0] ?? null);
     return file ? desktop.setGhPath(file) : null;
   });
+
+  // GitLab sources. The renderer names a URL, a host and a method; paths come from main's own pickers (below), and
+  // Desktop refuses anything else in the arguments.
+  handle(DESKTOP_IPC.testSource, (draft) => desktop.testSource(draft));
+  handle(DESKTOP_IPC.addSource, (draft) => desktop.addSource(draft));
+  handle(DESKTOP_IPC.setSourceCredential, (host, credential) => desktop.setSourceCredential(host, credential));
+  handle(DESKTOP_IPC.signOutSource, (host) => desktop.signOutSource(host));
+  handle(DESKTOP_IPC.removeSource, (host) => desktop.removeSource(host));
+  const pickFile = async (title: string, buttonLabel: string, exe: string | null) => {
+    const win = window();
+    const options: Electron.OpenDialogOptions = {
+      title,
+      buttonLabel,
+      defaultPath: homedir(),
+      properties: ['openFile', 'showHiddenFiles', 'dontAddToRecent'],
+      ...(exe && process.platform === 'win32' ? { filters: [{ name: exe, extensions: ['exe'] }] } : {}),
+    };
+    const result = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+    return result.canceled ? null : (result.filePaths[0] ?? null);
+  };
+  handle(DESKTOP_IPC.chooseGlabPath, async () => {
+    const file = await pickFile('Locate the GitLab CLI (glab)', 'Use this glab', 'glab.exe');
+    return file ? desktop.setGlabPath(file) : null;
+  });
+  handle(DESKTOP_IPC.chooseTokenFile, async () => {
+    const file = await pickFile('Choose the file holding the GitLab token', 'Use this file', null);
+    return file ? desktop.setTokenFile(file) : null;
+  });
 }

@@ -21,6 +21,7 @@ import type { IconName } from './Icon';
 import { useProviderOf, useRepoLabel, useRepoMapCtx, useSourceCtx, useWords } from './repoMapContext';
 import { sourceTitle } from './SourceBadge';
 import { useToast } from './Toasts';
+import { useViewHref } from './TopBar';
 import { useUI } from './ui';
 
 /** `labelParts` draws a repo name: a muted owner, then the name (`label` is the same text, for matching). */
@@ -61,6 +62,7 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggle
   const { sources, multi, current, byHost } = useSourceCtx();
   const ctx = current?.host ?? null;
   const switchTo = useSwitchContext();
+  const hrefTo = useViewHref();
   const repos = useRepos();
   const views = useViews();
   const apiBase = useApiBase();
@@ -106,7 +108,7 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggle
     const ql = q.trim().toLowerCase();
     const has = (t: string) => !ql || t.toLowerCase().includes(ql);
     const out: Section[] = [];
-    const go = (path: string) => navigate(`${path}${carrySearch(location.search)}`);
+    const go = (path: string) => navigate(hrefTo(path));
 
     // A repo is found by what it shows: its name, and for someone else's repo the owner as well. Every source's repos
     // are found; the context's come first, and choosing another's takes you to its context.
@@ -200,7 +202,7 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggle
     ].filter((a) => has(a.label));
     if (acts.length) out.push({ title: 'Actions', items: acts });
     return out;
-  }, [q, repos.data, repoMap, repoLabel, providerOf, w, views.data, prSearch.data, view, s, location.search, location.pathname, repoParam, onToggleSidebar, sidebarHidden, apiBase, openAddRepo, sources, multi, ctx, byHost, switchTo]);
+  }, [q, repos.data, repoMap, repoLabel, providerOf, w, views.data, prSearch.data, view, s, location.search, location.pathname, repoParam, onToggleSidebar, sidebarHidden, apiBase, openAddRepo, sources, multi, ctx, byHost, switchTo, hrefTo]);
 
   const flat = sections.flatMap((sec) => sec.items);
   const cur = Math.min(idx, Math.max(0, flat.length - 1));

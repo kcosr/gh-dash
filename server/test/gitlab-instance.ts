@@ -72,6 +72,7 @@ function fromMembership(p: (typeof memberProjectsFixture)[number]): Known {
     languages: [],
     repository: { rootRef: p.default_branch, tree: p.default_branch ? { lastCommit: { sha: '8'.repeat(40), committedDate: active } } : null },
     openMergeRequests: { count: 0 },
+    lockedMergeRequests: { count: 0 },
     openIssues: { count: 0 },
     latestMergeRequest: { nodes: [] },
     latestIssue: { nodes: [] },
@@ -95,6 +96,7 @@ function knownProjects(): Known[] {
     visibility: 'internal',
     lastActivityAt: '2026-09-28T09:00:00Z',
     openMergeRequests: { count: 0 },
+    lockedMergeRequests: { count: 0 },
     openIssues: { count: 0 },
     latestMergeRequest: { nodes: [] },
     latestIssue: { nodes: [] },
@@ -165,8 +167,8 @@ export function smokeOps(): Ops {
 
 /** A project's probe fields alone (what `Probes` answers). */
 function probeOf(p: Known) {
-  const { id, openMergeRequests, openIssues, latestMergeRequest, latestIssue, latestReleases } = p;
-  return { id, openMergeRequests, openIssues, latestMergeRequest, latestIssue, latestReleases };
+  const { id, openMergeRequests, lockedMergeRequests, openIssues, latestMergeRequest, latestIssue, latestReleases } = p;
+  return { id, openMergeRequests, lockedMergeRequests, openIssues, latestMergeRequest, latestIssue, latestReleases };
 }
 
 /**

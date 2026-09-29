@@ -394,7 +394,7 @@ const TOKEN_PAGE = '/-/user_settings/personal_access_tokens?name=gh-dash&scopes=
 
 /** The fields of ProjectFields and ProbeFields (queries.ts): every one must be in the response, null or not. */
 const PROJECT_KEYS = ['id', 'path', 'fullPath', 'namespace', 'description', 'webUrl', 'visibility', 'archived', 'isForked', 'starCount', 'forksCount', 'createdAt', 'lastActivityAt', 'topics', 'languages', 'repository'];
-const PROBE_KEYS = ['openMergeRequests', 'openIssues', 'latestMergeRequest', 'latestIssue', 'latestReleases'];
+const PROBE_KEYS = ['openMergeRequests', 'lockedMergeRequests', 'openIssues', 'latestMergeRequest', 'latestIssue', 'latestReleases'];
 
 const ADDRESS = /^[^@\s]+@[^@\s]+$/;
 const GLOBAL_ID = /^gid:\/\/gitlab\/(\w+)\/\d+$/;

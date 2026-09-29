@@ -24,8 +24,7 @@ const sha = (c: string) => c.repeat(40).slice(0, 40);
 /**
  * The fake instance, with empty lists for the projects other than alice/app that the sync reads over REST. Its GraphQL
  * fixtures are single pages that say more follow: here any later page is empty and the last. `owned` edits the owned
- * projects GitLab lists. The locked merge request (!2) is left out: the sync counts it as open and GitLab's open count
- * doesn't, which would add an open pass and a recheck to every sync.
+ * projects GitLab lists.
  */
 function instance(over: Record<string, Handler> = {}) {
   const owned = structuredClone(ownedFixture);
@@ -41,11 +40,10 @@ function instance(over: Record<string, Handler> = {}) {
     const { query, variables } = req.body as { query: string; variables?: { after?: string | null } };
     if (/query OwnedProjects\b/.test(query)) return { body: { data: owned } };
     const reply = answer(req);
-    const body = structuredClone(reply.body) as { data?: { project?: Record<string, { nodes?: { state?: string }[] } | null> | null } };
+    if (!variables?.after) return reply;
+    const body = structuredClone(reply.body) as { data?: { project?: Record<string, unknown> | null } };
     for (const conn of Object.values(body.data?.project ?? {})) {
-      if (!conn || typeof conn !== 'object' || !('pageInfo' in conn)) continue;
-      if (variables?.after) Object.assign(conn, { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } });
-      else conn.nodes = conn.nodes?.filter((n) => n.state !== 'locked');
+      if (conn && typeof conn === 'object' && 'pageInfo' in conn) Object.assign(conn, { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } });
     }
     return { ...reply, body };
   };
@@ -92,7 +90,9 @@ describe('a GitLab source', () => {
     });
     expect(db.get('SELECT stars_count FROM sync_state WHERE repo_id = ?', [app])).toEqual({ stars_count: 2 });
 
-    // Nothing moved: the list and the probes, nothing else.
+    // Nothing moved: the list and the probes, nothing else. !2 is locked (being merged): it is open, and GitLab's probe
+    // counts it with the opened ones, so the open counts agree without listing and rechecking the open ones every sync.
+    expect(db.all(`SELECT number FROM pull_requests WHERE repo_id = ? AND state = 'open' ORDER BY number`, [app])).toEqual([{ number: 2 }, { number: 7 }]);
     expect(await sync({}, NOW + HOUR)).toMatchObject({ newItems: 0, errors: [] });
     expect(take()).toEqual(['graphql OwnedProjects', 'graphql Probes']);
   });

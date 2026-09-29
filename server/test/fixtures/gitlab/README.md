@@ -46,7 +46,8 @@ URLs, and compare. Worth checking in particular:
   shared from another user's personal namespace.
 - `owned-projects.json` / `project.json`: `repository.tree.lastCommit` for a non-empty and an empty repository,
   `languages` right after a push (empty until GitLab detects them), relative `avatarUrl`s under a relative root.
-- `probes.json`: `count` on the open merge request and issue connections, and `projects(ids:)` with archived projects.
+- `probes.json`: `count` on the open merge request and issue connections, `state: locked` counted apart from `opened`
+  (a merge request being merged), and `projects(ids:)` with archived projects.
 - `issues.json`: label objects with `with_labels_details=true` (3-digit colors?), `closed_by` on issues closed by an MR.
 - `commits.json`: the `stats` of merge commits, and the empty last page GitLab offers after a full one.
 - `starrers.json`: that the list is oldest first and leaves out private profiles, against `starCount`.

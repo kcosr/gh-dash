@@ -143,7 +143,8 @@ export function mapCandidate(p: RestProject): RepoCandidateRecord {
 /** GitLab has no cheap "latest star" (starrers are REST-only, listed oldest first): latestStarredAt stays null. */
 export function mapProbe(p: GqlProbe): RepoProbe {
   return {
-    openPrs: p.openMergeRequests?.count ?? 0,
+    // Locked (being merged) counts as open, as in mapMergeRequest.
+    openPrs: (p.openMergeRequests?.count ?? 0) + (p.lockedMergeRequests?.count ?? 0),
     openIssues: p.openIssues?.count ?? 0,
     latestPrUpdatedAt: utcOrNull(p.latestMergeRequest?.nodes[0]?.updatedAt),
     latestIssueUpdatedAt: utcOrNull(p.latestIssue?.nodes[0]?.updatedAt),

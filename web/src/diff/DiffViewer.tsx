@@ -694,7 +694,7 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
   }, [open, draftsVersion, showDraft]);
   // A send can finish after the reader has left this diff (Back, another diff): the draft and the cached threads are
   // settled all the same, but only a viewer still showing the diff focuses the new thread (its URL setter would
-  // otherwise take the reader back).
+  // otherwise take the reader back). The same for a general comment (createGeneral).
   const mounted = useRef(false);
   useEffect(() => {
     mounted.current = true;
@@ -735,7 +735,7 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
   }, [setAside, showDraft, diff.kind, diffFiles, headOid, baseOid, goTo, toggleCollapsed]);
   const createGeneral = useCallback(async (body: string) => {
     const t = await actions.create({ commitOid: diff.headOid, baseOid: diff.baseOid, body });
-    focusThread(t.id);
+    if (mounted.current) focusThread(t.id);
   }, [actions, diff.headOid, diff.baseOid, focusThread]);
 
   // r: the focused thread's reply box (brought into view first if its card isn't on screen); e: resolve or reopen it.

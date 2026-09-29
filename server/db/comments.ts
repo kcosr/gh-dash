@@ -1,5 +1,6 @@
 import type { CommentThread, Principal, ThreadAnchor, ThreadComment, ThreadStatus } from '../../shared/api';
 import type { Db } from './db';
+import { repoKeySql } from './repo-key';
 
 /** The dashboard's own user ("You"): principals row 1, created by the migration. */
 export const SELF_PRINCIPAL_ID = 1;
@@ -44,7 +45,7 @@ interface CommentRow {
   edited_at: string | null;
 }
 
-const THREAD_SELECT = 'SELECT t.*, r.name AS repo FROM comment_threads t JOIN repos r ON r.id = t.repo_id';
+const THREAD_SELECT = `SELECT t.*, ${repoKeySql('r')} AS repo FROM comment_threads t JOIN repos r ON r.id = t.repo_id`;
 const COMMENT_SELECT =
   'SELECT c.*, p.kind AS author_kind, p.name AS author_name FROM comments c JOIN principals p ON p.id = c.author_id';
 

@@ -8,6 +8,7 @@ import { type Db, openDb } from './db/db';
 import { getMeta } from './db/meta';
 import { type DiffCache, openDiffCache } from './diff/cache';
 import { DiffService } from './diff/service';
+import { GitHubDiffSources } from './github/diff-source';
 import { SyncManager } from './sync/manager';
 import { TokenProvider, type TokenProviderOptions } from './token';
 
@@ -81,7 +82,7 @@ export async function startServer(opts: StartOptions): Promise<RunningServer> {
       tokenSettled = true;
     });
     const sync = new SyncManager({ db, schedule: config.syncEnabled, tokens, log });
-    const diffs = new DiffService({ db, cache, tokens, log });
+    const diffs = new DiffService({ db, cache, sources: new GitHubDiffSources({ tokens, log }), log });
     diffs.evict();
     const viewerReady = sync.ensureViewer().catch((err: Error) => log(`[startup] could not fetch GitHub viewer: ${err.message}`));
     const deps: AppDeps = { db, config, sync, diffs, tokens };

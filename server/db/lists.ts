@@ -25,6 +25,7 @@ import {
   type Scope,
   Where,
 } from './filters';
+import { repoKeySql, resolveRepo } from './repo-key';
 import {
   type CommitRow,
   type IssueRow,
@@ -92,7 +93,7 @@ function runPaged<R>(db: Db, spec: PagedSpec<R>, page: Page, knownTotal?: number
 
 function facetByRepo(db: Db, from: string, where: Where): Record<string, number> {
   const rows = db.all<{ repo: string; n: number }>(
-    `SELECT r.name AS repo, count(*) AS n FROM ${from} WHERE ${where.toSql()} GROUP BY r.name`,
+    `SELECT ${repoKeySql('r')} AS repo, count(*) AS n FROM ${from} WHERE ${where.toSql()} GROUP BY ${repoKeySql('r')}`,
     where.params,
   );
   return Object.fromEntries(rows.map((r) => [r.repo, r.n]));
@@ -114,7 +115,9 @@ export interface PrFilter {
 const PR_FROM = 'pull_requests p JOIN repos r ON r.id = p.repo_id';
 // Threads are keyed by repo and number (not p.id), so they match the PR's current row.
 const PR_THREADS = 'FROM comment_threads t WHERE t.repo_id = p.repo_id AND t.pr_number = p.number';
-const PR_SELECT = `p.*, r.name AS repo, (SELECT count(*) ${PR_THREADS}) AS threads, (SELECT count(*) ${PR_THREADS} AND t.status = 'open') AS unresolved_threads`;
+const PR_SELECT =
+  `p.*, ${repoKeySql('r')} AS repo, ` +
+  `(SELECT count(*) ${PR_THREADS}) AS threads, (SELECT count(*) ${PR_THREADS} AND t.status = 'open') AS unresolved_threads`;
 
 function prWhere(ctx: QueryCtx, scope: Scope, f: PrFilter, ignoreRepos: boolean): Where {
   const w = new Where();
@@ -146,7 +149,7 @@ export function listPrs(
     select: PR_SELECT,
     where: prWhere(ctx, scope, f, false),
     at: 'p.activity_at',
-    keys: ['r.name', 'p.number'],
+    keys: [repoKeySql('r'), 'p.number'],
     cursorOf: (r) => [r.activity_at, r.repo, r.number],
   }, page);
   return {
@@ -158,10 +161,9 @@ export function listPrs(
 }
 
 export function getPrDetail(db: Db, ctx: QueryCtx, repo: string, number: number): PullRequestDetail | null {
-  const row = db.get<PrRow>(`SELECT ${PR_SELECT} FROM ${PR_FROM} WHERE r.name = ? AND r.removed_at IS NULL AND p.number = ?`, [
-    repo,
-    number,
-  ]);
+  const ref = resolveRepo(db, repo);
+  if (!ref) return null;
+  const row = db.get<PrRow>(`SELECT ${PR_SELECT} FROM ${PR_FROM} WHERE p.repo_id = ? AND p.number = ?`, [ref.id, number]);
   if (!row) return null;
   const commits = db.all<PrCommitRow>('SELECT * FROM pr_commits WHERE pr_id = ? ORDER BY position', [row.id]);
   return toPrDetail(row, commits, isMeFn(ctx));
@@ -180,10 +182,10 @@ export function listCommits(db: Db, ctx: QueryCtx, scope: Scope, page: Page): Li
   const isMe = isMeFn(ctx);
   const { rows, next, total } = runPaged<CommitRow>(db, {
     from: 'commits c JOIN repos r ON r.id = c.repo_id',
-    select: 'c.*, r.name AS repo',
+    select: `c.*, ${repoKeySql('r')} AS repo`,
     where: w,
     at: 'c.committed_at',
-    keys: ['r.name', 'c.oid'],
+    keys: [repoKeySql('r'), 'c.oid'],
     cursorOf: (r) => [r.committed_at, r.repo, r.oid],
   }, page);
   return { items: rows.map((r) => toCommit(r, isMe)), nextCursor: next, total };
@@ -199,10 +201,10 @@ export function listIssues(db: Db, ctx: QueryCtx, scope: Scope, state: IssueStat
   const isMe = isMeFn(ctx);
   const { rows, next, total } = runPaged<IssueRow>(db, {
     from: 'issues i JOIN repos r ON r.id = i.repo_id',
-    select: 'i.*, r.name AS repo',
+    select: `i.*, ${repoKeySql('r')} AS repo`,
     where: w,
     at: 'i.activity_at',
-    keys: ['r.name', 'i.number'],
+    keys: [repoKeySql('r'), 'i.number'],
     cursorOf: (r) => [r.activity_at, r.repo, r.number],
   }, page);
   return { items: rows.map((r) => toIssue(r, isMe)), nextCursor: next, total };
@@ -217,10 +219,10 @@ export function listReleases(db: Db, ctx: QueryCtx, scope: Scope, page: Page): L
   const isMe = isMeFn(ctx);
   const { rows, next, total } = runPaged<ReleaseRow>(db, {
     from: 'releases rel JOIN repos r ON r.id = rel.repo_id',
-    select: 'rel.*, r.name AS repo',
+    select: `rel.*, ${repoKeySql('r')} AS repo`,
     where: w,
     at: 'rel.published_at',
-    keys: ['r.name', 'rel.tag'],
+    keys: [repoKeySql('r'), 'rel.tag'],
     cursorOf: (r) => [r.published_at, r.repo, r.tag],
   }, page);
   return { items: rows.map((r) => toRelease(r, isMe)), nextCursor: next, total };
@@ -234,10 +236,10 @@ export function listStars(db: Db, ctx: QueryCtx, scope: Scope, page: Page): List
   if (scope.who === 'me' || scope.q) w.add('0');
   const { rows, next, total } = runPaged<StarRow>(db, {
     from: 'stars s JOIN repos r ON r.id = s.repo_id',
-    select: 's.*, r.name AS repo',
+    select: `s.*, ${repoKeySql('r')} AS repo`,
     where: w,
     at: 's.starred_at',
-    keys: ['r.name', 's.login'],
+    keys: [repoKeySql('r'), 's.login'],
     cursorOf: (r) => [r.starred_at, r.repo, r.login],
   }, page);
   return { items: rows.map(toStar), nextCursor: next, total };
@@ -323,7 +325,7 @@ function eventUnion(ctx: QueryCtx, scope: Scope, types: EventType[] | null, igno
     const w = sourceWhere(src, ctx, scope, ignoreRepos);
     parts.push(
       `SELECT ${src.at} AS at, '${src.type}' AS type, ${src.kind ? `'${src.kind}'` : 'NULL'} AS kind, ${src.alias}.id AS eid, ` +
-        `r.name AS repo, '${src.code}' || printf('%012d', ${src.alias}.id) AS ek ` +
+        `${repoKeySql('r')} AS repo, '${src.code}' || printf('%012d', ${src.alias}.id) AS ek ` +
         `FROM ${src.table} ${src.alias} JOIN repos r ON r.id = ${src.alias}.repo_id WHERE ${w.toSql()}`,
     );
     params.push(...w.params);
@@ -351,7 +353,7 @@ function activityFacets(
   );
   const w = new Where();
   addRepoScope(w, scope, ctx);
-  const selected = new Set(db.all<{ name: string }>(`SELECT r.name FROM repos r WHERE ${w.toSql()}`, w.params).map((r) => r.name));
+  const selected = new Set(db.all<{ repo: string }>(`SELECT ${repoKeySql('r')} AS repo FROM repos r WHERE ${w.toSql()}`, w.params).map((r) => r.repo));
 
   let total = 0;
   const byRepo: Record<string, number> = {};
@@ -398,7 +400,7 @@ function hydrateEvents(db: Db, ctx: QueryCtx, rows: EventRow[]): ActivityEvent[]
   const load = <R extends { id: number }, T>(type: EventType, table: string, alias: string, map: (row: R) => T) => {
     const out = new Map<number, T>();
     if (!rows.some((r) => r.type === type)) return out;
-    const sql = `SELECT ${alias}.*, r.name AS repo FROM ${table} ${alias} JOIN repos r ON r.id = ${alias}.repo_id WHERE ${alias}.id IN (SELECT value FROM json_each(?))`;
+    const sql = `SELECT ${alias}.*, ${repoKeySql('r')} AS repo FROM ${table} ${alias} JOIN repos r ON r.id = ${alias}.repo_id WHERE ${alias}.id IN (SELECT value FROM json_each(?))`;
     for (const row of db.all<R>(sql, [ids(type)])) out.set(row.id, map(row));
     return out;
   };

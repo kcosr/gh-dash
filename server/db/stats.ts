@@ -4,6 +4,7 @@ import type { Db, Param } from './db';
 import { addRepoScope, meSql, type QueryCtx, type Scope, Where } from './filters';
 import { EVENT_SOURCES, type EventSource, sourceWhere } from './lists';
 import { getMeta } from './meta';
+import { repoKeySql } from './repo-key';
 
 const SLICES = 12;
 const TOP_CONTRIBUTORS = 20;
@@ -76,7 +77,7 @@ function fetchGroups(db: Db, ctx: QueryCtx, scope: Scope, segments: OffsetSegmen
   };
   const day = localDateSql(s.at, segments);
   const me = opts.mine && s.who ? meSql(ctx, s.who.login, s.who.email) : { sql: '0', params: [] as Param[] };
-  col('r.name AS repo');
+  col(`${repoKeySql('r')} AS repo`);
   col('r.visibility AS visibility');
   col(`CASE WHEN ${s.at} >= ? THEN ${day.sql} END AS day`, fromIso, ...day.params);
   // Same arithmetic (IEEE doubles, then floor) as Math.floor((t - from) * SLICES / len) in JS.

@@ -20,6 +20,7 @@ import {
   type ThreadTarget,
 } from '../../db/comments';
 import type { Db } from '../../db/db';
+import { resolveRepo } from '../../db/repo-key';
 import type { AppDeps } from '../app';
 import { HttpError, jsonBody, parseWith } from '../http';
 
@@ -84,14 +85,11 @@ const replyBody = z.object({ body: commentBody }).strict();
 const statusBody = z.object({ status: z.enum(['open', 'resolved']) }).strict();
 const listQuery = z.object({ format: z.enum(['json', 'md']).optional() });
 
-/**
- * The local repos.id for a route's repo key (today the repo's short name, as everywhere in the API; removed repos are
- * not found). The only place this module turns keys into ids, so it can move to a shared resolver in one step.
- */
+/** The local repos.id for a route's repo key, by the shared resolver (removed repos are not found). */
 function repoIdForKey(db: Db, key: string): number {
-  const row = db.get<{ id: number }>('SELECT id FROM repos WHERE name = ? AND removed_at IS NULL', [key]);
-  if (!row) throw new HttpError(404, 'Repository not found');
-  return row.id;
+  const ref = resolveRepo(db, key);
+  if (!ref) throw new HttpError(404, 'Repository not found');
+  return ref.id;
 }
 
 /**

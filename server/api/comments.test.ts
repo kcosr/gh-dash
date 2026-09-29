@@ -4,6 +4,7 @@ import { loadConfig } from '../config';
 import type { Db } from '../db/db';
 import { DiffCache } from '../diff/cache';
 import { DiffService } from '../diff/service';
+import { GitHubDiffSources } from '../github/diff-source';
 import { SyncManager } from '../sync/manager';
 import { seedDb } from '../test/seed';
 import { testTokens } from '../test/tokens';
@@ -17,7 +18,7 @@ function makeApp(db: Db = seedDb()) {
   const config = { ...loadConfig({}), webDir: '/nonexistent' };
   const tokens = testTokens();
   const sync = new SyncManager({ db, schedule: false, tokens, log: () => {} });
-  const diffs = new DiffService({ db, cache: new DiffCache(':memory:'), tokens, log: () => {} });
+  const diffs = new DiffService({ db, cache: new DiffCache(':memory:'), sources: new GitHubDiffSources({ tokens }), log: () => {} });
   const app = createApp({ db, config, sync, diffs, tokens });
   const send = (method: string, path: string, body?: unknown, headers: Record<string, string> = {}) =>
     app.request(`http://localhost/api/v1${path}`, {

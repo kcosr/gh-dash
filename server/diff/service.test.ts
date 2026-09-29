@@ -1,15 +1,18 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { gunzipSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
-import type { Diff } from '../../shared/api';
+import type { Diff, DiffFile } from '../../shared/api';
 import { HttpError } from '../api/http';
 import type { Db } from '../db/db';
 import { patchSettings } from '../db/settings';
+import { GitHubDiffSources } from '../github/diff-source';
+import { SourceError } from '../provider/errors';
+import type { BlobResult, DiffRepo, DiffSource, PrRevision } from '../provider/types';
 import { fakeGitHub, type Handler as Route, page, type Reply, restFile, sha } from '../test/github';
 import { seedDb } from '../test/seed';
 import { supplyOf } from '../test/tokens';
 import { DiffCache } from './cache';
-import { DiffService, MAX_BLOB_BYTES, OPEN_PR_TTL_MS, type Payload, payloadText } from './service';
+import { DiffService, type DiffSources, MAX_BLOB_BYTES, OPEN_PR_TTL_MS, type Payload, payloadText } from './service';
 
 const BASE = sha('0');
 const MERGE_BASE = sha('9');
@@ -17,7 +20,10 @@ const A = sha('a');
 const B = sha('b');
 const HOUR = 3_600_000;
 
-function setup(routes: Record<string, Route> = {}, opts: { fetchImpl?: (inner: typeof fetch) => typeof fetch; buildTimeoutMs?: number } = {}) {
+function setup(
+  routes: Record<string, Route> = {},
+  opts: { fetchImpl?: (inner: typeof fetch) => typeof fetch; buildTimeoutMs?: number; sources?: DiffSources } = {},
+) {
   const db = seedDb();
   const gh = fakeGitHub(routes);
   const token = { value: 'tok' as string | null, resolved: 0 };
@@ -30,16 +36,10 @@ function setup(routes: Record<string, Route> = {}, opts: { fetchImpl?: (inner: t
     token.resolved++;
     return token.value;
   });
-  const svc = new DiffService({
-    db,
-    cache,
-    tokens,
-    fetchImpl: opts.fetchImpl ? opts.fetchImpl(gh.fetchImpl) : gh.fetchImpl,
-    sleep: async () => {},
-    log: (line) => logs.push(line),
-    now: () => clock.t,
-    buildTimeoutMs: opts.buildTimeoutMs,
-  });
+  const log = (line: string) => logs.push(line);
+  const sources =
+    opts.sources ?? new GitHubDiffSources({ tokens, fetchImpl: opts.fetchImpl ? opts.fetchImpl(gh.fetchImpl) : gh.fetchImpl, sleep: async () => {}, log });
+  const svc = new DiffService({ db, cache, sources, log, now: () => clock.t, buildTimeoutMs: opts.buildTimeoutMs });
   /** Requests made by `fn`. */
   const spent = async <T>(fn: () => Promise<T>) => {
     gh.requests.length = 0;
@@ -388,7 +388,7 @@ describe('PR diffs', () => {
     clock.t += OPEN_PR_TTL_MS + 1;
 
     // A restart without a token (say after `gh auth logout`), same cache.
-    const noToken = new DiffService({ db, cache, tokens: supplyOf(() => null), log: () => {}, now: () => clock.t });
+    const noToken = new DiffService({ db, cache, sources: new GitHubDiffSources({ tokens: supplyOf(() => null) }), log: () => {}, now: () => clock.t });
     const stale = await noToken.prDiff('app', 2);
     expect(await diffOf(stale)).toEqual({ ...fresh, stale: true });
     expect(JSON.parse(gunzipSync(stale.gz).toString())).toEqual({ ...fresh, stale: true });
@@ -598,5 +598,155 @@ describe('file contents', () => {
     expect((await spent(() => svc.blob('app', REF, 'f4.txt'))).requests).toEqual([]);
     expect((await spent(() => svc.blob('app', REF, 'f1.txt'))).requests).toEqual([]);
     expect((await spent(() => svc.blob('app', REF, 'f2.txt'))).requests).toHaveLength(1);
+  });
+});
+
+describe('with another source', () => {
+  const C = sha('c');
+  /**
+   * An in-memory source that isn't GitHub, to show the service needs nothing beyond the DiffSource contract. It can't
+   * check a head cheaply (prHeadIs: null) and reports no rate limit. `calls` and `repos` record what it was asked, about which repo.
+   */
+  function anySource() {
+    const calls: string[] = [];
+    const repos: DiffRepo[] = [];
+    const file = (path: string): DiffFile => ({ path, previousPath: null, status: 'added', additions: 1, deletions: 0, patch: '@@ -0,0 +1 @@\n+x' });
+    const revision = (headOid: string, over: Partial<PrRevision> = {}): PrRevision => ({
+      headOid, baseRef: 'main', baseOid: MERGE_BASE, title: 'Add parser', totalFiles: 1, additions: 1, deletions: 0,
+      url: 'https://gitlab.example/alice/app/-/merge_requests/2/diffs', ...over,
+    });
+    const blobs: Record<string, BlobResult> = {
+      'a.txt': { kind: 'file', bytes: new TextEncoder().encode('hello') },
+      'logo.png': { kind: 'file', bytes: new Uint8Array([0x89, 0x50, 0, 0]) },
+      src: { kind: 'not-file' },
+      'big.bin': { kind: 'too-large' },
+    };
+    const state = { rev: revision(A), fail: null as SourceError | null };
+    const ask = (call: string, repo: DiffRepo) => {
+      calls.push(call);
+      repos.push(repo);
+      if (state.fail) throw state.fail;
+    };
+    const source: DiffSource = {
+      kind: 'gitlab',
+      get requests() {
+        return calls.length;
+      },
+      rateLimit: null,
+      authHint: 'check the GitLab token',
+      maxFiles: 1000,
+      prHeadIs: async () => null,
+      async prRevision(repo, number) {
+        ask(`revision !${number}`, repo);
+        return state.rev;
+      },
+      async prFiles(repo, number, rev) {
+        ask(`files !${number}`, repo);
+        return { rev, files: [file(`${rev.headOid.slice(0, 1)}.ts`)] };
+      },
+      async commit(repo, ref) {
+        ask(`commit ${ref.slice(0, 7)}`, repo);
+        if (ref !== C) throw new SourceError('not-found', 'no such commit', { status: 404 });
+        return { title: 'Fix', baseOid: sha('p'), headOid: C, files: [file('c.ts')], totalFiles: 1, additions: 1, deletions: 0, url: 'https://gitlab.example/c' };
+      },
+      async blob(repo, _sha, path, maxBytes) {
+        ask(`blob ${path} ${maxBytes}`, repo);
+        const blob = blobs[path];
+        if (!blob) throw new SourceError('not-found', 'no such file', { status: 404 });
+        return blob;
+      },
+    };
+    const failed: DiffSource[] = [];
+    const sources: DiffSources & { none: string | null } = {
+      none: null,
+      async get() {
+        if (this.none) throw new SourceError('auth', this.none);
+        return source;
+      },
+      authFailed: (s) => failed.push(s),
+    };
+    return { source, sources, calls, repos, state, revision, failed };
+  }
+
+  function setupAny() {
+    const fake = anySource();
+    const t = setup({}, { sources: fake.sources });
+    /** What the source was asked while `fn` ran. */
+    const asked = async <T>(fn: () => Promise<T>) => {
+      fake.calls.length = 0;
+      const out = await fn();
+      return { out, calls: [...fake.calls] };
+    };
+    return { ...fake, ...t, asked };
+  }
+
+  it('builds, caches and revalidates PR diffs', async () => {
+    const { svc, asked, synced, state, revision, repos, logs, clock } = setupAny();
+    synced(2, { head_oid: A });
+    const miss = await asked(() => diffOf(svc.prDiff('app', 2)));
+    expect(miss.calls).toEqual(['revision !2', 'files !2']);
+    expect(miss.out).toEqual({
+      kind: 'pr', repo: 'app', number: 2, title: 'Add parser', baseOid: MERGE_BASE, headOid: A,
+      files: [{ path: 'a.ts', previousPath: null, status: 'added', additions: 1, deletions: 0, patch: '@@ -0,0 +1 @@\n+x' }],
+      totalFiles: 1, additions: 1, deletions: 0, fetchedAt: new Date(clock.t).toISOString(), url: 'https://gitlab.example/alice/app/-/merge_requests/2/diffs',
+    });
+    expect(repos[0]).toEqual({ key: 'app', owner: 'alice', name: 'app', path: 'alice/app' });
+    expect(logs.at(-1)).toMatch(/^\[diff\] app#2: 2 GitLab requests in [\d.]+s$/);
+    expect((await asked(() => svc.prDiff('app', 2))).calls).toEqual([]);
+
+    // A head the sync hasn't recorded, which this source can't check cheaply: the revision is read, the files kept.
+    synced(2, { head_oid: null });
+    state.rev = revision(A, { title: 'Add a parser' });
+    const unknown = await asked(() => diffOf(svc.prDiff('app', 2)));
+    expect(unknown.calls).toEqual(['revision !2']);
+    expect(unknown.out).toMatchObject({ title: 'Add a parser', headOid: A, files: [{ path: 'a.ts' }] });
+
+    synced(2, { head_oid: B });
+    state.rev = revision(B);
+    const pushed = await asked(() => diffOf(svc.prDiff('app', 2)));
+    expect(pushed.calls).toEqual(['revision !2', 'files !2']);
+    expect(pushed.out).toMatchObject({ headOid: B, files: [{ path: 'b.ts' }] });
+    expect(svc.stats().entries).toBe(1);
+  });
+
+  it('serves commit diffs and file contents', async () => {
+    const { svc, asked } = setupAny();
+    const commit = await asked(() => diffOf(svc.commitDiff('app', C)));
+    expect(commit.calls).toEqual(['commit ccccccc']);
+    expect(commit.out).toMatchObject({ kind: 'commit', repo: 'app', number: null, title: 'Fix', baseOid: sha('p'), headOid: C, url: 'https://gitlab.example/c' });
+    expect((await asked(() => svc.commitDiff('app', C.slice(0, 7)))).calls).toEqual([]);
+
+    const text = await asked(async () => payloadText(await svc.blob('app', A, 'a.txt')));
+    expect(text).toEqual({ out: 'hello', calls: [`blob a.txt ${MAX_BLOB_BYTES}`] });
+    expect(await status(svc.blob('app', A, 'logo.png'))).toBe(415);
+    expect(await status(svc.blob('app', A, 'src'))).toBe(404);
+    expect(await status(svc.blob('app', A, 'big.bin'))).toBe(413);
+    expect(await svc.blob('app', A, 'gone.txt').catch((e: HttpError) => e)).toMatchObject({ status: 404, message: 'gone.txt not found at aaaaaaa' });
+    expect(await svc.commitDiff('app', sha('e')).catch((e: HttpError) => e)).toMatchObject({ status: 404, message: `Commit ${sha('e')} not found on GitLab` });
+  });
+
+  it("maps the source's failures to API errors in its own terms", async () => {
+    const { svc, synced, state, sources, source, failed, logs, clock } = setupAny();
+    synced(2, { head_oid: A });
+    await svc.prDiff('app', 2);
+    clock.t += OPEN_PR_TTL_MS + 1;
+
+    state.fail = new SourceError('auth', 'Token revoked', { status: 401 });
+    expect(await svc.prDiff('app', 2, true).catch((e: HttpError) => e)).toMatchObject({ status: 503, message: 'Token revoked; check the GitLab token' });
+    expect(failed).toEqual([source]);
+    state.fail = new SourceError('rate-limit', 'Slow down', { status: 429, resetAt: '2099-01-01T00:00:00.000Z' });
+    expect(await svc.prDiff('app', 2, true).catch((e: HttpError) => e)).toMatchObject({ status: 429, details: { resetAt: '2099-01-01T00:00:00.000Z' } });
+    state.fail = new SourceError('not-found', 'Merge request gone', { status: 404 });
+    expect(await svc.prDiff('app', 2).catch((e: HttpError) => e)).toMatchObject({ status: 404, message: 'Not found on GitLab: Merge request gone' });
+    state.fail = new SourceError('transient', 'Bad gateway', { status: 502 });
+    expect(await status(svc.prDiff('app', 2, true))).toBe(502);
+    // A source that can't answer still leaves the cached copy, when the sync agrees with it.
+    expect(await diffOf(svc.prDiff('app', 2))).toMatchObject({ headOid: A, stale: true });
+    expect(logs.at(-1)).toBe('[diff] app#2: serving the cached copy (Bad gateway)');
+
+    // No source to ask at all (say, no token): 503 with the reason as given.
+    sources.none = 'No GitLab token';
+    expect(await svc.prDiff('app', 2, true).catch((e: HttpError) => e)).toMatchObject({ status: 503, message: 'No GitLab token' });
+    expect(await diffOf(svc.prDiff('app', 2))).toMatchObject({ stale: true });
   });
 });

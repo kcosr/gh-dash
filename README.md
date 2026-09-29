@@ -288,7 +288,7 @@ the GitLab version, the token's scopes and expiry, and warns about scopes that c
 the source is added only after a successful test, and its first sync starts without a restart.
 Each source can be checked again, switched to another token (tested first), or removed with its
 data. `GITLAB_TOKEN` in the app's environment is the token of the only GitLab source, as
-`GITHUB_TOKEN` is GitHub's. The app writes the sources to its `config.json`; the tokens themselves
+`GITHUB_TOKEN` is GitHub's; the app asks before sending it to an address the first time. The app writes the sources to its `config.json`; the tokens themselves
 never go there, nor to the database.
 
 **Local API.** Turn it on in **Settings** to reach the API from browsers, curl and scripts

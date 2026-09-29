@@ -144,6 +144,16 @@ describe('GitHubClient', () => {
     await expect(client([reply]).c.queryPartial('query { x }', {}, { optional: ['prs'] })).rejects.toMatchObject({ kind: 'rate-limit' });
   });
 
+  it('redacts the token from GraphQL error messages, returned or thrown, keeping types and paths', async () => {
+    const secret = 'ghp_TOPSECRET123456';
+    const errors = [{ type: 'FORBIDDEN', path: ['nodes', 0], message: `Token ${secret} may not read this` }];
+    const reply = () => new Response(JSON.stringify({ data: { nodes: [null], rateLimit: RL }, errors }));
+    const c = new GitHubClient({ token: secret, fetchImpl: async () => reply(), sleep: async () => {} });
+    expect((await c.queryPartial('query { x }')).errors).toEqual([{ type: 'FORBIDDEN', path: ['nodes', 0], message: 'Token [token] may not read this' }]);
+    const thrown = await c.query('query { x }').catch((e: unknown) => e);
+    expect(thrown).toMatchObject({ kind: 'forbidden', message: 'Token [token] may not read this', errors: [{ type: 'FORBIDDEN', path: ['nodes', 0], message: 'Token [token] may not read this' }] });
+  });
+
   it('queryPartial still throws for other errors, and for no data at all', async () => {
     const other = () => new Response(JSON.stringify({ data: { nodes: [null] }, errors: [{ type: 'INTERNAL', message: 'boom' }, { type: 'NOT_FOUND', message: 'x' }] }));
     await expect(client([other]).c.queryPartial('query { x }')).rejects.toMatchObject({ kind: 'graphql', message: 'boom; x' });

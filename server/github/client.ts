@@ -1,5 +1,5 @@
 import type { GqlError, GqlRateLimit } from './types';
-import { checkToken, defaultSleep, GitHubError, limitError, RetryableError, withRetries } from './transport';
+import { checkToken, defaultSleep, GitHubError, limitError, redact, RetryableError, withRetries } from './transport';
 
 export { GitHubError, type GitHubErrorKind } from './transport';
 
@@ -135,7 +135,8 @@ export class GitHubClient {
       this.pointsUsed += rl.cost;
       this.opts.onRateLimit?.(rl);
     }
-    const errors = body.errors ?? [];
+    // Messages reach API responses, logs and unavailable_reason: never with the token in them.
+    const errors = (body.errors ?? []).map((e) => ({ ...e, message: redact(this.opts.token, String(e.message)) }));
     const messages = errors.map((e) => e.message).join('; ');
     // A rate limit stops the request wherever it is reported, optional fields included.
     if (errors.some((e) => e.type === 'RATE_LIMITED')) throw new GitHubError('rate-limit', messages, { errors });

@@ -7,12 +7,14 @@ import { ChipsInput } from '../components/ChipsInput';
 import { Icon } from '../components/Icon';
 import type { IconName } from '../components/Icon';
 import { ErrorNote } from '../components/EmptyState';
+import { useRepoLabel } from '../components/repoMapContext';
 import { useToast } from '../components/Toasts';
 import { apiLink } from '../lib/account';
 import { dur, fmtBytes, fmtDateTime, fmtNum, fmtTime, plural, relFuture, relLong } from '../lib/time';
 import { cx } from '../lib/util';
 import { AccountSection } from './SettingsAccount';
 import { InstanceSection } from './SettingsInstance';
+import { TrackedSection } from './SettingsTracked';
 
 /** A link to this API from outside the app; disabled with a hint while the Local API is off. */
 function ApiButton({ href, icon, children }: { href: string | null; icon: IconName; children: string }) {
@@ -136,6 +138,7 @@ export function SettingsView() {
   usePinnedHash();
 
   const st = status.data;
+  const repoLabel = useRepoLabel();
   const apiBase = useApiBase();
   const docsUrl = apiLink(apiBase, '/api/docs');
   const openapiUrl = apiLink(apiBase, '/api/v1/openapi.json');
@@ -172,13 +175,16 @@ export function SettingsView() {
           )}
           <AccountSection rateLimit={st?.rateLimit} />
 
+          <TrackedSection />
+
           <section className="card set-sec">
             <h2>Sync</h2>
             <dl className="kv">
               <dt>Status</dt>
               <dd>
                 {!st ? <span className="muted">unknown</span> : st.running
-                  ? <>Syncing{st.progress ? ` ${st.progress.done}/${st.progress.total} repos` : ''}{st.progress?.current ? <> · <code>{st.progress.current}</code></> : null}</>
+                  ? st.repo ? <>Syncing <code>{repoLabel(st.repo)}</code></>
+                    : <>Syncing{st.progress ? ` ${st.progress.done}/${st.progress.total} repos` : ''}{st.progress?.current ? <> · <code>{repoLabel(st.progress.current)}</code></> : null}</>
                   : st.lastSyncAt ? <>Last synced {relLong(st.lastSyncAt)} ({fmtDateTime(st.lastSyncAt)}){st.lastSyncDurationMs != null ? ` in ${dur(st.lastSyncDurationMs)}` : ''}</> : 'Never synced'}
               </dd>
               <dt>Next sync</dt>
@@ -229,7 +235,7 @@ export function SettingsView() {
                   </span>
                 </div>
                 <label className="set-row">
-                  <span className="set-l">Include forks<small>Forks are always synced; this adds them to the default scope.</small></span>
+                  <span className="set-l">Include forks<small>Forks are always synced; this adds them to the default selection.</small></span>
                   <span className="set-c"><input type="checkbox" className="switch" checked={form.includeForks} onChange={(e) => setForm({ ...form, includeForks: e.target.checked })} /></span>
                 </label>
                 <div className="set-actions">

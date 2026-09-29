@@ -96,6 +96,8 @@ export interface CalendarHeatmapProps {
 export interface HBarRow {
   key: string;
   label: string;
+  /** Muted text drawn before the label, e.g. a repo's "owner/". Measured and truncated together with the label (the owner gives way first); the tooltip title is prefix + label. */
+  labelPrefix?: string;
   value: number;
   /** Extra tooltip rows (optional `color` draws a line key, e.g. 'var(--s2)'). */
   breakdown?: { label: string; value: number; color?: string }[];

@@ -2,15 +2,22 @@
  * API contract shared by the server (server/) and the web app (web/).
  *
  * All endpoints live under /api/v1. All timestamps are ISO-8601 UTC strings.
- * Repos are identified by their short name (e.g. "gh-dash"): the dashboard only
- * tracks repositories owned by the authenticated user, so names are unique.
+ * Repos are identified by their key, "owner/name" (e.g. "kcosr/gh-dash"): every `repo` field and id carries it,
+ * and path params take it URL-encoded as one segment (`kcosr%2Fgh-dash`). Inputs (path params, `repos=` lists,
+ * set members, POST /sync `repo`) also accept the short name of a repository the authenticated user owns
+ * ("gh-dash"), which is how repos were identified before keys had owners.
  *
  * Change policy: this file is the coordination point between agents. Additive,
  * optional fields are fine; renames/removals are not.
  */
 
-export type Visibility = 'public' | 'private';
+/** 'internal': a GitHub Enterprise repository visible to every member of the enterprise. */
+export type Visibility = 'public' | 'private' | 'internal';
 export type VisibilityFilter = 'all' | Visibility;
+/** How a repository came to be tracked: synced because the viewer owns it, or added by hand. */
+export type TrackedBy = 'owned' | 'manual';
+/** Repos by how they are tracked: 'mine' = owned (tracked automatically), 'others' = added by hand. */
+export type Ownership = 'all' | 'mine' | 'others';
 export type Who = 'me' | 'others' | 'everyone';
 export type PrState = 'open' | 'merged' | 'closed';
 export type PrStateFilter = PrState | 'all';
@@ -52,6 +59,11 @@ export interface RepoStats {
 }
 
 export interface Repo {
+  /**
+   * Identity everywhere in the API and in URLs (`repos=` lists, path params, every `repo` field): "owner/name"
+   * (GitLab later: "group/sub/project"). `name` is the short name.
+   */
+  key: string;
   name: string;
   nameWithOwner: string;
   owner: string;
@@ -78,10 +90,16 @@ export interface Repo {
   setIds: number[];
   stats: RepoStats;
   syncedAt: string | null;
+  /** 'owned': one of the authenticated user's repositories, tracked automatically; 'manual': added by hand. */
+  trackedBy: TrackedBy;
+  /** Manual repos: when they were added. */
+  addedAt: string | null;
+  /** Manual repos the token can no longer read: data kept, sync skips it until readable again. */
+  unavailable: { since: string; reason: string } | null;
 }
 
 export interface PullRequest {
-  /** "<repo>#<number>", e.g. "gh-dash#24" */
+  /** "<repo>#<number>", e.g. "kcosr/gh-dash#24" */
   id: string;
   repo: string;
   number: number;
@@ -204,7 +222,7 @@ export interface Settings {
    * Ignored in PATCH.
    */
   myEmailsFromEnv?: string[];
-  includeForks: boolean; // default false: forks are synced but excluded from the default scope
+  includeForks: boolean; // default false: forks are synced but excluded from the default selection
   /** Size cap for the on-disk diff cache in MB (default 200; allowed 10..10000). Least recently viewed entries go first. */
   diffCacheMb: number;
 }
@@ -313,6 +331,68 @@ export interface SyncStatus {
   rateLimit: { limit: number; remaining: number; resetAt: string } | null;
   tokenSource: TokenSource;
   viewer: string | null;
+  /** Key of the one repository a single-repo sync is syncing (e.g. one just added); null for a full sync. */
+  repo?: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Adding and removing repositories
+// ---------------------------------------------------------------------------
+
+/** A repository the token can read, as offered by the Add dialog. */
+export interface RepoCandidate {
+  key: string;
+  owner: string;
+  name: string;
+  description: string | null;
+  visibility: Visibility;
+  isArchived: boolean;
+  isFork: boolean;
+  stars: number;
+  pushedAt: string | null;
+  /** How it is tracked already, or null when it isn't. */
+  tracked: TrackedBy | null;
+}
+
+/** GET /repo-candidates: the token's repositories of other owners, and ones the user recently contributed to. */
+export interface RepoCandidatesResponse {
+  /** Repositories you collaborate on or reach through an organization, most recently pushed first (at most 1000). */
+  items: RepoCandidate[];
+  /** Repositories of others you recently contributed to that aren't tracked yet. */
+  suggested: RepoCandidate[];
+  /** More repositories exist than `items` lists. */
+  truncated: boolean;
+  fetchedAt: string;
+}
+
+/**
+ * Why a repository can't be added (or synced): 'not-found' (doesn't exist, or the token can't see it), 'sso' (the
+ * organization requires SAML single sign-on), 'org-policy' (an organization policy refuses the token),
+ * 'permission' (the token sees the repository but not its pull requests, issues or code).
+ */
+export type AccessProblem = 'not-found' | 'sso' | 'org-policy' | 'permission';
+
+export interface RepoPreview extends RepoCandidate {
+  url: string;
+  openPrs: number;
+  openIssues: number;
+  /** The viewer owns it: tracked automatically, so Add is refused. */
+  owned: boolean;
+  /** When tracked: whether it is left out of the default selection. */
+  hidden: boolean | null;
+  /** What the first sync would fetch: items since `since` (null: unknown), and about how many GitHub requests. */
+  backfill: { since: string; commits: number | null; prs: number | null; issues: number | null; releases: number; requests: number | null };
+}
+
+/** GET /repo-lookup: whether the token can read a repository, with a preview when it can. */
+export type RepoLookup =
+  | { ok: true; repo: RepoPreview }
+  | { ok: false; key: string; problem: AccessProblem; message: string; hint: string | null };
+
+/** POST /repos: the repository as tracked now, and whether its first sync started or waits for the current one. */
+export interface AddRepoResponse {
+  repo: Repo;
+  sync: 'started' | 'queued';
 }
 
 // ---------------------------------------------------------------------------
@@ -321,10 +401,11 @@ export interface SyncStatus {
 
 /**
  * Scope shared by every list/stats endpoint.
- *  - repos: comma-separated repo names. Omitted => the default scope: all repos
- *    that are not archived, not hidden, and (unless settings.includeForks) not forks.
+ *  - repos: comma-separated repo keys ("owner/name"; an owned repo's short name also works). Omitted => the
+ *    default selection: all repos that are not archived, not hidden, and (unless settings.includeForks) not forks.
  *    An explicitly empty value (`repos=`) means "no repos" and returns nothing.
  *  - visibility: default 'all'.
+ *  - ownership: default 'all'; 'mine' = repositories you own, 'others' = repositories added by hand.
  *  - who: default 'everyone'. 'me' matches Actor.isMe. Stars are always by others.
  *  - from / to: 'YYYY-MM-DD' (interpreted in `tz`; `to` is inclusive through the end of that day),
  *    a full ISO datetime, or a relative offset like '-7d' / '-12w' / '-3m' (from now).
@@ -335,6 +416,7 @@ export interface SyncStatus {
 export interface ScopeQuery {
   repos?: string;
   visibility?: VisibilityFilter;
+  ownership?: Ownership;
   who?: Who;
   from?: string;
   to?: string;
@@ -367,12 +449,14 @@ export interface IssueQuery extends ScopeQuery, PageQuery {
   state?: IssueState | 'all';
 }
 
-/** Repository inventory by default; scope=default uses the dashboard's usual selection. */
+/** Repository inventory by default; scope=default narrows it to the default selection. */
 export interface RepoQuery {
-  /** Explicit names override scope; an empty string selects nothing. */
+  /** Explicit repo keys (or an owned repo's short name) override scope; an empty string selects nothing. */
   repos?: string;
   scope?: 'all' | 'default';
   visibility?: VisibilityFilter;
+  ownership?: Ownership;
+  /** Case-insensitive substring of owner/name, description, topics or language. */
   q?: string;
   sort?: 'activity' | 'stars' | 'open' | 'name';
 }
@@ -527,14 +611,20 @@ export interface DiffCacheStats {
 // GET    /api/health                           -> { ok: true, version: string }
 // GET    /api/v1/me                            -> Me
 // GET    /api/v1/repos          RepoQuery      -> { items: Repo[] }          (unfiltered: all repos incl. archived/hidden/forks)
-// GET    /api/v1/repos/:name                   -> Repo
-// PATCH  /api/v1/repos/:name   {pinned?, hidden?} -> Repo
+// GET    /api/v1/repos/:repo                   -> Repo      (:repo = key, URL-encoded: kcosr%2Fgh-dash; or an owned repo's short name)
+// PATCH  /api/v1/repos/:repo   {pinned?, hidden?} -> Repo
+// GET    /api/v1/repo-candidates {refresh?: '1'} -> RepoCandidatesResponse   (cached 5 min per token)
+// GET    /api/v1/repo-lookup   {repo}          -> RepoLookup   (400 when `repo` names no GitHub repository)
+// POST   /api/v1/repos         {repo, includeInDefault?} -> 201 AddRepoResponse
+//          400 bad input; 404/403 { details: { problem, hint } }; 409 { details: { key, trackedBy, hidden } } (you own it,
+//          or it's tracked already) or a token for another account; 429 rate limited; 503 no token.
+// DELETE /api/v1/repos/:repo                  -> 204   (409 for a repo you own; deletes its data from this dashboard)
 // GET    /api/v1/sets                          -> { items: RepoSet[] }
 // POST   /api/v1/sets          {name, repos}   -> RepoSet
 // PATCH  /api/v1/sets/:id      {name?, repos?} -> RepoSet
 // DELETE /api/v1/sets/:id                      -> 204
 // GET    /api/v1/views                         -> { items: SavedView[] }
-// POST   /api/v1/views         {name, path, query} -> SavedView
+// POST   /api/v1/views         {name, path, query} -> SavedView  (repo references in path and query are stored as keys)
 // DELETE /api/v1/views/:id                     -> 204
 // GET    /api/v1/prs            PrQuery        -> PrListResponse | text/markdown | text/csv
 // GET    /api/v1/prs/:repo/:number             -> PullRequestDetail
@@ -545,7 +635,8 @@ export interface DiffCacheStats {
 // GET    /api/v1/stars          ScopeQuery&PageQuery -> ListResponse<Star>
 // GET    /api/v1/stats          StatsQuery     -> StatsResponse
 // GET    /api/v1/sync/status                   -> SyncStatus
-// POST   /api/v1/sync           {repo?: string, full?: boolean} -> 202 SyncStatus (409 if already running, 503 no token)
+// POST   /api/v1/sync           {repo?: string, full?: boolean} -> 202 SyncStatus (409 if already running, 503 no token,
+//          404 when `repo` is a key nothing tracks)
 // GET    /api/v1/prs/:repo/:number/diff  {refresh?: '1'} -> Diff
 // GET    /api/v1/commits/:repo/:oid/diff {refresh?: '1'} -> Diff     (oid: 7-40 hex chars; need not be synced)
 //          Diff errors: 404 unknown repo/PR/commit, 503 no GitHub token, 429 GitHub rate limit, 502 other GitHub failure.

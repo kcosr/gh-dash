@@ -2,12 +2,13 @@ import { randomUUID } from 'node:crypto';
 import type { SyncStatus, TokenSource } from '../../shared/api';
 import type { Db } from '../db/db';
 import { deleteMeta, getMeta, type SyncLockMeta, setMeta } from '../db/meta';
+import { repoKeySql, resolveRepo } from '../db/repo-key';
 import { getSettings } from '../db/settings';
 import { GitHubClient } from '../github/client';
 import { VIEWER } from '../github/queries';
 import type { ViewerData } from '../github/types';
-import type { TokenSupply } from '../token';
-import { runSync, saveViewer, type SyncProgress, type SyncRequest, viewerMismatch } from './sync';
+import { tokenKind, type TokenSupply } from '../token';
+import { runSync, type SyncProgress, type SyncRequest, tryClaimViewer } from './sync';
 
 /** A lock whose heartbeat is older than this belongs to a dead process. */
 const LOCK_STALE_MS = 90_000;
@@ -15,6 +16,8 @@ const HEARTBEAT_MS = 15_000;
 const TICK_MS = 30_000;
 /** After a scheduled attempt finds no token, try again this much later (not a whole interval: `gh auth login` is quick). */
 const NO_TOKEN_RETRY_MS = 60_000;
+/** A repo added by hand whose first sync didn't complete is tried again after this long. */
+const FIRST_SYNC_RETRY_MS = 5 * 60_000;
 
 type Trigger = SyncLockMeta['trigger'];
 
@@ -25,6 +28,8 @@ export interface SyncManagerOptions {
   /** Where the GitHub token comes from (shared with the diff service and the account routes). */
   tokens: TokenSupply;
   log?: (line: string) => void;
+  /** GitHub's fetch (tests). */
+  fetchImpl?: typeof fetch;
 }
 
 export type StartResult = { ok: true } | { ok: false; reason: 'running' | 'no-token' };
@@ -46,16 +51,26 @@ export class SyncManager {
   private stopped = false;
   /** After a scheduled attempt finds no token, don't retry before this time. */
   private noTokenUntil = 0;
+  /** Single-repo syncs of just-added repos, waiting for this process's current sync. */
+  private readonly queue: SyncRequest[] = [];
+  /** Repos added by hand whose first sync the scheduler started, and when it may try again. */
+  private readonly firstSyncRetry = new Map<string, number>();
+  private readonly fetchImpl: typeof fetch;
 
   constructor(opts: SyncManagerOptions) {
     this.db = opts.db;
     this.scheduleEnabled = opts.schedule;
     this.tokens = opts.tokens;
     this.log = opts.log ?? ((line) => console.log(line));
+    this.fetchImpl = opts.fetchImpl ?? ((input, init) => fetch(input, init));
     // A new token (`gh auth login`, a pasted one) is worth trying at the next tick rather than after the backoff.
     this.tokens.onChange(() => {
       this.noTokenUntil = 0;
     });
+    // The schedule counts from the last full sync. A database from before full syncs were recorded apart has only
+    // lastSync, and every such run was a full one: adopt it now, before a single-repo run can overwrite it.
+    const last = getMeta(this.db, 'lastSync');
+    if (last && !last.repo && !getMeta(this.db, 'lastFullSyncAt')) setMeta(this.db, 'lastFullSyncAt', last.at);
   }
 
   /** The token's source as last resolved; polling this picks up a login or logout within about 30 s. */
@@ -83,6 +98,7 @@ export class SyncManager {
       rateLimit: rl ? { limit: rl.limit, remaining: rl.remaining, resetAt: rl.resetAt } : null,
       tokenSource: this.getTokenSource(),
       viewer: getMeta(this.db, 'viewer')?.login ?? null,
+      repo: lock?.repo ?? null,
     };
   }
 
@@ -96,9 +112,8 @@ export class SyncManager {
     if (!token) return;
     const client = this.client(token);
     const { viewer } = await client.query<ViewerData>(VIEWER);
-    const mismatch = viewerMismatch(getMeta(this.db, 'viewer'), viewer);
+    const mismatch = tryClaimViewer(this.db, viewer);
     if (mismatch) this.log(`[sync] warning: ${mismatch}`);
-    else saveViewer(this.db, viewer);
   }
 
   private client(token: string): GitHubClient {
@@ -106,7 +121,7 @@ export class SyncManager {
       token,
       // A 401 means the token was revoked or replaced: resolve it again before the next use.
       fetchImpl: async (input, init) => {
-        const res = await fetch(input, init);
+        const res = await this.fetchImpl(input, init);
         if (res.status === 401) this.tokens.invalidate(token);
         return res;
       },
@@ -118,8 +133,10 @@ export class SyncManager {
     return this.db.tx(() => {
       if (this.liveLock()) return false;
       const now = new Date().toISOString();
-      // Until the repo list arrives, assume the repos we already know about.
-      const total = req.repo ? 1 : this.db.get<{ n: number }>('SELECT count(*) AS n FROM repos WHERE removed_at IS NULL')!.n;
+      // Until the repo list arrives, assume the repos we already know about (unavailable ones aren't synced).
+      const total = req.repo
+        ? 1
+        : this.db.get<{ n: number }>('SELECT count(*) AS n FROM repos WHERE removed_at IS NULL AND unavailable_at IS NULL')!.n;
       setMeta(this.db, 'syncLock', {
         instance: this.instance,
         pid: process.pid,
@@ -127,6 +144,7 @@ export class SyncManager {
         startedAt: now,
         heartbeatAt: now,
         progress: { done: 0, total, current: null },
+        ...(req.repo ? { repo: resolveRepo(this.db, req.repo)?.key ?? req.repo } : {}),
       });
       return true;
     });
@@ -147,9 +165,34 @@ export class SyncManager {
     if (this.stopped || this.current || !this.acquire(trigger, req)) return { ok: false, reason: 'running' };
     this.current = this.execute(trigger, req, token).finally(() => {
       this.current = null;
-      this.reschedule();
+      if (!this.startQueued()) this.reschedule();
     });
     return { ok: true };
+  }
+
+  /**
+   * The first sync of a repo just added (POST /repos): now if nothing runs, else after the sync this process is
+   * running. When another instance holds the lock, the scheduler's rule for repos waiting for a sync picks it up.
+   */
+  async startOrQueue(req: SyncRequest): Promise<'started' | 'queued'> {
+    if (!this.current && !this.liveLock()) {
+      const res = await this.start('manual', req);
+      if (res.ok) return 'started';
+    }
+    if (this.current && !this.queue.some((q) => q.repo === req.repo)) this.queue.push(req);
+    return 'queued';
+  }
+
+  /** Starts the next queued single-repo sync whose repo still needs one (a full sync may have covered it). */
+  private startQueued(): boolean {
+    while (!this.stopped && this.queue.length) {
+      const req = this.queue.shift()!;
+      const ref = req.repo ? resolveRepo(this.db, req.repo) : null;
+      if (!ref || this.db.get('SELECT 1 FROM sync_state WHERE repo_id = ? AND synced_at IS NOT NULL', [ref.id])) continue;
+      void this.start('manual', { ...req, repo: ref.key });
+      return true;
+    }
+    return false;
   }
 
   private async execute(trigger: Trigger, req: SyncRequest, token: string): Promise<void> {
@@ -167,6 +210,7 @@ export class SyncManager {
           db: this.db,
           client,
           settings: getSettings(this.db),
+          tokenKind: tokenKind(token),
           onProgress: (p) => {
             progress = p;
             this.writeLock(p);
@@ -189,7 +233,9 @@ export class SyncManager {
         newItems,
         errors,
         pointsUsed: client.pointsUsed,
+        ...(req.repo ? { repo: getMeta(this.db, 'syncLock')?.repo ?? req.repo } : {}),
       });
+      if (!req.repo) setMeta(this.db, 'lastFullSyncAt', new Date().toISOString());
       if (getMeta(this.db, 'syncLock')?.instance === this.instance) deleteMeta(this.db, 'syncLock');
     });
     const scope = [req.repo ? `repo=${req.repo}` : null, req.full ? 'full' : null].filter(Boolean).join(' ');
@@ -220,19 +266,41 @@ export class SyncManager {
 
   private tick(trigger: Trigger): void {
     const interval = getSettings(this.db).syncIntervalMinutes * 60_000;
-    const last = getMeta(this.db, 'lastSync');
-    const due = Math.max(last ? Date.parse(last.at) + interval : 0, this.noTokenUntil);
+    // Single-repo runs (a repo just added) don't move the schedule of full syncs; with no full sync yet, one is due.
+    const last = getMeta(this.db, 'lastFullSyncAt');
+    const due = Math.max(last ? Date.parse(last) + interval : 0, this.noTokenUntil);
     const next = new Date(Math.max(due, Date.now())).toISOString();
     if (getMeta(this.db, 'nextSyncAt') !== next && !this.current) setMeta(this.db, 'nextSyncAt', next);
-    if (Date.now() < due || this.current || this.starting || this.liveLock()) return;
+    if (this.current || this.starting || this.liveLock() || Date.now() < this.noTokenUntil) return;
+    let req: SyncRequest = {};
+    if (Date.now() < due) {
+      // Not due, but a repo added by hand waits for its sync (added on another instance, revived, or its sync failed).
+      const key = this.manualRepoAwaitingSync();
+      if (!key) return;
+      this.firstSyncRetry.set(key, Date.now() + FIRST_SYNC_RETRY_MS);
+      req = { repo: key };
+    }
     this.starting = true;
-    void this.start(trigger)
+    void this.start(trigger, req)
       .then((res) => {
         if (!res.ok && res.reason === 'no-token') this.noTokenUntil = Date.now() + NO_TOKEN_RETRY_MS;
       })
       .finally(() => {
         this.starting = false;
       });
+  }
+
+  /**
+   * A live, readable repo added by hand with no synced_at (never synced since it was added or revived), that isn't
+   * waiting out a failed attempt.
+   */
+  private manualRepoAwaitingSync(): string | null {
+    const keys = this.db.all<{ key: string }>(
+      `SELECT ${repoKeySql('r')} AS key FROM repos r LEFT JOIN sync_state s ON s.repo_id = r.id
+       WHERE r.tracked_by = 'manual' AND r.removed_at IS NULL AND r.unavailable_at IS NULL AND s.synced_at IS NULL ORDER BY r.id`,
+    );
+    const now = Date.now();
+    return keys.find((k) => (this.firstSyncRetry.get(k.key) ?? 0) <= now)?.key ?? null;
   }
 
   /** Stops the scheduler and waits briefly for a running sync to release its lock. */

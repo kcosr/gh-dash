@@ -7,6 +7,8 @@ import { DiffView } from './components/DiffView';
 import { PrDrawer } from './components/Drawer';
 import { ExportModal } from './components/ExportModal';
 import { PromptDialog } from './components/PromptDialog';
+import { AddRepoDialog } from './components/AddRepoDialog';
+import { ConfirmDialog } from './components/ConfirmDialog';
 import { FirstSyncCard, NoTokenCard } from './components/Setup';
 import { Sidebar } from './components/Sidebar';
 import { usePanes } from './components/PaneResize';
@@ -15,8 +17,10 @@ import { ToastProvider, useToast } from './components/Toasts';
 import { TopBar, useSyncNow, useTheme } from './components/TopBar';
 import { UIProvider, useUI } from './components/ui';
 import { hasBlockingLayer, isTypingTarget, topLayer } from './lib/layers';
+import { useCanonicalRepoUrl } from './lib/canonicalUrl';
 import { getSidebarHidden, setSidebarHidden } from './lib/storage';
 import { plural } from './lib/time';
+import { repoLabel } from '../../shared/repos';
 import { repoFromPath, useUrlState } from './lib/urlState';
 import { cx, isChunkLoadError } from './lib/util';
 import { preloadMarkdown } from './components/Markdown';
@@ -125,7 +129,7 @@ function useGlobalKeys(openSidebarSearch?: () => void, toggleSidebar?: () => voi
       }
       if (isTypingTarget(document.activeElement) || e.metaKey || e.ctrlKey || e.altKey) return;
       // Also while the diff view is open (it's where the room helps most), but not behind a dialog.
-      if (e.key === '[' && toggleSidebar && !ui.paletteOpen && !ui.prompt && !ui.exportTab) {
+      if (e.key === '[' && toggleSidebar && !ui.paletteOpen && !ui.prompt && !ui.exportTab && !ui.addRepo && !ui.confirm) {
         e.preventDefault();
         toggleSidebar();
         return;
@@ -151,9 +155,11 @@ function Shell() {
   const repos = useRepos();
   useSyncWatcher();
   usePreloadWhenIdle();
-  const name = repoFromPath(useLocation().pathname);
+  useCanonicalRepoUrl();
+  const repoKey = repoFromPath(useLocation().pathname);
+  const name = repoKey && repoLabel(repoKey, repos.data ?? []);
   useEffect(() => {
-    const t = { prs: 'Pull requests', issues: 'Issues', activity: 'Activity', repos: 'Repositories', repo: name ?? 'Repository', insights: 'Insights', settings: 'Settings' }[view];
+    const t = { prs: 'Pull requests', issues: 'Issues', activity: 'Activity', repos: 'Repositories', repo: name || 'Repository', insights: 'Insights', settings: 'Settings' }[view];
     document.title = `${t} · gh-dash`;
   }, [view, name]);
 
@@ -238,6 +244,8 @@ function Shell() {
         onToggleSidebar={canHideSide ? toggleSide : undefined} sidebarHidden={sideHidden} />}
       {ui.exportTab && <ExportModal initialTab={ui.exportTab} onClose={ui.closeExport} />}
       {ui.prompt && <PromptDialog req={ui.prompt} onClose={ui.closePrompt} />}
+      {ui.addRepo && <AddRepoDialog onClose={ui.closeAddRepo} />}
+      {ui.confirm && <ConfirmDialog req={ui.confirm} onClose={ui.closeConfirm} />}
     </>
   );
 }
@@ -301,7 +309,7 @@ const router = createBrowserRouter([
       { path: 'issues', element: <IssuesView /> },
       { path: 'activity', element: <ActivityView /> },
       { path: 'repos', element: <RepositoriesView /> },
-      { path: 'repos/:name', element: <RepoDetailView /> },
+      { path: 'repos/*', element: <RepoDetailView /> },
       { path: 'insights', element: <InsightsView /> },
       { path: 'settings', element: <SettingsView /> },
       { path: '*', element: <Navigate to="/prs" replace /> },

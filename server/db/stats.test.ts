@@ -1,10 +1,11 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { DAY_MS, ymdToDayNum, zonedMidnight } from '../lib/time';
-import { seedDb } from '../test/seed';
+import { addManualRepo, seedDb } from '../test/seed';
 import type { Db } from './db';
 import { loadQueryCtx, type QueryCtx, type Scope } from './filters';
+import { listActivity, listStars } from './lists';
 import { computeStats, defaultBucket } from './stats';
-import { upsertCommit, upsertRepo } from './write';
+import { upsertCommit, upsertOwned, upsertStar } from './write';
 
 let db: Db;
 let ctx: QueryCtx;
@@ -19,6 +20,7 @@ function scope(from: string, to: string, over: Partial<Scope> = {}): Scope {
   return {
     repos: null,
     visibility: 'all',
+    ownership: 'all',
     who: 'everyone',
     q: null,
     tz,
@@ -91,6 +93,44 @@ describe('computeStats', () => {
     expect(privateOnly.stars.every((d) => d.total === 0)).toBe(true);
   });
 
+  it('keeps cumulative stars to public repos: internal ones are left out, and filterable on their own', () => {
+    const d = seedDb();
+    const corp = upsertOwned(d, {
+      nodeId: 'R_corp', name: 'corp', nameWithOwner: 'alice/corp', owner: 'alice', description: null, url: 'https://github.com/alice/corp',
+      visibility: 'internal', isArchived: false, isFork: false, languageName: null, languageColor: null, topics: [], defaultBranch: 'main',
+      stars: 7, forks: 0, createdAt: '2025-01-01T00:00:00Z', pushedAt: '2026-09-25T00:00:00Z',
+    }, '2026-09-27T00:00:00Z');
+    upsertStar(d, corp, { login: 'zoe', name: null, avatarUrl: null, starredAt: '2026-09-22T00:00:00Z' });
+    const s = computeStats(d, loadQueryCtx(d), scope('2026-09-20', '2026-09-26'));
+    expect(s.stars.map((b) => b.total)).toEqual([3, 3, 3, 3, 3, 4, 4]);
+    expect(s.tiles.newStars.value).toBe(3);
+    const internal = computeStats(d, loadQueryCtx(d), scope('2026-09-20', '2026-09-26', { visibility: 'internal' }));
+    expect(internal.byRepo.map((r) => [r.repo, r.stars])).toEqual([['alice/corp', 1]]);
+    expect(internal.stars.every((b) => b.total === 0)).toBe(true);
+  });
+
+  it('counts stars of repos you own only: tile, series, cumulative line, per-repo and activity', () => {
+    const d = seedDb();
+    // A public repo added by hand, with stargazer rows (say, from before it was transferred away).
+    const theirs = addManualRepo(d, 'bob/lib', { stars: 40 });
+    for (const [login, at] of [['yan', '2026-09-21T00:00:00Z'], ['zoe', '2026-09-24T00:00:00Z']] as const) {
+      upsertStar(d, theirs, { login, name: null, avatarUrl: null, starredAt: at });
+    }
+    upsertCommit(d, theirs, { oid: 'b'.repeat(40), headline: 'x', body: '', author: { login: 'bob', name: null, email: null, avatarUrl: null }, committedAt: '2026-09-22T00:00:00Z', url: 'u', additions: 1, deletions: 0, prNumber: null });
+    const c = loadQueryCtx(d);
+    const base = computeStats(db, ctx, scope('2026-09-20', '2026-09-26'));
+    const s = computeStats(d, c, scope('2026-09-20', '2026-09-26'));
+    expect(s.tiles.newStars).toEqual(base.tiles.newStars);
+    expect(s.series.map((b) => b.stars)).toEqual(base.series.map((b) => b.stars));
+    expect(s.stars).toEqual(base.stars);
+    expect(s.byRepo.find((r) => r.repo === 'bob/lib')).toMatchObject({ commits: 1, stars: 0 });
+    expect(s.tiles.commits.value).toBe(base.tiles.commits.value! + 1);
+    const events = listActivity(d, c, scope('2026-09-20', '2026-09-26'), ['star'], null);
+    expect(events.items.map((e) => e.repo)).toEqual(['alice/app', 'alice/app']);
+    expect(listStars(d, c, scope('2026-09-20', '2026-09-26'), null).items.map((st) => st.repo)).toEqual(['alice/app', 'alice/app']);
+    expect(listActivity(d, c, scope('2026-09-20', '2026-09-26', { ownership: 'others' }), null, null).facets.byType).toEqual({ commit: 1 });
+  });
+
   it('stars are never "me"', () => {
     const s = computeStats(db, ctx, scope('2026-09-20', '2026-09-26', { who: 'me' }));
     expect(s.stars).toHaveLength(7);
@@ -102,8 +142,8 @@ describe('computeStats', () => {
   it('ranks repos and contributors, merging all of the viewer identities', () => {
     const s = computeStats(db, ctx, scope('2026-09-20', '2026-09-26'));
     expect(s.byRepo).toEqual([
-      { repo: 'app', commits: 3, prsMerged: 1, issues: 2, releases: 1, stars: 2, total: 9 },
-      { repo: 'secret', commits: 1, prsMerged: 1, issues: 0, releases: 0, stars: 0, total: 2 },
+      { repo: 'alice/app', commits: 3, prsMerged: 1, issues: 2, releases: 1, stars: 2, total: 9 },
+      { repo: 'alice/secret', commits: 1, prsMerged: 1, issues: 0, releases: 0, stars: 0, total: 2 },
     ]);
     expect(s.contributors).toEqual([
       { actor: { login: 'Alice', name: 'Alice A', avatarUrl: 'https://avatars.example/alice', isMe: true }, commits: 3, prsMerged: 2, total: 5 },
@@ -120,7 +160,7 @@ describe('contributors', () => {
   });
   function db2() {
     const d = seedDb();
-    const lab = upsertRepo(d, {
+    const lab = upsertOwned(d, {
       nodeId: 'R_lab', name: 'lab', nameWithOwner: 'alice/lab', owner: 'alice', description: null, url: 'https://github.com/alice/lab',
       visibility: 'public', isArchived: false, isFork: false, languageName: null, languageColor: null, topics: [], defaultBranch: 'main',
       stars: 0, forks: 0, createdAt: '2025-01-01T00:00:00Z', pushedAt: '2026-09-25T00:00:00Z',

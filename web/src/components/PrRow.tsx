@@ -41,7 +41,7 @@ export const PrRow = memo(function PrRow({ pr, density, cursor, active, onOpen }
     return (
       <article className={cls} onClick={open} tabIndex={-1} aria-label={pr.title} data-id={pr.id}>
         <span className={`pr-ic ${prIconClass(pr)}`}><Icon name={prIconName(pr)} /></span>
-        <span className="t-repo"><RepoChip name={pr.repo} /><span className="num">#{pr.number}</span></span>
+        <span className="t-repo"><RepoChip repo={pr.repo} /><span className="num">#{pr.number}</span></span>
         <span className="t-title">{pr.title}{pr.isDraft && <span className="draft-tag">Draft</span>}<Labels labels={pr.labels} /></span>
         <Avatar actor={pr.author} size={18} />
         {time}
@@ -62,7 +62,7 @@ export const PrRow = memo(function PrRow({ pr, density, cursor, active, onOpen }
           <Labels labels={pr.labels} />
         </div>
         <div className="pr-meta">
-          <RepoChip name={pr.repo} />
+          <RepoChip repo={pr.repo} />
           <span className="num">#{pr.number}</span>
           <span className="sep">·</span>
           <span>{verb} {rel(at)} by</span>
@@ -97,7 +97,7 @@ export const ReleaseRow = memo(function ReleaseRow({ release: r, density }: { re
     return (
       <article className="pr t rel">
         <span className="pr-ic release"><Icon name="tag" /></span>
-        <span className="t-repo"><RepoChip name={r.repo} /></span>
+        <span className="t-repo"><RepoChip repo={r.repo} /></span>
         <span className="t-title"><a href={r.url} target="_blank" rel="noopener noreferrer">{title}</a></span>
         <span />
         {time}
@@ -111,7 +111,7 @@ export const ReleaseRow = memo(function ReleaseRow({ release: r, density }: { re
       <div className="pr-main">
         <div className="pr-title"><a href={r.url} target="_blank" rel="noopener noreferrer">{title}</a> {releaseLabel}</div>
         <div className="pr-meta">
-          <RepoChip name={r.repo} />
+          <RepoChip repo={r.repo} />
           <span className="sep">·</span>
           <span>released {rel(r.publishedAt)}</span>
         </div>

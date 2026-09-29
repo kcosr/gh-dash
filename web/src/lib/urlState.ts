@@ -5,7 +5,8 @@
 import { useCallback, useMemo, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router';
 import { EVENT_TYPES } from '../../../shared/api';
-import type { EventType, GroupBy, PrStateFilter, VisibilityFilter, Who } from '../../../shared/api';
+import { encodeQueryValue } from '../../../shared/query';
+import type { EventType, GroupBy, Ownership, PrStateFilter, Repo, VisibilityFilter, Who } from '../../../shared/api';
 import { RANGE_IDS, resolveRange } from './range';
 import type { RangeId, ResolvedRange } from './range';
 import { isValidDateOnly } from './time';
@@ -16,9 +17,11 @@ export type RepoSort = 'activity' | 'stars' | 'open' | 'name';
 export type RepoLayout = 'grid' | 'list';
 
 export interface UrlState {
-  /** null = default scope (param absent); [] = explicitly nothing. */
+  /** null = the default selection (param absent); [] = explicitly nothing. */
   repos: string[] | null;
   vis: VisibilityFilter;
+  /** Repos you own ('mine'), repos added by hand ('others'), or both. */
+  own: Ownership;
   who: Who;
   range: RangeId;
   from: string | null;
@@ -53,17 +56,13 @@ export function viewFromPath(pathname: string): ViewName {
   return 'prs';
 }
 
-/** Repo name on /repos/:name (usable outside the matched route, e.g. in overlays). */
-export function repoFromPath(pathname: string): string | undefined {
-  const m = /^\/repos\/([^/]+)\/?$/.exec(pathname);
-  if (!m) return undefined;
-  try { return decodeURIComponent(m[1]); } catch { return m[1]; }
-}
+export { repoFromPath } from '../../../shared/repos';
 
 export function defaultsFor(view: ViewName): UrlState {
   return {
     repos: null,
     vis: 'all',
+    own: 'all',
     who: view === 'prs' ? 'me' : 'everyone',
     range: view === 'insights' ? '90d' : '30d',
     from: null,
@@ -104,7 +103,8 @@ export function parseUrlState(search: string, view: ViewName): UrlState {
   const diffOk = parseDiffId(diff) !== null;
   return {
     repos: reposRaw === null ? null : list(reposRaw),
-    vis: oneOf(p.get('vis'), ['all', 'public', 'private'] as const, d.vis),
+    vis: oneOf(p.get('vis'), ['all', 'public', 'private', 'internal'] as const, d.vis),
+    own: oneOf(p.get('own'), ['all', 'mine', 'others'] as const, d.own),
     who: oneOf(p.get('who'), ['me', 'others', 'everyone'] as const, d.who),
     range,
     from: range === 'custom' ? from : null,
@@ -125,7 +125,7 @@ export function parseUrlState(search: string, view: ViewName): UrlState {
 }
 
 /** Param order in written URLs (unknown params are kept at the end). */
-const ORDER = ['repos', 'vis', 'who', 'range', 'from', 'to', 'state', 'group', 'density', 'rel', 'types', 'q', 'sort', 'layout', 'pr', 'diff', 'file'];
+const ORDER = ['repos', 'vis', 'own', 'who', 'range', 'from', 'to', 'state', 'group', 'density', 'rel', 'types', 'q', 'sort', 'layout', 'pr', 'diff', 'file'];
 
 /** Serialize a full state to params, omitting defaults for the view. */
 function toParams(s: UrlState, view: ViewName): [string, string][] {
@@ -133,6 +133,7 @@ function toParams(s: UrlState, view: ViewName): [string, string][] {
   const out: [string, string][] = [];
   if (s.repos !== null) out.push(['repos', s.repos.join(',')]);
   if (s.vis !== d.vis) out.push(['vis', s.vis]);
+  if (s.own !== d.own) out.push(['own', s.own]);
   if (s.who !== d.who) out.push(['who', s.who]);
   if (s.range === 'custom' && s.from && s.to) out.push(['range', 'custom'], ['from', s.from], ['to', s.to]);
   else if (s.range !== d.range && s.range !== 'custom') out.push(['range', s.range]);
@@ -154,7 +155,7 @@ function toParams(s: UrlState, view: ViewName): [string, string][] {
 
 /** Encode keeping ',', '/' and '@' readable (lists, file paths, commit diffs); '#', '&', spaces etc. are escaped. */
 export function encodeParams(pairs: [string, string][]): string {
-  return pairs.map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v).replace(/%2C/gi, ',').replace(/%2F/gi, '/').replace(/%40/g, '@')}`).join('&');
+  return pairs.map(([k, v]) => `${encodeURIComponent(k)}=${encodeQueryValue(v)}`).join('&');
 }
 
 /** Apply a patch to a search string for a view; returns "?..." or "". */
@@ -173,8 +174,25 @@ export function patchSearch(search: string, view: ViewName, patch: UrlPatch): st
   return qs ? `?${qs}` : '';
 }
 
+/** Whether a repo passes the visibility and ownership filters (sidebar list, selection counts). */
+export function passesRepoFilters(r: Pick<Repo, 'visibility' | 'trackedBy'>, s: Pick<UrlState, 'vis' | 'own'>): boolean {
+  return (s.vis === 'all' || r.visibility === s.vis) && (s.own === 'all' || (s.own === 'mine') === (r.trackedBy === 'owned'));
+}
+
+/**
+ * Filtering to one repo: reset the visibility and ownership filters it doesn't pass (`vis=private` and a public repo,
+ * `own=mine` and a repo added by hand), or the list would come back empty. Unknown repos change nothing.
+ */
+export function keepRepoInScope(repo: Pick<Repo, 'visibility' | 'trackedBy'> | undefined, s: Pick<UrlState, 'vis' | 'own'>): UrlPatch {
+  const patch: UrlPatch = {};
+  if (!repo) return patch;
+  if (s.vis !== 'all' && s.vis !== repo.visibility) patch.vis = 'all';
+  if (s.own !== 'all' && (s.own === 'mine') !== (repo.trackedBy === 'owned')) patch.own = 'all';
+  return patch;
+}
+
 /** Scope params carried across top-level navigation. */
-export const SCOPE_KEYS = ['repos', 'vis', 'who', 'range', 'from', 'to'];
+export const SCOPE_KEYS = ['repos', 'vis', 'own', 'who', 'range', 'from', 'to'];
 
 export function carrySearch(search: string, keys = SCOPE_KEYS): string {
   const p = new URLSearchParams(search);

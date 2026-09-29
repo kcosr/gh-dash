@@ -1,6 +1,6 @@
 {
  "kind": "commit",
- "repo": "gh-dash",
+ "repo": "kcosr/gh-dash",
  "number": null,
  "title": "Add Issues tab and shared repository scope across views",
  "baseOid": "744cad7adcd8247e26c3378146e0f62ac5b4c036",

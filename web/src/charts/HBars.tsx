@@ -2,7 +2,8 @@ import { useMemo } from 'react';
 import type { HBarRow, HBarsProps } from './index';
 import { useElementWidth, useFontsVersion, useIndexInteraction, type StepFn } from './hooks';
 import { TipPortal, type TipData, type TipRow } from './tooltip';
-import { RADIUS, fmtNum, hbarPath, textWidth, truncate } from './util';
+import { fitRepoLabel } from '../../../shared/repo-display';
+import { RADIUS, fmtNum, hbarPath, textWidth } from './util';
 
 const RH = 26; // row pitch (>= 24 px hit target)
 const BH = 14; // bar thickness
@@ -17,7 +18,7 @@ interface Row extends HBarRow {
 interface Geo {
   lw: number;
   height: number;
-  rows: { y: number; by: number; bw: number; d: string; text: string; valueText: string }[];
+  rows: { y: number; by: number; bw: number; d: string; prefix: string; text: string; valueText: string }[];
 }
 
 function fold(rows: HBarRow[], maxRows: number, otherLabel: string): Row[] {
@@ -32,7 +33,8 @@ function fold(rows: HBarRow[], maxRows: number, otherLabel: string): Row[] {
 }
 
 function layout(rows: Row[], width: number, fmt: (v: number) => string): Geo {
-  const natural = Math.max(...rows.map((r) => textWidth(r.label, LABEL_SIZE)));
+  const measure = (t: string) => textWidth(t, LABEL_SIZE);
+  const natural = Math.max(...rows.map((r) => measure((r.labelPrefix ?? '') + r.label)));
   const cap = Math.max(72, Math.floor(width * 0.36));
   const labelW = Math.min(Math.ceil(natural), cap);
   const lw = labelW + 14;
@@ -47,10 +49,12 @@ function layout(rows: Row[], width: number, fmt: (v: number) => string): Geo {
       const y = PAD_Y + i * RH;
       const by = y + (RH - BH) / 2;
       const bw = max > 0 && r.value > 0 ? Math.max(2, (r.value / max) * avail) : 0;
+      const fit = fitRepoLabel(r.labelPrefix ?? '', r.label, labelW, measure);
       return {
         y, by, bw,
         d: bw > 0 ? hbarPath(lw, by, bw, BH, RADIUS) : '',
-        text: truncate(r.label, labelW, LABEL_SIZE),
+        prefix: fit.prefix,
+        text: fit.label,
         valueText: valueTexts[i],
       };
     }),
@@ -93,11 +97,11 @@ export function HBars({
     const out: TipRow[] = [{ color: barColor(r), value: formatValue(r.value), label: unit }];
     if (r.other) {
       const show = r.other.slice(0, 6);
-      for (const o of show) out.push({ value: formatValue(o.value), label: o.label });
+      for (const o of show) out.push({ value: formatValue(o.value), label: (o.labelPrefix ?? '') + o.label });
       if (r.other.length > show.length) out.push({ value: '', label: `+ ${r.other.length - show.length} more` });
     }
     for (const b of r.breakdown ?? []) out.push({ color: b.color, value: formatValue(b.value), label: b.label });
-    return { title: r.label, rows: out };
+    return { title: (r.labelPrefix ?? '') + r.label, rows: out };
   };
 
   const ia = useIndexInteraction({
@@ -123,7 +127,7 @@ export function HBars({
             const mid = g.by + BH / 2 + 4;
             return (
               <g key={r.key}>
-                <text className={'row-label' + (r.other ? ' other' : '')} x={geo.lw - 10} y={mid} textAnchor="end">{g.text}</text>
+                <text className={'row-label' + (r.other ? ' other' : '')} x={geo.lw - 10} y={mid} textAnchor="end">{g.prefix && <tspan className="row-label-o">{g.prefix}</tspan>}{g.text}</text>
                 {g.d && <path d={g.d} style={{ fill: barColor(r) }} />}
                 <text className="bar-label" x={geo.lw + g.bw + 6} y={mid - 0.5}>{g.valueText}</text>
               </g>

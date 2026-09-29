@@ -27,6 +27,7 @@
 .chart .gd-hover-dot { stroke: var(--surface); stroke-width: 2; }
 .chart .gd-end-noun { fill: var(--muted); font-size: 11px; }
 .chart .row-label.other { fill: var(--muted); }
+.chart .row-label-o { fill: var(--muted); }
 .chart .gd-stub { fill: var(--grid); }
 
 /* Tooltip (portal): value column right-aligned, labels follow */

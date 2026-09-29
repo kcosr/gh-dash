@@ -1,7 +1,8 @@
 import type { Repo, RepoSet, SavedView } from '../../shared/api';
+import { type RepoResolver, rewriteRepoParams, rewriteRepoPath } from '../../shared/query';
 import { bucketIndex, DAY_MS, isoSec, localDayNum, makeBuckets, weekdayMon0, zonedMidnight } from '../lib/time';
 import type { Db } from './db';
-import { repoKeySql, resolveRepo, resolveRepoIds } from './repo-key';
+import { repoKey, repoKeySql, resolveRepo, resolveRepoIds } from './repo-key';
 
 interface RepoRow {
   id: number;
@@ -25,6 +26,10 @@ interface RepoRow {
   pushed_at: string | null;
   pinned: number;
   hidden: number;
+  tracked_by: string;
+  added_at: string | null;
+  unavailable_at: string | null;
+  unavailable_reason: string | null;
   synced_at: string | null;
   last_activity_at: string | null;
 }
@@ -60,7 +65,13 @@ export function listRepos(db: Db, tz: string, now = Date.now(), onlyKey?: string
   const since30 = isoSec(now - 30 * DAY_MS);
   const merged = countBy(db, 'SELECT repo_id, count(*) AS n FROM pull_requests WHERE merged_at >= ? GROUP BY repo_id', [since30]);
   const commits = countBy(db, 'SELECT repo_id, count(*) AS n FROM commits WHERE committed_at >= ? GROUP BY repo_id', [since30]);
-  const stars = countBy(db, 'SELECT repo_id, count(*) AS n FROM stars WHERE starred_at >= ? GROUP BY repo_id', [since30]);
+  // Stars count for owned repos only (like activity and Insights): a manual repo can keep stars from when it was owned.
+  const stars = countBy(
+    db,
+    `SELECT s.repo_id, count(*) AS n FROM stars s JOIN repos r ON r.id = s.repo_id
+     WHERE s.starred_at >= ? AND r.tracked_by = 'owned' GROUP BY s.repo_id`,
+    [since30],
+  );
 
   const today = localDayNum(tz, now);
   const firstWeek = today - weekdayMon0(today) - (WEEKS - 1) * 7;
@@ -84,6 +95,7 @@ export function listRepos(db: Db, tz: string, now = Date.now(), onlyKey?: string
   }
 
   return rows.map((r) => ({
+    key: repoKey(r),
     name: r.name,
     nameWithOwner: r.name_with_owner,
     owner: r.owner,
@@ -112,6 +124,9 @@ export function listRepos(db: Db, tz: string, now = Date.now(), onlyKey?: string
       weeklyCommits: (weekly.get(r.id) ?? new Array<number>(weeks.starts.length).fill(0)).slice(-WEEKS),
     },
     syncedAt: r.synced_at,
+    trackedBy: r.tracked_by === 'manual' ? ('manual' as const) : ('owned' as const),
+    addedAt: r.added_at,
+    unavailable: r.unavailable_at ? { since: r.unavailable_at, reason: r.unavailable_reason ?? '' } : null,
   }));
 }
 
@@ -134,6 +149,14 @@ export function setRepoPrefs(db: Db, key: string, prefs: { pinned?: boolean; hid
   if (!ref) return false;
   if (sets.length === 0) return true;
   return db.run(`UPDATE repos SET ${sets.join(', ')} WHERE id = ?`, [...params, ref.id]).changes > 0;
+}
+
+/**
+ * Stops tracking a repo: deletes its row, and with it (foreign keys, cascading) its sync state, pull requests and
+ * their commits, commits, issues, releases, stars and set memberships; the full-text index follows through triggers.
+ */
+export function removeRepo(db: Db, id: number): boolean {
+  return db.run('DELETE FROM repos WHERE id = ?', [id]).changes > 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -197,14 +220,17 @@ export function listViews(db: Db): SavedView[] {
   return db.all<SavedView>('SELECT id, name, path, query FROM saved_views ORDER BY name COLLATE NOCASE, id');
 }
 
+/** Stores a view with its repo references (`repos`, `pr`, `diff`, a `/repos/...` path) canonicalized to keys. */
 export function createView(db: Db, v: Omit<SavedView, 'id'>): SavedView {
+  const resolve: RepoResolver = (input) => resolveRepo(db, input)?.key ?? null;
+  const view = { name: v.name, path: rewriteRepoPath(v.path, resolve), query: rewriteRepoParams(v.query, resolve) };
   const id = db.run('INSERT INTO saved_views (name, path, query, created_at) VALUES (?, ?, ?, ?)', [
-    v.name,
-    v.path,
-    v.query,
+    view.name,
+    view.path,
+    view.query,
     new Date().toISOString(),
   ]).lastInsertRowid;
-  return { id, ...v };
+  return { id, ...view };
 }
 
 export function deleteView(db: Db, id: number): boolean {

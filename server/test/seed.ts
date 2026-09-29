@@ -3,7 +3,7 @@ import { setMeta } from '../db/meta';
 import type { ActorRecord, CommitRecord, IssueRecord, PrRecord, RepoRecord } from '../db/records';
 import { patchSettings } from '../db/settings';
 import { setRepoPrefs } from '../db/repos';
-import { upsertCommit, upsertIssue, upsertPr, upsertRelease, upsertRepo, upsertStar } from '../db/write';
+import { upsertCommit, upsertIssue, upsertPr, upsertRelease, upsertOwned, upsertStar } from '../db/write';
 
 export const actor = (login: string | null, email: string | null = null): ActorRecord => ({
   login,
@@ -86,18 +86,37 @@ function issue(number: number, over: Partial<IssueRecord> & Pick<IssueRecord, 's
 }
 
 /**
+ * A repository added by hand, stored as adding one will store it (tracked_by 'manual'). Returns its id.
+ * `key` is owner/name; the owner is everything before the last '/'.
+ */
+export function addManualRepo(db: Db, key: string, over: Partial<RepoRecord> & { hidden?: boolean; addedAt?: string } = {}): number {
+  const i = key.lastIndexOf('/');
+  const r: RepoRecord = { ...repo(key.slice(i + 1)), nodeId: `R_${key}`, nameWithOwner: key, owner: key.slice(0, i), url: `https://github.com/${key}`, ...over };
+  return db.run(
+    `INSERT INTO repos (node_id, name, name_with_owner, owner, description, url, visibility, is_archived, is_fork, language_name,
+       language_color, topics, default_branch, stars, forks, created_at, pushed_at, hidden, tracked_by, added_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?)`,
+    [
+      r.nodeId, r.name, r.nameWithOwner, r.owner, r.description, r.url, r.visibility, Number(r.isArchived), Number(r.isFork), r.languageName,
+      r.languageColor, JSON.stringify(r.topics), r.defaultBranch, r.stars, r.forks, r.createdAt, r.pushedAt, Number(over.hidden ?? false),
+      over.addedAt ?? '2026-09-27T12:00:00Z',
+    ],
+  ).lastInsertRowid;
+}
+
+/**
  * Viewer "alice"; repos: app (public, 5 stargazers), secret (private), old (archived), fork (fork), hidden (hidden).
- * All times are September 2026 UTC.
+ * Keys are alice/<name>. All times are September 2026 UTC.
  */
 export function seedDb(): Db {
   const db = openDb(':memory:');
   setMeta(db, 'viewer', { login: 'Alice', name: 'Alice A', avatarUrl: 'https://avatars.example/alice' });
   const now = '2026-09-27T12:00:00Z';
-  const app = upsertRepo(db, repo('app', { stars: 5 }), now);
-  const secret = upsertRepo(db, repo('secret', { visibility: 'private' }), now);
-  const old = upsertRepo(db, repo('old', { isArchived: true, stars: 1 }), now);
-  const fork = upsertRepo(db, repo('fork', { isFork: true }), now);
-  const hidden = upsertRepo(db, repo('hidden'), now);
+  const app = upsertOwned(db, repo('app', { stars: 5 }), now);
+  const secret = upsertOwned(db, repo('secret', { visibility: 'private' }), now);
+  const old = upsertOwned(db, repo('old', { isArchived: true, stars: 1 }), now);
+  const fork = upsertOwned(db, repo('fork', { isFork: true }), now);
+  const hidden = upsertOwned(db, repo('hidden'), now);
   setRepoPrefs(db, 'hidden', { hidden: true });
 
   upsertPr(db, app, pr(1, {

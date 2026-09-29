@@ -1,4 +1,4 @@
-import type { VisibilityFilter, Who } from '../../shared/api';
+import type { Ownership, VisibilityFilter, Who } from '../../shared/api';
 import { isoSec } from '../lib/time';
 import type { Db, Param } from './db';
 import { getMeta } from './meta';
@@ -7,9 +7,11 @@ import { getSettings } from './settings';
 
 /** Parsed, validated scope shared by every list/stats query. Times are UTC ms; `to` is exclusive. */
 export interface Scope {
-  /** null = default scope (non-archived, non-hidden, non-fork unless includeForks). */
+  /** null = the default selection (non-archived, non-hidden, non-fork unless includeForks). */
   repos: string[] | null;
   visibility: VisibilityFilter;
+  /** 'mine': repos tracked because the viewer owns them; 'others': repos added by hand. */
+  ownership: Ownership;
   who: Who;
   from: number;
   to: number;
@@ -17,7 +19,7 @@ export interface Scope {
   q: string | null;
 }
 
-/** Per-request facts needed to evaluate "me" and the default scope. */
+/** Per-request facts needed to evaluate "me" and the default selection. */
 export interface QueryCtx {
   /** Lower-cased viewer login, or null before the first sync. */
   viewer: string | null;
@@ -68,6 +70,7 @@ export function addRepoScope(w: Where, scope: Scope, ctx: QueryCtx, ignoreRepos 
     else w.add(`r.id IN ${REPO_IDS_FOR_KEYS}`, JSON.stringify(scope.repos));
   }
   if (scope.visibility !== 'all') w.add('r.visibility = ?', scope.visibility);
+  if (scope.ownership !== 'all') w.add(scope.ownership === 'mine' ? `r.tracked_by = 'owned'` : `r.tracked_by <> 'owned'`);
 }
 
 /** SQL predicate that is true when the actor in `loginCol` / `emailCol` is the viewer. */

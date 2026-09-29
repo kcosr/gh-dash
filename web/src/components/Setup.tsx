@@ -3,6 +3,7 @@ import { useDesktop } from '../api/desktop';
 import { useAccount, useCheckAccount } from '../api/hooks';
 import { CreateTokenNote, GhCliChoice, TokenForm, TokenOrder } from './Account';
 import { Icon } from './Icon';
+import { useRepoLabel } from './repoMapContext';
 import { useToast } from './Toasts';
 
 /** Shown instead of a view when there's no GitHub token and nothing synced yet. */
@@ -74,6 +75,7 @@ export function NoTokenCard() {
 /** First run: empty database, sync in progress (or not started yet). */
 export function FirstSyncCard({ status, onSync }: { status: SyncStatus | undefined; onSync: () => void }) {
   const p = status?.progress;
+  const repoLabel = useRepoLabel();
   const running = !!status?.running;
   return (
     <div className="setup">
@@ -91,7 +93,7 @@ export function FirstSyncCard({ status, onSync }: { status: SyncStatus | undefin
                 <i style={{ width: `${Math.round((p.done / p.total) * 100)}%` }} />
               </div>
             )}
-            {p?.current && <p className="muted small">Now syncing <code>{p.current}</code></p>}
+            {p?.current && <p className="muted small">Now syncing <code>{repoLabel(p.current)}</code></p>}
           </>
         ) : (
           <>

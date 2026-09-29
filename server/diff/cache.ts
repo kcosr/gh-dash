@@ -8,7 +8,7 @@ export type CacheKind = 'pr' | 'commit' | 'blob';
 export interface CacheEntry {
   key: string;
   kind: CacheKind;
-  /** The repo's key (db/repo-key.ts): entries of repos that disappear are dropped. */
+  /** The repo key (db/repo-key.ts, owner/name): entries of repos that disappear are dropped. */
   repo: string;
   /** PR number for kind 'pr', so a new head can supersede the old one. */
   number?: number | null;
@@ -37,7 +37,7 @@ const LOW_WATER = 0.9;
 
 // Bump to change the schema: the cache is disposable, so an old one is simply dropped and recreated.
 // `data` comes last so size and LRU scans never touch the blob pages.
-const VERSION = 2;
+const VERSION = 3;
 const SCHEMA = `
 CREATE TABLE entries (
   key TEXT PRIMARY KEY,

@@ -7,7 +7,8 @@ import { HttpError } from './http';
 
 export const scopeSchema = z.object({
   repos: z.string().optional(),
-  visibility: z.enum(['all', 'public', 'private']).optional(),
+  visibility: z.enum(['all', 'public', 'private', 'internal']).optional(),
+  ownership: z.enum(['all', 'mine', 'others']).optional(),
   who: z.enum(['me', 'others', 'everyone']).optional(),
   from: z.string().optional(),
   to: z.string().optional(),
@@ -127,6 +128,7 @@ export function parseScope(q: z.infer<typeof scopeSchema>, defaultTz: string, no
   return {
     repos: splitList(q.repos),
     visibility: q.visibility ?? 'all',
+    ownership: q.ownership ?? 'all',
     who: q.who ?? 'everyone',
     from,
     to,

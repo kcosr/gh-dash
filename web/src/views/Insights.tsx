@@ -1,5 +1,5 @@
 import { useCallback, useMemo } from 'react';
-import { defaultScope, useRepos, useSettings, useStats, useSyncStatus } from '../api/hooks';
+import { defaultScope, useRepoMap, useRepos, useSettings, useStats, useSyncStatus } from '../api/hooks';
 import { CalendarHeatmap, ChartCard, HBars, LineChart, StackedColumns, StatTile } from '../charts';
 import { DateRangeButton } from '../components/DateRange';
 import { ErrorNote, ProgressBar } from '../components/EmptyState';
@@ -19,12 +19,14 @@ import {
   tileProps,
   ttmLine,
 } from '../lib/statsCharts';
-import { patchSearch, useUrlState } from '../lib/urlState';
+import { repoPath } from '../../../shared/repos';
+import { passesRepoFilters, patchSearch, useUrlState } from '../lib/urlState';
 
 export function InsightsView() {
   const { s, set, range, navigate, location } = useUrlState();
   const { openExport } = useUI();
   const repos = useRepos();
+  const repoMap = useRepoMap();
   const settings = useSettings();
   const stats = useStats(statsParams(s));
   const st = stats.data;
@@ -33,9 +35,9 @@ export function InsightsView() {
 
   const nRepos = useMemo(() => {
     const all = repos.data ?? [];
-    const names = new Set(s.repos ?? defaultScope(all, settings.data));
-    return all.filter((r) => names.has(r.name) && (s.vis === 'all' || r.visibility === s.vis)).length;
-  }, [repos.data, settings.data, s.repos, s.vis]);
+    const keys = new Set(s.repos ?? defaultScope(all, settings.data));
+    return all.filter((r) => keys.has(r.key) && passesRepoFilters(r, s)).length;
+  }, [repos.data, settings.data, s.repos, s.vis, s.own]);
 
   const byWho = s.who === 'me' ? ' by you' : s.who === 'others' ? ' by others' : '';
   const whoSuffix = byWho ? `,${byWho}` : '';
@@ -45,7 +47,7 @@ export function InsightsView() {
     (date: string) => navigate({ pathname: '/activity', search: patchSearch(search, 'activity', { range: 'custom', from: date, to: date }) }),
     [navigate, search],
   );
-  const openRepo = useCallback((repo: string) => navigate(`/repos/${encodeURIComponent(repo)}`), [navigate]);
+  const openRepo = useCallback((key: string) => navigate(repoPath(key)), [navigate]);
 
   // Chart inputs are memoized on the response: the charts cache geometry by identity.
   const tiles = useMemo(() => st && [
@@ -58,7 +60,7 @@ export function InsightsView() {
   const merged = useMemo(() => st && mergedColumns(st, s.who), [st, s.who]);
   const stars = useMemo(() => st && starsLine(st), [st]);
   const calTable = useMemo(() => st && calendarTable(st), [st]);
-  const byRepo = useMemo(() => st && repoBars(st, openRepo), [st, openRepo]);
+  const byRepo = useMemo(() => st && repoBars(st, repoMap, openRepo), [st, repoMap, openRepo]);
   const ttm = useMemo(() => st && ttmLine(st), [st]);
   const people = useMemo(() => st && contributorBars(st, viewer), [st, viewer]);
 

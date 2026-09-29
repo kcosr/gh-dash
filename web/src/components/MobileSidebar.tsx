@@ -36,7 +36,7 @@ export function MobileSidebar({ onClose, focusSearch }: { onClose: () => void; f
 
   return createPortal(
     <div ref={box} id="mobile-sidebar" className="mobile-sidebar" role="dialog" aria-modal="true"
-      aria-labelledby="mobile-sidebar-title" inert={!!ui.prompt || ui.paletteOpen || !!ui.exportTab}
+      aria-labelledby="mobile-sidebar-title" inert={!!ui.prompt || ui.paletteOpen || !!ui.exportTab || ui.addRepo || !!ui.confirm}
       onKeyDown={(e) => {
         // Scope the trap to this panel; portaled prompts have their own focus handling.
         if (e.key !== 'Tab') return;

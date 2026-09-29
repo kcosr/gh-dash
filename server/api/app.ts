@@ -3,6 +3,7 @@ import { bodyLimit } from 'hono/body-limit';
 import type { Config } from '../config';
 import type { Db } from '../db/db';
 import type { DiffService } from '../diff/service';
+import { Tracking } from '../github/tracking';
 import type { SyncManager } from '../sync/manager';
 import type { TokenProvider } from '../token';
 import { desktopOnly, hostAllowlist, installAuth, sameOriginWrites } from './auth';
@@ -33,11 +34,17 @@ export interface AppDeps {
   transport?: AppTransport;
   /** Desktop transport: the Local API's URL while its TCP listener runs, else null (GET /instance apiUrl). */
   localApiUrl?: () => string | null;
+  /** Adding repositories (lookups and candidates on GitHub); by default over `tokens` and `sync`. */
+  tracking?: Tracking;
 }
 
 export type AppTransport = { kind: 'tcp' } | { kind: 'desktop'; secret: string };
 
-export function createApp(deps: AppDeps): Hono {
+export function createApp(input: AppDeps): Hono {
+  const deps: AppDeps = {
+    ...input,
+    tracking: input.tracking ?? new Tracking({ db: input.db, tokens: input.tokens, sync: input.sync, tz: input.config.defaultTz }),
+  };
   const { config } = deps;
   const transport: AppTransport = deps.transport ?? { kind: 'tcp' };
   const app = new Hono();

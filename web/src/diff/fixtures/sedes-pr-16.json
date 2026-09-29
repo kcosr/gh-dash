@@ -1,6 +1,6 @@
 {
  "kind": "pr",
- "repo": "sedes",
+ "repo": "kcosr/sedes",
  "number": 16,
  "title": "Show prioritized background work indicators in the sidebar",
  "baseOid": "e583eb97bc15126f62f955cc22012f07f5a91756",

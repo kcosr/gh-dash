@@ -5,13 +5,15 @@ import { gunzipSync } from 'node:zlib';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import { type Config, loadConfig } from '../config';
 import { getMeta, setMeta } from '../db/meta';
-import { upsertCommit } from '../db/write';
+import { upsertCommit, upsertOwned } from '../db/write';
 import { DiffCache } from '../diff/cache';
 import { DiffService } from '../diff/service';
 import { GitHubDiffSources } from '../github/diff-source';
 import { SyncManager } from '../sync/manager';
-import { fakeGitHub, type Reply, restFile, sha } from '../test/github';
-import { seedDb } from '../test/seed';
+import { fakeGitHub, page, type Reply, restFile, sha } from '../test/github';
+import { fakeGraphQL, prNode, repoNode } from '../test/graphql';
+import { Tracking } from '../github/tracking';
+import { addManualRepo, seedDb } from '../test/seed';
 import { DESKTOP_SECRET_HEADER } from '../../shared/desktop';
 import { testTokens } from '../test/tokens';
 import { type AppDeps, type AppTransport, createApp } from './app';
@@ -32,13 +34,13 @@ describe('HTTP API', () => {
   it('serves lists as JSON, Markdown and CSV', async () => {
     const json = await app.request(`/api/v1/prs?${range}&state=merged&limit=1`);
     const body = (await json.json()) as { items: { id: string }[]; total: number; nextCursor: string | null; facets: object };
-    expect(body).toMatchObject({ total: 2, items: [{ id: 'secret#1' }], facets: { byRepo: { app: 1, secret: 1 } } });
+    expect(body).toMatchObject({ total: 2, items: [{ id: 'alice/secret#1' }], facets: { byRepo: { 'alice/app': 1, 'alice/secret': 1 } } });
     const next = await app.request(`/api/v1/prs?${range}&state=merged&limit=1&cursor=${body.nextCursor}`);
-    expect(((await next.json()) as { items: { id: string }[] }).items.map((p) => p.id)).toEqual(['app#1']);
+    expect(((await next.json()) as { items: { id: string }[] }).items.map((p) => p.id)).toEqual(['alice/app#1']);
 
     const md = await app.request(`/api/v1/prs?${range}&state=merged&who=me&format=md`);
     expect(md.headers.get('content-type')).toBe('text/markdown; charset=utf-8');
-    expect(await md.text()).toContain('- **Fix login flow** ([app#1](https://github.com/alice/x/pull/1)) — Fixes the login flow for SSO users.');
+    expect(await md.text()).toContain('- **Fix login flow** ([alice/app#1](https://github.com/alice/x/pull/1)) — Fixes the login flow for SSO users.');
     const csv = await app.request(`/api/v1/activity?${range}&format=csv`);
     expect(csv.headers.get('content-type')).toBe('text/csv; charset=utf-8');
   });
@@ -54,17 +56,17 @@ describe('HTTP API', () => {
 
   it('filters issues by creator, state, repository and date and paginates without losing items', async () => {
     const read = async (query: string) => (await (await app.request(`/api/v1/issues?${range}&${query}`)).json()) as { total: number; nextCursor: string | null; items: { id: string }[] };
-    expect((await read('state=open&who=me')).items.map((i) => i.id)).toEqual(['app#11']);
+    expect((await read('state=open&who=me')).items.map((i) => i.id)).toEqual(['alice/app#11']);
     // Alice closed issue 10, but Bob created it: author filtering uses Bob.
-    expect((await read('state=closed&who=others&repos=app&q=10')).items.map((i) => i.id)).toEqual(['app#10']);
+    expect((await read('state=closed&who=others&repos=app&q=10')).items.map((i) => i.id)).toEqual(['alice/app#10']);
     expect((await read('state=closed&who=me')).total).toBe(0);
     expect((await read('repos=secret')).total).toBe(0);
     expect((await read('repos=')).total).toBe(0);
     const first = await read('state=all&limit=1');
     expect(first.total).toBe(2);
-    expect(first.items.map((i) => i.id)).toEqual(['app#11']);
+    expect(first.items.map((i) => i.id)).toEqual(['alice/app#11']);
     const second = await read(`state=all&limit=1&cursor=${encodeURIComponent(first.nextCursor!)}`);
-    expect(second.items.map((i) => i.id)).toEqual(['app#10']);
+    expect(second.items.map((i) => i.id)).toEqual(['alice/app#10']);
     expect(second.nextCursor).toBeNull();
     const md = await (await app.request(`/api/v1/issues?${range}&state=closed&format=md`)).text();
     expect(md).toContain('Issue 10');
@@ -84,6 +86,22 @@ describe('HTTP API', () => {
     await forkApp.request('/api/v1/settings', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: '{"includeForks":true}' });
     const selected = await (await forkApp.request('/api/v1/repos?scope=default')).json() as { items: { name: string }[] };
     expect(selected.items.map((r) => r.name).sort()).toEqual(['app', 'fork', 'secret']);
+  });
+
+  it('takes GitHub Enterprise internal repositories as their own visibility', async () => {
+    const db = seedDb();
+    const corp = upsertOwned(db, {
+      nodeId: 'R_corp', name: 'corp', nameWithOwner: 'alice/corp', owner: 'alice', description: null, url: 'https://github.com/alice/corp',
+      visibility: 'internal', isArchived: false, isFork: false, languageName: null, languageColor: null, topics: [], defaultBranch: 'main',
+      stars: 0, forks: 0, createdAt: '2025-01-01T00:00:00Z', pushedAt: '2026-09-25T00:00:00Z',
+    }, '2026-09-27T00:00:00Z');
+    upsertCommit(db, corp, { oid: 'e'.repeat(40), headline: 'Internal change', body: '', author: { login: 'alice', name: null, email: null, avatarUrl: null }, committedAt: '2026-09-21T00:00:00Z', url: 'u', additions: 1, deletions: 0, prNumber: null });
+    const internalApp = makeApp({}, db);
+    const repos = (await (await internalApp.request('/api/v1/repos?visibility=internal')).json()) as { items: { name: string; visibility: string }[] };
+    expect(repos.items).toMatchObject([{ name: 'corp', visibility: 'internal' }]);
+    const commits = (await (await internalApp.request(`/api/v1/commits?${range}&visibility=internal`)).json()) as { items: { headline: string }[] };
+    expect(commits.items.map((c) => c.headline)).toEqual(['Internal change']);
+    expect((await internalApp.request(`/api/v1/commits?${range}&visibility=secret`)).status).toBe(400);
   });
 
   it('reports sync status and refuses to sync without a token', async () => {
@@ -116,6 +134,15 @@ describe('HTTP API', () => {
     for (const path of ['/api/v1/prs/{repo}/{number}/diff', '/api/v1/commits/{repo}/{oid}/diff', '/api/v1/blob/{repo}', '/api/v1/diff-cache']) {
       expect(Object.keys(doc.paths)).toContain(path);
     }
+    for (const path of ['/api/v1/repo-candidates', '/api/v1/repo-lookup', '/api/v1/repos/{repo}']) expect(Object.keys(doc.paths)).toContain(path);
+    // Every {param} in a path is documented as a path parameter, and the other way round.
+    type Op = { parameters?: { name: string; in: string }[] };
+    for (const [path, ops] of Object.entries(doc.paths as Record<string, Record<string, Op>>)) {
+      const named = [...path.matchAll(/\{(\w+)\}/g)].map((m) => m[1]).sort();
+      for (const [method, op] of Object.entries(ops)) {
+        expect((op.parameters ?? []).filter((p) => p.in === 'path').map((p) => p.name).sort(), `${method} ${path}`).toEqual(named);
+      }
+    }
     expect(await (await app.request('/api/docs')).text()).toContain('/api/v1/activity');
     expect(await (await app.request('/prs')).text()).toContain('npm run build');
   });
@@ -130,8 +157,8 @@ describe('web app', () => {
   const app = makeApp({ webDir });
   afterAll(() => rmSync(webDir, { recursive: true, force: true }));
 
-  it('serves index.html for client-side routes, dotted repository names included', async () => {
-    for (const path of ['/', '/prs', '/repos/user.github.io', '/repos/foo.nvim', '/repos/x.js', '/repos/app?tab=files']) {
+  it('serves index.html for client-side routes, dotted repository names and owner/name paths included', async () => {
+    for (const path of ['/', '/prs', '/repos/user.github.io', '/repos/foo.nvim', '/repos/x.js', '/repos/app?tab=files', '/repos/kcosr/gh-dash', '/repos/dlvhdr/user.github.io', '/repos/org/team/proj.js', '/repos/kcosr%2Fgh-dash']) {
       const res = await app.request(path);
       expect(res.status, path).toBe(200);
       expect(await res.text(), path).toContain('<title>gh-dash</title>');
@@ -282,6 +309,304 @@ describe('auth', () => {
   });
 });
 
+describe('repo keys', () => {
+  function keyApp() {
+    const db = seedDb();
+    addManualRepo(db, 'bob/app');
+    return makeApp({}, db);
+  }
+  const json = async (res: Response) => ({ status: res.status, body: (await res.json()) as Record<string, unknown> });
+  const send = (method: string, body: unknown) => ({ method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+
+  it('take a key URL-encoded as one path segment, or the short name of a repo you own', async () => {
+    const app = keyApp();
+    for (const path of ['alice%2Fapp', 'ALICE%2FApp', 'app', 'App']) {
+      expect(await json(await app.request(`/api/v1/repos/${path}`)), path).toMatchObject({ status: 200, body: { key: 'alice/app', trackedBy: 'owned' } });
+    }
+    expect(await json(await app.request('/api/v1/repos/bob%2Fapp'))).toMatchObject({ status: 200, body: { key: 'bob/app', trackedBy: 'manual' } });
+    expect((await app.request('/api/v1/repos/alice/app')).status).toBe(404);
+    expect((await app.request('/api/v1/repos/nope%2Fapp')).status).toBe(404);
+
+    const patched = await json(await app.request('/api/v1/repos/bob%2Fapp', send('PATCH', { pinned: true })));
+    expect(patched).toMatchObject({ status: 200, body: { key: 'bob/app', pinned: true } });
+    expect(await json(await app.request('/api/v1/repos/app'))).toMatchObject({ body: { pinned: false } });
+
+    for (const path of ['alice%2Fapp', 'app']) {
+      expect(await json(await app.request(`/api/v1/prs/${path}/1`)), path).toMatchObject({ status: 200, body: { id: 'alice/app#1', repo: 'alice/app' } });
+    }
+    expect((await app.request('/api/v1/prs/alice/app/1')).status).toBe(404);
+    expect((await app.request('/api/v1/prs/bob%2Fapp/1')).status).toBe(404);
+  });
+
+  it('select repos by key or alias in repos= lists', async () => {
+    const app = keyApp();
+    const keys = async (query: string) => ((await (await app.request(`/api/v1/repos?${query}`)).json()) as { items: { key: string }[] }).items.map((r) => r.key);
+    expect(await keys('repos=app')).toEqual(['alice/app']);
+    expect(await keys('repos=alice%2Fapp')).toEqual(['alice/app']);
+    expect(await keys('repos=alice/app,bob/app&sort=name')).toEqual(['alice/app', 'bob/app']);
+    expect(await keys('q=bob')).toEqual(['bob/app']);
+    expect(await keys('ownership=others')).toEqual(['bob/app']);
+    expect(await keys('ownership=mine')).not.toContain('bob/app');
+    expect((await app.request('/api/v1/repos?ownership=nope')).status).toBe(400);
+    expect((await app.request('/api/v1/prs?ownership=theirs')).status).toBe(400);
+    const range = 'from=2026-09-01&to=2026-09-27&tz=UTC&state=all';
+    const prs = async (repos: string) => ((await (await app.request(`/api/v1/prs?${range}&repos=${repos}`)).json()) as { items: { id: string }[] }).items.map((p) => p.id);
+    expect(await prs('app')).toEqual(['alice/app#3', 'alice/app#2', 'alice/app#1']);
+    expect(await prs('alice%2Fapp')).toEqual(await prs('app'));
+    expect(await prs('bob/app')).toEqual([]);
+    const own = async (ownership: string) => ((await (await app.request(`/api/v1/prs?${range}&ownership=${ownership}`)).json()) as { total: number }).total;
+    expect(await own('others')).toBe(0);
+    expect(await own('mine')).toBe(await own('all'));
+  });
+
+  it('store set members and saved views by key', async () => {
+    const app = keyApp();
+    const set = await json(await app.request('/api/v1/sets', send('POST', { name: 'Mix', repos: ['app', 'bob/app', 'ALICE/SECRET', 'nope'] })));
+    expect(set.body).toMatchObject({ repos: ['alice/app', 'bob/app', 'alice/secret'] });
+
+    const view = async (path: string, query: string) => (await json(await app.request('/api/v1/views', send('POST', { name: 'v', path, query })))).body;
+    expect(await view('/prs', 'repos=app,bob/app,nope&who=me&pr=app%231&q=a%20b+c')).toMatchObject({
+      path: '/prs', query: 'repos=alice/app,bob/app,nope&who=me&pr=alice/app%231&q=a%20b+c',
+    });
+    expect(await view('/repos/app', '?diff=secret@abc1234')).toMatchObject({ path: '/repos/alice/app', query: 'diff=alice/secret@abc1234' });
+    expect(await view('/repos/BOB/APP', '')).toMatchObject({ path: '/repos/bob/app', query: '' });
+    expect(await view('/insights', 'range=90d')).toMatchObject({ path: '/insights', query: 'range=90d' });
+  });
+});
+
+describe('adding and removing repositories', () => {
+  /** seedDb (viewer Alice; alice/app, secret, old, fork, hidden) against a fake GitHub that also knows bob/tool. */
+  function trackApp(token: string | null = 'ghp_classic', wrap: (f: typeof fetch) => typeof fetch = (f) => f) {
+    const db = seedDb();
+    const gql = fakeGraphQL();
+    gql.state.owned.push(...['app', 'secret', 'old', 'fork', 'hidden'].map((n) => repoNode(`alice/${n}`, { id: `R_${n}` })));
+    gql.state.others.push(repoNode('bob/tool', { description: 'A tool', stargazerCount: 120, openPrs: { totalCount: 3 }, openIssues: { totalCount: 51 } }));
+    gql.state.prs['bob/tool'] = [prNode('bob/tool', 7, 'Faster startup')];
+    const rest = (key: string, over: object = {}) => ({
+      node_id: `R_${key}`, name: key.split('/')[1], full_name: key, owner: { login: key.split('/')[0] }, description: null, visibility: 'public',
+      private: false, archived: false, fork: false, stargazers_count: 5, pushed_at: '2026-09-20T00:00:00Z', ...over,
+    });
+    const gh = fakeGitHub({
+      '/graphql': gql.handler,
+      '/user/repos': page([rest('bob/tool'), rest('acme/infra', { visibility: 'internal' })], '/user/repos?page=2'),
+      '/user/repos?page=2': page([rest('dlvhdr/gh-dash')], null),
+    });
+    const tokens = testTokens(token);
+    const config = { ...loadConfig({}), webDir: '/nonexistent' };
+    const sync = new SyncManager({ db, schedule: false, tokens, log: () => {}, fetchImpl: gh.fetchImpl });
+    const diffs = new DiffService({ db, cache: new DiffCache(':memory:'), sources: new GitHubDiffSources({ tokens }), log: () => {} });
+    const tracking = new Tracking({ db, tokens, sync, tz: 'UTC', fetchImpl: wrap(gh.fetchImpl), sleep: async () => {} });
+    const app = createApp({ db, config, sync, diffs, tokens, tracking });
+    const call = async (method: string, path: string, body?: unknown) => {
+      const res = await app.request(`/api/v1${path}`, body === undefined ? { method } : { method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+      return { status: res.status, body: res.status === 204 ? null : ((await res.json()) as Record<string, any>) };
+    };
+    const idle = () => vi.waitFor(() => expect(sync.status().running).toBe(false));
+    return { app, db, gql, gh, sync, call, idle };
+  }
+
+  it('looks a repository up: a preview with the size of its first sync', async () => {
+    const t = trackApp();
+    const res = await t.call('GET', '/repo-lookup?repo=https://github.com/Bob/tool.git');
+    expect(res).toMatchObject({ status: 200, body: { ok: true, repo: {
+      key: 'bob/tool', owner: 'bob', name: 'tool', description: 'A tool', visibility: 'public', stars: 120, tracked: null,
+      url: 'https://github.com/bob/tool', openPrs: 3, openIssues: 51, owned: false, hidden: null,
+      // max(240/100, 60/50, 12/50) = 3 rounds, plus 1 for the open PRs and 2 for the open issues
+      backfill: { commits: 240, prs: 60, issues: 12, releases: 4, requests: 6 },
+    } } });
+    expect(res.body!.repo.backfill.since).toMatch(/^\d{4}-\d\d-\d\dT/);
+    expect(getMeta(t.db, 'rateLimit')).toEqual({ limit: 5000, remaining: 4990, resetAt: '2099-01-01T00:00:00Z' });
+    t.gql.state.size.prs = null;
+    expect((await t.call('GET', '/repo-lookup?repo=bob/tool')).body).toMatchObject({ ok: true, repo: { backfill: { prs: null, requests: null } } });
+    expect((await t.call('GET', '/repo-lookup?repo=app')).status).toBe(400);
+    expect((await t.call('GET', '/repo-lookup?repo=gitlab.com/bob/tool')).status).toBe(400);
+    expect((await t.call('GET', '/repo-lookup?repo=alice/app')).body).toMatchObject({ ok: true, repo: { owned: true, tracked: 'owned', hidden: false } });
+  });
+
+  it('explains why a repository can’t be read, with a hint for the kind of token', async () => {
+    const t = trackApp();
+    const lookup = async (repo: string) => (await t.call('GET', `/repo-lookup?repo=${repo}`)).body;
+    expect(await lookup('bob/nope')).toEqual({
+      ok: false, key: 'bob/nope', problem: 'not-found',
+      message: "GitHub doesn't show bob/nope to this token: it doesn't exist, or the token can't read it.", hint: 'Check the spelling, or ask for access.',
+    });
+    t.gql.state.errors['bob/tool'] = { type: 'FORBIDDEN', message: 'Resource protected by organization SAML enforcement. You must grant your Personal Access token access to this organization.' };
+    expect(await lookup('bob/tool')).toMatchObject({ problem: 'sso', message: 'bob requires SAML single sign-on.', hint: 'Authorize the token for bob (github.com/settings/tokens → Configure SSO).' });
+    t.gql.state.errors['bob/tool'] = { type: 'FORBIDDEN', message: 'Although you appear to have the correct authorization credentials, the `bob` organization has enabled OAuth App access restrictions.' };
+    expect(await lookup('bob/tool')).toMatchObject({ problem: 'org-policy', message: expect.stringContaining('OAuth App access restrictions'), hint: null });
+    t.gql.state.errors['bob/tool'] = { type: 'FORBIDDEN', message: 'Resource not accessible by personal access token', field: 'openIssues' };
+    expect(await lookup('bob/tool')).toMatchObject({
+      problem: 'permission', message: 'The token can see bob/tool but not its issues.', hint: 'Grant read access to Pull requests, Issues and Contents.',
+    });
+
+    const fine = trackApp('github_pat_x');
+    expect((await fine.call('GET', '/repo-lookup?repo=bob/nope')).body).toMatchObject({ hint: expect.stringMatching(/^Fine-grained tokens read public repositories anywhere.*Create one for bob,/) });
+    const gh = trackApp('gho_x');
+    gh.gql.state.errors['bob/tool'] = { type: 'FORBIDDEN', message: 'the `bob` organization has enabled OAuth App access restrictions' };
+    expect((await gh.call('GET', '/repo-lookup?repo=bob/tool')).body).toMatchObject({ hint: 'An owner of bob must approve GitHub CLI, or use a personal access token.' });
+  });
+
+  it('adds a repository and starts its first sync', async () => {
+    const t = trackApp();
+    const res = await t.call('POST', '/repos', { repo: 'bob/tool', includeInDefault: false });
+    expect(res).toMatchObject({ status: 201, body: { sync: 'started', repo: {
+      key: 'bob/tool', trackedBy: 'manual', hidden: true, description: 'A tool', stats: { openPrs: 3, openIssues: 51 }, unavailable: null,
+    } } });
+    expect(res.body!.repo.addedAt).toMatch(/^\d{4}-/);
+    expect(t.sync.status()).toMatchObject({ running: true, repo: 'bob/tool' });
+    await t.idle();
+    expect(t.gql.state.ops.slice(-2)).toEqual(['RepoNode:R_bob/tool', 'RepoDetail:bob/tool']);
+    const prs = await t.call('GET', '/prs?repos=bob/tool&from=2026-09-01&to=2026-09-29&state=all');
+    expect(prs.body!.items.map((p: { id: string }) => p.id)).toEqual(['bob/tool#7']);
+    // Now it's tracked: adding it again is refused, with how it is tracked.
+    expect(await t.call('POST', '/repos', { repo: 'bob/tool' })).toMatchObject({
+      status: 409, body: { error: 'bob/tool is already tracked.', details: { key: 'bob/tool', trackedBy: 'manual', hidden: true } },
+    });
+    expect((await t.call('GET', '/repo-lookup?repo=bob/tool')).body).toMatchObject({ repo: { tracked: 'manual', hidden: true } });
+  });
+
+  it('lets one account claim an unclaimed database when adds by two accounts race', async () => {
+    const accounts = [
+      { id: 'U_alice', login: 'alice', name: null, avatarUrl: null },
+      { id: 'U_mallory', login: 'mallory', name: null, avatarUrl: null },
+    ];
+    let lookups = 0;
+    let release = () => {};
+    const answered = new Promise<void>((r) => (release = r));
+    // Each lookup is answered as the next account, and both answers arrive together.
+    const t = trackApp('ghp_classic', (f) => async (input, init) => {
+      if (!/RepoLookup/.test(String(init?.body))) return f(input, init);
+      t.gql.state.viewer = accounts[lookups++]!;
+      const res = await f(input, init);
+      if (lookups === 2) release();
+      await answered;
+      return res;
+    });
+    t.gql.state.others.push(repoNode('carol/lib'));
+    t.db.run(`DELETE FROM meta WHERE key = 'viewer'`);
+    const [a, b] = await Promise.all([t.call('POST', '/repos', { repo: 'bob/tool' }), t.call('POST', '/repos', { repo: 'carol/lib' })]);
+    await t.idle();
+    expect([a.status, b.status]).toEqual([201, 409]);
+    expect(b.body).toMatchObject({ error: 'This database belongs to @alice, but the GitHub token is for @mallory. Switch back to @alice, or use a different database.' });
+    expect(getMeta(t.db, 'viewer')).toMatchObject({ id: 'U_alice', login: 'alice' });
+    expect(t.db.get(`SELECT 1 FROM repos WHERE owner = 'carol'`)).toBeUndefined();
+  });
+
+  it('queues the first sync while a sync runs elsewhere', async () => {
+    const t = trackApp();
+    const now = new Date().toISOString();
+    setMeta(t.db, 'syncLock', { instance: 'other', pid: 1, trigger: 'scheduled', startedAt: now, heartbeatAt: now, progress: { done: 0, total: 5, current: null } });
+    expect(await t.call('POST', '/repos', { repo: 'bob/tool' })).toMatchObject({ status: 201, body: { sync: 'queued', repo: { key: 'bob/tool', hidden: false } } });
+  });
+
+  it('refuses what it can’t add', async () => {
+    const t = trackApp();
+    expect(await t.call('POST', '/repos', { repo: 'alice/app' })).toMatchObject({
+      status: 409, body: { error: "You own alice/app, so it's tracked automatically.", details: { key: 'alice/app', trackedBy: 'owned', hidden: false } },
+    });
+    expect(await t.call('POST', '/repos', { repo: 'bob/nope' })).toMatchObject({ status: 404, body: { details: { problem: 'not-found', hint: expect.any(String) } } });
+    t.gql.state.errors['bob/tool'] = { type: 'FORBIDDEN', message: 'Resource protected by organization SAML enforcement.' };
+    expect(await t.call('POST', '/repos', { repo: 'bob/tool' })).toMatchObject({ status: 403, body: { error: 'bob requires SAML single sign-on.', details: { problem: 'sso' } } });
+    t.gql.state.errors['bob/tool'] = { type: 'FORBIDDEN', message: 'Resource not accessible by personal access token', field: 'openPrs' };
+    expect(await t.call('POST', '/repos', { repo: 'bob/tool' })).toMatchObject({ status: 403, body: { details: { problem: 'permission' } } });
+    expect((await t.call('POST', '/repos', { repo: 'not a repo' })).status).toBe(400);
+    expect((await t.call('POST', '/repos', { repo: 'bob/tool', extra: 1 })).status).toBe(400);
+    expect(t.db.get(`SELECT 1 FROM repos WHERE owner = 'bob'`)).toBeUndefined();
+
+    t.gql.state.viewer = { id: 'U_mallory', login: 'mallory', name: null, avatarUrl: null };
+    delete t.gql.state.errors['bob/tool'];
+    const mismatch = await t.call('POST', '/repos', { repo: 'bob/tool' });
+    expect(mismatch).toMatchObject({ status: 409, body: { error: expect.stringContaining('but the GitHub token is for @mallory') } });
+    expect((await t.call('GET', '/repo-lookup?repo=bob/tool')).status).toBe(409);
+    expect(t.db.get(`SELECT 1 FROM repos WHERE owner = 'bob'`)).toBeUndefined();
+
+    const none = trackApp(null);
+    expect((await none.call('POST', '/repos', { repo: 'bob/tool' })).status).toBe(503);
+    expect((await none.call('GET', '/repo-candidates')).status).toBe(503);
+  });
+
+  it('removes a repository added by hand with all its data; owned ones are hidden instead', async () => {
+    const t = trackApp();
+    await t.call('POST', '/repos', { repo: 'bob/tool' });
+    await t.idle();
+    const id = t.db.get<{ id: number }>(`SELECT id FROM repos WHERE name_with_owner = 'bob/tool'`)!.id;
+    t.db.run(`INSERT INTO commits (repo_id, oid, headline, committed_at, url) VALUES (?, 'c1', 'Speed up', '2026-09-25T00:00:00Z', 'u')`, [id]);
+    t.db.run(`INSERT INTO issues (repo_id, number, title, state, created_at, updated_at, activity_at, url) VALUES (?, 3, 'Slow', 'open', 'x', 'x', 'x', 'u')`, [id]);
+    t.db.run(`INSERT INTO releases (repo_id, tag, published_at, url) VALUES (?, 'v1', 'x', 'u')`, [id]);
+    t.db.run(`INSERT INTO stars (repo_id, login, starred_at) VALUES (?, 'zed', 'x')`, [id]);
+    t.db.run(`INSERT INTO pr_commits (pr_id, position, oid, headline, committed_at, url) SELECT id, 0, 'c', 'h', 'x', 'u' FROM pull_requests WHERE repo_id = ?`, [id]);
+    await t.call('POST', '/sets', { name: 'Mix', repos: ['app', 'bob/tool'] });
+    const children = ['sync_state', 'pull_requests', 'commits', 'issues', 'releases', 'stars', 'repo_set_members'];
+    const count = (table: string) => t.db.get<{ n: number }>(`SELECT count(*) AS n FROM ${table} WHERE repo_id = ?`, [id])!.n;
+    expect(children.map(count).every((n) => n > 0)).toBe(true);
+
+    expect(await t.call('DELETE', '/repos/alice%2Fapp')).toMatchObject({ status: 409, body: { error: 'Repositories you own are tracked automatically; hide it instead.' } });
+    expect(await t.call('DELETE', '/repos/bob%2Fnope')).toMatchObject({ status: 404 });
+    expect(await t.call('DELETE', '/repos/bob%2Ftool')).toEqual({ status: 204, body: null });
+    expect(children.map(count)).toEqual(children.map(() => 0));
+    expect(t.db.get<{ n: number }>('SELECT count(*) AS n FROM pr_commits WHERE pr_id NOT IN (SELECT id FROM pull_requests)')!.n).toBe(0);
+    for (const fts of ['pull_requests_fts', 'issues_fts', 'commits_fts', 'releases_fts']) t.db.exec(`INSERT INTO ${fts}(${fts}) VALUES ('integrity-check')`);
+    expect((await t.call('GET', '/sets')).body!.items).toMatchObject([{ name: 'Mix', repos: ['alice/app'] }]);
+    expect(await t.call('DELETE', '/repos/bob%2Ftool')).toMatchObject({ status: 404 });
+    // Adding it again syncs it from scratch.
+    expect(await t.call('POST', '/repos', { repo: 'bob/tool' })).toMatchObject({ status: 201 });
+    await t.idle();
+  });
+
+  it('lists candidates: tracked ones marked, suggestions untracked, cached until refreshed', async () => {
+    const t = trackApp();
+    t.gql.state.suggested = ['bob/tool', 'carol/lib'];
+    t.gql.state.others.push(repoNode('carol/lib'));
+    await t.call('POST', '/repos', { repo: 'bob/tool' });
+    await t.idle();
+    const first = await t.call('GET', '/repo-candidates');
+    expect(first.status).toBe(200);
+    expect(first.body!.items.map((c: { key: string; tracked: string | null; visibility: string }) => [c.key, c.tracked, c.visibility])).toEqual([
+      ['bob/tool', 'manual', 'public'], ['acme/infra', null, 'internal'], ['dlvhdr/gh-dash', null, 'public'],
+    ]);
+    expect(first.body!.suggested.map((c: { key: string }) => c.key)).toEqual(['carol/lib']);
+    expect(first.body).toMatchObject({ truncated: false, fetchedAt: expect.any(String) });
+    const requests = t.gh.requests.length;
+    await t.call('GET', '/repo-candidates');
+    expect(t.gh.requests.length).toBe(requests);
+    await t.call('GET', '/repo-candidates?refresh=1');
+    expect(t.gh.requests.length).toBe(requests + 3);
+    expect(t.gh.requests.filter((r) => r.startsWith('/user/repos'))[0]).toBe('/user/repos?affiliation=collaborator%2Corganization_member&sort=pushed&per_page=100');
+    // A later add shows up without refetching.
+    await t.call('POST', '/repos', { repo: 'carol/lib' });
+    await t.idle();
+    expect((await t.call('GET', '/repo-candidates')).body!.suggested).toEqual([]);
+  });
+
+  it('checks the account on every candidates answer, cached ones included', async () => {
+    const t = trackApp();
+    t.db.run(`DELETE FROM meta WHERE key = 'viewer'`);
+    expect((await t.call('GET', '/repo-candidates')).status).toBe(200);
+    // Meanwhile the database was claimed by another account (Bob added a repo with his token); Alice's lists are cached.
+    setMeta(t.db, 'viewer', { id: 'U_bob', login: 'bob', name: null, avatarUrl: null });
+    const requests = t.gh.requests.length;
+    expect(await t.call('GET', '/repo-candidates')).toMatchObject({ status: 409, body: { error: expect.stringContaining('but the GitHub token is for @alice') } });
+    expect(t.gh.requests.length).toBe(requests);
+  });
+
+  it('refuses GitHub-spending lookups from other sites', async () => {
+    const t = trackApp();
+    for (const path of ['/api/v1/repo-candidates', '/api/v1/repo-lookup?repo=bob/tool']) {
+      expect((await t.app.request(path, { headers: { 'sec-fetch-site': 'cross-site' } })).status, path).toBe(403);
+      expect((await t.app.request(path, { headers: { 'sec-fetch-site': 'same-origin' } })).status, path).toBe(200);
+    }
+    expect(t.gh.requests.filter((r) => r === '/graphql')).toHaveLength(2);
+  });
+
+  it('validates a single-repo POST /sync', async () => {
+    const t = trackApp();
+    expect(await t.call('POST', '/sync', { repo: 'bob/tool' })).toMatchObject({ status: 404, body: { error: "bob/tool isn't tracked. Add it first (POST /api/v1/repos)." } });
+    expect(await t.call('POST', '/sync', { repo: 'APP' })).toMatchObject({ status: 202, body: { running: true, repo: 'alice/app' } });
+    await t.idle();
+    expect(t.gql.state.ops.at(-2)).toBe('RepoNode:R_app');
+  });
+});
+
 describe('GH_DASH_MY_EMAILS', () => {
   it('is parsed as a trimmed, lower-cased, de-duplicated list', () => {
     expect(loadConfig({ GH_DASH_MY_EMAILS: ' Me@Home.example, ,other@x.example,me@home.example ,' }).myEmails).toEqual(['me@home.example', 'other@x.example']);
@@ -358,6 +683,10 @@ describe('diffs', () => {
     expect(await code(`/api/v1/blob/app?ref=${C}&path=../a`)).toBe(400);
     expect(await code('/api/v1/prs/nope/1/diff')).toBe(404);
     expect(await code('/api/v1/prs/app/999/diff')).toBe(404);
+    expect(await code('/api/v1/prs/bob%2Fapp/1/diff')).toBe(404);
+    // A key's slash must be encoded: raw, it is two path segments.
+    expect(await code('/api/v1/prs/alice/app/1/diff')).toBe(404);
+    expect(await code(`/api/v1/commits/alice/app/${C}/diff`)).toBe(404);
     const noToken = await app.request('/api/v1/prs/app/1/diff');
     expect(noToken.status).toBe(503);
     expect(await noToken.json()).toEqual({ error: 'No GitHub token: connect a GitHub account in Settings' });
@@ -370,12 +699,12 @@ describe('diffs', () => {
 
   it('serves diffs as JSON, gzip-encoded when the client accepts it', async () => {
     const { app } = diffApp(commitRoute);
-    const plain = await app.request(`/api/v1/commits/app/${C}/diff`);
+    const plain = await app.request(`/api/v1/commits/alice%2Fapp/${C}/diff`);
     expect(plain.headers.get('content-type')).toBe('application/json; charset=utf-8');
     expect(plain.headers.get('content-encoding')).toBeNull();
     const diff = await plain.json();
-    expect(diff).toMatchObject({ kind: 'commit', headOid: C, files: [{ path: 'src/f1.ts' }] });
-    const gz = await app.request(`/api/v1/commits/app/${C}/diff`, { headers: { 'accept-encoding': 'gzip, deflate, br' } });
+    expect(diff).toMatchObject({ kind: 'commit', repo: 'alice/app', headOid: C, files: [{ path: 'src/f1.ts' }] });
+    const gz = await app.request(`/api/v1/commits/alice%2Fapp/${C}/diff`, { headers: { 'accept-encoding': 'gzip, deflate, br' } });
     expect(gz.headers.get('content-encoding')).toBe('gzip');
     expect(JSON.parse(gunzipSync(Buffer.from(await gz.arrayBuffer())).toString())).toEqual(diff);
     const refused = await app.request(`/api/v1/commits/app/${C}/diff`, { headers: { 'accept-encoding': 'gzip;q=0, br' } });
@@ -398,7 +727,7 @@ describe('diffs', () => {
 
   it("refuses cross-site requests that would spend the owner's GitHub quota", async () => {
     const { app, gh } = diffApp({ ...commitRoute, [`/repos/alice/app/contents/a.txt?ref=${C}`]: { text: 'a' } });
-    const paths = [`/api/v1/commits/app/${C}/diff`, `/api/v1/blob/app?ref=${C}&path=a.txt`, '/api/v1/prs/app/1/diff'];
+    const paths = [`/api/v1/commits/alice%2Fapp/${C}/diff`, `/api/v1/blob/alice%2Fapp?ref=${C}&path=a.txt`, '/api/v1/prs/alice%2Fapp/1/diff'];
     for (const path of paths) {
       const res = await app.request(path, { headers: { 'sec-fetch-site': 'cross-site' } });
       expect(res.status, path).toBe(403);
@@ -416,7 +745,7 @@ describe('diffs', () => {
 
   it('serves file contents as text, immutable at a full SHA', async () => {
     const { app } = diffApp({ [`/repos/alice/app/contents/src/a.ts?ref=${C}`]: { text: 'export {};\n' } });
-    const res = await app.request(`/api/v1/blob/app?ref=${C}&path=src/a.ts`);
+    const res = await app.request(`/api/v1/blob/alice%2Fapp?ref=${C}&path=src/a.ts`);
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toBe('text/plain; charset=utf-8');
     expect(res.headers.get('cache-control')).toContain('immutable');
@@ -433,7 +762,7 @@ describe('diffs', () => {
     expect(await stats({ method: 'DELETE' })).toEqual({ entries: 0, bytes: 0, maxBytes: 200 * 1024 * 1024 });
 
     // Lowering the cap evicts right away.
-    for (const k of ['a', 'b', 'c']) cache.put({ key: k, kind: 'blob', repo: 'app', oid: C, fetchedAt: 1, data: Buffer.alloc(6 * 1024 * 1024) });
+    for (const k of ['a', 'b', 'c']) cache.put({ key: k, kind: 'blob', repo: 'alice/app', oid: C, fetchedAt: 1, data: Buffer.alloc(6 * 1024 * 1024) });
     const patch = await app.request('/api/v1/settings', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: '{"diffCacheMb":10}' });
     expect(await patch.json()).toMatchObject({ diffCacheMb: 10 });
     expect(await stats()).toEqual({ entries: 1, bytes: 6 * 1024 * 1024, maxBytes: 10 * 1024 * 1024 });

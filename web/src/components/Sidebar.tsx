@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import type { Repo } from '../../../shared/api';
+import type { Ownership, Repo, VisibilityFilter } from '../../../shared/api';
 import {
   defaultScope,
   useCreateSet,
@@ -12,17 +12,53 @@ import {
   useViews,
 } from '../api/hooks';
 import { DAY } from '../lib/time';
-import { OVERLAY_KEYS, canonicalQuery, encodeParams, useUrlState } from '../lib/urlState';
+import { OVERLAY_KEYS, canonicalQuery, encodeParams, passesRepoFilters, useUrlState } from '../lib/urlState';
 import { cx } from '../lib/util';
 import { Icon } from './Icon';
+import { MenuButton } from './Menu';
+import { RepoName } from './RepoName';
+import { useRepoLabel } from './repoMapContext';
 import { Seg } from './Seg';
 import { useToast } from './Toasts';
 import { useUI } from './ui';
 
 const ACTIVE_DAYS = 180;
 
+const VIS_LABEL: Record<VisibilityFilter, string> = { all: 'Any', public: 'Public', private: 'Private', internal: 'Internal' };
+
+const OWN_OPTIONS: { value: Ownership; label: string; title: string }[] = [
+  { value: 'all', label: 'All', title: 'All tracked repositories' },
+  { value: 'mine', label: 'Mine', title: 'Repositories you own (tracked automatically)' },
+  { value: 'others', label: 'Others', title: 'Repositories of other owners that you added' },
+];
+
+/** Visibility filter (`vis=`): a small menu next to the search box, with an accent dot while it narrows the list. */
+function VisibilityMenu({ value, onChange, counts }: {
+  value: VisibilityFilter;
+  onChange: (v: VisibilityFilter) => void;
+  /** Repos per visibility (after the ownership filter); Internal is offered only when some repo is internal. */
+  counts: Record<VisibilityFilter, number>;
+}) {
+  const opts: VisibilityFilter[] = ['all', 'public', 'private', ...(counts.internal || value === 'internal' ? ['internal' as const] : [])];
+  const what = `Visibility: ${VIS_LABEL[value]}`;
+  return (
+    <MenuButton className={cx('side-vis', value !== 'all' && 'on')} label={what} title={what} menuLabel="Visibility" menuClass="vis-menu" width={180}
+      button={<><Icon name="filter" />{value !== 'all' && <i className="dot" aria-hidden="true" />}</>}>
+      {(close) => opts.map((v) => (
+        <button key={v} type="button" role="menuitemradio" aria-checked={v === value} className={cx('opt', v === value && 'on')}
+          onClick={() => { close(); onChange(v); }}>
+          <span className="ck">{v === value && <Icon name="check" />}</span>
+          {VIS_LABEL[v]}
+          <span className="spacer" />
+          <span className="hint">{counts[v].toLocaleString()}</span>
+        </button>
+      ))}
+    </MenuButton>
+  );
+}
+
 const byActivity = (a: Repo, b: Repo) =>
-  (b.lastActivityAt ?? b.pushedAt ?? '').localeCompare(a.lastActivityAt ?? a.pushedAt ?? '') || a.name.localeCompare(b.name);
+  (b.lastActivityAt ?? b.pushedAt ?? '').localeCompare(a.lastActivityAt ?? a.pushedAt ?? '') || a.name.localeCompare(b.name) || a.key.localeCompare(b.key);
 
 export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const { s, set, location, navigate } = useUrlState();
@@ -30,8 +66,9 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const settings = useSettings();
   const sets = useSets();
   const views = useViews();
-  const { openPrompt } = useUI();
+  const { openPrompt, openAddRepo } = useUI();
   const toast = useToast();
+  const label = useRepoLabel();
   const createSet = useCreateSet();
   const deleteSet = useDeleteSet();
   const createView = useCreateView();
@@ -46,8 +83,12 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const includeForks = !!settings.data?.includeForks;
 
   const fq = filter.trim().toLowerCase();
-  const visOk = (r: Repo) => s.vis === 'all' || r.visibility === s.vis;
-  const shown = all.filter((r) => visOk(r) && (!fq || r.name.toLowerCase().includes(fq)));
+  const visCounts = useMemo(() => {
+    const counts: Record<VisibilityFilter, number> = { all: 0, public: 0, private: 0, internal: 0 };
+    for (const r of all) if (passesRepoFilters(r, { vis: 'all', own: s.own })) { counts.all++; counts[r.visibility]++; }
+    return counts;
+  }, [all, s.own]);
+  const shown = all.filter((r) => passesRepoFilters(r, s) && (!fq || r.key.toLowerCase().includes(fq)));
   const pinned = shown.filter((r) => r.pinned).sort(byActivity);
   const rest = shown.filter((r) => !r.pinned).sort(byActivity);
   const cutoff = Date.now() - ACTIVE_DAYS * DAY;
@@ -57,35 +98,38 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
     ((!!r.lastActivityAt && Date.parse(r.lastActivityAt) >= cutoff) || r.stats.openPrs > 0 || r.stats.openIssues > 0);
   const main = fq ? rest : rest.filter(isMain);
   const inactive = fq ? [] : rest.filter((r) => !isMain(r));
-  const nSel = shown.filter((r) => selected.has(r.name)).length;
+  const nSel = shown.filter((r) => selected.has(r.key)).length;
+  /** The selection as the lists see it: the visibility and ownership filters apply on top of `repos=`. */
+  const inScope = all.filter((r) => selected.has(r.key) && passesRepoFilters(r, s)).map((r) => r.key);
+  const noOthers = s.own === 'others' && !all.some((r) => r.trackedBy !== 'owned');
 
-  /** Write an explicit selection; collapse back to "default scope" when it matches it. */
-  const select = (names: Iterable<string>) => {
-    const list = [...new Set(names)].filter((n) => all.some((r) => r.name === n)).sort();
-    const isDefault = list.length === scope.length && scope.every((n) => list.includes(n));
+  /** Write an explicit selection of repo keys; collapse back to the default selection when it matches it. */
+  const select = (keys: Iterable<string>) => {
+    const list = [...new Set(keys)].filter((k) => all.some((r) => r.key === k)).sort();
+    const isDefault = list.length === scope.length && scope.every((k) => list.includes(k));
     set({ repos: isDefault ? null : list });
   };
-  const toggle = (name: string) => {
+  const toggle = (key: string) => {
     const next = new Set(selected);
-    if (next.has(name)) next.delete(name); else next.add(name);
+    if (next.has(key)) next.delete(key); else next.add(key);
     select(next);
   };
 
-  const sameSel = (names: string[]) => {
-    const valid = names.filter((n) => all.some((r) => r.name === n));
-    return valid.length === selected.size && valid.every((n) => selected.has(n));
+  const sameSel = (keys: string[]) => {
+    const valid = keys.filter((k) => all.some((r) => r.key === k));
+    return valid.length === selected.size && valid.every((k) => selected.has(k));
   };
   const curQuery = canonicalQuery(location.search);
 
   const newSet = () => {
-    if (!selected.size) { toast('Select some repositories first'); return; }
+    if (!inScope.length) { toast('Select some repositories first'); return; }
     openPrompt({
       title: 'New set',
       label: 'Name',
       placeholder: 'e.g. Side projects',
-      hint: `${selected.size} selected ${selected.size === 1 ? 'repository' : 'repositories'}`,
+      hint: `${inScope.length} selected ${inScope.length === 1 ? 'repository' : 'repositories'}`,
       submitLabel: 'Create set',
-      onSubmit: (name) => createSet.mutateAsync({ name, repos: [...selected].sort() }).then(() => toast(`Set “${name}” created`)),
+      onSubmit: (name) => createSet.mutateAsync({ name, repos: [...inScope].sort() }).then(() => toast(`Set “${name}” created`)),
     });
   };
   const saveView = () => {
@@ -101,41 +145,47 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   };
 
   const item = (r: Repo) => {
-    const on = selected.has(r.name);
+    const on = selected.has(r.key);
+    const name = label(r.key);
+    const syncing = r.syncedAt === null && !r.unavailable;
     const description = [
-      r.visibility === 'private' ? 'Private' : '', r.isArchived ? 'Archived' : '',
-      r.hidden ? 'Hidden' : '', r.isFork ? 'Fork' : '',
+      r.visibility === 'private' ? 'Private' : r.visibility === 'internal' ? 'Internal' : '',
+      r.unavailable ? `Unavailable: ${r.unavailable.reason}` : '', syncing ? 'Syncing' : '',
+      r.isArchived ? 'Archived' : '', r.hidden ? 'Hidden' : '', r.isFork ? 'Fork' : '',
       r.stats.openPrs > 0 ? `${r.stats.openPrs} open pull requests` : '',
       r.stats.openIssues > 0 ? `${r.stats.openIssues} open issues` : '',
     ].filter(Boolean).join('. ');
-    const describedBy = description ? `repo-info-${r.name}` : undefined;
+    const describedBy = description ? `repo-info-${r.key}` : undefined;
     return (
-      <div key={r.name} className={cx('repo-item', on && 'on')}>
-        <label className="repo-check-hit" title={`Include ${r.name} in selection`}>
+      <div key={r.key} className={cx('repo-item', on && 'on')}>
+        <label className="repo-check-hit" title={`Include ${name} in selection`}>
           <input
             type="checkbox"
             className="repo-check"
             checked={on}
-            aria-label={`Include ${r.name}`}
+            aria-label={`Include ${name}`}
             aria-describedby={describedBy}
-            onChange={() => toggle(r.name)}
+            onChange={() => toggle(r.key)}
           />
         </label>
         <button
           type="button"
           className="repo-select"
-          aria-label={`Filter to ${r.name}`}
+          aria-label={`Filter to ${name}`}
           aria-describedby={describedBy}
-          title={`Filter to ${r.name}${r.description ? ` · ${r.description}` : ''}`}
-          onClick={() => { set({ repos: [r.name], ...(onNavigate ? { pr: null, diff: null } : {}) }); onNavigate?.(); }}
+          title={`Filter to ${name}${r.description ? ` · ${r.description}` : ''}`}
+          onClick={() => { set({ repos: [r.key], ...(onNavigate ? { pr: null, diff: null } : {}) }); onNavigate?.(); }}
         >
           <span className="repo-name">
-            <span className="rname">{r.name}</span>
+            <RepoName repo={r.key} className="rname" />
             {r.visibility === 'private' && <span className="lk" title="Private"><Icon name="lock" /></span>}
+            {r.visibility === 'internal' && <span className="lk" title="Internal"><Icon name="lock" /></span>}
           </span>
-          {r.isArchived && <span className="arch">archived</span>}
-          {!r.isArchived && r.hidden && <span className="arch">hidden</span>}
-          {!r.isArchived && !r.hidden && r.isFork && <span className="arch">fork</span>}
+          {r.unavailable && <span className="arch" title={r.unavailable.reason}><Icon name="alert" />unavailable</span>}
+          {syncing && <span className="arch">syncing…</span>}
+          {!r.unavailable && !syncing && r.isArchived && <span className="arch">archived</span>}
+          {!r.unavailable && !syncing && !r.isArchived && r.hidden && <span className="arch">hidden</span>}
+          {!r.unavailable && !syncing && !r.isArchived && !r.hidden && r.isFork && <span className="arch">fork</span>}
           {(r.stats.openPrs > 0 || r.stats.openIssues > 0) && <span className="repo-counts" aria-hidden="true">
             {r.stats.openPrs > 0 && <span title={`${r.stats.openPrs} open pull requests`}>
               <Icon name="prOpen" />{r.stats.openPrs.toLocaleString()}
@@ -153,25 +203,18 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   return (
     <aside className="sidebar" id="repository-sidebar" aria-label="Repository scope">
       <div className="side-top">
-        <label className="field">
-          <Icon name="search" />
-          <input id="repoQ" placeholder="Filter repositories" value={filter} autoComplete="off" onChange={(e) => setFilter(e.target.value)} aria-label="Filter repositories" />
-        </label>
-        <Seg
-          className="full"
-          value={s.vis}
-          onChange={(vis) => set({ vis })}
-          ariaLabel="Visibility"
-          options={[
-            { value: 'all', label: 'All' },
-            { value: 'public', label: 'Public' },
-            { value: 'private', label: <><Icon name="lock" />Private</> },
-          ]}
-        />
+        <div className="side-search">
+          <label className="field">
+            <Icon name="search" />
+            <input id="repoQ" placeholder="Filter repositories" value={filter} autoComplete="off" onChange={(e) => setFilter(e.target.value)} aria-label="Filter repositories" />
+          </label>
+          <VisibilityMenu value={s.vis} onChange={(vis) => set({ vis })} counts={visCounts} />
+        </div>
+        <Seg className="full" value={s.own} onChange={(own) => set({ own })} ariaLabel="Ownership" options={OWN_OPTIONS} />
         <div className="side-quick">
-          <button type="button" onClick={() => set({ repos: null })} title="Default scope: everything except archived, hidden and forks">All</button>
+          <button type="button" onClick={() => set({ repos: null })} title="Default selection: everything except archived, hidden and forks">All</button>
           <button type="button" onClick={() => set({ repos: [] })}>None</button>
-          <button type="button" onClick={() => select(all.filter((r) => r.pinned).map((r) => r.name))}>Pinned</button>
+          <button type="button" onClick={() => select(all.filter((r) => r.pinned).map((r) => r.key))}>Pinned</button>
           <span className="spacer" />
           <span className="muted">{nSel} of {shown.length} selected</span>
         </div>
@@ -187,9 +230,18 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
       )}
       {!repos.isPending && (
         <>
-          <div className="side-h"><span>Repositories</span>{!pinned.length && <span className="note">Open PRs / issues</span>}</div>
+          <div className="side-h">
+            <span>Repositories</span>
+            {!pinned.length && <span className="note">Open PRs / issues</span>}
+            <button type="button" className="mini" title="Add a repository" aria-label="Add repository" onClick={openAddRepo}>+</button>
+          </div>
           {main.map(item)}
-          {!main.length && !inactive.length && <div className="side-empty">No matching repositories</div>}
+          {noOthers ? (
+            <div className="side-empty">
+              No repositories from other owners.{' '}
+              <button type="button" className="side-link" onClick={openAddRepo}>Add repository</button>
+            </div>
+          ) : !main.length && !inactive.length && <div className="side-empty">No matching repositories</div>}
           {inactive.length > 0 && (
             <>
               <button type="button" className="side-more" onClick={() => setShowInactive((v) => !v)} aria-expanded={showInactive}>
@@ -214,7 +266,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
           tabIndex={0}
           onClick={() => select(st.repos)}
           onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); select(st.repos); } }}
-          title={st.repos.join(', ')}
+          title={st.repos.map(label).join(', ')}
         >
           <Icon name="layers" />
           <span>{st.name}</span>

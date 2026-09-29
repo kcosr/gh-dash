@@ -117,6 +117,14 @@ describe('DiffCache', () => {
     put(upgraded, 'k', 10);
     upgraded.close();
 
+    // v2 had today's columns, but keyed entries by the repo's short name: dropped as well.
+    const v2 = new DatabaseSync(old);
+    v2.exec('PRAGMA user_version = 2');
+    v2.close();
+    const rekeyed = cache(old);
+    expect(rekeyed.stats()).toEqual({ entries: 0, bytes: 0 });
+    rekeyed.close();
+
     const other = join(dir, 'main.db');
     const raw = new DatabaseSync(other);
     raw.exec('CREATE TABLE repos (id INTEGER PRIMARY KEY)');

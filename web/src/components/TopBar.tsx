@@ -11,6 +11,7 @@ import { useNow } from '../lib/util';
 import { MOD_K } from './bits';
 import { Icon } from './Icon';
 import type { IconName } from './Icon';
+import { useRepoLabel } from './repoMapContext';
 import { useToast } from './Toasts';
 import { useUI } from './ui';
 
@@ -36,11 +37,13 @@ export function useTheme(): [Theme, () => void] {
 export function useSyncNow() {
   const start = useStartSync();
   const toast = useToast();
+  const label = useRepoLabel();
   return {
     pending: start.isPending,
+    /** `repo`: sync only that repository (for one added by hand, this also checks again whether it can be read). */
     run: (body: { full?: boolean; repo?: string } = {}) =>
       start.mutate(body, {
-        onSuccess: () => toast(body.full ? 'Full resync started' : 'Sync started'),
+        onSuccess: () => toast(body.full ? 'Full resync started' : body.repo ? `Syncing ${label(body.repo)}…` : 'Sync started'),
         onError: (e) => {
           const status = (e as { status?: number }).status;
           if (status === 409) toast('A sync is already running');
@@ -126,6 +129,7 @@ function SyncStatus({ label, title, to, children }: { label: string; title?: str
 
 function SyncIndicator() {
   const { data: st, isError } = useSyncStatus();
+  const repoLabel = useRepoLabel();
   const { data: account } = useAccount();
   const now = useNow(20_000);
   if (isError) {
@@ -141,8 +145,10 @@ function SyncIndicator() {
 
   if (st.running) {
     const p = st.progress;
+    // A single-repo sync (a repo just added, or "Sync now" in its menu) names the repo instead of counting "0/1 repos".
+    const label = st.repo ? `Syncing ${repoLabel(st.repo)}…` : p && p.total ? `Syncing ${p.done}/${p.total} repos…` : 'Syncing…';
     return (
-      <SyncStatus label={p && p.total ? `Syncing ${p.done}/${p.total} repos…` : 'Syncing…'} title={[p?.current ? `Syncing ${p.current}` : null, ...tip].filter(Boolean).join(' · ')}>
+      <SyncStatus label={label} title={[!st.repo && p?.current ? `Syncing ${repoLabel(p.current)}` : null, ...tip].filter(Boolean).join(' · ')}>
         <span className="spin"><Icon name="sync" /></span>
       </SyncStatus>
     );

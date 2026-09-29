@@ -182,7 +182,7 @@ export function PullRequestsView() {
               {groups.map((g) => (
                 <section key={g.key}>
                   <div className="group-h">
-                    <span className="gt">{s.group === 'repo' ? <RepoChip name={g.key} className="repo-ref" /> : g.title}</span>
+                    <span className="gt">{s.group === 'repo' ? <RepoChip repo={g.key} className="repo-ref" /> : g.title}</span>
                     {g.sub && s.group !== 'repo' && <span className="gs">{g.sub}</span>}
                     <span className="rule" />
                     <span className="gc">

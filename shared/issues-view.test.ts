@@ -11,10 +11,10 @@ describe('Issues URL state and navigation', () => {
   });
 
   it('carries repository scope across every tab without leaking PR filters or details', () => {
-    const search = '?repos=app,secret&vis=private&state=merged&density=full&q=bug&pr=app%231';
+    const search = '?repos=alice/app,alice/secret&vis=private&state=merged&density=full&q=bug&pr=alice/app%231';
     for (const view of ['prs', 'issues', 'activity', 'repos', 'insights'] as const) {
       const next = parseUrlState(carrySearch(search), view);
-      expect(next).toMatchObject({ repos: ['app', 'secret'], vis: 'private', q: '', pr: null });
+      expect(next).toMatchObject({ repos: ['alice/app', 'alice/secret'], vis: 'private', q: '', pr: null });
     }
     expect(parseUrlState(carrySearch(search), 'issues').state).toBe('open');
     expect(parseUrlState(carrySearch('?repos='), 'repos').repos).toEqual([]);
@@ -22,24 +22,24 @@ describe('Issues URL state and navigation', () => {
 
   it('exports the same issue filters as the list fetches, and preserves them when selecting a repo', () => {
     const search = '?state=closed&who=others&range=custom&from=2026-09-01&to=2026-09-30&q=crash';
-    const s = parseUrlState(patchSearch(search, 'issues', { repos: ['secret'] }), 'issues');
+    const s = parseUrlState(patchSearch(search, 'issues', { repos: ['alice/secret'] }), 'issues');
     const fetch = issueListParams(s);
-    expect(fetch).toMatchObject({ state: 'closed', who: 'others', repos: 'secret', from: '2026-09-01', to: '2026-09-30', q: 'crash' });
+    expect(fetch).toMatchObject({ state: 'closed', who: 'others', repos: 'alice/secret', from: '2026-09-01', to: '2026-09-30', q: 'crash' });
     expect(exportTarget('issues', s)).toMatchObject({ endpoint: 'issues', md: true, params: fetch });
   });
 
   it('exports repository scope, search and sort without date or author restrictions', () => {
-    const s = parseUrlState('?repos=hidden,old&vis=public&q=type&sort=stars&who=me&range=7d', 'repos');
+    const s = parseUrlState('?repos=alice/hidden,alice/old&vis=public&q=type&sort=stars&who=me&range=7d', 'repos');
     expect(exportTarget('repos', s)).toEqual({ endpoint: 'repos', md: false, label: 'repositories', params: {
-      scope: 'default', repos: 'hidden,old', visibility: 'public', q: 'type', sort: 'stars',
+      scope: 'default', repos: 'alice/hidden,alice/old', visibility: 'public', q: 'type', sort: 'stars',
     } });
   });
 
   it('drops retired repository toggles when filters change', () => {
-    const next = new URLSearchParams(patchSearch('?archived=1&forks=1&repos=old&extra=value', 'repos', { sort: 'name' }));
+    const next = new URLSearchParams(patchSearch('?archived=1&forks=1&repos=alice/old&extra=value', 'repos', { sort: 'name' }));
     expect(next.has('archived')).toBe(false);
     expect(next.has('forks')).toBe(false);
-    expect(next.get('repos')).toBe('old');
+    expect(next.get('repos')).toBe('alice/old');
     expect(next.get('extra')).toBe('value');
   });
 });

@@ -1,27 +1,69 @@
 import { describe, expect, it } from 'vitest';
-import { seedDb } from '../test/seed';
+import { resolveRepoKey } from '../../shared/repos';
+import { addManualRepo, seedDb } from '../test/seed';
 import type { Db } from './db';
 import { addRepoScope, loadQueryCtx, type Scope, Where } from './filters';
 import { getPrDetail, listPrs } from './lists';
 import { REPO_IDS_FOR_KEYS, repoKey, repoKeySql, resolveRepo, resolveRepoIds } from './repo-key';
 import { createSet, getRepo, listRepos, listSets, setRepoPrefs, updateSet } from './repos';
-import { markReposRemoved, upsertRepo } from './write';
+import { markReposRemoved, upsertOwned } from './write';
 
-const idOf = (db: Db, name: string) => db.get<{ id: number }>('SELECT id FROM repos WHERE name = ?', [name])!.id;
+const idOf = (db: Db, key: string) => db.get<{ id: number }>('SELECT id FROM repos WHERE name_with_owner = ?', [key])!.id;
 
-/** seedDb, with `old` and `hidden` marked removed (the sync does this to repos that disappear). */
-function withRemoved(): Db {
+/**
+ * seedDb (owned alice/app, secret, old, fork, hidden) with `old` and `hidden` marked removed, plus repos added by hand:
+ * bob/app (a namesake of the owned app), carol/tool (alone under its name), grp/sub/proj (a nested path) and a
+ * removed one, dave/gone.
+ */
+function fixture(): Db {
   const db = seedDb();
   const keep = db.all<{ node_id: string }>(`SELECT node_id FROM repos WHERE name NOT IN ('old', 'hidden')`).map((r) => r.node_id);
   expect(markReposRemoved(db, keep, '2026-09-28T00:00:00Z')).toBe(2);
+  addManualRepo(db, 'bob/app');
+  addManualRepo(db, 'carol/tool');
+  addManualRepo(db, 'grp/sub/proj');
+  db.run(`UPDATE repos SET removed_at = '2026-09-28T00:00:00Z' WHERE id = ?`, [addManualRepo(db, 'dave/gone')]);
   return db;
 }
 
+/** Input → the key it resolves to (section 2.2 of the design), or null. */
+const RESOLUTION: [input: string, key: string | null][] = [
+  ['alice/app', 'alice/app'], // a key
+  ['ALICE/App', 'alice/app'], // in any case
+  ['app', 'alice/app'], // the short name of an owned repo
+  ['APP', 'alice/app'],
+  ['secret', 'alice/secret'],
+  ['bob/app', 'bob/app'], // a repo added by hand, by key
+  ['Bob/APP', 'bob/app'],
+  ['carol/tool', 'carol/tool'],
+  ['tool', null], // a bare name only a repo added by hand has: nothing
+  ['grp/sub/proj', 'grp/sub/proj'], // nested
+  ['GRP/Sub/Proj', 'grp/sub/proj'],
+  ['proj', null],
+  ['sub/proj', null], // a partial path is not a key
+  ['old', null], // removed
+  ['alice/old', null],
+  ['hidden', null],
+  ['dave/gone', null],
+  ['gone', null],
+  ['nope', null],
+  ['alice/nope', null],
+  ['', null],
+  ['/', null],
+  ['alice/', null],
+  ['/app', null],
+  ['app/', null],
+  ['alice/app/', null],
+  ['a%p', null], // no pattern matching
+  ['_pp', null],
+  ['alice/app,alice/secret', null],
+];
+
 describe('repoKeySql / repoKey', () => {
-  it('name the short name for now', () => {
-    expect(repoKeySql('r')).toBe('r.name');
-    expect(repoKeySql('repos')).toBe('repos.name');
-    expect(repoKey({ name: 'app', name_with_owner: 'alice/app' })).toBe('app');
+  it('name name_with_owner', () => {
+    expect(repoKeySql('r')).toBe('r.name_with_owner');
+    expect(repoKeySql('repos')).toBe('repos.name_with_owner');
+    expect(repoKey({ name: 'app', name_with_owner: 'alice/app' })).toBe('alice/app');
   });
 
   it('agree with each other on a row', () => {
@@ -31,45 +73,59 @@ describe('repoKeySql / repoKey', () => {
   });
 });
 
-describe('resolveRepo', () => {
-  it('finds a live repo by exact short name', () => {
-    const db = seedDb();
-    expect(resolveRepo(db, 'app')).toEqual({ id: idOf(db, 'app'), key: 'app', owner: 'alice', name: 'app', path: 'alice/app', nodeId: 'R_app', trackedBy: 'owned' });
-    expect(resolveRepo(db, 'secret')).toMatchObject({ id: idOf(db, 'secret'), key: 'secret' });
+describe('resolution', () => {
+  const idsFor = (db: Db, keys: string[]) =>
+    db.all<{ id: number }>(`SELECT id FROM repos WHERE id IN ${REPO_IDS_FOR_KEYS} ORDER BY id`, [JSON.stringify(keys)]).map((r) => r.id);
+
+  it.each(RESOLUTION)('%j -> %j', (input, key) => {
+    const db = fixture();
+    expect(resolveRepo(db, input)?.key ?? null).toBe(key);
+    expect(idsFor(db, [input])).toEqual(key ? [idOf(db, key)] : []);
   });
 
-  it('returns null for an unknown key', () => {
-    const db = seedDb();
-    expect(resolveRepo(db, 'nope')).toBeNull();
-    expect(resolveRepo(db, '')).toBeNull();
+  it('is the same rule on the server (SQL) and in shared/repos.ts (the web app)', () => {
+    const db = fixture();
+    const repos = listRepos(db, 'UTC');
+    for (const [input, key] of RESOLUTION) {
+      expect(resolveRepoKey(input, repos), input).toBe(key);
+      expect(resolveRepo(db, input)?.key ?? null, input).toBe(resolveRepoKey(input, repos));
+    }
   });
 
-  it('returns null for a removed repo', () => {
-    const db = withRemoved();
-    expect(resolveRepo(db, 'old')).toBeNull();
-    expect(resolveRepo(db, 'hidden')).toBeNull();
-    expect(resolveRepo(db, 'app')).not.toBeNull();
+  it('returns the whole ref, with how the repo is tracked', () => {
+    const db = fixture();
+    expect(resolveRepo(db, 'app')).toEqual({
+      id: idOf(db, 'alice/app'), key: 'alice/app', owner: 'alice', name: 'app', path: 'alice/app', nodeId: 'R_app', trackedBy: 'owned',
+    });
+    expect(resolveRepo(db, 'bob/app')).toEqual({
+      id: idOf(db, 'bob/app'), key: 'bob/app', owner: 'bob', name: 'app', path: 'bob/app', nodeId: 'R_bob/app', trackedBy: 'manual',
+    });
+    expect(resolveRepo(db, 'grp/sub/proj')).toMatchObject({ owner: 'grp/sub', name: 'proj', path: 'grp/sub/proj' });
   });
 
-  it('is case-sensitive, and takes no owner prefix (yet)', () => {
-    const db = seedDb();
-    expect(resolveRepo(db, 'App')).toBeNull();
-    expect(resolveRepo(db, 'APP')).toBeNull();
-    expect(resolveRepo(db, 'alice/app')).toBeNull();
+  it('selects every repo named in a list, once', () => {
+    const db = fixture();
+    expect(idsFor(db, ['app', 'alice/app', 'bob/app', 'tool', 'carol/tool', 'old', 'nope'])).toEqual(
+      [idOf(db, 'alice/app'), idOf(db, 'bob/app'), idOf(db, 'carol/tool')].sort((a, b) => a - b),
+    );
+    expect(idsFor(db, [])).toEqual([]);
+  });
+
+  it('looks keys up through the key index', () => {
+    const db = fixture();
+    const plan = db.all<{ detail: string }>(`EXPLAIN QUERY PLAN SELECT id FROM repos WHERE id IN ${REPO_IDS_FOR_KEYS}`, ['["alice/app"]']).map((r) => r.detail);
+    expect(plan.join('\n')).toMatch(/repos_key/);
   });
 });
 
 describe('resolveRepoIds', () => {
   it('maps each resolvable input to its id, in input order', () => {
-    const db = seedDb();
-    const ids = resolveRepoIds(db, ['secret', 'app', 'fork']);
-    expect([...ids]).toEqual([['secret', idOf(db, 'secret')], ['app', idOf(db, 'app')], ['fork', idOf(db, 'fork')]]);
-  });
-
-  it('leaves out unknown, removed and differently cased inputs', () => {
-    const db = withRemoved();
-    const ids = resolveRepoIds(db, ['nope', 'app', 'old', 'SECRET', 'hidden', 'secret']);
-    expect([...ids]).toEqual([['app', idOf(db, 'app')], ['secret', idOf(db, 'secret')]]);
+    const db = fixture();
+    const ids = resolveRepoIds(db, ['secret', 'bob/app', 'nope', 'ALICE/APP', 'tool', 'app', 'fork', 'old']);
+    expect([...ids]).toEqual([
+      ['secret', idOf(db, 'alice/secret')], ['bob/app', idOf(db, 'bob/app')], ['ALICE/APP', idOf(db, 'alice/app')],
+      ['app', idOf(db, 'alice/app')], ['fork', idOf(db, 'alice/fork')],
+    ]);
   });
 
   it('lists a repeated input once, at its first position', () => {
@@ -82,140 +138,101 @@ describe('resolveRepoIds', () => {
   });
 });
 
-describe('REPO_IDS_FOR_KEYS', () => {
-  const inputs: string[][] = [
-    [],
-    ['app'],
-    ['secret', 'app'],
-    ['app', 'nope', 'fork'],
-    ['App', 'SECRET'],
-    ['old', 'hidden'],
-    ['old', 'app', 'hidden', 'nope'],
-    ['app', 'app'],
-  ];
-
-  // The form the code used before the helpers, minus the removed_at test that a caller's own `r.removed_at IS NULL` supplied.
-  const before = (db: Db, keys: string[]) =>
-    db
-      .all<{ id: number }>(`SELECT r.id FROM repos r WHERE r.removed_at IS NULL AND r.name IN (SELECT value FROM json_each(?)) ORDER BY r.id`, [JSON.stringify(keys)])
-      .map((r) => r.id);
-  const after = (db: Db, keys: string[]) =>
-    db
-      .all<{ id: number }>(`SELECT r.id FROM repos r WHERE r.removed_at IS NULL AND r.id IN ${REPO_IDS_FOR_KEYS} ORDER BY r.id`, [JSON.stringify(keys)])
-      .map((r) => r.id);
-
-  it('is one parenthesised subquery with a single parameter', () => {
-    expect(REPO_IDS_FOR_KEYS.startsWith('(SELECT')).toBe(true);
-    expect(REPO_IDS_FOR_KEYS.endsWith(')')).toBe(true);
-    expect(REPO_IDS_FOR_KEYS.match(/\?/g)).toHaveLength(1);
+describe('call sites', () => {
+  const scope = (repos: string[] | null): Scope => ({
+    repos, visibility: 'all', ownership: 'all', who: 'everyone', from: Date.parse('2026-01-01T00:00:00Z'), to: Date.parse('2026-10-01T00:00:00Z'), tz: 'UTC', q: null,
   });
 
-  it('selects the same repos as the name list it replaced', () => {
-    for (const db of [seedDb(), withRemoved()]) {
-      for (const keys of inputs) expect(after(db, keys), JSON.stringify(keys)).toEqual(before(db, keys));
-    }
-  });
-
-  it('selects live repos only, and only exact names', () => {
-    const db = withRemoved();
-    expect(after(db, ['app', 'secret'])).toEqual([idOf(db, 'app'), idOf(db, 'secret')]);
-    expect(after(db, ['old', 'hidden', 'App', 'nope'])).toEqual([]);
-  });
-
-  it('is what resolveRepoIds resolves', () => {
-    const db = withRemoved();
-    for (const keys of inputs) expect(after(db, keys), JSON.stringify(keys)).toEqual([...resolveRepoIds(db, keys).values()].sort((a, b) => a - b));
-  });
-
-  it('drives the repo scope of a list', () => {
-    const scope = (repos: string[] | null): Scope => ({
-      repos, visibility: 'all', who: 'everyone', from: Date.parse('2026-01-01T00:00:00Z'), to: Date.parse('2026-10-01T00:00:00Z'), tz: 'UTC', q: null,
-    });
-    const db = withRemoved();
+  it('a list scope takes keys and aliases alike', () => {
+    const db = fixture();
     const ctx = loadQueryCtx(db);
     const ids = (repos: string[]) => listPrs(db, ctx, scope(repos), { state: 'all', labels: null }, null).items.map((p) => p.id);
-    expect(ids(['app', 'secret'])).toEqual(['secret#1', 'app#3', 'app#2', 'app#1']);
+    expect(ids(['alice/app', 'alice/secret'])).toEqual(['alice/secret#1', 'alice/app#3', 'alice/app#2', 'alice/app#1']);
+    expect(ids(['app', 'SECRET'])).toEqual(ids(['alice/app', 'alice/secret']));
     // Removed repos stay out of a scope that names them; unknown names match nothing.
-    expect(ids(['old', 'hidden', 'nope'])).toEqual([]);
-    expect(ids(['old', 'app'])).toEqual(['app#3', 'app#2', 'app#1']);
+    expect(ids(['old', 'alice/hidden', 'nope'])).toEqual([]);
 
     const w = new Where();
     addRepoScope(w, scope(['app']), ctx);
     expect(w.parts).toContain(`r.id IN ${REPO_IDS_FOR_KEYS}`);
     expect(w.params).toContain('["app"]');
   });
-});
 
-describe('call sites', () => {
-  it('getRepo / listRepos(onlyKey) match a live key exactly', () => {
-    const db = withRemoved();
-    expect(getRepo(db, 'app', 'UTC')?.name).toBe('app');
-    expect(getRepo(db, 'App', 'UTC')).toBeNull();
+  it('getRepo / listRepos(onlyKey) find a live repo by key or alias', () => {
+    const db = fixture();
+    expect(getRepo(db, 'alice/app', 'UTC')?.key).toBe('alice/app');
+    expect(getRepo(db, 'App', 'UTC')?.key).toBe('alice/app');
+    expect(getRepo(db, 'bob/app', 'UTC')).toMatchObject({ key: 'bob/app', trackedBy: 'manual', addedAt: '2026-09-27T12:00:00Z', unavailable: null });
+    expect(getRepo(db, 'tool', 'UTC')).toBeNull();
     expect(getRepo(db, 'old', 'UTC')).toBeNull();
-    expect(getRepo(db, 'nope', 'UTC')).toBeNull();
-    expect(listRepos(db, 'UTC', Date.now(), 'secret').map((r) => r.name)).toEqual(['secret']);
-    expect(listRepos(db, 'UTC').map((r) => r.name)).not.toContain('old');
+    expect(listRepos(db, 'UTC', Date.now(), 'secret').map((r) => r.key)).toEqual(['alice/secret']);
+    expect(listRepos(db, 'UTC').map((r) => r.key)).not.toContain('alice/old');
   });
 
   it('listRepos orders by activity, then by key', () => {
     const db = seedDb();
     // Inserted in the opposite order to their keys, with the same (old) activity and nothing else.
-    for (const name of ['zeta', 'alpha']) {
-      upsertRepo(db, {
-        nodeId: `R_${name}`, name, nameWithOwner: `alice/${name}`, owner: 'alice', description: null, url: `https://github.com/alice/${name}`,
-        visibility: 'public', isArchived: false, isFork: false, languageName: null, languageColor: null, topics: [], defaultBranch: 'main',
-        stars: 0, forks: 0, createdAt: '2019-01-01T00:00:00Z', pushedAt: '2020-01-01T00:00:00Z',
-      }, '2026-09-27T00:00:00Z');
-    }
-    expect(listRepos(db, 'UTC', Date.parse('2026-09-27T12:00:00Z')).slice(-2).map((r) => r.name)).toEqual(['alpha', 'zeta']);
+    for (const key of ['zed/lib', 'amy/lib']) addManualRepo(db, key, { createdAt: '2019-01-01T00:00:00Z', pushedAt: '2020-01-01T00:00:00Z' });
+    expect(listRepos(db, 'UTC', Date.parse('2026-09-27T12:00:00Z')).slice(-2).map((r) => r.key)).toEqual(['amy/lib', 'zed/lib']);
   });
 
   it('setRepoPrefs answers whether a live repo was found', () => {
-    const db = withRemoved();
+    const db = fixture();
     expect(setRepoPrefs(db, 'app', { pinned: true })).toBe(true);
-    expect(getRepo(db, 'app', 'UTC')?.pinned).toBe(true);
-    expect(setRepoPrefs(db, 'app', { pinned: false, hidden: true })).toBe(true);
-    expect(getRepo(db, 'app', 'UTC')).toMatchObject({ pinned: false, hidden: true });
+    expect(getRepo(db, 'alice/app', 'UTC')?.pinned).toBe(true);
+    expect(setRepoPrefs(db, 'bob/app', { hidden: true })).toBe(true);
+    expect(getRepo(db, 'bob/app', 'UTC')?.hidden).toBe(true);
+    expect(getRepo(db, 'alice/app', 'UTC')?.hidden).toBe(false);
     // No preferences: only existence is reported.
     expect(setRepoPrefs(db, 'secret', {})).toBe(true);
     expect(setRepoPrefs(db, 'nope', {})).toBe(false);
-    expect(setRepoPrefs(db, 'old', {})).toBe(false);
-    expect(setRepoPrefs(db, 'nope', { pinned: true })).toBe(false);
-    expect(setRepoPrefs(db, 'App', { pinned: true })).toBe(false);
+    expect(setRepoPrefs(db, 'tool', { pinned: true })).toBe(false);
     // A removed repo keeps its preferences untouched.
     expect(setRepoPrefs(db, 'old', { pinned: true })).toBe(false);
     expect(db.get<{ pinned: number }>(`SELECT pinned FROM repos WHERE name = 'old'`)!.pinned).toBe(0);
   });
 
-  it('sets keep member order and drop unknown, removed and repeated names', () => {
-    const db = withRemoved();
-    const set = createSet(db, 'mix', ['secret', 'nope', 'app', 'old', 'secret', 'fork']);
-    expect(set.repos).toEqual(['secret', 'app', 'fork']);
+  it('sets store members by key, in order, and drop unknown, removed and repeated names', () => {
+    const db = fixture();
+    const set = createSet(db, 'mix', ['secret', 'nope', 'bob/app', 'old', 'secret', 'fork', 'ALICE/FORK', 'tool']);
+    expect(set.repos).toEqual(['alice/secret', 'bob/app', 'alice/fork']);
     // Positions count every distinct input, so the gaps left by dropped names don't reorder the rest.
     expect(db.all<{ position: number }>('SELECT position FROM repo_set_members WHERE set_id = ? ORDER BY position', [set.id]).map((r) => r.position)).toEqual([0, 2, 4]);
-    expect(updateSet(db, set.id, { repos: ['fork', 'app'] })?.repos).toEqual(['fork', 'app']);
-    expect(updateSet(db, set.id, { name: 'renamed' })).toMatchObject({ name: 'renamed', repos: ['fork', 'app'] });
+    expect(updateSet(db, set.id, { repos: ['alice/fork', 'app'] })?.repos).toEqual(['alice/fork', 'alice/app']);
+    expect(updateSet(db, set.id, { name: 'renamed' })).toMatchObject({ name: 'renamed', repos: ['alice/fork', 'alice/app'] });
     expect(createSet(db, 'empty', []).repos).toEqual([]);
-    expect(listSets(db).map((x) => [x.name, x.repos])).toEqual([['empty', []], ['renamed', ['fork', 'app']]]);
+    expect(listSets(db).map((x) => [x.name, x.repos])).toEqual([['empty', []], ['renamed', ['alice/fork', 'alice/app']]]);
   });
 
   it('listSets leaves out members that were removed since', () => {
     const db = seedDb();
     const set = createSet(db, 'all', ['app', 'old', 'secret']);
-    expect(set.repos).toEqual(['app', 'old', 'secret']);
+    expect(set.repos).toEqual(['alice/app', 'alice/old', 'alice/secret']);
     const keep = db.all<{ node_id: string }>(`SELECT node_id FROM repos WHERE name <> 'old'`).map((r) => r.node_id);
     markReposRemoved(db, keep, '2026-09-28T00:00:00Z');
-    expect(listSets(db)).toEqual([{ id: set.id, name: 'all', repos: ['app', 'secret'] }]);
+    expect(listSets(db)).toEqual([{ id: set.id, name: 'all', repos: ['alice/app', 'alice/secret'] }]);
   });
 
-  it('getPrDetail finds a PR of a live repo by exact key, else null', () => {
-    const db = withRemoved();
+  it('getPrDetail finds a PR of a live repo by key or alias, else null', () => {
+    const db = fixture();
     const ctx = loadQueryCtx(db);
-    expect(getPrDetail(db, ctx, 'app', 1)).toMatchObject({ id: 'app#1', repo: 'app', number: 1 });
-    expect(getPrDetail(db, ctx, 'secret', 1)).toMatchObject({ id: 'secret#1' });
-    expect(getPrDetail(db, ctx, 'app', 999)).toBeNull();
+    expect(getPrDetail(db, ctx, 'alice/app', 1)).toMatchObject({ id: 'alice/app#1', repo: 'alice/app', number: 1 });
+    expect(getPrDetail(db, ctx, 'App', 1)).toMatchObject({ id: 'alice/app#1' });
+    expect(getPrDetail(db, ctx, 'secret', 1)).toMatchObject({ id: 'alice/secret#1' });
+    expect(getPrDetail(db, ctx, 'alice/app', 999)).toBeNull();
+    expect(getPrDetail(db, ctx, 'bob/app', 1)).toBeNull();
     expect(getPrDetail(db, ctx, 'nope', 1)).toBeNull();
-    expect(getPrDetail(db, ctx, 'App', 1)).toBeNull();
     expect(getPrDetail(db, ctx, 'old', 1)).toBeNull();
+  });
+
+  it('a repo renamed on GitHub gets its new key; its old key stops resolving', () => {
+    const db = seedDb();
+    upsertOwned(db, {
+      nodeId: 'R_app', name: 'app2', nameWithOwner: 'alice/app2', owner: 'alice', description: null, url: 'https://github.com/alice/app2',
+      visibility: 'public', isArchived: false, isFork: false, languageName: null, languageColor: null, topics: [], defaultBranch: 'main',
+      stars: 0, forks: 0, createdAt: '2025-01-01T00:00:00Z', pushedAt: '2026-09-25T00:00:00Z',
+    }, '2026-09-28T00:00:00Z');
+    expect(resolveRepo(db, 'alice/app')).toBeNull();
+    expect(resolveRepo(db, 'app2')?.key).toBe('alice/app2');
   });
 });

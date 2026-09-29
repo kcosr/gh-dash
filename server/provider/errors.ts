@@ -1,7 +1,8 @@
 // Errors any source (GitHub, GitLab, …) raises for a failed request. Callers branch on `kind`, never on the class of a
 // particular provider's error, so the sync and the diff service treat every provider alike.
 
-export type SourceErrorKind = 'auth' | 'rate-limit' | 'transient' | 'graphql' | 'http' | 'not-found';
+/** 'forbidden': the provider knows the resource but refuses this token (SSO, an organization policy, missing permission). */
+export type SourceErrorKind = 'auth' | 'rate-limit' | 'transient' | 'graphql' | 'http' | 'not-found' | 'forbidden';
 
 export class SourceError extends Error {
   readonly kind: SourceErrorKind;

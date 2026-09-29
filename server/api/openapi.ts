@@ -33,11 +33,17 @@ const schemas: Record<string, Schema> = {
     weeklyCommits: { ...arr(int()), description: '12 Mon-start weeks (server tz), oldest first' },
   }),
   Repo: obj({
-    name: str(), nameWithOwner: str(), owner: str(), description: nullable(str()), url: str(),
-    visibility: enumOf('public', 'private'), isArchived: bool, isFork: bool,
+    key: str('Identity in URLs, `repos=` lists and every `repo` field: owner/name'), name: str('Short name'), nameWithOwner: str(), owner: str(), description: nullable(str()), url: str(),
+    visibility: enumOf('public', 'private', 'internal'), isArchived: bool, isFork: bool,
     language: nullable(obj({ name: str(), color: nullable(str()) })), topics: arr(str()), defaultBranch: nullable(str()),
     stars: int(), forks: int(), createdAt: dateTime, pushedAt: nullable(dateTime), lastActivityAt: nullable(dateTime),
     pinned: bool, hidden: bool, setIds: arr(int()), stats: ref('RepoStats'), syncedAt: nullable(dateTime),
+    trackedBy: { ...enumOf('owned', 'manual'), description: 'owned: one of your repositories, tracked automatically; manual: added by hand' },
+    addedAt: { ...nullable(dateTime), description: 'Manual repos: when they were added' },
+    unavailable: {
+      ...nullable(obj({ since: dateTime, reason: str() })),
+      description: 'Manual repos the token can no longer read: data kept, sync skips it until readable again',
+    },
   }),
   PullRequest: obj({
     id: str('<repo>#<number>'), repo: str(), number: int(), title: str(), body: str('Markdown'),
@@ -114,7 +120,41 @@ const schemas: Record<string, Schema> = {
     rateLimit: nullable(obj({ limit: int(), remaining: int(), resetAt: dateTime })),
     tokenSource: enumOf('env', 'file', 'gh-cli', 'app', 'none'),
     viewer: nullable(str()),
+    repo: { ...nullable(str()), description: 'Key of the one repository a single-repo sync is syncing (e.g. one just added); null for a full sync' },
+  }, ['repo']),
+  RepoCandidate: obj({
+    key: str('owner/name'), owner: str(), name: str(), description: nullable(str()), visibility: enumOf('public', 'private', 'internal'),
+    isArchived: bool, isFork: bool, stars: int(), pushedAt: nullable(dateTime),
+    tracked: { ...nullable(enumOf('owned', 'manual')), description: 'How it is tracked already; null when it is not' },
   }),
+  RepoCandidatesResponse: obj({
+    items: { ...arr(ref('RepoCandidate')), description: 'Repositories you collaborate on or reach through an organization, most recently pushed first (at most 1000)' },
+    suggested: { ...arr(ref('RepoCandidate')), description: 'Untracked repositories of others you recently contributed to' },
+    truncated: { ...bool, description: 'More repositories exist than items lists' },
+    fetchedAt: dateTime,
+  }),
+  RepoPreview: {
+    allOf: [ref('RepoCandidate'), obj({
+      url: str(), openPrs: int(), openIssues: int(),
+      owned: { ...bool, description: 'You own it: tracked automatically, so it cannot be added' },
+      hidden: { ...nullable(bool), description: 'When tracked: left out of the default selection' },
+      backfill: {
+        ...obj({ since: dateTime, commits: nullable(int()), prs: nullable(int()), issues: nullable(int()), releases: int(), requests: nullable(int()) }),
+        description: 'What the first sync would fetch since `since` (null: unknown), and about how many GitHub requests',
+      },
+    })],
+  },
+  RepoLookup: {
+    oneOf: [
+      obj({ ok: { type: 'boolean', const: true }, repo: ref('RepoPreview') }),
+      obj({
+        ok: { type: 'boolean', const: false }, key: str(),
+        problem: { ...enumOf('not-found', 'sso', 'org-policy', 'permission'), description: "not-found: doesn't exist, or the token can't see it; sso: the organization requires SAML single sign-on; org-policy: an organization policy refuses the token; permission: the token sees the repository but not its pull requests, issues or code" },
+        message: str(), hint: nullable(str('What to do about it, for this kind of token')),
+      }),
+    ],
+  },
+  AddRepoResponse: obj({ repo: ref('Repo'), sync: { ...enumOf('started', 'queued'), description: 'queued: after the sync that is running' } }),
   AccountStatus: obj({
     source: { ...TOKEN_SOURCE, description: 'Where the token comes from right now' },
     choice: nullable(enumOf('auto', 'gh', 'file', 'app')),
@@ -218,10 +258,12 @@ const q = (name: string, description: string, schema: Schema = str(), example?: 
   name, in: 'query', description, schema, ...(example ? { example } : {}),
 });
 const p = (name: string, description: string, schema: Schema = str()): ParamDoc => ({ name, in: 'path', description, schema, required: true });
+const REPO = { ...p('repo', 'Repo key `owner/name`, URL-encoded as one segment (`owner%2Fname`); a bare name selects the repository of that name you own.'), example: 'kcosr%2Fgh-dash' };
 
 const SCOPE: ParamDoc[] = [
-  q('repos', 'Comma-separated repo names. Omitted: default scope (non-archived, non-hidden, non-fork unless includeForks). Empty (`repos=`): no repos.', str(), 'app,tools'),
-  q('visibility', 'Repo visibility filter.', { ...enumOf('all', 'public', 'private'), default: 'all' }),
+  q('repos', 'Comma-separated repo keys (owner/name; the short name of a repo you own also works). Omitted: the default selection (non-archived, non-hidden, non-fork unless includeForks). Empty (`repos=`): no repos.', str(), 'kcosr/gh-dash,kcosr/tools'),
+  q('visibility', 'Repo visibility filter (internal: GitHub Enterprise).', { ...enumOf('all', 'public', 'private', 'internal'), default: 'all' }),
+  q('ownership', 'mine: repositories you own (tracked automatically); others: repositories added by hand.', { ...enumOf('all', 'mine', 'others'), default: 'all' }),
   q('who', "'me' = the authenticated user (login, settings.myEmails or GH_DASH_MY_EMAILS); stars are always by others.", { ...enumOf('me', 'others', 'everyone'), default: 'everyone' }, 'me'),
   q('from', 'Start: YYYY-MM-DD (in tz), ISO datetime, or relative offset like -7d / -12w / -3m. Default: 29 days before today.', str(), '-30d'),
   q('to', 'End, inclusive: YYYY-MM-DD covers that whole day. Same formats as from. Default: end of today. Bounds must lie in 1970–2999 and span at most 7320 days (~20 years).', str()),
@@ -280,7 +322,7 @@ export const ENDPOINTS: EndpointDoc[] = [
   },
   {
     method: 'get', path: '/api/v1/prs/{repo}/{number}', tag: 'Lists', summary: 'One pull request with commits and linked issues',
-    params: [p('repo', 'Repo name'), p('number', 'PR number', int())], response: { status: 200, schema: ref('PullRequestDetail') },
+    params: [REPO, p('number', 'PR number', int())], response: { status: 200, schema: ref('PullRequestDetail') },
   },
   {
     method: 'get', path: '/api/v1/activity', tag: 'Lists', summary: 'Activity feed (commits without a PR, PR/issue events, releases, stars)',
@@ -302,22 +344,51 @@ export const ENDPOINTS: EndpointDoc[] = [
     response: { status: 200, schema: ref('StatsResponse') }, example: 'from=-90d&tz=UTC',
   },
   { method: 'get', path: '/api/v1/repos', tag: 'Repos', summary: 'Repository inventory or a filtered selection', params: [
-    q('repos', 'Comma-separated names; explicit empty selects nothing. Overrides scope.'),
-    q('scope', 'all (default) returns the inventory; default excludes archived/hidden and forks unless enabled in settings.', enumOf('all', 'default')),
-    q('visibility', 'Repository visibility', enumOf('all', 'public', 'private')),
-    q('q', 'Case-insensitive substring in name, description, topics or language'),
+    q('repos', 'Comma-separated repo keys (or short names of repos you own); explicit empty selects nothing. Overrides scope.'),
+    q('scope', 'all (default) returns the inventory; default returns the default selection, which leaves out archived and hidden repos, and forks unless enabled in settings.', enumOf('all', 'default')),
+    q('visibility', 'Repository visibility (internal: GitHub Enterprise)', enumOf('all', 'public', 'private', 'internal')),
+    q('ownership', 'mine: repositories you own; others: repositories added by hand', enumOf('all', 'mine', 'others')),
+    q('q', 'Case-insensitive substring in owner/name, description, topics or language'),
     q('sort', 'Sort within pinned/hidden groups; default activity', enumOf('activity', 'stars', 'open', 'name')),
   ], response: { status: 200, schema: obj({ items: arr(ref('Repo')) }) } },
-  { method: 'get', path: '/api/v1/repos/{name}', tag: 'Repos', summary: 'One repo', params: [p('name', 'Repo name')], response: { status: 200, schema: ref('Repo') } },
+  { method: 'get', path: '/api/v1/repos/{repo}', tag: 'Repos', summary: 'One repo', params: [REPO], response: { status: 200, schema: ref('Repo') } },
   {
-    method: 'patch', path: '/api/v1/repos/{name}', tag: 'Repos', summary: 'Pin/unpin or hide/unhide a repo (local preference)',
-    params: [p('name', 'Repo name')], body: { schema: obj({ pinned: bool, hidden: bool }, ['pinned', 'hidden']), example: { pinned: true } },
+    method: 'get', path: '/api/v1/repo-candidates', tag: 'Repos', summary: 'Repositories of others the token can read, to add',
+    description: 'Cached for 5 minutes per token. Costs up to 10 REST requests and 1 GraphQL point. 503 without a token, 409 when the token is for another account than this database.',
+    params: [q('refresh', "'1' asks GitHub again instead of using the cache.", enumOf('1'))],
+    response: { status: 200, schema: ref('RepoCandidatesResponse') },
+  },
+  {
+    method: 'get', path: '/api/v1/repo-lookup', tag: 'Repos', summary: 'Whether the token can read a repository, with a preview',
+    description: 'One GraphQL request. `ok: false` explains why the token can\'t read it (200). 400 for input that names no GitHub repository, 503 without a token, 409 when the token is for another account, 429 rate limited.',
+    params: [{ ...q('repo', 'owner/name, a github.com URL (https or git@)', str(), 'dlvhdr/gh-dash'), required: true }],
+    response: { status: 200, schema: ref('RepoLookup') },
+  },
+  {
+    method: 'post', path: '/api/v1/repos', tag: 'Repos', summary: "Track a repository you don't own, and start its first sync",
+    description:
+      'Checks access again first. 400 bad input; 404 `{ details: { problem: "not-found", hint } }`; 403 `{ details: { problem: "sso" | "org-policy" | "permission", hint } }`; ' +
+      '409 `{ details: { key, trackedBy, hidden } }` when you own it (tracked automatically) or it is tracked already, or when the token is for another account; 503 without a token; 429 rate limited.',
+    body: {
+      schema: obj({ repo: str('owner/name or a github.com URL'), includeInDefault: { ...bool, default: true, description: 'Include in the default selection (hidden: false)' } }, ['includeInDefault']),
+      example: { repo: 'dlvhdr/gh-dash' },
+    },
+    response: { status: 201, schema: ref('AddRepoResponse') },
+  },
+  {
+    method: 'delete', path: '/api/v1/repos/{repo}', tag: 'Repos', summary: 'Stop tracking a repository you added',
+    description: 'Deletes its pull requests, issues, commits, releases and cached diffs from this dashboard, and its set memberships. Nothing changes on GitHub. 409 for a repository you own (hide it instead), 404 when unknown.',
+    params: [REPO], response: { status: 204, description: 'Removed' },
+  },
+  {
+    method: 'patch', path: '/api/v1/repos/{repo}', tag: 'Repos', summary: 'Pin/unpin or hide/unhide a repo (local preference)',
+    params: [REPO], body: { schema: obj({ pinned: bool, hidden: bool }, ['pinned', 'hidden']), example: { pinned: true } },
     response: { status: 200, schema: ref('Repo') },
   },
   { method: 'get', path: '/api/v1/sets', tag: 'Sets & views', summary: 'Repo sets', response: { status: 200, schema: obj({ items: arr(ref('RepoSet')) }) } },
   {
     method: 'post', path: '/api/v1/sets', tag: 'Sets & views', summary: 'Create a repo set (unknown repos are ignored)',
-    body: { schema: obj({ name: str(), repos: arr(str()) }), example: { name: 'Tools', repos: ['app', 'tools'] } },
+    body: { schema: obj({ name: str(), repos: arr(str('Repo key, or the short name of a repo you own')) }), example: { name: 'Tools', repos: ['kcosr/app', 'kcosr/tools'] } },
     response: { status: 200, schema: ref('RepoSet') },
   },
   {
@@ -329,6 +400,7 @@ export const ENDPOINTS: EndpointDoc[] = [
   { method: 'get', path: '/api/v1/views', tag: 'Sets & views', summary: 'Saved views', response: { status: 200, schema: obj({ items: arr(ref('SavedView')) }) } },
   {
     method: 'post', path: '/api/v1/views', tag: 'Sets & views', summary: 'Save a view (app path + query)',
+    description: 'Repo references (`repos`, `pr`, `diff` and a `/repos/...` path) are stored as keys; other params are kept as sent.',
     body: { schema: obj({ name: str(), path: str(), query: str() }), example: { name: 'My merged PRs', path: '/prs', query: 'state=merged&who=me&range=30d' } },
     response: { status: 200, schema: ref('SavedView') },
   },
@@ -343,7 +415,7 @@ export const ENDPOINTS: EndpointDoc[] = [
       'Errors: 404 unknown repo or PR, 503 no GitHub token, 429 GitHub rate limit (details.resetAt), 502 other GitHub failures, ' +
       '403 for cross-site browser requests.',
     params: [
-      p('repo', 'Repo name'), p('number', 'PR number', int()),
+      REPO, p('number', 'PR number', int()),
       q('refresh', "'1' re-checks the PR on GitHub (head, merge base, title) instead of trusting the last sync; files are fetched again only if the head or merge base changed.", enumOf('1')),
     ],
     response: { status: 200, schema: ref('Diff') },
@@ -351,13 +423,13 @@ export const ENDPOINTS: EndpointDoc[] = [
   {
     method: 'get', path: '/api/v1/commits/{repo}/{oid}/diff', tag: 'Diffs', summary: "A commit's changes against its first parent",
     description: 'The commit need not be synced (e.g. PR branch commits), but the repo must be. Errors as for PR diffs.',
-    params: [p('repo', 'Repo name'), p('oid', 'Commit SHA, 7-40 hex characters'), q('refresh', "'1' fetches it again instead of using the cache.", enumOf('1'))],
+    params: [REPO, p('oid', 'Commit SHA, 7-40 hex characters'), q('refresh', "'1' fetches it again instead of using the cache.", enumOf('1'))],
     response: { status: 200, schema: ref('Diff') },
   },
   {
     method: 'get', path: '/api/v1/blob/{repo}', tag: 'Diffs', summary: 'File contents at a commit (for expanding diff context)',
     description: 'Errors: 400 invalid ref or path, 404 no such file, 413 larger than 5 MB, 415 binary file.',
-    params: [p('repo', 'Repo name'), { ...q('ref', 'Commit SHA, 7-40 hex characters'), required: true }, { ...q('path', 'File path in the repo'), required: true }],
+    params: [REPO, { ...q('ref', 'Commit SHA, 7-40 hex characters'), required: true }, { ...q('path', 'File path in the repo'), required: true }],
     response: { status: 200, schema: str(), type: 'text/plain' },
     example: 'ref=0123abc&path=README.md',
   },
@@ -367,7 +439,7 @@ export const ENDPOINTS: EndpointDoc[] = [
   {
     method: 'post', path: '/api/v1/sync', tag: 'Sync', summary: 'Start a sync now (409 if one is running)',
     description:
-      '`repo` limits the sync to one repo; `full` ignores high-water marks, re-fetches the backfill window and re-diffs stars. ' +
+      '`repo` (a key, or the short name of a repo you own) limits the sync to one repo (404 when a key names no tracked repository: add it first); `full` ignores high-water marks, re-fetches the backfill window and re-diffs stars. ' +
       'The token is resolved afresh; without one the answer is 503 with the reason.',
     body: { schema: obj({ repo: str(), full: bool }, ['repo', 'full']), example: { full: true }, optional: true },
     response: { status: 202, schema: ref('SyncStatus') },

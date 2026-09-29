@@ -1,15 +1,18 @@
-import type { Settings } from '../../shared/api';
+import type { Settings, TokenKind, TrackedBy } from '../../shared/api';
 import type { Db } from '../db/db';
 import { getMeta, setMeta, type ViewerMeta } from '../db/meta';
 import type { RepoProbe, RepoRecord } from '../db/records';
-import { repoKey } from '../db/repo-key';
+import { repoKey, repoKeySql, resolveRepo } from '../db/repo-key';
 import {
   applyProbe,
   deleteItem,
   deleteStarsExcept,
   getSyncState,
   markReposRemoved,
+  markUnavailable,
   pruneCommits,
+  refreshManual,
+  storedRepoRecord,
   releaseExists,
   starExists,
   storedOpenNumbers,
@@ -20,18 +23,24 @@ import {
   upsertIssue,
   upsertPr,
   upsertRelease,
-  upsertRepo,
+  upsertOwned,
   upsertStar,
 } from '../db/write';
 import { GitHubError, type GitHubClient } from '../github/client';
 import { mapCommit, mapIssue, mapProbe, mapPullRequest, mapRelease, mapRepo, mapStar } from '../github/map';
-import { recheckQuery, REPO_DETAIL, REPO_PROBES, VIEWER_REPO, VIEWER_REPOS } from '../github/queries';
+import { type AccessFailure, accessFailure, notFound, reasonOf } from '../github/access';
+import { MANUAL_REPOS, recheckQuery, REPO_DETAIL, REPO_NODE, REPO_PROBES, VIEWER_REPO, VIEWER_REPOS } from '../github/queries';
 import type {
+  GqlError,
   GqlIssue,
+  GqlProbe,
   GqlPullRequest,
+  GqlRepo,
   GqlViewer,
+  ManualReposData,
   RecheckData,
   RepoDetailData,
+  RepoNodeData,
   RepoProbesData,
   ViewerRepoData,
   ViewerReposData,
@@ -70,6 +79,8 @@ export interface SyncDeps {
   now?: () => number;
   concurrency?: number;
   onProgress?: (p: SyncProgress) => void;
+  /** The kind of token the client uses: what to suggest when a repo added by hand can't be read. */
+  tokenKind?: TokenKind | null;
 }
 
 export interface RepoPlan {
@@ -85,6 +96,8 @@ export interface RepoPlan {
 
 export interface PlanContext {
   full: boolean;
+  /** Stargazers are synced for repos the viewer owns only. */
+  syncStars: boolean;
   /** Fork commit history (often a large upstream history) is only synced when forks are in scope. */
   includeForks: boolean;
   backfillStart: string;
@@ -114,12 +127,14 @@ export function planRepo(r: RepoRecord, probe: RepoProbe | null, s: SyncStateRow
   else if (!probe || probe.releaseTags.some((t) => !ctx.isKnownRelease(t))) releases = { stopAtKnown: true };
 
   let stars: RepoPlan['stars'] = null;
-  const canDiff = r.stars < FULL_STAR_DIFF_MAX;
-  const diffDue = !s.stars_full_at || ctx.now - Date.parse(s.stars_full_at) >= DAY_MS;
-  const { count, latest } = ctx.storedStars;
-  if (full || !s.stars_synced_at) stars = { mode: 'full' };
-  else if (canDiff && (r.stars > 0 || count > 0) && (diffDue || r.stars < count)) stars = { mode: 'full' };
-  else if (!probe || (probe.latestStarredAt && (!latest || probe.latestStarredAt > latest))) stars = { mode: 'incremental' };
+  if (ctx.syncStars) {
+    const canDiff = r.stars < FULL_STAR_DIFF_MAX;
+    const diffDue = !s.stars_full_at || ctx.now - Date.parse(s.stars_full_at) >= DAY_MS;
+    const { count, latest } = ctx.storedStars;
+    if (full || !s.stars_synced_at) stars = { mode: 'full' };
+    else if (canDiff && (r.stars > 0 || count > 0) && (diffDue || r.stars < count)) stars = { mode: 'full' };
+    else if (!probe || (probe.latestStarredAt && (!latest || probe.latestStarredAt > latest))) stars = { mode: 'incremental' };
+  }
 
   return {
     commits,
@@ -134,30 +149,46 @@ interface RepoTarget {
   id: number;
   record: RepoRecord;
   probe: RepoProbe | null;
+  trackedBy: TrackedBy;
+  /** Why this repo was only read in part (fields the token may not read): the run reports it as failed. */
+  problem: string | null;
 }
 
 type Section = 'commits' | 'prs' | 'issues' | 'openPrs' | 'openIssues' | 'releases' | 'stars';
 
+/**
+ * Runs `fn` over `items`, `concurrency` at a time. After the first failure no further items start, but the ones in
+ * flight are awaited before it is rethrown: once this settles, nothing it started can still write (the caller
+ * releases the sync lock then).
+ */
 async function pool<T>(items: T[], concurrency: number, fn: (item: T) => Promise<void>): Promise<void> {
   let next = 0;
+  let failure: { err: unknown } | null = null;
   const worker = async () => {
-    while (next < items.length) await fn(items[next++]!);
+    while (!failure && next < items.length) {
+      try {
+        await fn(items[next++]!);
+      } catch (err) {
+        failure ??= { err };
+      }
+    }
   };
   await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker));
+  if (failure) throw (failure as { err: unknown }).err;
 }
 
 const isFatal = (err: unknown) => err instanceof GitHubError && (err.kind === 'auth' || err.kind === 'rate-limit');
 const message = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
 export async function runSync(deps: SyncDeps, req: SyncRequest = {}): Promise<SyncResult> {
-  const { db, client, settings } = deps;
+  const { db, settings } = deps;
   const nowMs = deps.now?.() ?? Date.now();
   const nowIso = isoSec(nowMs);
   const backfillStart = isoSec(nowMs - settings.backfillDays * DAY_MS);
   const full = !!req.full;
   const errors: string[] = [];
 
-  const targets = req.repo ? await fetchOneRepo(deps, req.repo, nowIso) : await fetchAllRepos(deps, nowIso, errors);
+  const targets = req.repo ? await fetchOneRepo(deps, req.repo, nowIso, errors) : await fetchAllRepos(deps, nowIso, errors);
 
   const progress: SyncProgress = { done: 0, total: targets.length, current: null };
   deps.onProgress?.({ ...progress });
@@ -172,12 +203,22 @@ export async function runSync(deps: SyncDeps, req: SyncRequest = {}): Promise<Sy
     try {
       // Await first: `newItems += await …` would read newItems before the await and lose concurrent updates.
       const added = await syncRepo(deps, t, { full, includeForks: settings.includeForks, backfillStart, nowMs, nowIso });
+      writeTx(db, t, () => updateSyncState(db, t.id, t.problem ? { last_error: t.problem } : { synced_at: nowIso, last_error: null }));
       newItems += added;
-      updateSyncState(db, t.id, { synced_at: nowIso, last_error: null });
+      if (t.problem) errors.push(`${key}: ${t.problem}`);
     } catch (err) {
       if (isFatal(err)) fatal = message(err);
-      else errors.push(`${key}: ${message(err)}`);
-      updateSyncState(db, t.id, { last_error: message(err) });
+      try {
+        writeTx(db, t, () => {
+          if (fatal) return;
+          const lost = t.trackedBy === 'manual' ? lostAccess(err, key, deps.tokenKind ?? null) : null;
+          if (lost) markUnavailable(db, t.id, t.record.nodeId, reasonOf(lost), nowIso);
+          errors.push(`${key}: ${lost ? `unavailable: ${reasonOf(lost)}` : message(err)}`);
+        });
+        writeTx(db, t, () => updateSyncState(db, t.id, { last_error: message(err) }));
+      } catch (gone) {
+        if (!(gone instanceof RepoGone)) throw gone;
+      }
     }
     progress.done++;
     deps.onProgress?.({ ...progress });
@@ -185,6 +226,35 @@ export async function runSync(deps: SyncDeps, req: SyncRequest = {}): Promise<Sy
   if (fatal) errors.push(`Sync stopped: ${fatal}`);
   const forksSkipped = settings.includeForks ? 0 : targets.filter((t) => t.record.isFork && t.record.defaultBranch).length;
   return { repos: targets.length, newItems, errors, forksSkipped };
+}
+
+/**
+ * The target stopped being the repo this run is syncing: deleted (DELETE /repos) or no longer live while its answers
+ * were pending. Its id may even belong to another repo by now (ids of deleted rows could be reused before v5 added
+ * AUTOINCREMENT), so nothing of this run may be written under it.
+ */
+class RepoGone extends Error {
+  constructor() {
+    super('repository no longer tracked');
+  }
+}
+
+/** A write transaction for target `t`: checks first that its row is still the same live repo (id and node id). */
+function writeTx<T>(db: Db, t: { id: number; record: RepoRecord }, fn: () => T): T {
+  return db.tx(() => {
+    if (!db.get('SELECT 1 FROM repos WHERE id = ? AND node_id = ? AND removed_at IS NULL', [t.id, t.record.nodeId])) throw new RepoGone();
+    return fn();
+  });
+}
+
+/**
+ * The repository itself can no longer be read (REPO_DETAIL failed on `repository`, not on one of its sections): what
+ * to record for a repo added by hand. A section the token may not read stays an ordinary error.
+ */
+function lostAccess(err: unknown, key: string, kind: TokenKind | null): AccessFailure | null {
+  if (!(err instanceof GitHubError) || (err.kind !== 'not-found' && err.kind !== 'forbidden')) return null;
+  const failure = accessFailure(err.errors, ['repository'], key, kind);
+  return failure && failure.problem !== 'permission' ? failure : null;
 }
 
 /**
@@ -204,26 +274,65 @@ export function saveViewer(db: Db, v: GqlViewer): void {
   setMeta(db, 'viewer', { id: v.id, login: v.login, name: v.name, avatarUrl: v.avatarUrl });
 }
 
-/** Runs before anything is written: a token for another account fails the sync and leaves the database as it was. */
-function claimViewer(db: Db, v: GqlViewer): void {
-  const mismatch = viewerMismatch(getMeta(db, 'viewer'), v);
-  if (mismatch) throw new Error(mismatch);
-  saveViewer(db, v);
+/**
+ * Claims the database for the account `v`, or finds it belongs to another one (returned: why not). The read, check
+ * and write are one write transaction, so another process can't claim the database in between.
+ */
+export function tryClaimViewer(db: Db, v: GqlViewer): string | null {
+  return db.tx(() => {
+    const mismatch = viewerMismatch(getMeta(db, 'viewer'), v);
+    if (!mismatch) saveViewer(db, v);
+    return mismatch;
+  });
 }
 
-async function fetchOneRepo(deps: SyncDeps, name: string, nowIso: string): Promise<RepoTarget[]> {
-  const data = await deps.client.query<ViewerRepoData>(VIEWER_REPO, { name });
-  claimViewer(deps.db, data.viewer);
-  const node = data.viewer.repository;
-  if (!node) throw new Error(`Repository not found on GitHub: ${name}`);
-  const record = mapRepo(node);
-  const probe = mapProbe(node);
-  const id = deps.db.tx(() => {
-    const repoId = upsertRepo(deps.db, record, nowIso);
-    applyProbe(deps.db, repoId, probe);
+/** Runs before anything is written: a token for another account fails the sync and leaves the database as it was. */
+function claimViewer(db: Db, v: GqlViewer): void {
+  const mismatch = tryClaimViewer(db, v);
+  if (mismatch) throw new Error(mismatch);
+}
+
+/**
+ * One repository: `repo` is a key or an owned repo's short name. A tracked repo is read by node id (it may have been
+ * renamed since). A bare name nothing tracks yet may name a repo the viewer just created: that is looked up among the
+ * viewer's own. A repo added by hand that can't be read is marked unavailable, and there is nothing to sync.
+ */
+async function fetchOneRepo(deps: SyncDeps, repo: string, nowIso: string, errors: string[]): Promise<RepoTarget[]> {
+  const { db, client } = deps;
+  const ref = resolveRepo(db, repo);
+  if (!ref) {
+    if (repo.includes('/')) throw new Error(`Repository isn't tracked: ${repo}`);
+    const data = await client.query<ViewerRepoData>(VIEWER_REPO, { name: repo });
+    claimViewer(db, data.viewer);
+    const node = data.viewer.repository;
+    if (!node) throw new Error(`Repository not found on GitHub: ${repo}`);
+    const record = mapRepo(node);
+    const probe = mapProbe(node);
+    const id = db.tx(() => {
+      const repoId = upsertOwned(db, record, nowIso);
+      applyProbe(db, repoId, probe);
+      return repoId;
+    });
+    return [{ id, record, probe, trackedBy: 'owned', problem: null }];
+  }
+
+  const { data, errors: gqlErrors } = await client.queryPartial<RepoNodeData>(REPO_NODE, { id: ref.nodeId });
+  claimViewer(db, data.viewer);
+  const node = data.node;
+  if (!node) {
+    if (ref.trackedBy === 'owned') throw new Error(`Repository not found on GitHub: ${ref.key}`);
+    const failure = accessFailure(gqlErrors, ['node'], ref.key, deps.tokenKind ?? null) ?? notFound(ref.key, deps.tokenKind ?? null);
+    markUnavailable(db, ref.id, ref.nodeId, reasonOf(failure), nowIso);
+    errors.push(`${ref.key}: unavailable: ${reasonOf(failure)}`);
+    return [];
+  }
+  const { record, probe, problem } = readNode(db, node, gqlErrors, ['node'], ref.key, deps.tokenKind ?? null);
+  const id = db.tx(() => {
+    const repoId = ref.trackedBy === 'owned' ? upsertOwned(db, record, nowIso) : refreshManual(db, record, nowIso);
+    if (repoId !== null && probe) applyProbe(db, repoId, probe);
     return repoId;
   });
-  return [{ id, record, probe }];
+  return id === null ? [] : [{ id, record, probe, trackedBy: ref.trackedBy, problem }];
 }
 
 async function fetchAllRepos(deps: SyncDeps, nowIso: string, errors: string[]): Promise<RepoTarget[]> {
@@ -239,31 +348,104 @@ async function fetchAllRepos(deps: SyncDeps, nowIso: string, errors: string[]): 
   } while (after);
 
   const ids = db.tx(() => {
-    const out = records.map((r) => upsertRepo(db, r, nowIso));
+    const out = records.map((r) => upsertOwned(db, r, nowIso));
     markReposRemoved(db, records.map((r) => r.nodeId), nowIso);
     return out;
   });
 
+  const manual = await fetchManualRepos(deps, nowIso, errors);
+
+  // A node the token can't read loses only its own probe (the repo then syncs as if it had changed).
   const probes = new Map<string, RepoProbe>();
-  const chunks: string[][] = [];
-  for (let i = 0; i < records.length; i += PROBE_CHUNK) chunks.push(records.slice(i, i + PROBE_CHUNK).map((r) => r.nodeId));
-  await pool(chunks, 4, async (chunk) => {
+  await pool(chunked(records.map((r) => r.nodeId), PROBE_CHUNK), 4, async (chunk) => {
     try {
-      const data = await client.query<RepoProbesData>(REPO_PROBES, { ids: chunk });
-      for (const n of data.nodes) if (n) probes.set(n.id, mapProbe(n));
+      const { data, errors: gqlErrors } = await client.queryPartial<RepoProbesData>(REPO_PROBES, { ids: chunk });
+      data.nodes.forEach((n, i) => {
+        if (n && !gqlErrors.some((e) => e.path?.[0] === 'nodes' && e.path[1] === i)) probes.set(n.id, mapProbe(n));
+      });
     } catch (err) {
       if (isFatal(err)) throw err;
       errors.push(`probe: ${message(err)}`);
     }
   });
 
-  return db.tx(() =>
+  const owned = db.tx(() =>
     records.map((record, i) => {
       const probe = probes.get(record.nodeId) ?? null;
       if (probe) applyProbe(db, ids[i]!, probe);
-      return { id: ids[i]!, record, probe };
+      return { id: ids[i]!, record, probe, trackedBy: 'owned' as const, problem: null };
     }),
   );
+  return [...owned, ...manual];
+}
+
+/** RepoRecord fields a repository field fills: the ones kept from the database when GitHub denies that field. */
+const RECORD_FIELDS: Record<string, (keyof RepoRecord)[]> = {
+  description: ['description'], visibility: ['visibility'], isArchived: ['isArchived'], isFork: ['isFork'],
+  primaryLanguage: ['languageName', 'languageColor'], repositoryTopics: ['topics'], defaultBranchRef: ['defaultBranch'],
+  stargazerCount: ['stars'], forkCount: ['forks'], createdAt: ['createdAt'], pushedAt: ['pushedAt'],
+};
+
+/**
+ * A repository node read with queryPartial, at `at` in the response. Fields the token may not read come back null:
+ * they keep what the database has (a denied defaultBranchRef is not an empty repository), the probe is left out, and
+ * the refusal becomes the repo's problem for this run, so it is reported as failed rather than synced.
+ */
+function readNode(db: Db, node: GqlRepo & GqlProbe, errors: GqlError[], at: (string | number)[], key: string, kind: TokenKind | null) {
+  const inside = errors.filter((e) => !!e.path && e.path.length > at.length && at.every((x, i) => e.path![i] === x));
+  const record = mapRepo(node);
+  if (!inside.length) return { record, probe: mapProbe(node), problem: null };
+  const stored = storedRepoRecord(db, record.nodeId);
+  const kept = inside.flatMap((e) => RECORD_FIELDS[String(e.path![at.length])] ?? []);
+  const failure = accessFailure(errors, at, key, kind);
+  return {
+    record: stored ? { ...record, ...Object.fromEntries(kept.map((f) => [f, stored[f]])) } : record,
+    probe: null,
+    problem: failure ? reasonOf(failure) : inside.map((e) => e.message).join('; '),
+  };
+}
+
+const chunked = <T>(items: T[], size: number): T[][] =>
+  Array.from({ length: Math.ceil(items.length / size) }, (_, i) => items.slice(i * size, (i + 1) * size));
+
+/**
+ * Refreshes the live repos added by hand by node id (they follow renames and transfers), unavailable ones included so
+ * they are checked again every run. One that can't be read is marked unavailable: its data is kept and it isn't
+ * synced. A chunk failing for another reason skips its repos this run.
+ */
+async function fetchManualRepos(deps: SyncDeps, nowIso: string, errors: string[]): Promise<RepoTarget[]> {
+  const { db, client } = deps;
+  const rows = db.all<{ id: number; node_id: string; key: string }>(
+    `SELECT id, node_id, ${repoKeySql('repos')} AS key FROM repos WHERE tracked_by = 'manual' AND removed_at IS NULL ORDER BY id`,
+  );
+  const targets = new Map<number, RepoTarget>();
+  await pool(chunked(rows, PROBE_CHUNK), 4, async (chunk) => {
+    let res: { data: ManualReposData; errors: GqlError[] };
+    try {
+      res = await client.queryPartial<ManualReposData>(MANUAL_REPOS, { ids: chunk.map((r) => r.node_id) });
+    } catch (err) {
+      if (isFatal(err)) throw err;
+      errors.push(`manual repos: ${message(err)}`);
+      return;
+    }
+    db.tx(() =>
+      chunk.forEach((row, i) => {
+        const node = res.data.nodes[i];
+        const at = ['nodes', i];
+        if (!node) {
+          const failure = accessFailure(res.errors, at, row.key, deps.tokenKind ?? null) ?? notFound(row.key, deps.tokenKind ?? null);
+          markUnavailable(db, row.id, row.node_id, reasonOf(failure), nowIso);
+          return;
+        }
+        const { record, probe, problem } = readNode(db, node, res.errors, at, row.key, deps.tokenKind ?? null);
+        const id = refreshManual(db, record, nowIso);
+        if (id === null) return;
+        if (probe) applyProbe(db, id, probe);
+        targets.set(row.id, { id, record, probe, trackedBy: 'manual', problem });
+      }),
+    );
+  });
+  return rows.flatMap((r) => targets.get(r.id) ?? []);
 }
 
 interface OpenPass {
@@ -302,6 +484,7 @@ async function syncRepo(deps: SyncDeps, t: RepoTarget, run: RunContext): Promise
 
   const plan = planRepo(r, t.probe, state, {
     full: run.full,
+    syncStars: t.trackedBy === 'owned',
     includeForks: run.includeForks,
     backfillStart: run.backfillStart,
     now: run.nowMs,
@@ -372,7 +555,7 @@ async function syncRepo(deps: SyncDeps, t: RepoTarget, run: RunContext): Promise
     const repo = data.repository;
     if (!repo) throw new Error('repository not found');
 
-    db.tx(() => {
+    writeTx(db, t, () => {
       if (active.has('commits')) {
         const hist = repo.defaultBranchRef?.target?.history;
         const nodes = hist?.nodes ?? [];
@@ -526,7 +709,7 @@ async function recheckItems(deps: SyncDeps, t: RepoTarget, prs: number[], issues
       const node = repo[key];
       return node && node.repository.nameWithOwner === t.record.nameWithOwner ? node : null;
     };
-    db.tx(() => {
+    writeTx(db, t, () => {
       for (const n of prChunk) {
         const node = here(`pr${n}`);
         if (node) upsertPr(db, t.id, mapPullRequest(node as GqlPullRequest));

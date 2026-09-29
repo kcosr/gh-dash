@@ -222,11 +222,57 @@ const V3 = `ALTER TABLE sync_state ADD COLUMN commits_head TEXT;`;
 // PR head commit as of the last sync: diffs are cached by it, so an unchanged PR needs no GitHub request.
 const V4 = `ALTER TABLE pull_requests ADD COLUMN head_oid TEXT;`;
 
+// Local review comments (never sent to GitHub). Authors are principals: row 1 is the dashboard's own user; agents
+// writing through the API get rows of their own. Threads are keyed by repo and PR number or commit oid, not by
+// pull_requests.id: sync may delete and re-create a PR row (a transfer), and the user's comments must outlive that.
+// A thread's revision (commit_oid, base_oid) and snippet let a later revision of the PR's diff relocate it.
+const V5 = `
+CREATE TABLE principals (
+  id INTEGER PRIMARY KEY,
+  kind TEXT NOT NULL CHECK (kind IN ('self', 'agent')),
+  name TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+INSERT INTO principals (id, kind, name, created_at) VALUES (1, 'self', 'You', strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));
+
+CREATE TABLE comment_threads (
+  id INTEGER PRIMARY KEY,
+  repo_id INTEGER NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  pr_number INTEGER,
+  commit_oid TEXT NOT NULL,
+  base_oid TEXT,
+  path TEXT,
+  side TEXT CHECK (side IN ('old', 'new')),
+  start_line INTEGER,
+  end_line INTEGER,
+  snippet TEXT,
+  status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'resolved')),
+  resolved_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  CHECK (side IS NULL OR path IS NOT NULL),
+  CHECK ((side IS NULL) = (start_line IS NULL) AND (side IS NULL) = (end_line IS NULL) AND (side IS NULL) = (snippet IS NULL)),
+  CHECK (start_line IS NULL OR (start_line >= 1 AND end_line >= start_line))
+);
+CREATE INDEX comment_threads_target ON comment_threads(repo_id, pr_number, commit_oid);
+
+CREATE TABLE comments (
+  id INTEGER PRIMARY KEY,
+  thread_id INTEGER NOT NULL REFERENCES comment_threads(id) ON DELETE CASCADE,
+  author_id INTEGER NOT NULL REFERENCES principals(id),
+  body TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  edited_at TEXT
+);
+CREATE INDEX comments_thread ON comments(thread_id);
+`;
+
 const MIGRATIONS: Migration[] = [
   { version: 1, destructive: false, sql: V1 },
   { version: 2, destructive: false, sql: V2 },
   { version: 3, destructive: false, sql: V3 },
   { version: 4, destructive: false, sql: V4 },
+  { version: 5, destructive: false, sql: V5 },
 ];
 
 export function migrate(db: Db, allowDestructive: boolean): void {

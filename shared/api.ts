@@ -106,6 +106,8 @@ export interface PullRequest {
   baseRef: string;
   labels: Label[];
   url: string;
+  /** Local comment threads on this PR (GET /prs and the PR detail; absent on activity events). */
+  comments?: CommentCounts;
 }
 
 export interface PullRequestDetail extends PullRequest {
@@ -354,6 +356,8 @@ export interface PageQuery {
 export interface PrQuery extends ScopeQuery, PageQuery {
   state?: PrStateFilter; // default 'all'
   labels?: string; // comma-separated; PR must have at least one
+  /** Only PRs with local comment threads: any, or at least one unresolved. */
+  comments?: CommentFilter;
   /** Only affects format=md headings. Default 'week'. */
   group?: GroupBy;
 }
@@ -521,6 +525,89 @@ export interface DiffCacheStats {
 }
 
 // ---------------------------------------------------------------------------
+// Comments: local review threads on PR and commit diffs. Stored in gh-dash only, never posted to
+// GitHub. Placement in a later revision of a PR's diff: shared/comment-placement.ts.
+// ---------------------------------------------------------------------------
+
+/** Who wrote a comment: the dashboard's own user ('self', id 1, "You") or an agent acting through the API. */
+export type PrincipalKind = 'self' | 'agent';
+
+export interface Principal {
+  id: number;
+  kind: PrincipalKind;
+  name: string;
+}
+
+/** Which side of the diff a line thread is on: the old file (deletions) or the new one (additions). */
+export type CommentSide = 'old' | 'new';
+export type ThreadStatus = 'open' | 'resolved';
+/** PR list filter: PRs with any comment thread, or with at least one unresolved. */
+export type CommentFilter = 'any' | 'unresolved';
+
+export interface CommentCounts {
+  threads: number;
+  /** Threads still open. */
+  unresolved: number;
+}
+
+/**
+ * Where a thread is anchored. Three levels:
+ *  - the whole PR or commit: path, side, lines and snippet all null;
+ *  - a file: path set, the rest null;
+ *  - lines: everything set; startLine..endLine (inclusive, 1-based) on `side`, numbered as in that side's file.
+ */
+export interface ThreadAnchor {
+  /** DiffFile.path of the file (its path on the new side). */
+  path: string | null;
+  side: CommentSide | null;
+  startLine: number | null;
+  endLine: number | null;
+  /**
+   * The anchored lines' text as they were, joined with "\n" (one entry per line, so endLine - startLine + 1
+   * lines). Keeps an outdated thread readable once its revision is gone, and relocates it in a later one.
+   */
+  snippet: string | null;
+}
+
+export interface ThreadComment {
+  id: number;
+  author: Principal;
+  /** Markdown. */
+  body: string;
+  createdAt: string;
+  /** Last edit of the body; null when never edited. */
+  editedAt: string | null;
+}
+
+export interface CommentThread extends ThreadAnchor {
+  id: number;
+  kind: 'pr' | 'commit';
+  repo: string;
+  /** PR number for kind 'pr'; null for commits. */
+  number: number | null;
+  /** The revision the thread was made on: the diff's headOid then (the PR head, or the commit itself). */
+  commitOid: string;
+  /** The diff's baseOid then (merge base, or first parent); null when not given or for a root commit. */
+  baseOid: string | null;
+  status: ThreadStatus;
+  resolvedAt: string | null;
+  createdAt: string;
+  /** Last activity: a comment added, edited or deleted, or the status changed. */
+  updatedAt: string;
+  /** Oldest first; never empty (the first comment opens the thread, and deleting it deletes the thread). */
+  comments: ThreadComment[];
+}
+
+/** POST /prs/:repo/:number/threads and /commits/:repo/:oid/threads. Anchor fields omitted = null. */
+export interface NewThread extends Partial<ThreadAnchor> {
+  /** PR threads only (a commit thread's is the commit): the headOid of the diff the thread is made on. */
+  commitOid?: string;
+  baseOid?: string | null;
+  /** The first comment. */
+  body: string;
+}
+
+// ---------------------------------------------------------------------------
 // Endpoint index (for reference; implemented in server/, consumed in web/src/api)
 // ---------------------------------------------------------------------------
 //
@@ -536,7 +623,7 @@ export interface DiffCacheStats {
 // GET    /api/v1/views                         -> { items: SavedView[] }
 // POST   /api/v1/views         {name, path, query} -> SavedView
 // DELETE /api/v1/views/:id                     -> 204
-// GET    /api/v1/prs            PrQuery        -> PrListResponse | text/markdown | text/csv
+// GET    /api/v1/prs            PrQuery        -> PrListResponse | text/markdown | text/csv   (items carry `comments` counts)
 // GET    /api/v1/prs/:repo/:number             -> PullRequestDetail
 // GET    /api/v1/activity       ActivityQuery  -> ActivityResponse | text/markdown | text/csv
 // GET    /api/v1/commits        ScopeQuery&PageQuery -> ListResponse<Commit>
@@ -554,6 +641,16 @@ export interface DiffCacheStats {
 //          404 missing, 415 binary, 413 too large
 // GET    /api/v1/diff-cache                    -> DiffCacheStats
 // DELETE /api/v1/diff-cache                    -> DiffCacheStats (after clearing)
+// GET    /api/v1/prs/:repo/:number/threads {format?: 'md'} -> { items: CommentThread[] } | text/markdown
+// POST   /api/v1/prs/:repo/:number/threads NewThread -> CommentThread   (404 unless the PR is synced)
+// GET    /api/v1/commits/:repo/:oid/threads {format?: 'md'} -> { items: CommentThread[] } | text/markdown  (oid: full SHA)
+// POST   /api/v1/commits/:repo/:oid/threads NewThread -> CommentThread
+// GET    /api/v1/threads/:id                   -> CommentThread
+// PATCH  /api/v1/threads/:id   {status}        -> CommentThread
+// DELETE /api/v1/threads/:id                   -> 204
+// POST   /api/v1/threads/:id/comments {body}   -> CommentThread (with the reply)
+// PATCH  /api/v1/comments/:id  {body}          -> CommentThread  (own comments only, else 403)
+// DELETE /api/v1/comments/:id                  -> { thread: CommentThread | null }  (the first comment takes its thread along: null)
 // GET    /api/v1/account                       -> AccountStatus
 // POST   /api/v1/account/check                 -> AccountStatus (re-resolve and re-validate the token now)
 //          GET /account never calls GitHub (a new token is validated in the background); InstanceInfo.apiUrl is the

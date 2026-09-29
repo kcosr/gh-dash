@@ -58,6 +58,13 @@ export const qk = {
 export const refetchAfterSync = (q: Query) =>
   !['sync-status', 'diff', 'blob', 'instance', 'desktop-state', 'repo-candidates', 'repo-lookup'].includes(q.queryKey[0] as string);
 
+/**
+ * Queries whose answers follow the default selection: every list or stats request without an explicit `repos=`
+ * (the views, the palette's PR search, the export previews). Hiding or showing a repo changes them.
+ */
+const SELECTION_QUERIES = ['prs', 'issues', 'activity', 'releases', 'commits', 'stars', 'stats', 'palette-prs', 'export-md', 'export-sample'];
+export const followsDefaultSelection = (q: Query) => SELECTION_QUERIES.includes(q.queryKey[0] as string);
+
 // ---------------------------------------------------------------- reference data
 
 export function useRepos() {
@@ -333,6 +340,9 @@ export function usePatchRepo() {
       return { prev };
     },
     onError: (_e, _v, ctx) => { if (ctx?.prev) qc.setQueryData(qk.repos, ctx.prev); },
+    // Hidden or shown: the default selection changed, and with it every list and chart that follows it. (Pinning
+    // only reorders repos.) These callbacks run even when hiding unmounted the component that asked.
+    onSuccess: (_r, { patch }) => { if (patch.hidden !== undefined) void qc.invalidateQueries({ predicate: followsDefaultSelection }); },
     onSettled: () => qc.invalidateQueries({ queryKey: qk.repos }),
   });
 }

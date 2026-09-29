@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fakeExec, fakeFs } from '../test/credentials';
+import { fakeGitHub } from '../test/github';
 import { BASE, fakeGitLab, graphql, type Handler } from '../test/gitlab';
+import { fakeGraphQL } from '../test/graphql';
 import { testTokens } from '../test/tokens';
 import { openDb } from '../db/db';
 import { ensureSource, GITHUB_SOURCE_ID, getSource, listSources, removeSource, tryClaimViewer } from '../db/sources';
@@ -29,17 +31,17 @@ const gitlab = (host = HOST, over: Partial<SourceConfig> = {}): SourceConfig => 
   kind: 'gitlab', host, baseUrl: host === HOST ? BASE : `https://${host}`, tokenChoice: 'glab', tokenFile: null, tokenEnv: null, from: 'file', ...over,
 });
 
-function setup(o: { env?: NodeJS.ProcessEnv; routes?: Record<string, Handler> } = {}) {
+function setup(o: { env?: NodeJS.ProcessEnv; routes?: Record<string, Handler>; githubToken?: string; githubFetch?: typeof fetch } = {}) {
   const db = openDb(':memory:');
   const api = fakeGitLab(o.routes ?? CHECK_ROUTES);
   const glab = fakeExec(() => `${PAT}\n`);
   const logs: string[] = [];
-  const github = testTokens(null);
+  const github = testTokens(o.githubToken ?? null);
   const githubDiffs = new GitHubDiffSources({ tokens: github, log: () => {} });
   const registry = new SourceRegistry({
     db,
     env: o.env ?? { HOME: '/home/alice', PATH: '/usr/bin' },
-    github: { tokens: github.credentials, diffs: githubDiffs },
+    github: { tokens: github.credentials, diffs: githubDiffs, fetchImpl: o.githubFetch },
     log: (line) => logs.push(line),
     seams: { fetchImpl: api.fetchImpl, sleep: async () => {}, exec: glab.exec, fs: fakeFs({ [GLAB]: { exec: true } }), platform: 'linux', now: () => NOW },
   });
@@ -50,7 +52,7 @@ describe('SourceRegistry', () => {
   it('always has github.com, over the TokenProvider and diff sources startServer built', () => {
     const { registry, github, githubDiffs } = setup();
     const gh = registry.github();
-    expect(gh).toMatchObject({ id: GITHUB_SOURCE_ID, kind: 'github', host: 'github.com', label: 'GitHub', configured: true, config: null, syncSource: null });
+    expect(gh).toMatchObject({ id: GITHUB_SOURCE_ID, kind: 'github', host: 'github.com', label: 'GitHub', configured: true, config: null });
     expect(gh.tokens).toBe(github.credentials);
     expect(gh.diffs).toBe(githubDiffs);
     expect(gh.row).toMatchObject({ id: 1, name: 'GitHub', baseUrl: 'https://github.com' });
@@ -185,6 +187,24 @@ describe('SourceRegistry', () => {
     // Its provider knows the account this source's data belongs to.
     tryClaimViewer(db, gl!.id, { id: 'gid://gitlab/User/9', login: 'bob' });
     expect((await gl!.tokens.account()).dbLogin).toBe('bob');
+  });
+
+  it("builds github.com's sync clients: GitHub's rate limit goes to source 1 as it comes, and a 401 invalidates the token", async () => {
+    const gql = fakeGraphQL();
+    const gh = fakeGitHub({ '/graphql': gql.handler });
+    const { db, registry, github } = setup({ githubToken: 'ghp_test', githubFetch: gh.fetchImpl });
+    expect((await github.get()).token).toBe('ghp_test');
+    const sync = registry.github().syncSource('ghp_test');
+    expect([sync.kind, sync.requests, sync.points, sync.probesStars, sync.linksCommits]).toEqual(['github', 0, 0, true, true]);
+    expect(await sync.viewer()).toEqual({ id: 'U_alice', login: 'alice', name: 'Alice', avatarUrl: null, emails: [] });
+    expect([sync.requests, sync.points]).toEqual([1, 1]);
+    expect(getSource(db, GITHUB_SOURCE_ID)!.rateLimit).toEqual({ limit: 5000, remaining: 4990, resetAt: '2099-01-01T00:00:00Z' });
+
+    gh.routes['/graphql'] = { status: 401, body: { message: 'Bad credentials' } };
+    await expect(registry.github().syncSource('ghp_test').viewer()).rejects.toMatchObject({ kind: 'auth' });
+    expect(gh.requests).toEqual(['/graphql', '/graphql']);
+    // Resolved again before the next use; meanwhile the account says why.
+    expect((await github.account()).error).toBe('Bad credentials');
   });
 
   it('builds a sync client with other retry limits for a person waiting on it', async () => {

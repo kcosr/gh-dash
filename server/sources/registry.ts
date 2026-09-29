@@ -5,9 +5,9 @@
 // Who uses what (the steps are the design's §11):
 // - tokens (CredentialProvider: TokenSupply + account() + check()): startup's check() here; the manager's per-source
 //   runs (5); tracking (6); diffs' 503 text (7); /sources and Settings → Sources (8, 11).
-// - syncSource(token, limits?): runSync's `source` per source run of the multi-source manager (5); tracking's
-//   candidates() and lookup() (6), with few retries and short waits. github.com's is null for now: the manager builds
-//   its GitHubSyncSource itself, and tracking its own, until step 5 moves that here.
+// - syncSource(token, limits?): runSync's `source` per source run of the multi-source manager (5), and its viewer
+//   checks; tracking's candidates() and lookup() (6), with few retries and short waits. github.com's is
+//   githubSyncSource (tracking still builds its own GitHub client, over the fetch and sleep it is given).
 // - diffs (SourceDiffSupply): the diff service, through DiffRouter (sources/diffs.ts), which asks the repo's source's.
 //   github.com's is the GitHubDiffSources startServer builds.
 // - byHost / byId / list / configured: the manager (5), tracking (6), diffs (7), the API (8), the desktop child (11).
@@ -16,10 +16,12 @@
 
 import type { ProviderKind, SourceAccount } from '../../shared/api';
 import { CredentialProvider, type CredentialOptions } from '../credentials/provider';
-import type { ResolvedToken } from '../credentials/types';
+import type { ResolvedToken, TokenSupply } from '../credentials/types';
 import type { Db } from '../db/db';
-import { ensureSource, GITHUB_SOURCE_ID, getSource, listSources, sourceByHost, type SourceRow } from '../db/sources';
+import { ensureSource, GITHUB_SOURCE_ID, getSource, listSources, setSourceRateLimit, sourceByHost, type SourceRow } from '../db/sources';
 import type { SourceDiffSupply } from '../diff/service';
+import { tokenKind } from '../github/credentials';
+import { GitHubSyncSource } from '../github/sync-source';
 import { gitlabSpec } from '../gitlab/credentials';
 import { GitLabDiffSources } from '../gitlab/diff-source';
 import { GitLabSyncSource } from '../gitlab/sync-source';
@@ -48,10 +50,9 @@ export interface SourceRuntime {
   readonly tokens: CredentialProvider;
   /**
    * A sync client for one token. A 401 invalidates that token, so the next get() resolves again. `limits` replaces the
-   * client's retry defaults (the sync's: several attempts, long waits), for a person waiting on the answer. null for
-   * github.com, whose GitHubSyncSource the manager builds itself until step 5.
+   * client's retry defaults (the sync's: several attempts, long waits), for a person waiting on the answer.
    */
-  readonly syncSource: ((token: string, limits?: RetryLimits) => SyncSource) | null;
+  readonly syncSource: (token: string, limits?: RetryLimits) => SyncSource;
   /** Its diff and file-content client for the current token. */
   readonly diffs: SourceDiffSupply;
 }
@@ -60,8 +61,11 @@ export interface SourceRegistryOptions {
   db: Db;
   /** The merged environment (token variables, PATH and HOME for glab). */
   env: NodeJS.ProcessEnv;
-  /** github.com's parts, which startServer builds: TokenProvider.credentials and the diff service's GitHubDiffSources. */
-  github: { tokens: CredentialProvider; diffs: SourceDiffSupply };
+  /**
+   * github.com's parts, which startServer builds: TokenProvider.credentials and the diff service's GitHubDiffSources;
+   * `fetchImpl` is its sync clients' transport (tests; default: the global fetch, looked up on each call).
+   */
+  github: { tokens: CredentialProvider; diffs: SourceDiffSupply; fetchImpl?: typeof fetch };
   log?: (line: string) => void;
   /** Test seams for GitLab sources' credential providers and clients. */
   seams?: Pick<CredentialOptions, 'platform' | 'exec' | 'fs' | 'now'> & { fetchImpl?: typeof fetch; sleep?: (ms: number) => Promise<void> };
@@ -83,6 +87,30 @@ interface Built {
   runtime: SourceRuntime;
   recipe: string;
   unsubscribe: () => void;
+}
+
+/**
+ * github.com's sync clients, one per token (what the sync manager built before sources): a 401 invalidates the token,
+ * so the next get() resolves again; the rate limit GitHub reports is written to source 1 as it comes; and the access
+ * hints follow the token's kind. `fetchImpl` defaults to the global fetch, looked up on each call.
+ */
+export function githubSyncSource(
+  db: Db,
+  tokens: Pick<TokenSupply, 'invalidate'>,
+  fetchImpl: typeof fetch = (input, init) => fetch(input, init),
+): (token: string, limits?: RetryLimits) => GitHubSyncSource {
+  return (token, limits = {}) =>
+    new GitHubSyncSource({
+      ...limits,
+      token,
+      fetchImpl: async (input, init) => {
+        const res = await fetchImpl(input, init);
+        if (res.status === 401) tokens.invalidate(token);
+        return res;
+      },
+      onRateLimit: (rl) => setSourceRateLimit(db, GITHUB_SOURCE_ID, rl),
+      tokenKind: tokenKind(token),
+    });
 }
 
 /** A CredentialProvider for a GitLab source as configured: what the registry builds, and what a draft test can use. */
@@ -131,7 +159,7 @@ export class SourceRegistry {
       configured: true,
       config: null,
       tokens: opts.github.tokens,
-      syncSource: null,
+      syncSource: githubSyncSource(db, opts.github.tokens, opts.github.fetchImpl),
       diffs: opts.github.diffs,
     };
     this.githubRuntime = runtime;

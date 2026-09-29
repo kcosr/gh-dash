@@ -474,6 +474,14 @@ describe('repos added by hand', () => {
     expect(row('bob/tool')!.unavailable_at).toBeNull();
   });
 
+  it('a manual chunk failing for another reason skips its repos this run, and marks nothing', async () => {
+    gh.fx.nodeErrors['R_bob/tool'] = { type: 'INTERNAL', message: 'Something broke' };
+    const res = await sync(NOW + HOUR);
+    expect(res).toMatchObject({ repos: 2, errors: ['manual repos: Something broke'] });
+    expect(details()).not.toContain('bob/tool');
+    expect(row('bob/tool')!.unavailable_at).toBeNull();
+  });
+
   it('one repo failing with FORBIDDEN leaves the others to finish', async () => {
     gh.fx.detailErrors['alice/app'] = { type: 'FORBIDDEN', message: 'Resource not accessible by integration', path: ['repository', 'pullRequests'] };
     const res = await sync(NOW + HOUR, { full: true });

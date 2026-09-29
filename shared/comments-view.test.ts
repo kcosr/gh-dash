@@ -80,7 +80,7 @@ describe('Comments API params and export', () => {
   it('exports the same list as the API and as Markdown', () => {
     const s = parseUrlState('?source=gitlab.example.com&status=resolved&kind=pr&q=a%20b', 'comments');
     const t = exportTarget('comments', s);
-    expect(t).toMatchObject({ endpoint: 'threads', md: true, label: 'comments', params: threadListParams(s) });
+    expect(t).toEqual({ endpoint: 'threads', md: true, csv: false, label: 'comments', params: threadListParams(s) });
     expect(exportUrl(t)).toBe('/api/v1/threads?source=gitlab.example.com&q=a%20b&status=resolved&kind=pr');
     expect(exportUrl(t, { format: 'md' })).toBe('/api/v1/threads?source=gitlab.example.com&q=a%20b&status=resolved&kind=pr&format=md');
   });
@@ -107,7 +107,7 @@ function item(o: Partial<ThreadListItem> & { at: number }): ThreadListItem {
     id, kind: 'pr', repo: 'alice/app', number: 1, commitOid: 'a'.repeat(40), baseOid: null, path: 'src/a.ts', side: 'new', startLine: 1, endLine: 1,
     snippet: null, status: 'open', resolvedAt: null, createdAt: '2026-09-01T00:00:00.000Z', updatedAt: new Date(Date.UTC(2026, 8, 1, 0, at)).toISOString(),
     comments: [{ id: id * 10, author: { id: 1, kind: 'self', name: 'You' }, body: `thread ${id}`, createdAt: '2026-09-01T00:00:00.000Z', editedAt: null }],
-    targetTitle: 'A PR', prState: 'open', targetUrl: null, earlierPush: false,
+    targetTitle: 'A PR', prState: 'open', targetUrl: 'https://github.com/alice/app/pull/1', earlierPush: false,
     ...rest,
   };
 }

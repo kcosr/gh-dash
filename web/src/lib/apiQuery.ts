@@ -99,6 +99,8 @@ export interface ExportTarget {
   params: Record<string, string | number | undefined>;
   /** Whether the endpoint supports format=md. */
   md: boolean;
+  /** An endpoint with Markdown that has no CSV. */
+  csv?: false;
   label: string;
 }
 
@@ -118,7 +120,7 @@ export function exportTarget(view: ViewName, s: UrlState, repoKey?: string): Exp
     case 'settings':
       return { endpoint: 'settings', params: {}, md: false, label: 'settings' };
     case 'comments':
-      return { endpoint: 'threads', params: { ...threadListParams(s) }, md: true, label: 'comments' };
+      return { endpoint: 'threads', params: { ...threadListParams(s) }, md: true, csv: false, label: 'comments' };
     case 'prs':
     default:
       return { endpoint: 'prs', params: { ...prListParams(s) }, md: true, label: 'pull requests' };

@@ -67,6 +67,10 @@ export class SyncManager {
     this.tokens.onChange(() => {
       this.noTokenUntil = 0;
     });
+    // The schedule counts from the last full sync. A database from before full syncs were recorded apart has only
+    // lastSync, and every such run was a full one: adopt it now, before a single-repo run can overwrite it.
+    const last = getMeta(this.db, 'lastSync');
+    if (last && !last.repo && !getMeta(this.db, 'lastFullSyncAt')) setMeta(this.db, 'lastFullSyncAt', last.at);
   }
 
   /** The token's source as last resolved; polling this picks up a login or logout within about 30 s. */
@@ -230,6 +234,7 @@ export class SyncManager {
         newItems,
         errors,
         pointsUsed: client.pointsUsed,
+        ...(req.repo ? { repo: getMeta(this.db, 'syncLock')?.repo ?? req.repo } : {}),
       });
       if (!req.repo) setMeta(this.db, 'lastFullSyncAt', new Date().toISOString());
       if (getMeta(this.db, 'syncLock')?.instance === this.instance) deleteMeta(this.db, 'syncLock');
@@ -262,8 +267,8 @@ export class SyncManager {
 
   private tick(trigger: Trigger): void {
     const interval = getSettings(this.db).syncIntervalMinutes * 60_000;
-    // Single-repo runs (a repo just added) don't move the schedule of full syncs.
-    const last = getMeta(this.db, 'lastFullSyncAt') ?? getMeta(this.db, 'lastSync')?.at;
+    // Single-repo runs (a repo just added) don't move the schedule of full syncs; with no full sync yet, one is due.
+    const last = getMeta(this.db, 'lastFullSyncAt');
     const due = Math.max(last ? Date.parse(last) + interval : 0, this.noTokenUntil);
     const next = new Date(Math.max(due, Date.now())).toISOString();
     if (getMeta(this.db, 'nextSyncAt') !== next && !this.current) setMeta(this.db, 'nextSyncAt', next);

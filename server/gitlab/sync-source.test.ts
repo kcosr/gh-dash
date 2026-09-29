@@ -26,6 +26,24 @@ function setup(routes: Record<string, Handler>) {
   return { ...fake, source, vars };
 }
 
+/**
+ * A project's starrers as GitLab pages them: oldest first, 100 a page, u1 … u<count>, one a minute. Without
+ * `counted` there is no X-Total, as beyond 10,000.
+ */
+function fakeStarrers(count: number, opts: { counted?: boolean } = {}) {
+  const at = (i: number) => new Date(Date.UTC(2020, 0, 1) + i * 60_000).toISOString();
+  const pages = Math.ceil(count / 100);
+  const handler: Handler = (req) => {
+    const p = Number(req.url.searchParams.get('page'));
+    const ids = Array.from({ length: Math.max(0, Math.min(100, count - (p - 1) * 100)) }, (_, i) => (p - 1) * 100 + i + 1);
+    const body = ids.map((i) => ({ starred_since: at(i), user: { username: `u${i}`, name: null, avatar_url: null } }));
+    return page(body, p < pages ? p + 1 : null, opts.counted === false ? {} : { 'x-total': String(count) });
+  };
+  /** Logins from `from` down to `to`. */
+  const logins = (from: number, to: number) => Array.from({ length: from - to + 1 }, (_, i) => `u${from - i}`);
+  return { handler, logins };
+}
+
 const fail = (p: Promise<unknown>) => p.then(() => { throw new Error('expected a failure'); }, (e: unknown) => e as GitLabError);
 
 describe('GitLabSyncSource: account and projects', () => {
@@ -208,6 +226,36 @@ describe('GitLabSyncSource: rounds', () => {
     ]);
     expect(stars).toMatchObject({ hasMore: false, endCursor: null, totalCount: 3 });
     expect(requests).toEqual(['/api/v4/projects/11/starrers?per_page=100&page=1', '/api/v4/projects/11/starrers?per_page=100&page=2']);
+  });
+
+  it('reads the newest starrers first when there are too many to list at once, continuing backwards', async () => {
+    const stargazers = fakeStarrers(3050);
+    const { source, requests } = setup({ '/api/v4/projects/11/starrers': stargazers.handler });
+    const repo = { ...APP, stars: 3050 };
+    const first = (await source.round(repo, { stars: { after: null } })).stars!;
+    expect(first.items.map((s) => s.login)).toEqual(stargazers.logins(3050, 3001));
+    expect(first).toMatchObject({ hasMore: true, endCursor: '30', totalCount: 3050 });
+    const next = (await source.round(repo, { stars: { after: first.endCursor } })).stars!;
+    expect(next.items.map((s) => s.login)).toEqual(stargazers.logins(3000, 2901));
+    expect(next).toMatchObject({ hasMore: true, endCursor: '29', totalCount: 3050 });
+    const oldest = (await source.round(repo, { stars: { after: '1' } })).stars!;
+    expect(oldest).toMatchObject({ hasMore: false, endCursor: null });
+    expect(oldest.items.at(-1)!.login).toBe('u1');
+    expect(requests).toEqual([1, 31, 30, 1].map((p) => `/api/v4/projects/11/starrers?per_page=100&page=${p}`));
+  });
+
+  it('finds the newest starrers beyond 10,000, where GitLab stops counting, from the project star count', async () => {
+    // 10,050 visible starrers; the star count also has 200 private profiles, so its estimate overshoots by two pages.
+    const stargazers = fakeStarrers(10_050, { counted: false });
+    const { source, requests } = setup({ '/api/v4/projects/11/starrers': stargazers.handler });
+    const stars = (await source.round({ ...APP, stars: 10_250 }, { stars: { after: null } })).stars!;
+    expect(stars.items.map((s) => s.login)).toEqual(stargazers.logins(10_050, 10_001));
+    expect(stars).toMatchObject({ hasMore: true, endCursor: '100', totalCount: 10_250 });
+    expect(requests).toEqual([1, 103, 102, 101].map((p) => `/api/v4/projects/11/starrers?per_page=100&page=${p}`));
+    // A star count that lags behind: on along X-Next-Page.
+    requests.length = 0;
+    expect((await source.round({ ...APP, stars: 10_000 }, { stars: { after: null } })).stars!.items[0]!.login).toBe('u10050');
+    expect(requests).toEqual([1, 100, 101].map((p) => `/api/v4/projects/11/starrers?per_page=100&page=${p}`));
   });
 
   it('uses the URL-encoded full path for REST when the node id is not a project id', async () => {

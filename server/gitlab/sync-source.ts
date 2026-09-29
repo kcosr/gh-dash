@@ -4,7 +4,7 @@ import type { Page, RecheckResult, RoundRequest, RoundResult, SyncSource, Viewer
 import { GitLabClient } from './client';
 import { mapCommit, mapIssue, mapMergeRequest, mapProbe, mapProject, mapRelease, mapStar, mapViewer, releaseCreatedAt } from './map';
 import { MERGE_REQUESTS, OWNED_PROJECTS, PROBES, PROJECT, RECHECK_MERGE_REQUESTS, RELEASES, VIEWER } from './queries';
-import { encodeSegment, GitLabRestClient } from './rest';
+import { encodeSegment, GitLabRestClient, type RestPage } from './rest';
 import { GitLabError, GitLabTransport, type GitLabOptions } from './transport';
 import type {
   Connection,
@@ -31,10 +31,13 @@ const PROJECT_PAGE = 50;
 const PROBE_CHUNK = 25;
 const COMMIT_PAGE = 100;
 const STAR_PAGE = 100;
-/** Most starrers listed per stars round: the sync doesn't diff unstars beyond 3000 anyway. */
+/** Most starrers listed in one round; beyond, they're paged newest first (the sync doesn't diff unstars past 3000). */
 const MAX_STARS = 3000;
+/** Pages tried to find the last page of starrers when GitLab doesn't count them (over 10,000). */
+const STAR_SEEK_PAGES = 10;
 
 type Order = 'updated' | 'created';
+type StarsPage = Page<StarRecord> & { totalCount: number };
 
 /**
  * Syncs from a GitLab instance: GraphQL for projects, merge requests and releases; REST where GraphQL falls short
@@ -110,7 +113,7 @@ export class GitLabSyncSource implements SyncSource {
       req.issues && this.issues(repo, req.issues.after, 'all', 'updated').then((p) => (out.issues = p)),
       req.openIssues && this.issues(repo, req.openIssues.after, 'opened', 'created').then((p) => (out.openIssues = p)),
       req.releases && this.releases(repo, req.releases.after).then((p) => (out.releases = p)),
-      req.stars && this.stars(repo).then((p) => (out.stars = p)),
+      req.stars && this.stars(repo, req.stars.after).then((p) => (out.stars = p)),
     ]);
     return out;
   }
@@ -191,17 +194,59 @@ export class GitLabSyncSource implements SyncSource {
   }
 
   /**
-   * Every starrer, most recent first, as one page. GitLab can't list starrers newest first (it pages them oldest first,
-   * by id), so the order the sync relies on (it stops at the first known star) only holds once the whole list is
-   * sorted here. `totalCount` is GitLab's count of that same list, which leaves out private profiles and blocked
-   * users, so it can be below the project's star count.
+   * Starrers, most recent first. GitLab can't list them that way (it pages them oldest first, by id), so:
+   * - up to MAX_STARS: every page in this round, sorted here, as one page the sync can diff for unstars;
+   * - beyond: one page a round from the last page backwards, the cursor being the next page to read. Reading
+   *   backwards, an unstar mid-way only shifts an already-read starrer into the next page (seen twice), and new stars
+   *   land after the pages being read.
+   * `totalCount` is GitLab's count of that same list, which leaves out private profiles and blocked users, so it can
+   * be below the project's star count; GitLab stops counting at 10,000, where the star count stands in.
    */
-  private async stars(repo: RepoRecord): Promise<Page<StarRecord> & { totalCount: number }> {
-    const { items, total } = await this.rest.all<RestStarrer>(`/projects/${projectId(repo)}/starrers`, MAX_STARS, { query: { per_page: STAR_PAGE } });
-    const stars = items.map((s) => mapStar(s, this.base)).sort((a, b) => (a.starredAt < b.starredAt ? 1 : a.starredAt > b.starredAt ? -1 : 0));
-    return { items: stars, hasMore: false, endCursor: null, totalCount: total ?? stars.length };
+  private async stars(repo: RepoRecord, after: string | null): Promise<StarsPage> {
+    const path = `/projects/${projectId(repo)}/starrers`;
+    const read = (page: number) => this.rest.page<RestStarrer[]>(path, { query: { per_page: STAR_PAGE, page } });
+    if (after) {
+      const n = pageCursor(after);
+      return this.starPage(repo, n, await read(n));
+    }
+    const first = await read(1);
+    const total = first.total;
+    if (first.nextPage !== null && (total === null || total > MAX_STARS)) {
+      const last = total === null ? await this.lastStarPage(repo, read) : { n: Math.ceil(total / STAR_PAGE), res: null };
+      return this.starPage(repo, last.n, last.res ?? (await read(last.n)));
+    }
+    const items = [...first.body];
+    for (let res = first, n = 1; res.nextPage !== null && res.nextPage > n && n < MAX_STARS / STAR_PAGE; ) {
+      n = res.nextPage;
+      res = await read(n);
+      items.push(...res.body);
+    }
+    return { items: newestFirst(items.map((s) => mapStar(s, this.base))), hasMore: false, endCursor: null, totalCount: total ?? items.length };
+  }
+
+  /** Page `n` of the starrers, newest first; the next round reads page n - 1. */
+  private starPage(repo: RepoRecord, n: number, res: RestPage<RestStarrer[]>): StarsPage {
+    const items = newestFirst(res.body.map((s) => mapStar(s, this.base)));
+    return { items, hasMore: n > 1, endCursor: n > 1 ? String(n - 1) : null, totalCount: res.total ?? repo.stars };
+  }
+
+  /**
+   * The last page of starrers when GitLab doesn't count them (over 10,000): estimated from the project's star count,
+   * which also counts hidden profiles and so tends to overshoot, then found by stepping back over empty pages (or on,
+   * should the count be behind).
+   */
+  private async lastStarPage(repo: RepoRecord, read: (page: number) => Promise<RestPage<RestStarrer[]>>) {
+    let n = Math.max(1, Math.ceil(repo.stars / STAR_PAGE));
+    for (let tries = 0; tries < STAR_SEEK_PAGES && n >= 1; tries++) {
+      const res = await read(n);
+      if (res.body.length > 0 && res.nextPage === null) return { n, res };
+      n = res.body.length > 0 && res.nextPage! > n ? res.nextPage! : n - 1;
+    }
+    throw new GitLabError('transient', `Could not find the newest starrers of ${repo.nameWithOwner}`);
   }
 }
+
+const newestFirst = (stars: StarRecord[]) => stars.sort((a, b) => (a.starredAt < b.starredAt ? 1 : a.starredAt > b.starredAt ? -1 : 0));
 
 /** Issues proper (not incidents, tasks or test cases), with label colors; the same set the probe counts. */
 const ISSUE_FILTER = { issue_type: 'issue', with_labels_details: true } as const;

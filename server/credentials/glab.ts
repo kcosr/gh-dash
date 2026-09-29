@@ -35,7 +35,8 @@ export function tokenFromAuthStatus(output: string, host: string): string | null
  *  1. `glab config get token --host <host>`: a non-empty, header-safe stdout is the token (glab 1.119 prints it even
  *     when the token is in the OS keyring);
  *  2. only when that printed nothing: `glab auth status --hostname <host> --show-token` (glab has no `auth token`).
- * A spawn failure or a timeout stops there. Output is never quoted, except the first line of a failure's stderr.
+ * A spawn failure or a timeout stops there. Output is never quoted, except the first line of a failure's stderr, with
+ * anything that looks like a token taken out.
  */
 export async function glabToken(path: string, host: string, io: Pick<CliIo, 'env' | 'exec' | 'win'>): Promise<ResolvedToken> {
   const env = glabEnv(io.env, io.win);
@@ -49,7 +50,7 @@ export async function glabToken(path: string, host: string, io: Pick<CliIo, 'env
     const e = err as ExecError;
     const fatal = runFailure(e, path);
     if (fatal) return none(fatal);
-    // What glab said, if anything (not Node's "Command failed: …", which only repeats the command).
+    // What glab said, if anything (not Node's "Command failed: …", which only repeats the command), tokens taken out.
     configFailed = e.stderr?.trim() ? firstLine(e) : null;
   }
   if (stored) {

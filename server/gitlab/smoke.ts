@@ -16,6 +16,7 @@ import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { scrubTokens } from '../credentials/cli';
 import type { ActorRecord, CommitRecord, IssueRecord, PrRecord, ReleaseRecord, RepoProbe, RepoRecord, StarRecord } from '../db/records';
 import type { DiffFile } from '../../shared/api';
 import type { DiffRepo, PrRevision, RoundRequest, RoundResult } from '../provider/types';
@@ -780,7 +781,8 @@ export function parseAuthStatus(text: string): GlabHost[] {
   return hosts;
 }
 
-const firstLine = (text: string) => text.trim().split('\n')[0]?.slice(0, 200) || '(no message)';
+/** A failed command's first line, cut after anything that looks like a token is out (a failing glab may print its token). */
+const firstLine = (text: string) => scrubTokens(text).trim().split('\n')[0]?.slice(0, 200) || '(no message)';
 const sha256 = (s: string) => createHash('sha256').update(s).digest('hex');
 
 // ---------------------------------------------------------------------------

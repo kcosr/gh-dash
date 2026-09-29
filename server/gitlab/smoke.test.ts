@@ -245,6 +245,19 @@ describe('gitlab smoke: glab', () => {
     for (const t of [oldRun.text, otherRun.text]) for (const p of [TOKEN, GLAB_TOKEN]) expect(t).not.toContain(p);
   });
 
+  it("never prints a token glab's failure prints", async () => {
+    const leaked = `glpat-${'Zq8'.repeat(7)}`;
+    const failing: Exec = async (_cmd, args) => {
+      const a = args.join(' ');
+      if (a === '--version') return { code: 0, stdout: 'glab 1.119.0\n', stderr: '' };
+      if (a === `config get token --host ${host}`) return { code: 1, stdout: '', stderr: `error: token ${leaked} could not be read\n` };
+      return { code: 1, stdout: '', stderr: 'unknown command' };
+    };
+    const found = await glabToken('glab', host, {}, failing, () => {});
+    expect(found.attempts).toContain('glab config get token: failed (1): error: token [token] could not be read');
+    expect((await run(['--glab'], { exec: failing })).text).not.toMatch(/glpat|Zq8/);
+  });
+
   it('reports a missing glab, and has no token to run with then', async () => {
     const noGlab = await run(['--glab'], { env: { GITLAB_TOKEN: '' }, exec: async () => ({ code: 'ENOENT', stdout: '', stderr: '' }) });
     expect(noGlab.code).toBe(1);

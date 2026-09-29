@@ -90,7 +90,25 @@ export function cliEnv(env: NodeJS.ProcessEnv, win: boolean, drop: readonly stri
 /** A child_process error from Exec, as far as the resolvers read it. */
 export type ExecError = NodeJS.ErrnoException & { stdout?: string; stderr?: string; killed?: boolean; signal?: string | null };
 
-/** The first line of a failed command's stderr (or of the error), cut to 200 characters. */
+/**
+ * What looks like a token in a CLI's output: a GitLab token (glpat-…, whose newer forms have dots) or any long opaque
+ * run, such as an OAuth token, an older personal token or gh's. A long host name or word goes with them.
+ */
+const TOKEN_TEXT = /gl[a-z]+-[\w.-]{10,}|[A-Za-z0-9_-]{20,}/g;
+
+/**
+ * `text` with anything that looks like a token replaced by "[token]": a CLI's failure may print the token it holds,
+ * and its message ends up in logs, SourceAccount.error and API errors.
+ */
+export function scrubTokens(text: string): string {
+  return text.replace(TOKEN_TEXT, '[token]');
+}
+
+/**
+ * The first line of a failed command's stderr (or of the error), cut to 200 characters after anything that looks like
+ * a token is taken out (cut first, a token's first characters could be left).
+ */
 export function firstLine(err: ExecError): string {
-  return ((err.stderr ?? '').trim().split('\n')[0]!.trim() || err.message.split('\n')[0]!).slice(0, 200);
+  const line = (text: string) => scrubTokens(text).trim().split('\n')[0]!.trim();
+  return (line(err.stderr ?? '') || line(err.message)).slice(0, 200);
 }

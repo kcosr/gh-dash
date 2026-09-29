@@ -4,6 +4,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Source } from '../../shared/api';
 import { loadConfig } from '../config';
+import type { Exec } from '../credentials/types';
 import type { Db } from '../db/db';
 import { GITHUB_SOURCE_ID, getSource, sourceByHost } from '../db/sources';
 import { DiffCache } from '../diff/cache';
@@ -11,6 +12,7 @@ import { DiffService } from '../diff/service';
 import { GitHubDiffSources } from '../github/diff-source';
 import { SourceRegistry } from '../sources/registry';
 import { SyncManager } from '../sync/manager';
+import { execError, fakeExec, fakeFs } from '../test/credentials';
 import { fakeGitHub, type Reply } from '../test/github';
 import { BASE as GITLAB_BASE, type Handler } from '../test/gitlab';
 import { fakeInstance } from '../test/gitlab-instance';
@@ -46,6 +48,8 @@ interface Setup {
   over?: Record<string, Handler>;
   /** A registry-less app, as the tests that don't need sources build it. */
   noRegistry?: boolean;
+  /** glab's stand-in: the configured source then signs in with glab (/usr/bin/glab), not GITLAB_TOKEN. */
+  glab?: Exec;
 }
 
 function sourcesApp(setup: Setup = {}) {
@@ -64,15 +68,21 @@ function sourcesApp(setup: Setup = {}) {
   const gl = fakeInstance(setup.over, GITLAB_BASE, CHECK);
   const sources = new SourceRegistry({
     db,
-    env: gitlabToken === null ? {} : { GITLAB_TOKEN: gitlabToken },
+    env: { ...(gitlabToken === null ? {} : { GITLAB_TOKEN: gitlabToken }), ...(setup.glab ? { PATH: '/usr/bin' } : {}) },
     github: { tokens: tokens.credentials, diffs: githubDiffs },
     log: () => {},
-    seams: { fetchImpl: gl.fetchImpl, sleep: async () => {}, fs: noFiles, exec: async () => { throw new Error('glab must not run in tests'); } },
+    seams: {
+      fetchImpl: gl.fetchImpl,
+      sleep: async () => {},
+      fs: setup.glab ? fakeFs({ '/usr/bin/glab': { exec: true } }) : noFiles,
+      exec: setup.glab ?? (async () => { throw new Error('glab must not run in tests'); }),
+    },
   });
   if (gitlab === 'configured') {
+    const method = setup.glab ? { tokenChoice: 'glab' as const, tokenEnv: null } : { tokenChoice: 'auto' as const, tokenEnv: 'GITLAB_TOKEN' };
     sources.apply({
       glabPath: null,
-      sources: [{ kind: 'gitlab', host: GITLAB_HOST, baseUrl: GITLAB_BASE, tokenChoice: 'auto', tokenFile: null, tokenEnv: 'GITLAB_TOKEN', from }],
+      sources: [{ kind: 'gitlab', host: GITLAB_HOST, baseUrl: GITLAB_BASE, tokenFile: null, ...method, from }],
     });
   } else if (gitlab === 'unconfigured') {
     // What another instance sharing the database configured: the row is there, and the runtime is built without config.
@@ -232,6 +242,21 @@ describe('POST /sources/:source/check', () => {
     expect(gitlab.status).toBe(503);
     expect(gitlab.body.error).toMatch(new RegExp(`^No GitLab token for ${GITLAB_HOST}: `));
     expect(gitlab.body.details).toMatchObject({ host: GITLAB_HOST, configured: true, account: { source: 'none', locked: false } });
+  });
+
+  it('never sends a token glab printed as it failed, in the 503 or the source', async () => {
+    const leaked = `glpat-${'Zq8'.repeat(7)}`;
+    const glab = fakeExec((args) => (args[0] === 'config' ? Promise.reject(execError(`error: token ${leaked} could not be read`)) : ''));
+    const t = sourcesApp({ gitlabToken: null, glab: glab.exec });
+    const res = await t.call('POST', `/sources/${GITLAB_HOST}/check`);
+    expect(res.status).toBe(503);
+    expect(res.body.error).toBe(
+      `No GitLab token for ${GITLAB_HOST}: glab has no token for ${GITLAB_HOST}: run \`glab auth login --hostname ${GITLAB_HOST}\` (glab config get token failed: error: token [token] could not be read)`,
+    );
+    expect(res.body.details.account).toMatchObject({ source: 'none', choice: 'glab', error: res.body.error.replace(`No GitLab token for ${GITLAB_HOST}: `, '') });
+    const listed = await t.call('GET', '/sources');
+    for (const body of [res.body, listed.body]) expect(JSON.stringify(body)).not.toMatch(/glpat|Zq8/);
+    expect(glab.calls.map((c) => c.args[0])).toContain('config');
   });
 
   it('is 503 for a source not configured on this server, and asks nobody', async () => {

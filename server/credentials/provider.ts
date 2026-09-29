@@ -422,10 +422,14 @@ export class CredentialProvider implements TokenSupply {
     this.log(`${this.spec.logPrefix} warning: token file ${path} is readable by other users (mode ${(mode & 0o777).toString(8)}); run chmod 600 on it`);
   }
 
+  /** The CLI's token; its failure's message (which may quote the CLI) without any token this provider knows. */
   private async fromCli(info: CliInfo): Promise<ResolvedToken> {
     const cli = this.spec.cli!;
     if (!info.path) return none(cli.path ? `${cli.name} not found at ${cli.path} (${cli.pathSetting})` : cli.notFound);
-    return cli.token(info.path, this.io);
+    const r = await cli.token(info.path, this.io);
+    if (!r.error) return r;
+    const known = [this.current?.token, this.appToken, this.envToken()];
+    return { ...r, error: known.reduce<string>((error, token) => (token ? redact(token, error) : error), r.error) };
   }
 
   /** The CLI's location and its active login. */

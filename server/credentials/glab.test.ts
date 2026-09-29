@@ -9,6 +9,8 @@ const HOST = 'gitlab.example.com';
 const GLAB = '/usr/bin/glab';
 const PAT = 'glpat-AbCdEf0123456789xyz';
 const OAUTH = 'a'.repeat(64);
+/** A token a failing glab prints in its error: built here, so no token-shaped literal is in the file. */
+const LEAKED = `glpat-${'Zq8'.repeat(7)}`;
 const ENV = { HOME: '/home/u', PATH: '/usr/bin', GLAB_CONFIG_DIR: '/home/u/.glab', GITLAB_TOKEN: 'glpat-fromenv', GLAB_TOKEN: 'x', GITLAB_ACCESS_TOKEN: 'y', OAUTH_TOKEN: 'z' };
 
 type Reply = string | { stdout: string; stderr?: string };
@@ -49,6 +51,19 @@ describe('glab resolver', () => {
     expect((await run(both)).error).toBe(`glab has no token for ${HOST}: run \`glab auth login --hostname ${HOST}\` (glab config get token failed: keyring: the collection is locked)`);
     const old = glab(() => '', () => Promise.reject(execError('unknown flag: --show-token')));
     expect((await run(old)).error).toBe(`this glab can't print its token for ${HOST} (no auth status --show-token): upgrade glab, or use a token file`);
+  });
+
+  it('takes anything that looks like a token out of a failure it quotes, before cutting it to 200 characters', async () => {
+    const cases: [string, string][] = [
+      [`error: could not save ${LEAKED} to the keyring`, 'error: could not save [token] to the keyring'],
+      [`401: token ${'f0'.repeat(32)} was revoked`, '401: token [token] was revoked'],
+      // Cut first, the token's first characters would be left at the end.
+      [`${'word '.repeat(38)}${LEAKED}`, `${'word '.repeat(38)}[token]`],
+    ];
+    for (const [stderr, quoted] of cases) {
+      const { error } = await run(glab(() => Promise.reject(execError(stderr)), () => ''));
+      expect(error).toBe(`glab has no token for ${HOST}: run \`glab auth login --hostname ${HOST}\` (glab config get token failed: ${quoted})`);
+    }
   });
 
   it("refuses output that isn't a token, without quoting it or trying the fallback", async () => {
@@ -93,8 +108,10 @@ describe('glab resolver', () => {
 });
 
 /** A GitLab-ish spec around glabCli, to drive discovery through CredentialProvider. */
-function glabProvider(opts: { glabPath?: string | null; files?: Record<string, FakeFile>; env?: NodeJS.ProcessEnv; platform?: NodeJS.Platform } = {}) {
-  const exec = fakeExec((args) => (args[0] === 'config' ? PAT : ''));
+function glabProvider(
+  opts: { glabPath?: string | null; files?: Record<string, FakeFile>; env?: NodeJS.ProcessEnv; platform?: NodeJS.Platform; exec?: ReturnType<typeof fakeExec>; log?: (line: string) => void } = {},
+) {
+  const exec = opts.exec ?? fakeExec((args) => (args[0] === 'config' ? PAT : ''));
   const spec: CredentialSpec = {
     provider: 'gitlab', name: 'GitLab', host: HOST, label: `GitLab (${HOST})`, envVar: null, fileSetting: 'tokenFile',
     noTokenHint: 'set one up in Settings → Sources', notConfigured: 'No sign-in method is configured', rejected: 'rejected', authHint: '',
@@ -107,7 +124,7 @@ function glabProvider(opts: { glabPath?: string | null; files?: Record<string, F
     platform: opts.platform ?? 'linux',
     fs: fakeFs(opts.files ?? {}),
     exec: exec.exec,
-    log: () => {},
+    log: opts.log ?? (() => {}),
   });
   return { tokens, exec };
 }
@@ -137,6 +154,32 @@ describe('glab discovery', () => {
       source: 'none', cli: { name: 'glab', available: false, path: null, login: null },
       error: 'glab not found: install it, or set its location (Settings → Sources → Locate glab…, or glabPath)',
     });
+  });
+});
+
+describe('a failing glab', () => {
+  it("never puts a token in the logs, the account's error or the no-token message", async () => {
+    // What glab handed out before: too short to look like a token, but this provider knows it.
+    const earlier = 'Tok3n-99xz';
+    let failing = false;
+    const exec = fakeExec((args) => {
+      if (args[0] !== 'config') return '';
+      return failing ? Promise.reject(execError(`cannot refresh ${earlier}: ${LEAKED} was rejected\nmore`)) : earlier;
+    });
+    const logs: string[] = [];
+    const { tokens } = glabProvider({ files: { [GLAB]: { exec: true } }, env: { HOME: '/home/u', PATH: '/usr/bin' }, exec, log: (line) => logs.push(line) });
+    expect((await tokens.get()).token).toBe(earlier);
+
+    failing = true;
+    const resolved = await tokens.get({ fresh: true });
+    const account = await tokens.account();
+    expect(resolved.token).toBeNull();
+    expect(account.error).toBe(`glab has no token for ${HOST}: run \`glab auth login --hostname ${HOST}\` (glab config get token failed: cannot refresh [token]: [token] was rejected)`);
+    expect(logs.at(-1)).toBe(`[token ${HOST}] no token: ${account.error}`);
+    for (const text of [...logs, resolved.error, account.error, tokens.noTokenMessage()]) {
+      expect(text).not.toContain(earlier);
+      expect(text).not.toMatch(/glpat|Zq8/);
+    }
   });
 });
 

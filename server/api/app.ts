@@ -2,9 +2,11 @@ import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { CommentBus } from '../comments/bus';
 import type { Config } from '../config';
+import { principalForToken } from '../db/agents';
 import type { Db } from '../db/db';
 import type { DiffService } from '../diff/service';
 import { GitHubDiffSources } from '../github/diff-source';
+import { createMcpCore } from '../mcp';
 import { Tracking } from '../sync/tracking';
 import { SourceRegistry } from '../sources/registry';
 import type { SyncManager } from '../sync/manager';
@@ -19,6 +21,7 @@ import { commentRoutes } from './routes/comments';
 import { diffRoutes } from './routes/diffs';
 import { instanceRoutes } from './routes/instance';
 import { listRoutes } from './routes/lists';
+import { installMcp, refuseMcp } from './routes/mcp';
 import { repoRoutes } from './routes/repos';
 import { sourceRoutes } from './routes/sources';
 import { statsRoutes } from './routes/stats';
@@ -87,6 +90,13 @@ export function createApp(input: AppDeps): Hono {
   app.use('*', sameOriginWrites);
   // The desktop app has one local user: the secret is its authentication.
   if (transport.kind === 'tcp') installAuth(app, deps.db, config);
+
+  // Agents: its own auth (an agent token), exempt from installAuth's. Only network listeners serve it.
+  if (transport.kind === 'tcp') {
+    installMcp(app, { core: createMcpCore({ ...deps, bus: deps.bus! }), principalFor: (token) => principalForToken(deps.db, token) });
+  } else {
+    refuseMcp(app);
+  }
 
   app.get('/api/health', (c) => c.json({ ok: true, version: config.version }));
   app.route('/api/v1', systemRoutes(deps));

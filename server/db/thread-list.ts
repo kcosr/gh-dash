@@ -14,6 +14,12 @@ export interface ThreadFilter {
   author?: 'self' | 'agents' | number;
   /** Open threads whose last comment isn't this principal's (someone is waiting on them): GET /threads's waiting=you is the dashboard's user. */
   waitingOn?: number;
+  /** One PR's threads, or one commit's (a full oid or a prefix of one), in the scope's repos (MCP's list_threads). */
+  target?: { pr: number } | { commit: string };
+  /** Threads on this file, or on files under this directory. */
+  path?: string;
+  /** Threads with activity (updatedAt) at or after this ISO time. */
+  since?: string;
 }
 
 export interface ThreadListResult {
@@ -70,6 +76,15 @@ function threadWhere(ctx: QueryCtx, scope: Scope, f: ThreadFilter, status: Threa
   else if (f.author === 'agents') w.add(`${OPENER} IN (SELECT id FROM principals WHERE kind = 'agent')`);
   else if (f.author !== undefined) w.add(`${OPENER} = ?`, f.author);
   if (f.waitingOn !== undefined) w.add(`t.status = 'open' AND ${LAST_AUTHOR} <> ?`, f.waitingOn);
+  if (f.target && 'pr' in f.target) w.add('t.pr_number = ?', f.target.pr);
+  // Oids are stored lower-case: [prefix, prefix + 'g') is every oid that starts with it.
+  else if (f.target) w.add('t.pr_number IS NULL AND t.commit_oid >= ? AND t.commit_oid < ?', f.target.commit, `${f.target.commit}g`);
+  if (f.path !== undefined) {
+    // Under a directory: from "dir/" up to "dir0" ('0' follows '/'), comparing bytes as the paths are case-sensitive.
+    const dir = f.path.replace(/\/+$/, '');
+    w.add('t.path = ? OR (t.path >= ? AND t.path < ?)', f.path, `${dir}/`, `${dir}0`);
+  }
+  if (f.since !== undefined) w.add('t.updated_at >= ?', f.since);
   if (scope.q) {
     // Any comment's words, or the file. LIKE (no FTS table): case-insensitive for ASCII only, as SQLite's is.
     const like = likeContains(scope.q);

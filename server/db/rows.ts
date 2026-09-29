@@ -32,6 +32,8 @@ export interface PrRow {
   labels: string;
   closing_issues: string;
   url: string;
+  /** The head commit as of the last sync; null in rows synced before it was recorded. */
+  head_oid: string | null;
   /** Local comment threads on the PR, and the ones still open (PR_SELECT counts them). */
   threads: number;
   unresolved_threads: number;

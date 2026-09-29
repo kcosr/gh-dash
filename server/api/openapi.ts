@@ -357,6 +357,14 @@ const schemas: Record<string, Schema> = {
     updatedAt: { ...dateTime, description: 'Last comment added, edited or deleted, or status change' },
     comments: { ...arr(ref('ThreadComment')), description: 'Oldest first; never empty' },
   }),
+  ThreadListItem: {
+    allOf: [ref('CommentThread'), obj({
+      targetTitle: nullable(str("The PR's title or the commit's headline; null when that isn't synced (a thread can outlive its PR's row)")),
+      prState: nullable({ ...enumOf('open', 'merged', 'closed'), description: "The PR's state; null for a commit thread, or a PR that isn't synced" }),
+      targetUrl: nullable(str("The PR or commit on its code host; null when it isn't synced")),
+      earlierPush: { ...bool, description: "A PR thread made on an earlier push than the PR's current head (false for commits, or when the head isn't known)" },
+    })],
+  },
   NewPrThread: newThread('pr'),
   NewThread: newThread('commit'),
 };
@@ -425,7 +433,28 @@ function commentEndpoints(): EndpointDoc[] {
   const id = (what: string) => p('id', `${what} id`, int());
   const threads = obj({ items: arr(ref('CommentThread')) });
   const example = { commitOid: '0123456789abcdef0123456789abcdef01234567', path: 'src/app.ts', side: 'new', startLine: 12, endLine: 13, snippet: 'const a = 1;\nconst b = 2;', body: 'Why two?' };
+  const threadList = obj({
+    items: arr(ref('ThreadListItem')), nextCursor: nullable(str()), total: int('Threads matching every filter, across all pages'),
+    counts: { ...obj({ open: int(), resolved: int() }), description: 'Threads per status in the same scope and filters, ignoring `status` (the status control\'s counts)' },
+  });
+  const listParams = [
+    q('status', "'open' (unresolved) by default; 'all' for both.", { ...enumOf('open', 'resolved', 'all'), default: 'open' }),
+    q('kind', 'Threads on pull requests (merge requests), on commits, or both.', { ...enumOf('pr', 'commit', 'all'), default: 'all' }),
+    q('sort', "By last activity (`updatedAt`): 'recent' newest first, 'oldest' the reverse. Ties by thread id in the same direction.", { ...enumOf('recent', 'oldest'), default: 'recent' }),
+    ...SCOPE.filter((param) => ['repos', 'source', 'visibility', 'ownership'].includes(param.name)),
+    q('q', 'Case-insensitive substring (ASCII) of any comment of the thread, or of its file path.', str(), 'typo'),
+    PAGE[0]!,
+    q('cursor', 'Opaque cursor from a previous nextCursor. It belongs to the `sort` it was made under (400 under the other).', str()),
+    q('format', "'md' (text/markdown) returns every matching thread, ignoring limit/cursor: a section per PR or commit.", { ...enumOf('json', 'md'), default: 'json' }),
+  ];
   return [
+    {
+      method: 'get', path: '/api/v1/threads', tag, summary: 'Every comment thread in scope, across PRs and commits',
+      description:
+        'Scoped like the PR list (source, repos, visibility, ownership; removed repositories are hidden), but not by `who` or the date range: a thread stays open however old it is. ' +
+        '`who`, `from`, `to`, `range` and `tz` are accepted and ignored. Each thread carries its comments, and what it is on when that is synced.',
+      params: listParams, response: { status: 200, schema: threadList }, textFormats: 'md', example: 'status=open&kind=pr',
+    },
     {
       method: 'get', path: '/api/v1/prs/{repo}/{number}/threads', tag, summary: "A pull request's comment threads, with their comments",
       description: 'Oldest first. Anchors are as made; the diff viewer places them in the current diff (outdated or moved).',

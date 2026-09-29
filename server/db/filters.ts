@@ -151,6 +151,9 @@ export function ftsQuery(q: string): string | null {
   return terms.map((t, i) => `"${t.text}"${i === terms.length - 1 && !t.quoted ? '*' : ''}`).join(' ');
 }
 
+/** A LIKE pattern for "contains `text`": `%`, `_` and the escape character in it match themselves. Use with ESCAPE '\'. */
+export const likeContains = (text: string): string => `%${text.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
+
 export type FtsTable = 'pull_requests' | 'issues' | 'commits' | 'releases';
 
 /** Full-text filter on `alias.id` via the table's FTS index; LIKE over `likeCols` when there is nothing to match. */
@@ -160,7 +163,7 @@ export function addText(w: Where, q: string | null, table: FtsTable, alias: stri
   if (match) {
     w.add(`${alias}.id IN (SELECT rowid FROM ${table}_fts WHERE ${table}_fts MATCH ?)`, match);
   } else {
-    const like = `%${q.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
+    const like = likeContains(q);
     w.add(likeCols.map((c) => `${c} LIKE ? ESCAPE '\\'`).join(' OR '), ...likeCols.map(() => like));
   }
 }

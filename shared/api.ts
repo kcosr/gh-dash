@@ -878,6 +878,8 @@ export interface ThreadListQuery extends Pick<ScopeQuery, 'repos' | 'source' | '
   kind?: ThreadKindFilter;
   /** Default 'recent'. */
   sort?: ThreadSort;
+  /** 'md' returns every matching thread as text/markdown; there is no CSV (400). */
+  format?: Exclude<ListFormat, 'csv'>;
 }
 
 /** A thread in GET /threads: the thread, and what it is on. */

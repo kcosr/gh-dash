@@ -17,7 +17,7 @@ export interface ThreadInput {
   body: string;
 }
 
-interface ThreadRow {
+export interface ThreadRow {
   id: number;
   repo: string;
   pr_number: number | null;
@@ -59,8 +59,8 @@ const toComment = (r: CommentRow): ThreadComment => ({
   editedAt: r.edited_at,
 });
 
-/** Threads with their comments (two queries, whatever the number of threads). */
-function hydrate(db: Db, rows: ThreadRow[]): CommentThread[] {
+/** Threads with their comments (two queries, whatever the number of threads), in the order of `rows`. */
+export function hydrate(db: Db, rows: ThreadRow[]): CommentThread[] {
   if (rows.length === 0) return [];
   const byThread = new Map<number, ThreadComment[]>(rows.map((r) => [r.id, []]));
   const comments = db.all<CommentRow>(`${COMMENT_SELECT} WHERE c.thread_id IN (SELECT value FROM json_each(?)) ORDER BY c.id`, [

@@ -68,12 +68,12 @@ export function parsePrNumber(value: string | number): number {
   return number;
 }
 
-function page(q: PageParams, keyLength: number): Page {
+export function page(q: PageParams, keyLength: number): NonNullable<Page> {
   return { limit: q.limit ?? 200, after: decodeCursor(q.cursor, keyLength) };
 }
 
 /** Each repo's code host (by repo key), for the exports' words (`#`/`!`, PRs/MRs). Unknown keys read as GitHub. */
-function repoKinds(db: Db): KindOf {
+export function repoKinds(db: Db): KindOf {
   const kinds = new Map(
     db.all<{ key: string; kind: string }>('SELECT r.key, s.kind FROM repos r JOIN sources s ON s.id = r.source_id').map((r) => [r.key, r.kind]),
   );

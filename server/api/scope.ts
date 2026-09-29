@@ -32,6 +32,21 @@ export const prQuerySchema = scopeSchema.extend(pageSchema.shape).extend({
   group: z.enum(['day', 'week', 'month', 'repo']).optional(),
 });
 
+/**
+ * GET /threads: the scope's repo, source, visibility, ownership and text filters. `who`, `from`, `to` and `tz` are left
+ * out on purpose: the web sends its shared scope, and a thread stays open however old it is, so they are ignored (not
+ * even validated) rather than rejected.
+ */
+export const threadQuerySchema = scopeSchema
+  .pick({ repos: true, source: true, visibility: true, ownership: true, q: true })
+  .extend(pageSchema.shape)
+  .extend({
+    format: z.enum(['json', 'md']).optional(),
+    status: z.enum(['open', 'resolved', 'all']).optional(),
+    kind: z.enum(['pr', 'commit', 'all']).optional(),
+    sort: z.enum(['recent', 'oldest']).optional(),
+  });
+
 export const activityQuerySchema = scopeSchema.extend(pageSchema.shape).extend({
   types: z.string().optional(),
 });

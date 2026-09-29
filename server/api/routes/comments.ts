@@ -22,8 +22,10 @@ import {
 } from '../../db/comments';
 import type { Db } from '../../db/db';
 import { resolveRepo } from '../../db/repo-key';
+import { queryThreads } from '../../services/threads';
 import type { AppDeps } from '../app';
 import { HttpError, jsonBody, parseWith } from '../http';
+import { threadQuerySchema } from '../scope';
 
 /** Longest comment body, as on GitHub. */
 const MAX_BODY_CHARS = 65_536;
@@ -149,7 +151,7 @@ const found = <T>(value: T | null, what: string): T => {
   return value;
 };
 
-export function commentRoutes({ db }: AppDeps): Hono {
+export function commentRoutes({ db, config }: AppDeps): Hono {
   const r = new Hono();
 
   const list = (c: Context, target: ThreadTarget, title: (kind: ProviderKind) => string) => {
@@ -195,6 +197,13 @@ export function commentRoutes({ db }: AppDeps): Hono {
     const target = commitTarget(db, c, oid);
     const input = { commitOid: oid, baseOid: f.baseOid ?? null, anchor: toAnchor(f), body: f.body };
     return c.json(createThread(db, target, input, actingPrincipal(db)));
+  });
+
+  // Every thread in scope, across PRs and commits (the scope hides removed repos, as /prs does).
+  r.get('/threads', (c) => {
+    const out = queryThreads({ db, config }, parseWith(threadQuerySchema, c.req.query()));
+    if (out.format === 'json') return c.json(out.body);
+    return c.body(out.text, 200, { 'Content-Type': 'text/markdown; charset=utf-8' });
   });
 
   // By id: every route checks the thread's repo, as the key-based routes do through repoIdForKey.

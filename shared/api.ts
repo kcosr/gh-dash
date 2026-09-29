@@ -861,6 +861,42 @@ export interface NewPrThread extends NewThread {
   commitOid: string;
 }
 
+export type ThreadStatusFilter = ThreadStatus | 'all';
+/** Threads on PRs, on commits, or both. */
+export type ThreadKindFilter = 'pr' | 'commit' | 'all';
+/** By last activity (`updatedAt`): newest first, or oldest first. */
+export type ThreadSort = 'recent' | 'oldest';
+
+/**
+ * GET /threads: every thread in scope, across PRs and commits. The scope is source, repos, visibility and ownership
+ * (not `who` or the date range: a thread stays open however old it is); `q` matches comment bodies and file paths.
+ */
+export interface ThreadListQuery extends Pick<ScopeQuery, 'repos' | 'source' | 'visibility' | 'ownership' | 'q'>, PageQuery {
+  /** Default 'open'. */
+  status?: ThreadStatusFilter;
+  /** Default 'all'. */
+  kind?: ThreadKindFilter;
+  /** Default 'recent'. */
+  sort?: ThreadSort;
+}
+
+/** A thread in GET /threads: the thread, and what it is on. */
+export interface ThreadListItem extends CommentThread {
+  /** The PR's title or the commit's headline; null when that isn't synced (a thread can outlive its PR's row). */
+  targetTitle: string | null;
+  /** The PR's state; null for a commit thread, or a PR that isn't synced. */
+  prState: PrState | null;
+  /** The PR or commit on its code host; null when it isn't synced. */
+  targetUrl: string | null;
+  /** A PR thread made on an earlier push than the PR's current head (false for commits, or when the head isn't known). */
+  earlierPush: boolean;
+}
+
+export interface ThreadListResponse extends ListResponse<ThreadListItem> {
+  /** Threads per status in the same scope and filters, ignoring `status` (the status control's counts). */
+  counts: Record<ThreadStatus, number>;
+}
+
 // ---------------------------------------------------------------------------
 // Endpoint index (for reference; implemented in server/, consumed in web/src/api)
 // ---------------------------------------------------------------------------
@@ -921,6 +957,8 @@ export interface NewPrThread extends NewThread {
 // POST   /api/v1/prs/:repo/:number/threads NewPrThread -> CommentThread   (404 unless the PR is synced)
 // GET    /api/v1/commits/:repo/:oid/threads {format?: 'md'} -> { items: CommentThread[] } | text/markdown  (oid: full SHA)
 // POST   /api/v1/commits/:repo/:oid/threads NewThread -> CommentThread
+// GET    /api/v1/threads    ThreadListQuery    -> ThreadListResponse | text/markdown   (every thread in scope, across PRs
+//          and commits: status open by default, newest activity first; format=md groups them per PR or commit)
 // GET    /api/v1/threads/:id                   -> CommentThread
 // PATCH  /api/v1/threads/:id   {status}        -> CommentThread
 // DELETE /api/v1/threads/:id                   -> 204

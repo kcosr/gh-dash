@@ -215,6 +215,17 @@ describe('migration to repo keys (repos rebuild)', () => {
     expect(version(db)).toBe(SCHEMA_VERSION + 1);
   });
 
+  it('never hands out the id of a deleted repo again (AUTOINCREMENT), also after migrating', () => {
+    for (const db of [v4(), openDb(':memory:')]) {
+      if (version(db) === 4) migrate(db, true);
+      else repo(db, 1, 'a');
+      const max = db.get<{ id: number }>('SELECT max(id) AS id FROM repos')!.id;
+      db.run('DELETE FROM repos WHERE id = ?', [max]);
+      const { lastInsertRowid } = db.run(`INSERT INTO repos (node_id, name, name_with_owner, owner, url, visibility, created_at) VALUES ('R_new', 'new', 'x/new', 'x', 'u', 'public', 'x')`);
+      expect(lastInsertRowid).toBe(max + 1);
+    }
+  });
+
   it('creates new databases at the latest version with foreign keys on', () => {
     const db = openDb(':memory:');
     expect(version(db)).toBe(SCHEMA_VERSION);

@@ -153,12 +153,16 @@ describe('markUnavailable', () => {
   it('keeps the first time and the latest reason, for live repos added by hand only', () => {
     const db = openDb(':memory:');
     const id = manual(db, 'bob/tool', 'R_tool');
-    markUnavailable(db, id, 'first', '2026-09-29T01:00:00Z');
-    markUnavailable(db, id, 'second', '2026-09-29T02:00:00Z');
+    markUnavailable(db, id, 'R_tool', 'first', '2026-09-29T01:00:00Z');
+    markUnavailable(db, id, 'R_tool', 'second', '2026-09-29T02:00:00Z');
     expect(db.get('SELECT unavailable_at, unavailable_reason FROM repos WHERE id = ?', [id])).toEqual({ unavailable_at: '2026-09-29T01:00:00Z', unavailable_reason: 'second' });
     const owned = upsertOwned(db, rec('alice/app', 'R_app'), NOW);
-    markUnavailable(db, owned, 'x', NOW);
+    markUnavailable(db, owned, 'R_app', 'x', NOW);
     expect(row(db, owned).unavailable_at).toBeNull();
+    // Another repo that has this id now (the one it was meant for is gone) is never marked.
+    const other = manual(db, 'bob/lib', 'R_lib');
+    markUnavailable(db, other, 'R_tool', 'x', NOW);
+    expect(row(db, other).unavailable_at).toBeNull();
   });
 });
 

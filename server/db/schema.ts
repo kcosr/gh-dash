@@ -235,10 +235,11 @@ const V4 = `ALTER TABLE pull_requests ADD COLUMN head_oid TEXT;`;
 // the short name stops being unique (its inline UNIQUE can only go with a rebuild, as can the visibility CHECK,
 // which gains GitHub Enterprise 'internal'). Uniqueness moves to a partial index on the key over live rows, so a
 // removed row never blocks a key. Every existing row was synced from the viewer's own repositories: 'owned'.
-// tracked_by has no CHECK so that later tracking kinds need no rebuild.
+// tracked_by has no CHECK so that later tracking kinds need no rebuild. AUTOINCREMENT: repos added by hand can be
+// deleted, and a new one must never get the id of a deleted one (a sync still running for that would write into it).
 const REPOS_REBUILD = `
 CREATE TABLE repos_new (
-  id INTEGER PRIMARY KEY,
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
   node_id TEXT NOT NULL UNIQUE,
   name TEXT NOT NULL,
   name_with_owner TEXT NOT NULL,

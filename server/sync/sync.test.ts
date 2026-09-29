@@ -514,6 +514,38 @@ describe('repos added by hand', () => {
     expect(row('bob/tool')).toBeUndefined();
   });
 
+  it('never writes into a repo that took the id of one removed while its answer was pending', async () => {
+    addManualRepo(db, 'bob/old');
+    gh.fx.others.push(otherRepo('bob/old'));
+    const oldId = row('bob/old')!.id;
+    gh.fx.onDetail = (key) => {
+      if (key !== 'bob/old') return;
+      db.run('DELETE FROM repos WHERE id = ?', [oldId]);
+      // Added meanwhile under the same id (a table without AUTOINCREMENT hands out the highest rowid again).
+      db.run(`INSERT INTO repos (id, node_id, name, name_with_owner, owner, url, visibility, created_at, tracked_by, added_at)
+        VALUES (?, 'R_carol/new', 'new', 'carol/new', 'carol', 'u', 'public', 'x', 'manual', 'x')`, [oldId]);
+    };
+    const res = await sync(NOW + HOUR);
+    expect(res.errors).toEqual([]);
+    expect(prsOf('carol/new')).toEqual([]);
+    expect(syncedAt('carol/new')).toBeNull();
+    expect(row('carol/new')).toMatchObject({ id: oldId, unavailable_at: null });
+  });
+
+  it('marks nothing unavailable in a repo that took the id of one removed while its answer was pending', async () => {
+    const oldId = row('bob/tool')!.id;
+    gh.fx.detailErrors['bob/tool'] = { type: 'NOT_FOUND', message: "Could not resolve to a Repository with the name 'bob/tool'.", path: ['repository'] };
+    gh.fx.onDetail = (key) => {
+      if (key !== 'bob/tool') return;
+      db.run('DELETE FROM repos WHERE id = ?', [oldId]);
+      db.run(`INSERT INTO repos (id, node_id, name, name_with_owner, owner, url, visibility, created_at, tracked_by, added_at)
+        VALUES (?, 'R_carol/new', 'new', 'carol/new', 'carol', 'u', 'public', 'x', 'manual', 'x')`, [oldId]);
+    };
+    expect((await sync(NOW + HOUR)).errors).toEqual([]);
+    expect(row('carol/new')).toMatchObject({ unavailable_at: null });
+    expect(db.get('SELECT last_error FROM sync_state WHERE repo_id = ?', [oldId])).toBeUndefined();
+  });
+
   it('a single-repo sync of one that became unreadable marks it unavailable and syncs nothing', async () => {
     gh.fx.nodeErrors['R_bob/tool'] = { type: 'FORBIDDEN', message: 'Although you appear to have the correct authorization credentials, the `bob` organization has enabled OAuth App access restrictions.' };
     const res = await sync(NOW + HOUR, { repo: 'bob/tool' });

@@ -78,11 +78,15 @@ export function refreshManual(db: Db, r: RepoRecord, now: string): number | null
   });
 }
 
-/** A repo added by hand that the token can't read (any more): its data is kept, and the sync skips it until readable. */
-export function markUnavailable(db: Db, id: number, reason: string, now: string): void {
+/**
+ * A repo added by hand that the token can't read (any more): its data is kept, and the sync skips it until readable.
+ * Named by id and node id, so a row that took the id of a deleted one is never marked.
+ */
+export function markUnavailable(db: Db, id: number, nodeId: string, reason: string, now: string): void {
   db.run(
-    `UPDATE repos SET unavailable_at = coalesce(unavailable_at, ?), unavailable_reason = ? WHERE id = ? AND tracked_by = 'manual' AND removed_at IS NULL`,
-    [now, reason, id],
+    `UPDATE repos SET unavailable_at = coalesce(unavailable_at, ?), unavailable_reason = ?
+     WHERE id = ? AND node_id = ? AND tracked_by = 'manual' AND removed_at IS NULL`,
+    [now, reason, id, nodeId],
   );
 }
 

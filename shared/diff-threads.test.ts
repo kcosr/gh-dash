@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { CommentThread } from './api';
-import { placeThreads } from './comment-placement';
+import { createPlacer, placeThreads } from './comment-placement';
 import {
-  annotationsFor, countsByFile, draftSnippet, notesByFile, readingOrder, selectionAnchor, stepThread,
+  annotationsFor, countsByFile, draftSnippet, draftSpot, notesByFile, readingOrder, selectionAnchor, stepThread,
 } from '../web/src/diff/threadModel';
 import { canonicalQuery, parseUrlState, patchSearch } from '../web/src/lib/urlState';
 
@@ -46,16 +46,18 @@ describe('threads → viewer model', () => {
 
   it('makes Pierre annotations: the file block at line 0 first, the composer last', () => {
     const notes = notesByFile(all, placements, shown);
-    const draft = { path: 'a.ts', side: 'old' as const, startLine: 1, endLine: 2 };
+    const draft = { at: 'line' as const, side: 'old' as const, startLine: 1, endLine: 2, relocated: false };
     expect(annotationsFor(notes.get('a.ts'), draft, 'additions')).toEqual([
-      { side: 'additions', lineNumber: 0, metadata: { kind: 'file', ids: [hidden.id], outdated: [outdated.id] } },
+      { side: 'additions', lineNumber: 0, metadata: { kind: 'file', ids: [hidden.id], outdated: [outdated.id], draft: false } },
       { side: 'additions', lineNumber: 2, metadata: { kind: 'threads', ids: [alsoTwo.id, onTwo.id] } },
       { side: 'deletions', lineNumber: 4, metadata: { kind: 'threads', ids: [oldFour.id] } },
       { side: 'deletions', lineNumber: 2, metadata: { kind: 'draft' } },
     ]);
     // A deleted file has no additions side for Pierre to put the block on.
-    expect(annotationsFor(notes.get('b.ts'), null, 'deletions')).toEqual([{ side: 'deletions', lineNumber: 0, metadata: { kind: 'file', ids: [fileLevel.id], outdated: [] } }]);
+    expect(annotationsFor(notes.get('b.ts'), null, 'deletions')).toEqual([{ side: 'deletions', lineNumber: 0, metadata: { kind: 'file', ids: [fileLevel.id], outdated: [], draft: false } }]);
     expect(annotationsFor(undefined, null, 'additions')).toEqual([]);
+    // A draft whose lines aren't on screen waits in the file's top block, which it opens if need be.
+    expect(annotationsFor(undefined, { at: 'file', why: 'outdated' }, 'additions')).toEqual([{ side: 'additions', lineNumber: 0, metadata: { kind: 'file', ids: [], outdated: [], draft: true } }]);
   });
 
   it('counts threads per file for the file list, outdated ones included', () => {
@@ -81,6 +83,21 @@ describe('threads → viewer model', () => {
 });
 
 describe('new threads', () => {
+  it("shows a draft where its lines are now, from the revision and text it was started on", () => {
+    const started = { path: 'a.ts', side: 'new' as const, startLine: 2, endLine: 3, commitOid: OLD, baseOid: null, snippet: 'one\ntwo' };
+    // Same revision: at its lines.
+    expect(draftSpot({ ...started, commitOid: HEAD }, 'pr', createPlacer(diff))).toEqual({ at: 'line', side: 'new', startLine: 2, endLine: 3, relocated: false });
+    // A later push moved its lines down by one.
+    const pushed = { ...diff, files: [{ path: 'a.ts', patch: PATCH.replace('@@ -1,5 +1,6 @@\n', '@@ -1,5 +1,7 @@\n+// pushed\n') }] };
+    expect(draftSpot(started, 'pr', createPlacer(pushed))).toEqual({ at: 'line', side: 'new', startLine: 3, endLine: 4, relocated: true });
+    // Its lines changed: at the file's top.
+    expect(draftSpot({ ...started, snippet: 'gone\nnow' }, 'pr', createPlacer(diff))).toEqual({ at: 'file', why: 'outdated' });
+    // Its file left the diff: nowhere.
+    expect(draftSpot({ ...started, path: 'c.ts' }, 'pr', createPlacer(diff))).toBeNull();
+    // A commit never changes.
+    expect(draftSpot({ ...started, snippet: 'gone\nnow' }, 'commit', createPlacer(diff))).toMatchObject({ at: 'line', startLine: 2, relocated: false });
+  });
+
   it('anchors a selection to one side, in order, even across sides of a unified view', () => {
     expect(selectionAnchor('a.ts', PATCH, { start: 5, end: 3, side: 'additions' })).toEqual({ path: 'a.ts', side: 'new', startLine: 3, endLine: 5 });
     expect(selectionAnchor('a.ts', PATCH, { start: 2, end: 2 })).toEqual({ path: 'a.ts', side: 'new', startLine: 2, endLine: 2 });

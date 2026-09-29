@@ -4,23 +4,50 @@
  */
 import type { DiffLineAnnotation } from '@pierre/diffs';
 import type { CommentCounts, CommentSide, CommentThread } from '../../../shared/api';
-import { patchLines, patchRows, type SideLines, snippetOf, type ThreadPlacement } from '../../../shared/comment-placement';
+import { patchLines, patchRows, type PlaceableThread, type SideLines, snippetOf, type ThreadPlacement } from '../../../shared/comment-placement';
 
 /** What one annotation carries: threads ending on a line, a file's own and outdated threads, or the new-thread composer. */
 export type Note =
   | { kind: 'threads'; ids: number[] }
-  | { kind: 'file'; ids: number[]; outdated: number[] }
+  /** `draft`: the composer is here too (its lines aren't on screen: see DraftSpot). */
+  | { kind: 'file'; ids: number[]; outdated: number[]; draft: boolean }
   | { kind: 'draft' };
 
 /** Pierre's name for a side. */
 export const pierreSide = (side: CommentSide) => (side === 'old' ? 'deletions' : 'additions');
 
-/** A new thread being written: its lines on one side of one file. */
-export interface DraftAnchor {
+/** Lines on one side of one file. */
+export interface LineRange {
   path: string;
   side: CommentSide;
   startLine: number;
   endLine: number;
+}
+
+/**
+ * A new thread being written: the lines it was started on, with the revision (the diff's head and base then) and
+ * their text. It's submitted as that, so it records the code the reader saw even if the diff moved on meanwhile (a
+ * push, then a refresh or a reload); placement then finds it again or marks it outdated, as for any thread.
+ */
+export interface DraftAnchor extends LineRange {
+  commitOid: string;
+  baseOid: string | null;
+  snippet: string;
+}
+
+/**
+ * Where a draft's composer shows in the diff on screen: under its lines (`relocated` when a later push moved them),
+ * or at its file's top when its lines changed since it was started. null when its file left the diff.
+ */
+export type DraftSpot =
+  | { at: 'line'; side: CommentSide; startLine: number; endLine: number; relocated: boolean }
+  | { at: 'file'; why: 'outdated' }
+  | null;
+
+export function draftSpot(d: DraftAnchor, kind: 'pr' | 'commit', place: (t: PlaceableThread) => ThreadPlacement): DraftSpot {
+  const p = place({ kind, commitOid: d.commitOid, baseOid: d.baseOid, path: d.path, side: d.side, startLine: d.startLine, endLine: d.endLine, snippet: d.snippet });
+  if (p.kind === 'line') return { at: 'line', side: p.side, startLine: p.startLine, endLine: p.endLine, relocated: p.relocated };
+  return p.kind === 'outdated' && p.reason === 'lines' ? { at: 'file', why: 'outdated' } : null;
 }
 
 export interface FileNotes {
@@ -66,16 +93,18 @@ export function notesByFile(threads: readonly CommentThread[], placements: Reado
 }
 
 /**
- * Pierre annotations for a file: its notes and, when it's there, the composer (last, after any thread on its line).
- * `fileSide`: the side a file-level block goes on (Pierre shows none on the missing side of an added or deleted file).
+ * Pierre annotations for a file: its notes and, when it's this file's, the composer: under its lines (last, after any
+ * thread on the line), or in the file's top block. `fileSide`: the side a file-level block goes on (Pierre shows none
+ * on the missing side of an added or deleted file).
  */
-export function annotationsFor(notes: FileNotes | undefined, draft: DraftAnchor | null, fileSide: 'deletions' | 'additions'): DiffLineAnnotation<Note>[] {
+export function annotationsFor(notes: FileNotes | undefined, draft: DraftSpot, fileSide: 'deletions' | 'additions'): DiffLineAnnotation<Note>[] {
   const out: DiffLineAnnotation<Note>[] = [];
-  if (notes && (notes.file.length || notes.outdated.length || notes.hidden.length)) {
-    out.push({ side: fileSide, lineNumber: 0, metadata: { kind: 'file', ids: [...notes.file, ...notes.hidden], outdated: notes.outdated } });
+  const atTop = draft?.at === 'file';
+  if (atTop || (notes && (notes.file.length || notes.outdated.length || notes.hidden.length))) {
+    out.push({ side: fileSide, lineNumber: 0, metadata: { kind: 'file', ids: [...(notes?.file ?? []), ...(notes?.hidden ?? [])], outdated: notes?.outdated ?? [], draft: atTop } });
   }
   for (const l of notes?.lines ?? []) out.push({ side: pierreSide(l.side), lineNumber: l.line, metadata: { kind: 'threads', ids: l.ids } });
-  if (draft) out.push({ side: pierreSide(draft.side), lineNumber: draft.endLine, metadata: { kind: 'draft' } });
+  if (draft?.at === 'line') out.push({ side: pierreSide(draft.side), lineNumber: draft.endLine, metadata: { kind: 'draft' } });
   return out;
 }
 
@@ -129,7 +158,7 @@ export function stepThread(order: readonly { id: number; open: boolean }[], focu
  * The snippet a new thread records: from the patch when it shows every line, else from the file's full contents
  * (loaded when context was expanded). null when neither has them.
  */
-export function draftSnippet(patch: string | null, contents: { old: string[] | null; new: string[] | null } | undefined, a: DraftAnchor): string | null {
+export function draftSnippet(patch: string | null, contents: { old: string[] | null; new: string[] | null } | undefined, a: LineRange): string | null {
   if (patch) {
     const lines: SideLines = patchLines(patch)[a.side];
     const s = snippetOf(lines, a.startLine, a.endLine);
@@ -153,7 +182,7 @@ export interface PierreRange {
  * deletions into additions, or back): the end's side, over that side's lines among the rows between the two ends;
  * when either end isn't in the patch (expanded context), just the end line.
  */
-export function selectionAnchor(path: string, patch: string | null, r: PierreRange): DraftAnchor {
+export function selectionAnchor(path: string, patch: string | null, r: PierreRange): LineRange {
   const startSide = r.side ?? 'additions';
   const endSide = r.endSide ?? startSide;
   const side: CommentSide = endSide === 'deletions' ? 'old' : 'new';

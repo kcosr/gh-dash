@@ -16,7 +16,7 @@ import { plainPreview } from '../lib/markdown';
 import { fmtDateTime, plural, rel } from '../lib/time';
 import { copyText, cx } from '../lib/util';
 import { clearDraft, getDraft, setDraft } from './drafts';
-import type { DraftAnchor } from './threadModel';
+import type { DraftAnchor, DraftSpot } from './threadModel';
 
 export type ThreadActions = ReturnType<typeof useThreadActions>;
 
@@ -34,8 +34,9 @@ export interface ThreadsState {
   setExpanded: (id: number, open: boolean) => void;
   /** Prefix for this diff's draft keys. */
   draftScope: string;
-  /** The new thread being written, if any (one at a time). */
+  /** The new thread being written, if any (one at a time), and where it shows now. */
   draft: DraftAnchor | null;
+  draftSpot: DraftSpot;
   submitDraft: (body: string) => Promise<unknown>;
   closeDraft: () => void;
   /** Files whose Outdated block is open. */
@@ -306,12 +307,13 @@ export function LineThreads({ ids }: { ids: number[] }) {
  * A file's top (a file-level annotation): threads on the file itself, threads on lines the diff doesn't show, and
  * the Outdated block, collapsed until opened. Hidden and outdated threads show the lines they were made on.
  */
-export function FileNotes({ path, ids, outdated }: { path: string; ids: number[]; outdated: number[] }) {
+export function FileNotes({ path, ids, outdated, draft }: { path: string; ids: number[]; outdated: number[]; draft: boolean }) {
   const s = useThreadsState();
   const open = s.outdatedOpen.has(path) || outdated.includes(s.focused ?? -1);
   const unresolved = outdated.filter((id) => s.byId.get(id)?.status === 'open').length;
   return (
     <div className="dth-stack dth-file">
+      {draft && <DraftComposer />}
       {ids.map((id) => {
         const t = s.byId.get(id);
         if (!t) return null;
@@ -339,18 +341,28 @@ export function FileNotes({ path, ids, outdated }: { path: string; ids: number[]
   );
 }
 
-/** The composer for a new thread on the selected lines (an annotation under the last of them). */
+/**
+ * The composer for a new thread: under its lines, or at its file's top (with the lines it was started on) when they
+ * changed since. It keeps the key of the lines it was started on, so its text follows it.
+ */
 export function DraftComposer() {
   const s = useThreadsState();
   const d = s.draft;
-  if (!d) return null;
+  const at = s.draftSpot;
+  if (!d || !at) return null;
+  const lines = at.at === 'line' ? lineRange(at.startLine, at.endLine) : lineRange(d.startLine, d.endLine);
   return (
     <div className="dth dth-new">
-      <div className="dth-top"><span>New comment · {lineRange(d.startLine, d.endLine)} ({d.side})</span></div>
+      <div className="dth-top">
+        {at.at === 'line'
+          ? <span>New comment · {lines} ({at.side}){at.relocated && <span className="dth-moved"> · moved since you started it</span>}</span>
+          : <span>New comment · was {lines} ({d.side}) <span className="dth-moved">· its lines changed since you started it</span></span>}
+      </div>
+      {at.at === 'file' && <pre className="dth-snippet">{d.snippet}</pre>}
       <Composer
         key={`${d.path}|${d.side}|${d.startLine}-${d.endLine}`}
         draftKey={`${s.draftScope}|new|${d.path}|${d.side}|${d.startLine}-${d.endLine}`}
-        placeholder={`Comment on ${lineRange(d.startLine, d.endLine)}`}
+        placeholder={`Comment on ${lines}`}
         submitLabel="Comment"
         onSubmit={s.submitDraft}
         onClose={s.closeDraft}

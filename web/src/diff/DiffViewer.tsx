@@ -10,7 +10,7 @@ import { CodeView, WorkerPoolContextProvider, type CodeViewHandle } from '@pierr
 import HighlightWorker from '@pierre/diffs/worker/worker.js?worker';
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from 'react';
 import type { CommentThread, Diff, Me } from '../../../shared/api';
-import { patchLines, placeThreads, type SideLines } from '../../../shared/comment-placement';
+import { createPlacer, patchLines, placeThreads, type SideLines } from '../../../shared/comment-placement';
 import type { useThreadActions } from '../api/hooks';
 import { Icon } from '../components/Icon';
 import { Seg } from '../components/Seg';
@@ -26,7 +26,8 @@ import { createCurrentFile, FileList, type CurrentFile } from './FileList';
 import { buildFiles, parseFiles, type ViewerFile } from './model';
 import { DraftComposer, FileNotes, LineThreads, ThreadsCtx, type ThreadsState } from './Threads';
 import {
-  annotationsFor, countsByFile, type DraftAnchor, draftSnippet, type Note, notesByFile, type PierreRange, pierreSide, readingOrder, selectionAnchor, stepThread,
+  annotationsFor, countsByFile, type DraftAnchor, draftSnippet, draftSpot, type Note, notesByFile, type PierreRange, pierreSide, readingOrder, selectionAnchor,
+  stepThread,
 } from './threadModel';
 import unsafeCSS from './pierre.css?inline';
 import { registerThemes, THEMES } from './theme';
@@ -240,14 +241,13 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
     return next;
   }), []);
   // The new thread being written survives a reload (with its text: drafts.ts), like the rest of the reader's place.
-  const [draft, setDraftState] = useState<DraftAnchor | null>(() => {
-    const d = getDraftAnchor(comments.key);
-    return d && byId.has(d.path) ? d : null;
-  });
+  // It shows where placement puts it in the diff on screen, which may have moved on since it was started.
+  const [draft, setDraftState] = useState<DraftAnchor | null>(() => getDraftAnchor(comments.key));
   const setDraft = useCallback((d: DraftAnchor | null) => {
     setDraftState(d);
     setDraftAnchor(comments.key, d);
   }, [comments.key]);
+  const spot = useMemo(() => (draft ? draftSpot(draft, diff.kind, createPlacer({ files: diffFiles, headOid, baseOid })) : null), [draft, diff.kind, diffFiles, headOid, baseOid]);
   const theme = useSyncExternalStore(subscribeTheme, readTheme);
   const [prefs, setPrefs] = useState(getDiffPrefs);
   const updatePrefs = useCallback((patch: Partial<DiffPrefs>) => setPrefs((p) => ({ ...p, ...patch })), []);
@@ -279,7 +279,7 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
   const items = useMemo(() => files.slice(0, count).map((vf): Item => {
     const flip = flips.get(vf.id) ?? 0;
     const n = notes.get(vf.id);
-    const d = draft?.path === vf.id ? draft : null;
+    const d = draft?.path === vf.id ? spot : null;
     const sig = n || d ? JSON.stringify([n, d]) : '';
     const cached = itemCache.current.get(vf.id);
     if (cached && cached.flip === flip && cached.notes === sig && cached.item.type === 'diff' && cached.item.fileDiff === vf.fileDiff) return cached.item;
@@ -289,7 +289,7 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
     };
     itemCache.current.set(vf.id, { item, flip, notes: sig });
     return item;
-  }), [files, count, flips, isCollapsed, notes, draft]);
+  }), [files, count, flips, isCollapsed, notes, draft, spot]);
 
   // Context expansion: Pierre asks for both sides of a partial (patch-only) diff on the first expand.
   // A failure leaves the hunks as they are and says so in the header. loadFile resolves null for
@@ -327,7 +327,11 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
   const openDraftRef = useRef((_id: string, _range: PierreRange) => {});
   openDraftRef.current = (id, range) => {
     const vf = byId.get(id);
-    if (vf) setDraft(selectionAnchor(id, vf.file.patch, range));
+    if (!vf) return;
+    const lines = selectionAnchor(id, vf.file.patch, range);
+    const snippet = draftSnippet(vf.file.patch, contents.get(id), lines);
+    if (snippet === null) toast("Couldn't read these lines: expand the context around them and select them again", { error: true });
+    else setDraft({ ...lines, commitOid: diff.headOid, baseOid: diff.baseOid, snippet });
   };
   // A plain click's line is let go at once (while any selection stands, Pierre parks the "+" at its end instead of
   // following the pointer; an open composer keeps its own lines selected). It's remembered instead, marked on its
@@ -565,14 +569,22 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
   }, [jumpToThread]);
 
 
-  // The composer's lines stay selected, also when it comes back after a reload (Pierre keeps the selection of a file
-  // that isn't rendered yet and paints it when it is).
+  // The composer's lines (where they are now) stay selected, also when it comes back after a reload (Pierre keeps the
+  // selection of a file that isn't rendered yet and paints it when it is).
+  const draftLines = draft && spot?.at === 'line' ? { path: draft.path, ...spot } : null;
+  const draftSel = draftLines ? `${draftLines.path}\0${draftLines.side}\0${draftLines.startLine}\0${draftLines.endLine}` : '';
+  const selectDraft = useCallback((sel: string) => {
+    const [path, side, start, end] = sel.split('\0');
+    const cv = view.current;
+    if (!sel) return;
+    const cur = cv?.getSelectedLines();
+    if (cur?.id === path && Math.min(cur.range.start, cur.range.end) === Number(start) && Math.max(cur.range.start, cur.range.end) === Number(end)) return;
+    cv?.setSelectedLines({ id: path!, range: { start: Number(start), end: Number(end), side: pierreSide(side as 'old' | 'new') } });
+  }, []);
   useEffect(() => {
-    if (!draft || (indexOf.get(draft.path) ?? Infinity) >= count) return;
-    const cur = view.current?.getSelectedLines();
-    if (cur?.id === draft.path && Math.min(cur.range.start, cur.range.end) === draft.startLine && Math.max(cur.range.start, cur.range.end) === draft.endLine) return;
-    view.current?.setSelectedLines({ id: draft.path, range: { start: draft.startLine, end: draft.endLine, side: pierreSide(draft.side) } });
-  }, [draft, count, indexOf]);
+    const path = draftSel.split('\0')[0]!;
+    if (draftSel && (indexOf.get(path) ?? Infinity) < count) selectDraft(draftSel);
+  }, [draftSel, count, indexOf, selectDraft]);
   const closeDraft = useCallback(() => {
     setDraft(null);
     view.current?.clearSelectedLines();
@@ -588,21 +600,19 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
   const draftRef = useRef(draft);
   draftRef.current = draft;
   dropClickRef.current = () => {
-    const d = draftRef.current;
-    if (d) view.current?.setSelectedLines({ id: d.path, range: { start: d.startLine, end: d.endLine, side: pierreSide(d.side) } });
-    else view.current?.clearSelectedLines();
+    view.current?.clearSelectedLines();
+    selectDraft(draftSel);
     for (const host of scroller.current?.querySelectorAll<HTMLElement>('diffs-container') ?? []) paintThreadLines(host);
   };
   const { actions } = comments;
+  // As it was started (see DraftAnchor), whatever the diff shows now.
   const submitDraft = useCallback(async (body: string) => {
     const d = draftRef.current;
-    const vf = d && byId.get(d.path);
-    if (!d || !vf) return;
-    const snippet = draftSnippet(vf.file.patch, contents.get(d.path), d);
-    if (snippet === null) throw new Error("these lines aren't loaded: expand the context and select them again");
-    const t = await actions.create({ commitOid: diff.headOid, baseOid: diff.baseOid, path: d.path, side: d.side, startLine: d.startLine, endLine: d.endLine, snippet, body });
+    if (!d) return;
+    const { path, side, startLine, endLine, commitOid, baseOid: base, snippet } = d;
+    const t = await actions.create({ commitOid, baseOid: base, path, side, startLine, endLine, snippet, body });
     focusThread(t.id);
-  }, [byId, contents, actions, diff.headOid, diff.baseOid, focusThread]);
+  }, [actions, focusThread]);
   const createGeneral = useCallback(async (body: string) => {
     const t = await actions.create({ commitOid: diff.headOid, baseOid: diff.baseOid, body });
     focusThread(t.id);
@@ -625,8 +635,8 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
 
   const threadsState = useMemo((): ThreadsState => ({
     byId: threadById, placements, actions, me: comments.me, focused, focus: focusThread, expanded, setExpanded,
-    draftScope: comments.key, draft, submitDraft, closeDraft, outdatedOpen, setOutdatedOpen, replyRequest, takeReply,
-  }), [threadById, placements, actions, comments.me, focused, focusThread, expanded, setExpanded, comments.key, draft, submitDraft, closeDraft, outdatedOpen, setOutdatedOpen, replyRequest, takeReply]);
+    draftScope: comments.key, draft, draftSpot: spot, submitDraft, closeDraft, outdatedOpen, setOutdatedOpen, replyRequest, takeReply,
+  }), [threadById, placements, actions, comments.me, focused, focusThread, expanded, setExpanded, comments.key, draft, spot, submitDraft, closeDraft, outdatedOpen, setOutdatedOpen, replyRequest, takeReply]);
 
   // Threads render from ThreadsCtx: this stays the same function, so Pierre doesn't re-render every file for them.
   const renderAnnotation = useCallback((a: Annotation, item: Item) => {
@@ -634,7 +644,7 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
     if (!note) return null;
     if (note.kind === 'draft') return <DraftComposer />;
     if (note.kind === 'threads') return <LineThreads ids={note.ids} />;
-    return <FileNotes path={item.id} ids={note.ids} outdated={note.outdated} />;
+    return <FileNotes path={item.id} ids={note.ids} outdated={note.outdated} draft={note.draft} />;
   }, []);
 
   // Deep link: the shell's URL as of opening; after that the URL only follows the viewer. Its thread wins (once the

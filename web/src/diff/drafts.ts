@@ -32,7 +32,11 @@ const ANCHOR = 'gh-dash:draft-anchor:';
 export function getDraftAnchor(scope: string): DraftAnchor | null {
   try {
     const v = JSON.parse(sessionStorage.getItem(ANCHOR + scope) ?? 'null') as DraftAnchor | null;
-    return v && typeof v.path === 'string' && (v.side === 'old' || v.side === 'new') && Number.isInteger(v.startLine) && Number.isInteger(v.endLine) ? v : null;
+    const oid = (x: unknown) => typeof x === 'string' && /^[0-9a-f]{40}$/.test(x);
+    const ok = v && typeof v.path === 'string' && (v.side === 'old' || v.side === 'new') && Number.isInteger(v.startLine) && Number.isInteger(v.endLine)
+      && v.startLine >= 1 && v.endLine >= v.startLine && oid(v.commitOid) && (v.baseOid === null || oid(v.baseOid))
+      && typeof v.snippet === 'string' && v.snippet.split('\n').length === v.endLine - v.startLine + 1;
+    return ok ? v : null;
   } catch {
     return null;
   }

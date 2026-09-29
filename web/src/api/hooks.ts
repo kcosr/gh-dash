@@ -17,10 +17,11 @@ import type {
   SavedView,
   ScopeQuery,
   Settings,
+  Source,
   StatsQuery,
   SyncStatus,
 } from '../../../shared/api';
-import { api, isClientError, isUnreachable } from './client';
+import { ApiError, api, isClientError, isUnreachable } from './client';
 import { resolveApiBase } from '../lib/account';
 import { defaultRepoScope } from '../../../shared/repos';
 import { parseDiffId } from '../lib/urlState';
@@ -34,6 +35,8 @@ export const qk = {
   sync: ['sync-status'] as const,
   account: ['account'] as const,
   instance: ['instance'] as const,
+  /** GET /sources: every source's account, sync state and repository counts. */
+  sources: ['sources'] as const,
   /** DesktopState from the desktop app's bridge (not an HTTP query). */
   desktop: ['desktop-state'] as const,
   prs: (q: PrQuery) => ['prs', q] as const,
@@ -116,6 +119,61 @@ export function useCheckAccount() {
 /** What depends on the token besides the account itself: "me" and the sync status (token source, viewer). */
 export function invalidateAccountData(qc: QueryClient) {
   for (const queryKey of [qk.me, qk.sync]) void qc.invalidateQueries({ queryKey });
+}
+
+/**
+ * Every source with its account, sync state and repository counts (Settings → Sources). GET /sources never calls a
+ * code host, so it is refetched freely: on focus (after `glab auth login` in a terminal, say) and after every sync.
+ */
+export function useSources() {
+  return useQuery({
+    queryKey: qk.sources,
+    queryFn: api.sources,
+    select: (d) => d.items,
+    staleTime: 30_000,
+    refetchOnWindowFocus: true,
+    retry: (count, err) => count < 1 && !isClientError(err),
+  });
+}
+
+function putSource(qc: QueryClient, source: Source) {
+  const prev = qc.getQueryData<{ items: Source[] }>(qk.sources);
+  if (prev) qc.setQueryData(qk.sources, { items: prev.items.map((s) => (s.host === source.host ? source : s)) });
+}
+
+const isSource = (x: unknown): x is Source => !!x && typeof x === 'object' && typeof (x as Source).host === 'string' && 'sync' in x;
+
+/**
+ * Re-resolve a source's token and validate it now (POST /sources/:host/check). With no token the server answers 503
+ * with the source as it stands, which is shown too; the error still reaches the caller.
+ */
+export function useCheckSource() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (host: string) => api.checkSource(host),
+    onSuccess: (source) => putSource(qc, source),
+    onError: (e) => {
+      if (e instanceof ApiError && isSource(e.details)) putSource(qc, e.details);
+    },
+    onSettled: (_s, _e, host) => {
+      void qc.invalidateQueries({ queryKey: qk.sync });
+      if (host === 'github.com') void qc.invalidateQueries({ queryKey: qk.account });
+    },
+  });
+}
+
+/** Remove a source this server no longer configures, with all its data (DELETE /sources/:host). */
+export function useDeleteSource() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (host: string) => api.deleteSource(host),
+    onSuccess: (_r, host) => {
+      const prev = qc.getQueryData<{ items: Source[] }>(qk.sources);
+      if (prev) qc.setQueryData(qk.sources, { items: prev.items.filter((s) => s.host !== host) });
+      // Its repositories, and everything synced from them, are gone.
+      void qc.invalidateQueries({ predicate: refetchAfterSync });
+    },
+  });
 }
 
 /** How this server runs. Changes only when it restarts (the desktop app invalidates it then). */

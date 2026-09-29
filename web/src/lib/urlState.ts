@@ -54,16 +54,7 @@ export function viewFromPath(pathname: string): ViewName {
   return 'prs';
 }
 
-const decodeSegment = (seg: string) => { try { return decodeURIComponent(seg); } catch { return seg; } };
-
-/**
- * Repo key on /repos/<owner>/<name> (a single segment is a bare key/alias), each segment URL-decoded.
- * Usable outside the matched route, e.g. in overlays.
- */
-export function repoFromPath(pathname: string): string | undefined {
-  const m = /^\/repos\/([^/].*?)\/?$/.exec(pathname);
-  return m ? m[1]!.split('/').map(decodeSegment).join('/') : undefined;
-}
+export { repoFromPath } from '../../../shared/repos';
 
 export function defaultsFor(view: ViewName): UrlState {
   return {

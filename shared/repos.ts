@@ -24,6 +24,17 @@ export function repoPath(key: string): string {
   return `/repos/${key.split('/').map(encodeURIComponent).join('/')}`;
 }
 
+const decodeSegment = (seg: string) => { try { return decodeURIComponent(seg); } catch { return seg; } };
+
+/**
+ * The repo named by a repo page path, `/repos/<owner>/<name>` (a single segment is a bare key or alias), each segment
+ * URL-decoded; undefined for any other path. The inverse of `repoPath`.
+ */
+export function repoFromPath(pathname: string): string | undefined {
+  const m = /^\/repos\/([^/].*?)\/?$/.exec(pathname);
+  return m ? m[1]!.split('/').map(decodeSegment).join('/') : undefined;
+}
+
 const list = <R extends RepoIdent>(repos: RepoSource<R>): readonly R[] => (repos instanceof Map ? [...repos.values()] : (repos as readonly R[]));
 
 /**

@@ -4,6 +4,8 @@ import { encodeQueryValue, rewriteRepoParams, rewriteRepoPath } from './query';
 const KEYS: Record<string, string> = { a: 'alice/a', b: 'alice/b', proj: 'grp/sub/proj' };
 /** Bare names only, like the v5 saved-view rewrite. */
 const resolve = (repo: string) => (repo.includes('/') ? null : KEYS[repo.toLowerCase()] ?? null);
+/** Keys in any case as well, like the live resolver (POST /views, the address bar). */
+const live = (repo: string) => resolve(repo) ?? Object.values(KEYS).find((k) => k.toLowerCase() === repo.toLowerCase()) ?? null;
 
 describe('encodeQueryValue', () => {
   it("keeps ',', '/' and '@' readable and escapes everything else", () => {
@@ -20,6 +22,13 @@ describe('rewriteRepoParams', () => {
     expect(rewriteRepoParams('repos=a,nope', resolve)).toBe('repos=alice/a,nope');
     expect(rewriteRepoParams('repos=A', resolve)).toBe('repos=alice/a');
     expect(rewriteRepoParams('repos=proj', resolve)).toBe('repos=grp/sub/proj');
+  });
+
+  it('trims entries and collapses the ones naming one repo, once something is rewritten', () => {
+    expect(rewriteRepoParams('repos=a,alice/a,,b', resolve)).toBe('repos=alice/a,alice/b');
+    expect(rewriteRepoParams('repos=ALICE/A,a', live)).toBe('repos=alice/a');
+    // Nothing to rewrite: the value (duplicates, blanks) is left as it was.
+    expect(rewriteRepoParams('repos=alice/a,,alice/a', live)).toBe('repos=alice/a,,alice/a');
   });
 
   it('maps the repo part of `pr` and `diff`', () => {
@@ -58,8 +67,15 @@ describe('rewriteRepoPath', () => {
     expect(rewriteRepoPath('/repos/proj', resolve)).toBe('/repos/grp/sub/proj');
   });
 
+  it('canonicalizes a key path when the resolver knows keys', () => {
+    expect(rewriteRepoPath('/repos/ALICE/A', live)).toBe('/repos/alice/a');
+    expect(rewriteRepoPath('/repos/alice%2FA', live)).toBe('/repos/alice/a');
+    expect(rewriteRepoPath('/repos/alice/a', live)).toBe('/repos/alice/a');
+    expect(rewriteRepoPath('/repos/alice%2Fa', live)).toBe('/repos/alice%2Fa');
+  });
+
   it('leaves every other path alone', () => {
-    for (const p of ['/repos/nope', '/repos', '/repos/', '/repos/alice/a', '/prs', '/insights', '/', '/repos/%E0%A4%A']) {
+    for (const p of ['/repos/nope', '/repos', '/repos/', '/repos//', '/repos/alice/a', '/prs', '/insights', '/', '/repos/%E0%A4%A', '/prs/a']) {
       expect(rewriteRepoPath(p, resolve), p).toBe(p);
     }
   });

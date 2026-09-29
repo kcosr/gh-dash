@@ -237,6 +237,38 @@ URL-encoded as one segment (`/api/v1/repos/kcosr%2Fgh-dash`,
 `/api/v1/repos/gitlab.example.com%2Fplatform%2Fapp`). Inputs also accept the short name of a
 github.com repository you own, which is what earlier versions used everywhere.
 
+## Agents (MCP)
+
+Coding agents such as Claude Code and Codex can work with gh-dash's review comments over MCP:
+answer the questions you leave in a diff and fix what you annotate, or review code themselves
+and leave annotations for you to pick up. Comments live in gh-dash only; agents, like the rest
+of gh-dash, never change anything on GitHub or GitLab. Each agent has a name and a token. What
+it writes, resolves or reopens is shown as its own, in the diff, the Comments tab and Activity.
+
+In the desktop app, **Settings → Agents → Add agent** shows the new token once, with the MCP
+address and the configuration to paste into the agent. Agents connect through the **Local
+API**, so turn it on in **Settings**; the address is `http://127.0.0.1:4780/mcp` (with the
+Local API's port). For the headless server, use the `agents` command, which opens the same
+database as the server (`GH_DASH_DB`, `config.json`), whether or not it is running:
+
+```sh
+node dist/server/index.mjs agents add Claude       # prints the token, once
+node dist/server/index.mjs agents list
+node dist/server/index.mjs agents regenerate Claude
+node dist/server/index.mjs agents revoke Claude    # its comments stay
+```
+
+The address is the server's own followed by `/mcp` (`http://127.0.0.1:4780/mcp` by default).
+For Claude Code:
+
+```sh
+claude mcp add --transport http gh-dash http://127.0.0.1:4780/mcp --header "Authorization: Bearer <token>"
+```
+
+A token works until it is regenerated or revoked, so the agent's configuration survives
+restarts. Behind a reverse proxy, see [deploy/nginx.conf.example](deploy/nginx.conf.example)
+for `/mcp` and the live updates at `/api/v1/stream`.
+
 ## Desktop app
 
 The desktop app runs gh-dash in its own window on macOS, Windows and Linux. It starts the

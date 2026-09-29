@@ -57,6 +57,35 @@ server {
         gzip_types application/json text/markdown text/csv text/css application/javascript image/svg+xml;
     }
 
+    # Live updates (server-sent events): each event passes at once (no buffering, no gzip), and an idle stream outlives
+    # the 60 s read timeout (gh-dash sends a comment line every 25 s; a reconnect is cheap anyway).
+    location = /api/v1/stream {
+        proxy_pass http://gh_dash;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 1h;
+        gzip off;
+    }
+
+    # Agents (MCP). The agent's token is its credential (Authorization: Bearer), so nginx basic auth must stay off here;
+    # wait_for_reply holds a request open for up to 5 minutes.
+    location = /mcp {
+        auth_basic off;
+        proxy_pass http://gh_dash;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_buffering off;
+        proxy_read_timeout 330s;
+    }
+
     # Health checks stay reachable without credentials.
     location = /api/health {
         auth_basic off;

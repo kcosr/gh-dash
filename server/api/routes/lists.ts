@@ -14,7 +14,7 @@ import {
   type Page,
 } from '../../db/lists';
 import { activityCsv, commitsCsv, issuesCsv, prsCsv, releasesCsv, starsCsv } from '../../format/csv';
-import { eventsMarkdown, GITHUB_ONLY, type KindOf, type MdContext, prsMarkdown } from '../../format/markdown';
+import { eventsMarkdown, type KindOf, type MdContext, prsMarkdown } from '../../format/markdown';
 import type { AppDeps } from '../app';
 import { HttpError, parseWith } from '../http';
 import {
@@ -40,12 +40,12 @@ function page(q: PageQuery, keyLength: number): Page {
   return { limit: q.limit ?? 200, after: decodeCursor(q.cursor, keyLength) };
 }
 
-/**
- * Each repo's code host, for the exports' words (`#`/`!`, PRs/MRs). Hook for step 1a: every repo is on github.com
- * until repos carry a source; then this returns the kind of `repos.source_id`'s source, looked up by `repos.key`.
- */
-function repoKinds(_db: Db): KindOf {
-  return GITHUB_ONLY;
+/** Each repo's code host (by repo key), for the exports' words (`#`/`!`, PRs/MRs). Unknown keys read as GitHub. */
+function repoKinds(db: Db): KindOf {
+  const kinds = new Map(
+    db.all<{ key: string; kind: string }>('SELECT r.key, s.kind FROM repos r JOIN sources s ON s.id = r.source_id').map((r) => [r.key, r.kind]),
+  );
+  return (repo) => (kinds.get(repo) === 'gitlab' ? 'gitlab' : 'github');
 }
 
 const mdCtx = (scope: Scope, kindOf: KindOf): MdContext => ({ tz: scope.tz, now: Date.now(), from: scope.from, to: scope.to, kindOf });

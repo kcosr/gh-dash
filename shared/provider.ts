@@ -100,15 +100,8 @@ const GITLAB: Provider = {
 
 export const PROVIDERS: Record<ProviderKind, Provider> = { github: GITHUB, gitlab: GITLAB };
 
-/**
- * What this module reads of a repo.
- *
- * Hook for step 1a: `Repo` has no `provider` yet, so every repo is on github.com. When 1a adds `Repo.source` and
- * `Repo.provider`, this line becomes `export type ProviderRepo = Pick<Repo, 'provider' | 'url' | 'nameWithOwner'>;`.
- * Nothing else changes: the lookups below already read `provider`, and fall back to GitHub only for a repo that
- * isn't known at all.
- */
-export type ProviderRepo = Pick<Repo, 'url' | 'nameWithOwner'> & { provider?: ProviderKind };
+/** What this module reads of a repo. The lookups fall back to GitHub only for a repo that isn't known at all. */
+export type ProviderRepo = Pick<Repo, 'provider' | 'url' | 'nameWithOwner'>;
 
 /** The kind of a repo's host; GitHub for a repo that isn't known (not in the map, removed). */
 export function repoKind(repo: ProviderRepo | null | undefined): ProviderKind {

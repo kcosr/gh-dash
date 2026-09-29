@@ -11,7 +11,7 @@ const GL = 'https://gitlab.example.com/alice/app';
 // A GitLab under a relative root, with a nested project.
 const GL_ROOTED = 'https://gitlab.example.com/gitlab/platform/team/svc';
 
-const ghRepo: ProviderRepo = { url: GH, nameWithOwner: 'kcosr/gh-dash' };
+const ghRepo: ProviderRepo = { url: GH, nameWithOwner: 'kcosr/gh-dash', provider: 'github' };
 const glRepo: ProviderRepo = { url: GL, nameWithOwner: 'alice/app', provider: 'gitlab' };
 const glRooted: ProviderRepo = { url: GL_ROOTED, nameWithOwner: 'platform/team/svc', provider: 'gitlab' };
 

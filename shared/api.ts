@@ -11,7 +11,7 @@
  * optional fields are fine; renames/removals are not.
  */
 
-/** The kind of code host a source is. */
+/** The kind of code host a source is. Its words and URL shapes are in shared/provider.ts. */
 export type ProviderKind = 'github' | 'gitlab';
 /** The host of the built-in github.com source (`Repo.source`). Its keys are `owner/name`; every other source's carry the host. */
 export const GITHUB_HOST = 'github.com';
@@ -30,8 +30,6 @@ export type EventType = 'commit' | 'pr' | 'issue' | 'release' | 'star';
 export type Bucket = 'day' | 'week' | 'month';
 export type GroupBy = 'day' | 'week' | 'month' | 'repo';
 export type ListFormat = 'json' | 'md' | 'csv';
-/** A code host kind. Its words and URL shapes are in shared/provider.ts. */
-export type ProviderKind = 'github' | 'gitlab';
 
 export const EVENT_TYPES: EventType[] = ['commit', 'pr', 'issue', 'release', 'star'];
 

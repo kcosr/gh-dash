@@ -5,6 +5,7 @@
 import { useCallback, useMemo, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router';
 import { EVENT_TYPES } from '../../../shared/api';
+import { encodeQueryValue } from '../../../shared/query';
 import type { EventType, GroupBy, PrStateFilter, VisibilityFilter, Who } from '../../../shared/api';
 import { RANGE_IDS, resolveRange } from './range';
 import type { RangeId, ResolvedRange } from './range';
@@ -154,7 +155,7 @@ function toParams(s: UrlState, view: ViewName): [string, string][] {
 
 /** Encode keeping ',', '/' and '@' readable (lists, file paths, commit diffs); '#', '&', spaces etc. are escaped. */
 export function encodeParams(pairs: [string, string][]): string {
-  return pairs.map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v).replace(/%2C/gi, ',').replace(/%2F/gi, '/').replace(/%40/g, '@')}`).join('&');
+  return pairs.map(([k, v]) => `${encodeURIComponent(k)}=${encodeQueryValue(v)}`).join('&');
 }
 
 /** Apply a patch to a search string for a view; returns "?..." or "". */

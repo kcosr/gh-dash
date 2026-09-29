@@ -163,27 +163,42 @@ export function defaultScope(repos: Repo[], settings?: Settings): string[] {
 
 // ---------------------------------------------------------------- lists
 
+/**
+ * Whether a list in a source's context may be asked for: once the repos show that source is here. The API refuses a
+ * host that isn't a source (400); the address bar drops such a `source` as soon as the repos are known
+ * (useCanonicalRepoUrl), so the list waits for that rather than failing first. The repos come first on a cold load
+ * only (they're cached after), and only when the URL names a source.
+ */
+export function useSourceReady(source: string | undefined): boolean {
+  const { data } = useRepos();
+  return useMemo(() => !source || !!data?.some((r) => r.source === source), [source, data]);
+}
+
 /** PR lists for 30–90 days are small; fetch up to 1000 in one go. */
 export const PR_LIMIT = 1000;
 
 export function usePrList(q: PrQuery, enabled = true) {
   const params = { ...q, limit: q.limit ?? PR_LIMIT };
-  return useQuery({ queryKey: qk.prs(params), queryFn: () => api.prs(params), placeholderData: keepPreviousData, enabled });
+  const ready = useSourceReady(q.source);
+  return useQuery({ queryKey: qk.prs(params), queryFn: () => api.prs(params), placeholderData: keepPreviousData, enabled: enabled && ready });
 }
 
 export function useReleases(q: ScopeQuery, enabled = true) {
   const params = { ...q, limit: 200 };
-  return useQuery({ queryKey: qk.releases(params), queryFn: () => api.releases(params), placeholderData: keepPreviousData, enabled });
+  const ready = useSourceReady(q.source);
+  return useQuery({ queryKey: qk.releases(params), queryFn: () => api.releases(params), placeholderData: keepPreviousData, enabled: enabled && ready });
 }
 
 export function useIssueList(q: IssueQuery) {
   const params = { ...q, limit: 100 };
+  const ready = useSourceReady(q.source);
   return useInfiniteQuery({
     queryKey: qk.issues(params),
     queryFn: ({ pageParam }) => api.issues({ ...params, cursor: pageParam ?? undefined }),
     initialPageParam: null as string | null,
     getNextPageParam: (last) => last.nextCursor,
     placeholderData: keepPreviousData,
+    enabled: ready,
   });
 }
 
@@ -191,18 +206,20 @@ export const ACTIVITY_PAGE = 200;
 
 export function useActivityFeed(q: ActivityQuery, enabled = true) {
   const params = { ...q, limit: ACTIVITY_PAGE };
+  const ready = useSourceReady(q.source);
   return useInfiniteQuery({
     queryKey: qk.activity(params),
     queryFn: ({ pageParam }) => api.activity({ ...params, cursor: pageParam ?? undefined }),
     initialPageParam: null as string | null,
     getNextPageParam: (last) => last.nextCursor,
     placeholderData: keepPreviousData,
-    enabled,
+    enabled: enabled && ready,
   });
 }
 
 export function useStats(q: StatsQuery, enabled = true) {
-  return useQuery({ queryKey: qk.stats(q), queryFn: () => api.stats(q), placeholderData: keepPreviousData, enabled });
+  const ready = useSourceReady(q.source);
+  return useQuery({ queryKey: qk.stats(q), queryFn: () => api.stats(q), placeholderData: keepPreviousData, enabled: enabled && ready });
 }
 
 export function usePrDetail(id: string | null) {

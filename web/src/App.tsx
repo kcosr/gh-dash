@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider, useIsFetching, useQueryClient } from '@tanstack/react-query';
-import { Suspense, lazy, useEffect, useRef, useState } from 'react';
+import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import { Navigate, Outlet, RouterProvider, createBrowserRouter, useLocation, useRouteError } from 'react-router';
 import { qk, refetchAfterSync, useRepos, useSyncStatus } from './api/hooks';
 import { CommandPalette } from './components/CommandPalette';
@@ -18,6 +18,7 @@ import { TopBar, useSyncNow, useTheme } from './components/TopBar';
 import { UIProvider, useUI } from './components/ui';
 import { hasBlockingLayer, isTypingTarget, topLayer } from './lib/layers';
 import { useCanonicalRepoUrl } from './lib/canonicalUrl';
+import { homePlace, presentSources, readPlaces, useContextMemory } from './lib/contexts';
 import { getSidebarHidden, setSidebarHidden } from './lib/storage';
 import { plural } from './lib/time';
 import { capitalize } from '../../shared/provider';
@@ -75,7 +76,9 @@ function usePreloadWhenIdle() {
 
 const queryClient = new QueryClient({
   defaultOptions: {
-    queries: { staleTime: 30_000, refetchOnWindowFocus: false, retry: 1 },
+    // Each context's data stays cached for half an hour (the context is in every query key through its params), so
+    // switching back paints at once and then revalidates.
+    queries: { staleTime: 30_000, gcTime: 30 * 60_000, refetchOnWindowFocus: false, retry: 1 },
   },
 });
 
@@ -157,7 +160,10 @@ function Shell() {
   const repos = useRepos();
   useSyncWatcher();
   usePreloadWhenIdle();
-  useCanonicalRepoUrl();
+  const { settled } = useCanonicalRepoUrl();
+  // The contexts to keep places for, from the same repo list `settled` was judged on.
+  const hosts = useMemo(() => (repos.data ? presentSources(repos.data).map((x) => x.host) : null), [repos.data]);
+  useContextMemory(settled, hosts);
   const repoKey = repoFromPath(useLocation().pathname);
   const name = repoKey && repoLabel(repoKey, repos.data ?? []);
   const prsTitle = capitalize(useWords().pr.many);
@@ -293,9 +299,10 @@ function AppError() {
   );
 }
 
+/** `/`: the last context's last place (the app reopens where you were); a query on `/` is a deep link and wins. */
 function RedirectHome() {
   const { search } = useLocation();
-  return <Navigate to={{ pathname: '/prs', search }} replace />;
+  return <Navigate to={search ? { pathname: '/prs', search } : homePlace(readPlaces())} replace />;
 }
 
 const router = createBrowserRouter([

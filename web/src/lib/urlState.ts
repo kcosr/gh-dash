@@ -17,6 +17,8 @@ export type RepoSort = 'activity' | 'stars' | 'open' | 'name';
 export type RepoLayout = 'grid' | 'list';
 
 export interface UrlState {
+  /** The context: a source's host (`source=gitlab.example.com`), lower-case; null = All (param absent). */
+  source: string | null;
   /** null = the default selection (param absent); [] = explicitly nothing. */
   repos: string[] | null;
   vis: VisibilityFilter;
@@ -60,6 +62,7 @@ export { repoFromPath } from '../../../shared/repos';
 
 export function defaultsFor(view: ViewName): UrlState {
   return {
+    source: null,
     repos: null,
     vis: 'all',
     own: 'all',
@@ -102,6 +105,8 @@ export function parseUrlState(search: string, view: ViewName): UrlState {
   const diff = p.get('diff');
   const diffOk = parseDiffId(diff) !== null;
   return {
+    // Any non-empty value: one that names no source is dropped once the repos are known (useCanonicalRepoUrl).
+    source: p.get('source')?.trim().toLowerCase() || null,
     repos: reposRaw === null ? null : list(reposRaw),
     vis: oneOf(p.get('vis'), ['all', 'public', 'private', 'internal'] as const, d.vis),
     own: oneOf(p.get('own'), ['all', 'mine', 'others'] as const, d.own),
@@ -125,12 +130,13 @@ export function parseUrlState(search: string, view: ViewName): UrlState {
 }
 
 /** Param order in written URLs (unknown params are kept at the end). */
-const ORDER = ['repos', 'vis', 'own', 'who', 'range', 'from', 'to', 'state', 'group', 'density', 'rel', 'types', 'q', 'sort', 'layout', 'pr', 'diff', 'file'];
+const ORDER = ['source', 'repos', 'vis', 'own', 'who', 'range', 'from', 'to', 'state', 'group', 'density', 'rel', 'types', 'q', 'sort', 'layout', 'pr', 'diff', 'file'];
 
 /** Serialize a full state to params, omitting defaults for the view. */
 function toParams(s: UrlState, view: ViewName): [string, string][] {
   const d = defaultsFor(view);
   const out: [string, string][] = [];
+  if (s.source) out.push(['source', s.source]);
   if (s.repos !== null) out.push(['repos', s.repos.join(',')]);
   if (s.vis !== d.vis) out.push(['vis', s.vis]);
   if (s.own !== d.own) out.push(['own', s.own]);
@@ -174,25 +180,35 @@ export function patchSearch(search: string, view: ViewName, patch: UrlPatch): st
   return qs ? `?${qs}` : '';
 }
 
-/** Whether a repo passes the visibility and ownership filters (sidebar list, selection counts). */
-export function passesRepoFilters(r: Pick<Repo, 'visibility' | 'trackedBy'>, s: Pick<UrlState, 'vis' | 'own'>): boolean {
-  return (s.vis === 'all' || r.visibility === s.vis) && (s.own === 'all' || (s.own === 'mine') === (r.trackedBy === 'owned'));
+/** The filters on repos; `source` absent is All. */
+type RepoFilters = Pick<UrlState, 'vis' | 'own'> & { source?: string | null };
+
+/** Whether a repo is in the context: on its source, or any repo in All. */
+export function inContext(r: Partial<Pick<Repo, 'source'>>, source: string | null | undefined): boolean {
+  return !source || r.source === source;
+}
+
+/** Whether a repo passes the context and the visibility and ownership filters (sidebar list, selection counts). */
+export function passesRepoFilters(r: Pick<Repo, 'visibility' | 'trackedBy'> & Partial<Pick<Repo, 'source'>>, s: RepoFilters): boolean {
+  return inContext(r, s.source) && (s.vis === 'all' || r.visibility === s.vis) && (s.own === 'all' || (s.own === 'mine') === (r.trackedBy === 'owned'));
 }
 
 /**
  * Filtering to one repo: reset the visibility and ownership filters it doesn't pass (`vis=private` and a public repo,
- * `own=mine` and a repo added by hand), or the list would come back empty. Unknown repos change nothing.
+ * `own=mine` and a repo added by hand), or the list would come back empty. A repo on another source than the context's
+ * takes the context with it (in All, nothing changes). Unknown repos change nothing.
  */
-export function keepRepoInScope(repo: Pick<Repo, 'visibility' | 'trackedBy'> | undefined, s: Pick<UrlState, 'vis' | 'own'>): UrlPatch {
+export function keepRepoInScope(repo: (Pick<Repo, 'visibility' | 'trackedBy'> & Partial<Pick<Repo, 'source'>>) | undefined, s: RepoFilters): UrlPatch {
   const patch: UrlPatch = {};
   if (!repo) return patch;
+  if (s.source && repo.source && s.source !== repo.source) patch.source = repo.source;
   if (s.vis !== 'all' && s.vis !== repo.visibility) patch.vis = 'all';
   if (s.own !== 'all' && (s.own === 'mine') !== (repo.trackedBy === 'owned')) patch.own = 'all';
   return patch;
 }
 
-/** Scope params carried across top-level navigation. */
-export const SCOPE_KEYS = ['repos', 'vis', 'own', 'who', 'range', 'from', 'to'];
+/** Scope params carried across top-level navigation (the context first). */
+export const SCOPE_KEYS = ['source', 'repos', 'vis', 'own', 'who', 'range', 'from', 'to'];
 
 export function carrySearch(search: string, keys = SCOPE_KEYS): string {
   const p = new URLSearchParams(search);
@@ -200,6 +216,16 @@ export function carrySearch(search: string, keys = SCOPE_KEYS): string {
   for (const k of keys) { const v = p.get(k); if (v !== null) pairs.push([k, v]); }
   const qs = encodeParams(pairs);
   return qs ? `?${qs}` : '';
+}
+
+/** The context param alone, for links that leave the rest of the scope behind ("?source=…" or ""). */
+export function contextSearch(search: string): string {
+  return carrySearch(search, ['source']);
+}
+
+/** "source=…&repos=<key>" (or just the repos): a link about one repo that stays in the context. */
+export function repoLinkSearch(key: string, source: string | null): string {
+  return encodeParams([...(source ? [['source', source] as [string, string]] : []), ['repos', key]]);
 }
 
 /** Params for what's open on top of a view (details, diff): never part of a saved view. */

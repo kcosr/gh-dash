@@ -5,6 +5,7 @@ import type { Diff } from '../../shared/api';
 import { HttpError } from '../api/http';
 import type { Db } from '../db/db';
 import { patchSettings } from '../db/settings';
+import { GitHubDiffSources } from '../github/diff-source';
 import { fakeGitHub, type Handler as Route, page, type Reply, restFile, sha } from '../test/github';
 import { seedDb } from '../test/seed';
 import { supplyOf } from '../test/tokens';
@@ -30,16 +31,9 @@ function setup(routes: Record<string, Route> = {}, opts: { fetchImpl?: (inner: t
     token.resolved++;
     return token.value;
   });
-  const svc = new DiffService({
-    db,
-    cache,
-    tokens,
-    fetchImpl: opts.fetchImpl ? opts.fetchImpl(gh.fetchImpl) : gh.fetchImpl,
-    sleep: async () => {},
-    log: (line) => logs.push(line),
-    now: () => clock.t,
-    buildTimeoutMs: opts.buildTimeoutMs,
-  });
+  const log = (line: string) => logs.push(line);
+  const sources = new GitHubDiffSources({ tokens, fetchImpl: opts.fetchImpl ? opts.fetchImpl(gh.fetchImpl) : gh.fetchImpl, sleep: async () => {}, log });
+  const svc = new DiffService({ db, cache, sources, log, now: () => clock.t, buildTimeoutMs: opts.buildTimeoutMs });
   /** Requests made by `fn`. */
   const spent = async <T>(fn: () => Promise<T>) => {
     gh.requests.length = 0;
@@ -388,7 +382,7 @@ describe('PR diffs', () => {
     clock.t += OPEN_PR_TTL_MS + 1;
 
     // A restart without a token (say after `gh auth logout`), same cache.
-    const noToken = new DiffService({ db, cache, tokens: supplyOf(() => null), log: () => {}, now: () => clock.t });
+    const noToken = new DiffService({ db, cache, sources: new GitHubDiffSources({ tokens: supplyOf(() => null) }), log: () => {}, now: () => clock.t });
     const stale = await noToken.prDiff('app', 2);
     expect(await diffOf(stale)).toEqual({ ...fresh, stale: true });
     expect(JSON.parse(gunzipSync(stale.gz).toString())).toEqual({ ...fresh, stale: true });

@@ -8,6 +8,7 @@ import { getMeta, setMeta } from '../db/meta';
 import { upsertCommit } from '../db/write';
 import { DiffCache } from '../diff/cache';
 import { DiffService } from '../diff/service';
+import { GitHubDiffSources } from '../github/diff-source';
 import { SyncManager } from '../sync/manager';
 import { fakeGitHub, type Reply, restFile, sha } from '../test/github';
 import { seedDb } from '../test/seed';
@@ -20,7 +21,7 @@ function makeApp(over: Partial<Config> = {}, db = seedDb(), transport?: AppTrans
   const config = { ...loadConfig({}), webDir: '/nonexistent', ...over };
   const tokens = testTokens();
   const sync = new SyncManager({ db, schedule: false, tokens, log: () => {} });
-  const diffs = new DiffService({ db, cache: new DiffCache(':memory:'), tokens, log: () => {} });
+  const diffs = new DiffService({ db, cache: new DiffCache(':memory:'), sources: new GitHubDiffSources({ tokens }), log: () => {} });
   return createApp({ db, config, sync, diffs, tokens, transport });
 }
 
@@ -337,7 +338,8 @@ describe('diffs', () => {
     const sync = new SyncManager({ db, schedule: false, tokens, log: () => {} });
     const gh = fakeGitHub(routes);
     const cache = new DiffCache(':memory:');
-    const diffs = new DiffService({ db, cache, tokens, fetchImpl: gh.fetchImpl, sleep: async () => {}, log: () => {} });
+    const sources = new GitHubDiffSources({ tokens, fetchImpl: gh.fetchImpl, sleep: async () => {}, log: () => {} });
+    const diffs = new DiffService({ db, cache, sources, log: () => {} });
     return { app: createApp({ db, config, sync, diffs, tokens }), gh, cache };
   }
   const commitRoute = {
@@ -442,7 +444,7 @@ describe('account and instance', () => {
   function accountApp(tokens = testTokens(), over: Partial<Config> = {}, deps: Partial<AppDeps> = {}, db = seedDb()) {
     const config = { ...loadConfig({}), webDir: '/nonexistent', ...over };
     const sync = new SyncManager({ db, schedule: false, tokens, log: () => {} });
-    const diffs = new DiffService({ db, cache: new DiffCache(':memory:'), tokens, log: () => {} });
+    const diffs = new DiffService({ db, cache: new DiffCache(':memory:'), sources: new GitHubDiffSources({ tokens }), log: () => {} });
     return createApp({ db, config, sync, diffs, tokens, ...deps });
   }
   const viewer = (login: string, headers: Record<string, string> = {}): Reply => ({

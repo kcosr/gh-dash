@@ -36,15 +36,15 @@ export interface DraftAnchor extends LineRange {
 }
 
 /**
- * Where a draft's composer shows in the diff on screen: under its lines (`relocated` when a later push moved them),
- * or at its file's top: when its lines changed since it was started (`outdated`), or when the diff doesn't show them
- * (`hidden`: expanded context, which a reload folds away again, and Pierre draws nothing on lines it doesn't show).
- * null when its file left the diff.
+ * Where a draft's composer shows: in the diff on screen, under its lines (`relocated` when a later push moved them),
+ * or at its file's top when its lines changed since it was started (`outdated`) or the diff doesn't show them
+ * (`hidden`: expanded context, which a reload folds away again, and Pierre draws nothing on lines it doesn't show);
+ * or, its file gone from the diff (a push removed or renamed it), in the comments column.
  */
 export type DraftSpot =
   | { at: 'line'; side: CommentSide; startLine: number; endLine: number; relocated: boolean }
   | { at: 'file'; why: 'outdated' | 'hidden' }
-  | null;
+  | { at: 'gone' };
 
 /** `visible`: whether the diff on screen shows a line of the draft's file. */
 export function draftSpot(
@@ -58,7 +58,7 @@ export function draftSpot(
     if (!visible(p.side, p.endLine)) return { at: 'file', why: 'hidden' };
     return { at: 'line', side: p.side, startLine: p.startLine, endLine: p.endLine, relocated: p.relocated };
   }
-  return p.kind === 'outdated' && p.reason === 'lines' ? { at: 'file', why: 'outdated' } : null;
+  return p.kind === 'outdated' && p.reason === 'lines' ? { at: 'file', why: 'outdated' } : { at: 'gone' };
 }
 
 export interface FileNotes {
@@ -108,7 +108,7 @@ export function notesByFile(threads: readonly CommentThread[], placements: Reado
  * thread on the line), or in the file's top block. `fileSide`: the side a file-level block goes on (Pierre shows none
  * on the missing side of an added or deleted file).
  */
-export function annotationsFor(notes: FileNotes | undefined, draft: DraftSpot, fileSide: 'deletions' | 'additions'): DiffLineAnnotation<Note>[] {
+export function annotationsFor(notes: FileNotes | undefined, draft: DraftSpot | null, fileSide: 'deletions' | 'additions'): DiffLineAnnotation<Note>[] {
   const out: DiffLineAnnotation<Note>[] = [];
   const atTop = draft?.at === 'file';
   if (atTop || (notes && (notes.file.length || notes.outdated.length || notes.hidden.length))) {

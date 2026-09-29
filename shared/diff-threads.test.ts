@@ -93,8 +93,8 @@ describe('new threads', () => {
     expect(draftSpot(started, 'pr', createPlacer(pushed), all)).toEqual({ at: 'line', side: 'new', startLine: 3, endLine: 4, relocated: true });
     // Its lines changed: at the file's top.
     expect(draftSpot({ ...started, snippet: 'gone\nnow' }, 'pr', createPlacer(diff), all)).toEqual({ at: 'file', why: 'outdated' });
-    // Its file left the diff: nowhere.
-    expect(draftSpot({ ...started, path: 'c.ts' }, 'pr', createPlacer(diff), all)).toBeNull();
+    // Its file left the diff: in the comments column.
+    expect(draftSpot({ ...started, path: 'c.ts' }, 'pr', createPlacer(diff), all)).toEqual({ at: 'gone' });
     // A commit never changes.
     expect(draftSpot({ ...started, snippet: 'gone\nnow' }, 'commit', createPlacer(diff), all)).toMatchObject({ at: 'line', startLine: 2, relocated: false });
   });

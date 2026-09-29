@@ -653,6 +653,9 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
     const path = draftSel.split('\0')[0]!;
     if (draftSel && (indexOf.get(path) ?? Infinity) < count) selectDraft(draftSel);
   }, [draftSel, count, indexOf, selectDraft]);
+  // A draft whose file left the diff waits in the comments column: open it when that's where the open draft is.
+  const draftGone = spot?.at === 'gone';
+  useEffect(() => { if (draftGone) setColumn(true); }, [draftGone, setColumn]);
   const closeDraft = useCallback(() => {
     setAside();
     showDraft(null);
@@ -695,7 +698,7 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
     const l = live.current;
     const at = draftSpot(d.anchor, diff.kind, createPlacer({ files: diffFiles, headOid, baseOid }), (side, line) => l.shown(d.anchor.path, side, line));
     const vf = l.byId.get(d.anchor.path);
-    if (!vf || !at) return;
+    if (!vf || at.at === 'gone') return;
     if (l.compact) setColumnOpen(false);
     if (l.isCollapsed(vf)) toggleCollapsed(vf.id);
     goTo(vf.id, at.at === 'line' ? { type: 'line', id: vf.id, lineNumber: at.endLine, side: pierreSide(at.side), align: 'center' } : { type: 'item', id: vf.id, align: 'start' });

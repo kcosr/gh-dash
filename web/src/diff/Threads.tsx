@@ -37,7 +37,7 @@ export interface ThreadsState {
   /** The new thread being written, if any (one at a time): its record's key, its anchor, and where it shows now. */
   draftKey: string | null;
   draft: DraftAnchor | null;
-  draftSpot: DraftSpot;
+  draftSpot: DraftSpot | null;
   /** Cancel: the draft goes (Esc, closeDraft, only sets it aside). */
   discardDraft: () => void;
   submitDraft: (body: string) => Promise<unknown>;
@@ -367,16 +367,19 @@ export function DraftComposer() {
   const key = s.draftKey;
   if (!d || !at || key === null) return null;
   const lines = at.at === 'line' ? lineRange(at.startLine, at.endLine) : lineRange(d.startLine, d.endLine);
+  const note = (text: string) => <span className="dth-moved"> · {text}</span>;
   return (
     <div className="dth dth-new">
       <div className="dth-top">
         {at.at === 'line'
-          ? <span>New comment · {lines} ({at.side}){at.relocated && <span className="dth-moved"> · moved since you started it</span>}</span>
-          : at.why === 'outdated'
-            ? <span>New comment · was {lines} ({d.side}) <span className="dth-moved">· its lines changed since you started it</span></span>
-            : <span>New comment · {lines} ({d.side}) <span className="dth-moved">· not in the diff's context: expand it to see them</span></span>}
+          ? <span>New comment · {lines} ({at.side}){at.relocated && note('moved since you started it')}</span>
+          : at.at === 'gone'
+            ? <span>New comment · <span className="dth-where">{d.path}</span> {lines} ({d.side}){note('its file is no longer in this diff')}</span>
+            : at.why === 'outdated'
+              ? <span>New comment · was {lines} ({d.side}){note('its lines changed since you started it')}</span>
+              : <span>New comment · {lines} ({d.side}){note("not in the diff's context: expand it to see them")}</span>}
       </div>
-      {at.at === 'file' && <pre className="dth-snippet">{d.snippet}</pre>}
+      {at.at !== 'line' && <pre className="dth-snippet">{d.snippet}</pre>}
       <Composer
         key={key}
         store={{ load: () => loadNewDraft(key)?.body ?? '', save: (text) => setNewDraftBody(key, text) }}

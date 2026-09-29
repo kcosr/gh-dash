@@ -15,7 +15,7 @@ import { plural } from '../lib/time';
 import { copyText, cx } from '../lib/util';
 import { getDraft, type NewThreadDraft } from './drafts';
 import { baseName } from './model';
-import { Composer, ThreadCard, threadWhere, useThreadsState } from './Threads';
+import { Composer, DraftComposer, ThreadCard, threadWhere, useThreadsState } from './Threads';
 
 /** One thread as a line: where it sits now, its opening words, replies; a click scrolls the diff to it. */
 function ThreadLink({ t, p, onJump }: { t: CommentThread; p: ThreadPlacement | undefined; onJump: (id: number) => void }) {
@@ -107,9 +107,12 @@ export const CommentsColumn = memo(function CommentsColumn({
             )
             : <button type="button" className="dth-reply dcc-start" onClick={() => setComposing(true)}>Comment on this {what}…</button>}
         </section>
-        {unsent.length > 0 && (
+        {(unsent.length > 0 || s.draftSpot?.at === 'gone') && (
           <section className="dcc-sec">
-            <h4 title="New comments you set aside (Esc): resume one to finish it">Unsent <span className="n">{unsent.length}</span></h4>
+            <h4 title="New comments not sent yet: set aside (Esc), or on a file no longer in this diff">
+              Unsent <span className="n">{unsent.length + (s.draftSpot?.at === 'gone' ? 1 : 0)}</span>
+            </h4>
+            {s.draftSpot?.at === 'gone' && <DraftComposer />}
             {unsent.map((d) => {
               const a = d.anchor;
               const lines = a.startLine === a.endLine ? `${a.startLine}` : `${a.startLine}–${a.endLine}`;

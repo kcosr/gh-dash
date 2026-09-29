@@ -4,7 +4,7 @@ import { useLocation, useNavigate } from 'react-router';
 import { useRepoMap } from '../api/hooks';
 import { Icon } from './Icon';
 import { RepoName } from './RepoName';
-import { RepoMapCtx, useRepoMapCtx } from './repoMapContext';
+import { RepoMapCtx, ReposCtx, useRepoMapCtx } from './repoMapContext';
 import { repoLabel } from '../../../shared/repos';
 import { OVERLAY_KEYS, keepRepoInScope, parseUrlState, patchSearch, viewFromPath } from '../lib/urlState';
 
@@ -33,7 +33,7 @@ export function RepoMapProvider({ children }: { children: ReactNode }) {
     };
   }, [pathname, search, repos]);
   const value = useMemo(() => ({ repos, hrefFor, navigate }), [repos, hrefFor, navigate]);
-  return <RepoMapCtx.Provider value={value}>{children}</RepoMapCtx.Provider>;
+  return <ReposCtx.Provider value={repos}><RepoMapCtx.Provider value={value}>{children}</RepoMapCtx.Provider></ReposCtx.Provider>;
 }
 
 /** Filter the current list to this repo (its key); detail pages lead to its activity. */

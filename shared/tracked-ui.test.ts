@@ -1,6 +1,7 @@
 // T2 steps 7–8: the web's ownership filter, and the Add dialog / Remove confirmation helpers.
 import { describe, expect, it } from 'vitest';
 import type { RepoCandidate, TrackedBy, Visibility } from './api';
+import { PROVIDERS } from './provider';
 import { exportTarget, repoListParams, scopeParams } from '../web/src/lib/apiQuery';
 import { backfillLine, inputKey, matchCandidates, removeRepoBody } from '../web/src/lib/tracking';
 import { carrySearch, keepRepoInScope, parseUrlState, passesRepoFilters, patchSearch } from '../web/src/lib/urlState';
@@ -94,6 +95,8 @@ describe('Add dialog helpers', () => {
     expect(backfillLine({ since, commits: 1, prs: 1, issues: 0, releases: 0, requests: 1 }))
       .toBe('Since Sep 29, 2025: ~1 commit · 1 PR · 0 issues · about 1 GitHub request');
     expect(backfillLine({ since, commits: 12, prs: null, issues: 3, releases: 0, requests: null })).toBe('Since Sep 29, 2025: size unknown');
+    expect(backfillLine({ since, commits: 5, prs: 1, issues: 2, releases: 0, requests: 3 }, PROVIDERS.gitlab))
+      .toBe('Since Sep 29, 2025: ~5 commits · 1 MR · 2 issues · about 3 GitLab requests');
   });
 
   it('names the comments that go with a removed repo once the count exists', () => {
@@ -102,5 +105,7 @@ describe('Add dialog helpers', () => {
     expect(removeRepoBody(0)).toBe(removeRepoBody());
     expect(removeRepoBody(3)).toContain('from this dashboard, and your 3 comments. It also leaves your sets.');
     expect(removeRepoBody(1)).toContain('and your 1 comment.');
+    expect(removeRepoBody(undefined, PROVIDERS.gitlab)).toBe('gh-dash stops syncing it and deletes its merge requests, issues, commits and releases '
+      + 'from this dashboard. It also leaves your sets. Nothing changes on GitLab. Adding it again re-syncs from scratch.');
   });
 });

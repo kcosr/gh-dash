@@ -1,6 +1,7 @@
 /** Repositories added by hand: the Remove confirmation, and the note on one the token can no longer read. */
 import { useNavigate } from 'react-router';
 import type { Repo } from '../../../shared/api';
+import { repoProvider } from '../../../shared/provider';
 import { repoFromPath } from '../../../shared/repos';
 import { useRemoveRepo } from '../api/hooks';
 import { fmtDateSmart } from '../lib/time';
@@ -28,7 +29,7 @@ export function useConfirmRemoveRepo(): (repo: Repo) => void {
     openConfirm({
       title: `Remove ${name}?`,
       // The diff-comments track adds Repo.commentCount; until then there are no comments to count.
-      body: removeRepoBody((repo as Repo & { commentCount?: number }).commentCount),
+      body: removeRepoBody((repo as Repo & { commentCount?: number }).commentCount, repoProvider(repo)),
       confirmLabel: 'Remove',
       danger: true,
       onConfirm: async () => {

@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { type Db, openDb } from '../db/db';
-import { getMeta, setMeta } from '../db/meta';
 import type { RepoProbe, RepoRecord } from '../db/records';
+import { ensureSource, GITHUB_SOURCE_ID, getSource, type SourceRow, viewerMismatch } from '../db/sources';
+import { upsertOwned } from '../db/write';
+import { mapRepo } from '../github/map';
 import { DEFAULT_SETTINGS } from '../db/settings';
 import type { Settings } from '../../shared/api';
 import type { SyncStateRow } from '../db/write';
@@ -10,8 +12,10 @@ import type { GqlIssue, GqlProbe, GqlPullRequest, GqlRepo } from '../github/type
 import detailFixture from '../test/fixtures/repo-detail.json';
 import probesFixture from '../test/fixtures/repo-probes.json';
 import reposFixture from '../test/fixtures/viewer-repos.json';
-import { planRepo, runSync, viewerMismatch } from './sync';
-import { addManualRepo } from '../test/seed';
+import { planRepo, runSync } from './sync';
+import { addManualRepo, setViewer } from '../test/seed';
+
+const viewerOf = (db: Db) => getSource(db, GITHUB_SOURCE_ID)!.viewer;
 
 const NOW = Date.parse('2026-09-27T12:00:00Z');
 const HOUR = 3_600_000;
@@ -185,7 +189,7 @@ describe('runSync', () => {
   });
 
   it('stores everything on the first sync', () => {
-    expect(getMeta(db, 'viewer')).toEqual({ id: 'U_alice', login: 'alice', name: 'Alice A', avatarUrl: 'https://avatars.example/alice' });
+    expect(viewerOf(db)).toEqual({ id: 'U_alice', login: 'alice', name: 'Alice A', avatarUrl: 'https://avatars.example/alice', emails: [] });
     expect([count(db, 'repos'), count(db, 'commits'), count(db, 'pull_requests'), count(db, 'pr_commits'), count(db, 'issues'), count(db, 'releases'), count(db, 'stars')])
       .toEqual([2, 3, 2, 1, 2, 1, 2]);
     expect(db.all('SELECT headline, pr_number FROM commits ORDER BY committed_at')).toEqual([
@@ -569,8 +573,8 @@ describe('repos added by hand', () => {
       if (key !== 'bob/old') return;
       db.run('DELETE FROM repos WHERE id = ?', [oldId]);
       // Added meanwhile under the same id (a table without AUTOINCREMENT hands out the highest rowid again).
-      db.run(`INSERT INTO repos (id, node_id, name, name_with_owner, owner, url, visibility, created_at, tracked_by, added_at)
-        VALUES (?, 'R_carol/new', 'new', 'carol/new', 'carol', 'u', 'public', 'x', 'manual', 'x')`, [oldId]);
+      db.run(`INSERT INTO repos (id, source_id, key, node_id, name, name_with_owner, owner, url, visibility, created_at, tracked_by, added_at)
+        VALUES (?, 1, 'carol/new', 'R_carol/new', 'new', 'carol/new', 'carol', 'u', 'public', 'x', 'manual', 'x')`, [oldId]);
     };
     const res = await sync(NOW + HOUR);
     expect(res.errors).toEqual([]);
@@ -585,8 +589,8 @@ describe('repos added by hand', () => {
     gh.fx.onDetail = (key) => {
       if (key !== 'bob/tool') return;
       db.run('DELETE FROM repos WHERE id = ?', [oldId]);
-      db.run(`INSERT INTO repos (id, node_id, name, name_with_owner, owner, url, visibility, created_at, tracked_by, added_at)
-        VALUES (?, 'R_carol/new', 'new', 'carol/new', 'carol', 'u', 'public', 'x', 'manual', 'x')`, [oldId]);
+      db.run(`INSERT INTO repos (id, source_id, key, node_id, name, name_with_owner, owner, url, visibility, created_at, tracked_by, added_at)
+        VALUES (?, 1, 'carol/new', 'R_carol/new', 'new', 'carol/new', 'carol', 'u', 'public', 'x', 'manual', 'x')`, [oldId]);
     };
     expect((await sync(NOW + HOUR)).errors).toEqual([]);
     expect(row('carol/new')).toMatchObject({ unavailable_at: null });
@@ -616,7 +620,7 @@ describe('repos added by hand', () => {
 });
 
 describe('account guard', () => {
-  const MISMATCH = 'This database belongs to @alice, but the GitHub token is for @mallory. Switch back to @alice, or use a different database.';
+  const MISMATCH = "This database's GitHub account is @alice, but the token is for @mallory. Switch back to @alice, or use a different database.";
   function setup() {
     const db = openDb(':memory:');
     const gh = fakeGitHub();
@@ -628,7 +632,7 @@ describe('account guard', () => {
     const { db, gh, sync } = setup();
     await sync();
     const repos = () => db.all('SELECT * FROM repos ORDER BY id');
-    const before = { repos: repos(), viewer: getMeta(db, 'viewer') };
+    const before = { repos: repos(), viewer: viewerOf(db) };
     // `gh auth switch` to another account, with its own repos of the same names.
     const v = gh.fx.repos.viewer;
     Object.assign(v, { id: 'U_mallory', login: 'mallory' });
@@ -638,26 +642,53 @@ describe('account guard', () => {
     await expect(sync({ repo: 'app' })).rejects.toThrow(MISMATCH);
     await expect(sync({ repo: 'brand-new' })).rejects.toThrow(MISMATCH);
     expect(gh.calls.map((c) => c.op)).toEqual(['ViewerRepos', 'RepoNode', 'ViewerRepo']);
-    expect({ repos: repos(), viewer: getMeta(db, 'viewer') }).toEqual(before);
+    expect({ repos: repos(), viewer: viewerOf(db) }).toEqual(before);
   });
 
   it('follows a renamed account by id, and matches logins for databases stored without one', async () => {
     const { db, gh, sync } = setup();
-    setMeta(db, 'viewer', { login: 'Alice', name: null, avatarUrl: null });
+    setViewer(db, { login: 'Alice', name: null, avatarUrl: null });
     await sync({ repo: 'app' });
-    expect(getMeta(db, 'viewer')).toMatchObject({ id: 'U_alice', login: 'alice' });
+    expect(viewerOf(db)).toMatchObject({ id: 'U_alice', login: 'alice' });
     gh.fx.repos.viewer.login = 'alice-renamed';
     expect(await sync()).toMatchObject({ errors: [] });
-    expect(getMeta(db, 'viewer')).toMatchObject({ id: 'U_alice', login: 'alice-renamed' });
+    expect(viewerOf(db)).toMatchObject({ id: 'U_alice', login: 'alice-renamed' });
   });
 
   it('compares ids when both sides have one', () => {
-    const alice = { id: 'U_alice', login: 'alice', name: null, avatarUrl: null };
-    expect(viewerMismatch(null, { id: 'U_x', login: 'x' })).toBeNull();
-    expect(viewerMismatch(alice, { id: 'U_alice', login: 'someone-else' })).toBeNull();
-    expect(viewerMismatch(alice, { id: 'U_new', login: 'alice' })).toContain('belongs to @alice');
-    expect(viewerMismatch({ ...alice, id: undefined }, { id: 'U_new', login: 'ALICE' })).toBeNull();
-    expect(viewerMismatch({ ...alice, id: undefined }, { login: 'mallory' })).toBe(MISMATCH);
+    const github = (viewer: SourceRow['viewer']) => ({ id: GITHUB_SOURCE_ID, host: 'github.com', name: 'GitHub', viewer });
+    const alice = { id: 'U_alice', login: 'alice', name: null, avatarUrl: null, emails: [] };
+    expect(viewerMismatch(github(null), { id: 'U_x', login: 'x' })).toBeNull();
+    expect(viewerMismatch(github(alice), { id: 'U_alice', login: 'someone-else' })).toBeNull();
+    expect(viewerMismatch(github(alice), { id: 'U_new', login: 'alice' })).toContain('account is @alice');
+    expect(viewerMismatch(github({ ...alice, id: null }), { id: 'U_new', login: 'ALICE' })).toBeNull();
+    expect(viewerMismatch(github({ ...alice, id: null }), { login: 'mallory' })).toBe(MISMATCH);
+  });
+});
+
+describe('other sources', () => {
+  it("a GitHub run never reads, removes or marks another source's repos", async () => {
+    const db = openDb(':memory:');
+    const gh = fakeGitHub();
+    const gl = ensureSource(db, { kind: 'gitlab', host: 'gitlab.example.com', baseUrl: 'https://gitlab.example.com' });
+    // The viewer's GitLab namesake of alice/app, and a nested project added by hand.
+    const project = { ...otherRepo('alice/app'), id: 'gid://gitlab/Project/5', url: 'https://gitlab.example.com/alice/app' };
+    upsertOwned(db, gl, mapRepo(project), '2026-09-27T00:00:00Z');
+    addManualRepo(db, 'platform/team/svc', { source: gl, nodeId: 'gid://gitlab/Project/9' });
+    const sync = (req = {}) => runSync({ db, client: new GitHubClient({ token: 't', fetchImpl: gh.fetchImpl }), settings: DEFAULT_SETTINGS, now: () => NOW }, req);
+
+    expect(await sync()).toMatchObject({ repos: 2, errors: [] });
+    expect(JSON.stringify(gh.calls)).not.toContain('gid://gitlab');
+    expect(gh.calls.map((c) => c.op)).not.toContain('ManualRepos');
+    expect(db.all('SELECT key, removed_at, unavailable_at FROM repos WHERE source_id = ? ORDER BY id', [gl.id])).toEqual([
+      { key: 'gitlab.example.com/alice/app', removed_at: null, unavailable_at: null },
+      { key: 'gitlab.example.com/platform/team/svc', removed_at: null, unavailable_at: null },
+    ]);
+    expect(db.all('SELECT key FROM repos WHERE source_id = 1 AND removed_at IS NULL ORDER BY key')).toEqual([{ key: 'alice/app' }, { key: 'alice/corp' }]);
+    // A single-repo run is refused another source's repo before any request.
+    gh.calls.length = 0;
+    await expect(sync({ repo: 'gitlab.example.com/platform/team/svc' })).rejects.toThrow("gitlab.example.com/platform/team/svc isn't on GitHub");
+    expect(gh.calls).toEqual([]);
   });
 });
 

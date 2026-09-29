@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { resolveRepoKey } from '../../shared/repos';
-import { addManualRepo, seedDb } from '../test/seed';
+import { addManualRepo, GITHUB, seedDb } from '../test/seed';
 import type { Db } from './db';
 import { addRepoScope, loadQueryCtx, type Scope, Where } from './filters';
 import { getPrDetail, listPrs } from './lists';
@@ -8,7 +8,7 @@ import { REPO_IDS_FOR_KEYS, repoKey, repoKeySql, resolveRepo, resolveRepoIds } f
 import { createSet, getRepo, listRepos, listSets, setRepoPrefs, updateSet } from './repos';
 import { markReposRemoved, upsertOwned } from './write';
 
-const idOf = (db: Db, key: string) => db.get<{ id: number }>('SELECT id FROM repos WHERE name_with_owner = ?', [key])!.id;
+const idOf = (db: Db, key: string) => db.get<{ id: number }>('SELECT id FROM repos WHERE key = ?', [key])!.id;
 
 /**
  * seedDb (owned alice/app, secret, old, fork, hidden) with `old` and `hidden` marked removed, plus repos added by hand:
@@ -18,7 +18,7 @@ const idOf = (db: Db, key: string) => db.get<{ id: number }>('SELECT id FROM rep
 function fixture(): Db {
   const db = seedDb();
   const keep = db.all<{ node_id: string }>(`SELECT node_id FROM repos WHERE name NOT IN ('old', 'hidden')`).map((r) => r.node_id);
-  expect(markReposRemoved(db, keep, '2026-09-28T00:00:00Z')).toBe(2);
+  expect(markReposRemoved(db, GITHUB, keep, '2026-09-28T00:00:00Z')).toBe(2);
   addManualRepo(db, 'bob/app');
   addManualRepo(db, 'carol/tool');
   addManualRepo(db, 'grp/sub/proj');
@@ -60,16 +60,16 @@ const RESOLUTION: [input: string, key: string | null][] = [
 ];
 
 describe('repoKeySql / repoKey', () => {
-  it('name name_with_owner', () => {
-    expect(repoKeySql('r')).toBe('r.name_with_owner');
-    expect(repoKeySql('repos')).toBe('repos.name_with_owner');
-    expect(repoKey({ name: 'app', name_with_owner: 'alice/app' })).toBe('alice/app');
+  it('name the key column', () => {
+    expect(repoKeySql('r')).toBe('r.key');
+    expect(repoKeySql('repos')).toBe('repos.key');
+    expect(repoKey({ key: 'alice/app' })).toBe('alice/app');
   });
 
   it('agree with each other on a row', () => {
     const db = seedDb();
-    const row = db.get<{ name: string; name_with_owner: string; key: string }>(`SELECT r.*, ${repoKeySql('r')} AS key FROM repos r WHERE r.name = 'app'`)!;
-    expect(repoKey(row)).toBe(row.key);
+    const row = db.get<{ key: string; k: string }>(`SELECT r.*, ${repoKeySql('r')} AS k FROM repos r WHERE r.name = 'app'`)!;
+    expect(repoKey(row)).toBe(row.k);
   });
 });
 
@@ -95,10 +95,10 @@ describe('resolution', () => {
   it('returns the whole ref, with how the repo is tracked', () => {
     const db = fixture();
     expect(resolveRepo(db, 'app')).toEqual({
-      id: idOf(db, 'alice/app'), key: 'alice/app', owner: 'alice', name: 'app', path: 'alice/app', nodeId: 'R_app', trackedBy: 'owned',
+      id: idOf(db, 'alice/app'), sourceId: 1, key: 'alice/app', owner: 'alice', name: 'app', path: 'alice/app', nodeId: 'R_app', trackedBy: 'owned',
     });
     expect(resolveRepo(db, 'bob/app')).toEqual({
-      id: idOf(db, 'bob/app'), key: 'bob/app', owner: 'bob', name: 'app', path: 'bob/app', nodeId: 'R_bob/app', trackedBy: 'manual',
+      id: idOf(db, 'bob/app'), sourceId: 1, key: 'bob/app', owner: 'bob', name: 'app', path: 'bob/app', nodeId: 'R_bob/app', trackedBy: 'manual',
     });
     expect(resolveRepo(db, 'grp/sub/proj')).toMatchObject({ owner: 'grp/sub', name: 'proj', path: 'grp/sub/proj' });
   });
@@ -209,7 +209,7 @@ describe('call sites', () => {
     const set = createSet(db, 'all', ['app', 'old', 'secret']);
     expect(set.repos).toEqual(['alice/app', 'alice/old', 'alice/secret']);
     const keep = db.all<{ node_id: string }>(`SELECT node_id FROM repos WHERE name <> 'old'`).map((r) => r.node_id);
-    markReposRemoved(db, keep, '2026-09-28T00:00:00Z');
+    markReposRemoved(db, GITHUB, keep, '2026-09-28T00:00:00Z');
     expect(listSets(db)).toEqual([{ id: set.id, name: 'all', repos: ['alice/app', 'alice/secret'] }]);
   });
 
@@ -227,7 +227,7 @@ describe('call sites', () => {
 
   it('a repo renamed on GitHub gets its new key; its old key stops resolving', () => {
     const db = seedDb();
-    upsertOwned(db, {
+    upsertOwned(db, GITHUB, {
       nodeId: 'R_app', name: 'app2', nameWithOwner: 'alice/app2', owner: 'alice', description: null, url: 'https://github.com/alice/app2',
       visibility: 'public', isArchived: false, isFork: false, languageName: null, languageColor: null, topics: [], defaultBranch: 'main',
       stars: 0, forks: 0, createdAt: '2025-01-01T00:00:00Z', pushedAt: '2026-09-25T00:00:00Z',

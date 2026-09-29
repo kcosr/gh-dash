@@ -1,14 +1,5 @@
 import type { Db } from './db';
 
-/** The GitHub account this database belongs to (set by the first sync; see viewerMismatch). */
-export interface ViewerMeta {
-  /** GraphQL node id; missing in databases synced before it was stored. */
-  id?: string;
-  login: string;
-  name: string | null;
-  avatarUrl: string | null;
-}
-
 export interface LastSyncMeta {
   at: string;
   durationMs: number;
@@ -20,6 +11,7 @@ export interface LastSyncMeta {
   repo?: string;
 }
 
+/** A provider's rate limit as a client last saw it (stored per source: sources.rate_limit). */
 export interface RateLimitMeta {
   limit: number;
   remaining: number;
@@ -37,10 +29,9 @@ export interface SyncLockMeta {
   repo?: string;
 }
 
+// The account and rate limit are per source (db/sources.ts); these are run-level.
 interface MetaTypes {
-  viewer: ViewerMeta;
   lastSync: LastSyncMeta;
-  rateLimit: RateLimitMeta;
   syncLock: SyncLockMeta;
   nextSyncAt: string;
   /** When the last full (all repositories) sync finished: the schedule counts from it, not from single-repo runs. */

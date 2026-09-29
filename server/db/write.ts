@@ -9,6 +9,7 @@ import type {
   RepoRecord,
   StarRecord,
 } from './records';
+import { type SourceRef, sourceKey } from './sources';
 
 function upsertSql(table: string, columns: string[], conflict: string[]): string {
   const updates = columns.filter((c) => !conflict.includes(c)).map((c) => `${c} = excluded.${c}`);
@@ -23,27 +24,29 @@ const actorVals = (a: ActorRecord | null): Param[] => [a?.login ?? null, a?.name
 // Repos
 // ---------------------------------------------------------------------------
 
-// pinned and hidden are local preferences: never written here, so they survive every sync.
+// pinned and hidden are local preferences: never written here, so they survive every sync. A repo is identified by
+// its source and node id (GitLab node ids repeat across instances); its key is derived from them (sourceKey).
 const REPO_COLS = [
-  'node_id', 'name', 'name_with_owner', 'owner', 'description', 'url', 'visibility', 'is_archived', 'is_fork',
-  'language_name', 'language_color', 'topics', 'default_branch', 'stars', 'forks', 'created_at', 'pushed_at',
+  'source_id', 'node_id', 'key', 'name', 'name_with_owner', 'owner', 'description', 'url', 'visibility', 'is_archived',
+  'is_fork', 'language_name', 'language_color', 'topics', 'default_branch', 'stars', 'forks', 'created_at', 'pushed_at',
   'removed_at', 'tracked_by', 'added_at', 'unavailable_at', 'unavailable_reason',
 ];
-const UPSERT_OWNED = upsertSql('repos', REPO_COLS, ['node_id']);
+const UPSERT_OWNED = upsertSql('repos', REPO_COLS, ['source_id', 'node_id']);
 
-/** The fields GitHub reports for a repo, in REPO_COLS order up to pushed_at. */
-const recordVals = (r: RepoRecord): Param[] => [
-  r.nodeId, r.name, r.nameWithOwner, r.owner, r.description, r.url, r.visibility, Number(r.isArchived), Number(r.isFork),
-  r.languageName, r.languageColor, JSON.stringify(r.topics), r.defaultBranch, r.stars, r.forks, r.createdAt, r.pushedAt,
+/** The source, node id and key, then the fields the provider reports for a repo: REPO_COLS order up to pushed_at. */
+const recordVals = (src: SourceRef, r: RepoRecord): Param[] => [
+  src.id, r.nodeId, sourceKey(src, r.nameWithOwner), r.name, r.nameWithOwner, r.owner, r.description, r.url, r.visibility,
+  Number(r.isArchived), Number(r.isFork), r.languageName, r.languageColor, JSON.stringify(r.topics), r.defaultBranch, r.stars,
+  r.forks, r.createdAt, r.pushedAt,
 ];
 
-/** What the database has for the repo with this node id, as a record (null when there is none). */
-export function storedRepoRecord(db: Db, nodeId: string): RepoRecord | null {
+/** What the database has for the repo with this node id on `src`, as a record (null when there is none). */
+export function storedRepoRecord(db: Db, src: SourceRef, nodeId: string): RepoRecord | null {
   const r = db.get<{
     node_id: string; name: string; name_with_owner: string; owner: string; description: string | null; url: string; visibility: RepoRecord['visibility'];
     is_archived: number; is_fork: number; language_name: string | null; language_color: string | null; topics: string; default_branch: string | null;
     stars: number; forks: number; created_at: string; pushed_at: string | null;
-  }>('SELECT * FROM repos WHERE node_id = ?', [nodeId]);
+  }>('SELECT * FROM repos WHERE source_id = ? AND node_id = ?', [src.id, nodeId]);
   return r
     ? {
         nodeId: r.node_id, name: r.name, nameWithOwner: r.name_with_owner, owner: r.owner, description: r.description, url: r.url, visibility: r.visibility,
@@ -54,11 +57,12 @@ export function storedRepoRecord(db: Db, nodeId: string): RepoRecord | null {
 }
 
 /**
- * The provider says `key` (owner/name) now belongs to the repo `nodeId`, so any other live row holding it (a repo
- * deleted, renamed or transferred away since) stops being live. Its data and name are kept. Returns the rows released.
+ * The provider says `key` now belongs to the repo `nodeId`, so any other live row holding it (a repo deleted, renamed
+ * or transferred away since) stops being live. Its data and name are kept. Returns the rows released. A key names
+ * one source (its host prefix, or none for github.com), so the rows compared are that source's.
  */
 export function releaseKey(db: Db, key: string, nodeId: string, now: string): number {
-  return db.run('UPDATE repos SET removed_at = ? WHERE name_with_owner = ? COLLATE NOCASE AND node_id <> ? AND removed_at IS NULL', [
+  return db.run('UPDATE repos SET removed_at = ? WHERE key = ? COLLATE NOCASE AND node_id <> ? AND removed_at IS NULL', [
     now,
     key,
     nodeId,
@@ -66,30 +70,34 @@ export function releaseKey(db: Db, key: string, nodeId: string, now: string): nu
 }
 
 /**
- * Upserts one of the viewer's own repos by node id (so renames keep local prefs and data): it is live and tracked as
- * owned from now on, whatever it was before (removed, unavailable, or added by hand). Returns the local id.
+ * Upserts one of the viewer's own repos on `src` by node id (so renames keep local prefs and data): it is live and
+ * tracked as owned from now on, whatever it was before (removed, unavailable, or added by hand). Returns the local id.
  */
-export function upsertOwned(db: Db, r: RepoRecord, now: string): number {
+export function upsertOwned(db: Db, src: SourceRef, r: RepoRecord, now: string): number {
   return db.tx(() => {
-    releaseKey(db, r.nameWithOwner, r.nodeId, now);
-    const row = db.get<{ id: number }>(UPSERT_OWNED, [...recordVals(r), null, 'owned', null, null, null]);
+    releaseKey(db, sourceKey(src, r.nameWithOwner), r.nodeId, now);
+    const row = db.get<{ id: number }>(UPSERT_OWNED, [...recordVals(src, r), null, 'owned', null, null, null]);
     return row!.id;
   });
 }
 
-const REFRESH_MANUAL = `UPDATE repos SET ${REPO_COLS.slice(1, REPO_COLS.indexOf('removed_at')).map((c) => `${c} = ?`).join(', ')},
+const REFRESH_MANUAL = `UPDATE repos SET ${REPO_COLS.slice(REPO_COLS.indexOf('key'), REPO_COLS.indexOf('removed_at')).map((c) => `${c} = ?`).join(', ')},
   unavailable_at = NULL, unavailable_reason = NULL WHERE id = ?`;
 
 /**
- * Updates a live repo added by hand from what GitHub reports, and clears `unavailable_*` (it could be read). Never
- * inserts: a repo removed (or claimed as owned) meanwhile stays as it is, and null is returned. Otherwise its id.
+ * Updates a live repo added by hand on `src` from what the provider reports, and clears `unavailable_*` (it could be
+ * read). Never inserts: a repo removed (or claimed as owned) meanwhile stays as it is, and null is returned. Otherwise
+ * its id.
  */
-export function refreshManual(db: Db, r: RepoRecord, now: string): number | null {
+export function refreshManual(db: Db, src: SourceRef, r: RepoRecord, now: string): number | null {
   return db.tx(() => {
-    const row = db.get<{ id: number }>(`SELECT id FROM repos WHERE node_id = ? AND tracked_by = 'manual' AND removed_at IS NULL`, [r.nodeId]);
+    const row = db.get<{ id: number }>(
+      `SELECT id FROM repos WHERE source_id = ? AND node_id = ? AND tracked_by = 'manual' AND removed_at IS NULL`,
+      [src.id, r.nodeId],
+    );
     if (!row) return null;
-    releaseKey(db, r.nameWithOwner, r.nodeId, now);
-    db.run(REFRESH_MANUAL, [...recordVals(r).slice(1), row.id]);
+    releaseKey(db, sourceKey(src, r.nameWithOwner), r.nodeId, now);
+    db.run(REFRESH_MANUAL, [...recordVals(src, r).slice(REPO_COLS.indexOf('key')), row.id]);
     return row.id;
   });
 }
@@ -106,7 +114,7 @@ export function markUnavailable(db: Db, id: number, nodeId: string, reason: stri
   );
 }
 
-const UPSERT_MANUAL = upsertSql('repos', [...REPO_COLS, 'hidden'], ['node_id']);
+const UPSERT_MANUAL = upsertSql('repos', [...REPO_COLS, 'hidden'], ['source_id', 'node_id']);
 
 export type AddManualResult =
   | { added: true; id: number }
@@ -114,19 +122,19 @@ export type AddManualResult =
   | { added: false; id: number; trackedBy: 'owned' | 'manual'; hidden: boolean };
 
 /**
- * Tracks a repo by hand. A live row with its node id is left alone (reported back). A removed row is revived with
- * its earlier data (an owned repo transferred away, then added by hand), waiting for a sync; otherwise the repo is
- * inserted. `hidden` keeps it out of the default selection.
+ * Tracks a repo on `src` by hand. A live row with its node id is left alone (reported back). A removed row is revived
+ * with its earlier data (an owned repo transferred away, then added by hand), waiting for a sync; otherwise the repo
+ * is inserted. `hidden` keeps it out of the default selection.
  */
-export function addManual(db: Db, r: RepoRecord, opts: { hidden: boolean }, now: string): AddManualResult {
+export function addManual(db: Db, src: SourceRef, r: RepoRecord, opts: { hidden: boolean }, now: string): AddManualResult {
   return db.tx(() => {
     const live = db.get<{ id: number; tracked_by: string; hidden: number }>(
-      'SELECT id, tracked_by, hidden FROM repos WHERE node_id = ? AND removed_at IS NULL',
-      [r.nodeId],
+      'SELECT id, tracked_by, hidden FROM repos WHERE source_id = ? AND node_id = ? AND removed_at IS NULL',
+      [src.id, r.nodeId],
     );
     if (live) return { added: false, id: live.id, trackedBy: live.tracked_by === 'manual' ? 'manual' : 'owned', hidden: !!live.hidden };
-    releaseKey(db, r.nameWithOwner, r.nodeId, now);
-    const row = db.get<{ id: number }>(UPSERT_MANUAL, [...recordVals(r), null, 'manual', now, null, null, Number(opts.hidden)]);
+    releaseKey(db, sourceKey(src, r.nameWithOwner), r.nodeId, now);
+    const row = db.get<{ id: number }>(UPSERT_MANUAL, [...recordVals(src, r), null, 'manual', now, null, null, Number(opts.hidden)]);
     // A revived row keeps its sync state from before it was removed. Its high-water marks still save work, but it
     // waits for its post-add sync like a new repo: synced_at is set again only by a successful run (queue draining
     // and the scheduler both go by it).
@@ -135,11 +143,15 @@ export function addManual(db: Db, r: RepoRecord, opts: { hidden: boolean }, now:
   });
 }
 
-/** Marks owned repos the viewer no longer owns removed (repos added by hand are not in the owned list). */
-export function markReposRemoved(db: Db, keepNodeIds: string[], now: string): number {
+/**
+ * Marks `src`'s owned repos the viewer no longer owns removed (repos added by hand are not in the owned list). Other
+ * sources' repos are never touched: the list is one source's.
+ */
+export function markReposRemoved(db: Db, src: SourceRef, keepNodeIds: string[], now: string): number {
   return db.run(
-    `UPDATE repos SET removed_at = ? WHERE removed_at IS NULL AND tracked_by = 'owned' AND node_id NOT IN (SELECT value FROM json_each(?))`,
-    [now, JSON.stringify(keepNodeIds)],
+    `UPDATE repos SET removed_at = ? WHERE source_id = ? AND removed_at IS NULL AND tracked_by = 'owned'
+       AND node_id NOT IN (SELECT value FROM json_each(?))`,
+    [now, src.id, JSON.stringify(keepNodeIds)],
   ).changes;
 }
 

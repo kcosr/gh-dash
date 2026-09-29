@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { DAY_MS, ymdToDayNum, zonedMidnight } from '../lib/time';
-import { addManualRepo, seedDb } from '../test/seed';
+import { addManualRepo, GITHUB, seedDb } from '../test/seed';
 import type { Db } from './db';
 import { loadQueryCtx, type QueryCtx, type Scope } from './filters';
 import { listActivity, listStars } from './lists';
@@ -95,7 +95,7 @@ describe('computeStats', () => {
 
   it('keeps cumulative stars to public repos: internal ones are left out, and filterable on their own', () => {
     const d = seedDb();
-    const corp = upsertOwned(d, {
+    const corp = upsertOwned(d, GITHUB, {
       nodeId: 'R_corp', name: 'corp', nameWithOwner: 'alice/corp', owner: 'alice', description: null, url: 'https://github.com/alice/corp',
       visibility: 'internal', isArchived: false, isFork: false, languageName: null, languageColor: null, topics: [], defaultBranch: 'main',
       stars: 7, forks: 0, createdAt: '2025-01-01T00:00:00Z', pushedAt: '2026-09-25T00:00:00Z',
@@ -160,7 +160,7 @@ describe('contributors', () => {
   });
   function db2() {
     const d = seedDb();
-    const lab = upsertOwned(d, {
+    const lab = upsertOwned(d, GITHUB, {
       nodeId: 'R_lab', name: 'lab', nameWithOwner: 'alice/lab', owner: 'alice', description: null, url: 'https://github.com/alice/lab',
       visibility: 'public', isArchived: false, isFork: false, languageName: null, languageColor: null, topics: [], defaultBranch: 'main',
       stars: 0, forks: 0, createdAt: '2025-01-01T00:00:00Z', pushedAt: '2026-09-25T00:00:00Z',

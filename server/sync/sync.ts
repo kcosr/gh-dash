@@ -1,8 +1,8 @@
 import type { Settings, TokenKind, TrackedBy } from '../../shared/api';
 import type { Db } from '../db/db';
-import { getMeta, setMeta, type ViewerMeta } from '../db/meta';
 import type { RepoProbe, RepoRecord } from '../db/records';
-import { repoKey, repoKeySql, resolveRepo } from '../db/repo-key';
+import { repoKeySql, resolveRepo } from '../db/repo-key';
+import { type ClaimedViewer, GITHUB_SOURCE_ID, getSource, type SourceRow, sourceKey, tryClaimViewer } from '../db/sources';
 import {
   applyProbe,
   deleteItem,
@@ -36,7 +36,6 @@ import type {
   GqlProbe,
   GqlPullRequest,
   GqlRepo,
-  GqlViewer,
   ManualReposData,
   RecheckData,
   RepoDetailData,
@@ -187,8 +186,10 @@ export async function runSync(deps: SyncDeps, req: SyncRequest = {}): Promise<Sy
   const backfillStart = isoSec(nowMs - settings.backfillDays * DAY_MS);
   const full = !!req.full;
   const errors: string[] = [];
+  // The GitHub client syncs the github.com source (a sync per source comes with the provider-neutral sync).
+  const src = getSource(db, GITHUB_SOURCE_ID)!;
 
-  const targets = req.repo ? await fetchOneRepo(deps, req.repo, nowIso, errors) : await fetchAllRepos(deps, nowIso, errors);
+  const targets = req.repo ? await fetchOneRepo(deps, src, req.repo, nowIso, errors) : await fetchAllRepos(deps, src, nowIso, errors);
 
   const progress: SyncProgress = { done: 0, total: targets.length, current: null };
   deps.onProgress?.({ ...progress });
@@ -197,7 +198,7 @@ export async function runSync(deps: SyncDeps, req: SyncRequest = {}): Promise<Sy
 
   await pool(targets, deps.concurrency ?? 3, async (t) => {
     if (fatal) return;
-    const key = repoKey({ name: t.record.name, name_with_owner: t.record.nameWithOwner });
+    const key = sourceKey(src, t.record.nameWithOwner);
     progress.current = key;
     deps.onProgress?.({ ...progress });
     try {
@@ -257,38 +258,9 @@ function lostAccess(err: unknown, key: string, kind: TokenKind | null): AccessFa
   return failure && failure.problem !== 'permission' ? failure : null;
 }
 
-/**
- * Why the token's account mustn't sync into this database, or null if it may. A database belongs to the account that
- * first synced it: adopting another one (say after `gh auth switch`) would mark every repo removed, rename same-named
- * ones and mix both accounts' data. Compares node ids, or logins for databases stored without an id.
- */
-export function viewerMismatch(stored: ViewerMeta | null, viewer: { id?: string | null; login: string }): string | null {
-  if (!stored) return null;
-  const same = stored.id && viewer.id ? stored.id === viewer.id : stored.login.toLowerCase() === viewer.login.toLowerCase();
-  if (same) return null;
-  return `This database belongs to @${stored.login}, but the GitHub token is for @${viewer.login}. Switch back to @${stored.login}, or use a different database.`;
-}
-
-/** Records the viewer as the database's account (its login, name and avatar may have changed). */
-export function saveViewer(db: Db, v: GqlViewer): void {
-  setMeta(db, 'viewer', { id: v.id, login: v.login, name: v.name, avatarUrl: v.avatarUrl });
-}
-
-/**
- * Claims the database for the account `v`, or finds it belongs to another one (returned: why not). The read, check
- * and write are one write transaction, so another process can't claim the database in between.
- */
-export function tryClaimViewer(db: Db, v: GqlViewer): string | null {
-  return db.tx(() => {
-    const mismatch = viewerMismatch(getMeta(db, 'viewer'), v);
-    if (!mismatch) saveViewer(db, v);
-    return mismatch;
-  });
-}
-
 /** Runs before anything is written: a token for another account fails the sync and leaves the database as it was. */
-function claimViewer(db: Db, v: GqlViewer): void {
-  const mismatch = tryClaimViewer(db, v);
+function claimViewer(db: Db, src: SourceRow, v: ClaimedViewer): void {
+  const mismatch = tryClaimViewer(db, src.id, v);
   if (mismatch) throw new Error(mismatch);
 }
 
@@ -297,19 +269,20 @@ function claimViewer(db: Db, v: GqlViewer): void {
  * renamed since). A bare name nothing tracks yet may name a repo the viewer just created: that is looked up among the
  * viewer's own. A repo added by hand that can't be read is marked unavailable, and there is nothing to sync.
  */
-async function fetchOneRepo(deps: SyncDeps, repo: string, nowIso: string, errors: string[]): Promise<RepoTarget[]> {
+async function fetchOneRepo(deps: SyncDeps, src: SourceRow, repo: string, nowIso: string, errors: string[]): Promise<RepoTarget[]> {
   const { db, client } = deps;
   const ref = resolveRepo(db, repo);
+  if (ref && ref.sourceId !== src.id) throw new Error(`${ref.key} isn't on ${src.name}`);
   if (!ref) {
     if (repo.includes('/')) throw new Error(`Repository isn't tracked: ${repo}`);
     const data = await client.query<ViewerRepoData>(VIEWER_REPO, { name: repo });
-    claimViewer(db, data.viewer);
+    claimViewer(db, src, data.viewer);
     const node = data.viewer.repository;
     if (!node) throw new Error(`Repository not found on GitHub: ${repo}`);
     const record = mapRepo(node);
     const probe = mapProbe(node);
     const id = db.tx(() => {
-      const repoId = upsertOwned(db, record, nowIso);
+      const repoId = upsertOwned(db, src, record, nowIso);
       applyProbe(db, repoId, probe);
       return repoId;
     });
@@ -317,7 +290,7 @@ async function fetchOneRepo(deps: SyncDeps, repo: string, nowIso: string, errors
   }
 
   const { data, errors: gqlErrors } = await client.queryPartial<RepoNodeData>(REPO_NODE, { id: ref.nodeId });
-  claimViewer(db, data.viewer);
+  claimViewer(db, src, data.viewer);
   const node = data.node;
   if (!node) {
     if (ref.trackedBy === 'owned') throw new Error(`Repository not found on GitHub: ${ref.key}`);
@@ -326,34 +299,34 @@ async function fetchOneRepo(deps: SyncDeps, repo: string, nowIso: string, errors
     errors.push(`${ref.key}: unavailable: ${reasonOf(failure)}`);
     return [];
   }
-  const { record, probe, problem } = readNode(db, node, gqlErrors, ['node'], ref.key, deps.tokenKind ?? null);
+  const { record, probe, problem } = readNode(db, src, node, gqlErrors, ['node'], ref.key, deps.tokenKind ?? null);
   const id = db.tx(() => {
-    const repoId = ref.trackedBy === 'owned' ? upsertOwned(db, record, nowIso) : refreshManual(db, record, nowIso);
+    const repoId = ref.trackedBy === 'owned' ? upsertOwned(db, src, record, nowIso) : refreshManual(db, src, record, nowIso);
     if (repoId !== null && probe) applyProbe(db, repoId, probe);
     return repoId;
   });
   return id === null ? [] : [{ id, record, probe, trackedBy: ref.trackedBy, problem }];
 }
 
-async function fetchAllRepos(deps: SyncDeps, nowIso: string, errors: string[]): Promise<RepoTarget[]> {
+async function fetchAllRepos(deps: SyncDeps, src: SourceRow, nowIso: string, errors: string[]): Promise<RepoTarget[]> {
   const { db, client } = deps;
   const records: RepoRecord[] = [];
   let after: string | null = null;
   do {
     const data: ViewerReposData = await client.query<ViewerReposData>(VIEWER_REPOS, { after });
-    claimViewer(db, data.viewer);
+    claimViewer(db, src, data.viewer);
     const conn = data.viewer.repositories;
     records.push(...conn.nodes.map(mapRepo));
     after = conn.pageInfo.hasNextPage ? conn.pageInfo.endCursor : null;
   } while (after);
 
   const ids = db.tx(() => {
-    const out = records.map((r) => upsertOwned(db, r, nowIso));
-    markReposRemoved(db, records.map((r) => r.nodeId), nowIso);
+    const out = records.map((r) => upsertOwned(db, src, r, nowIso));
+    markReposRemoved(db, src, records.map((r) => r.nodeId), nowIso);
     return out;
   });
 
-  const manual = await fetchManualRepos(deps, nowIso, errors);
+  const manual = await fetchManualRepos(deps, src, nowIso, errors);
 
   // A node the token can't read loses only its own probe (the repo then syncs as if it had changed).
   const probes = new Map<string, RepoProbe>();
@@ -391,11 +364,11 @@ const RECORD_FIELDS: Record<string, (keyof RepoRecord)[]> = {
  * they keep what the database has (a denied defaultBranchRef is not an empty repository), the probe is left out, and
  * the refusal becomes the repo's problem for this run, so it is reported as failed rather than synced.
  */
-function readNode(db: Db, node: GqlRepo & GqlProbe, errors: GqlError[], at: (string | number)[], key: string, kind: TokenKind | null) {
+function readNode(db: Db, src: SourceRow, node: GqlRepo & GqlProbe, errors: GqlError[], at: (string | number)[], key: string, kind: TokenKind | null) {
   const inside = errors.filter((e) => !!e.path && e.path.length > at.length && at.every((x, i) => e.path![i] === x));
   const record = mapRepo(node);
   if (!inside.length) return { record, probe: mapProbe(node), problem: null };
-  const stored = storedRepoRecord(db, record.nodeId);
+  const stored = storedRepoRecord(db, src, record.nodeId);
   const kept = inside.flatMap((e) => RECORD_FIELDS[String(e.path![at.length])] ?? []);
   const failure = accessFailure(errors, at, key, kind);
   return {
@@ -413,10 +386,11 @@ const chunked = <T>(items: T[], size: number): T[][] =>
  * they are checked again every run. One that can't be read is marked unavailable: its data is kept and it isn't
  * synced. A chunk failing for another reason skips its repos this run.
  */
-async function fetchManualRepos(deps: SyncDeps, nowIso: string, errors: string[]): Promise<RepoTarget[]> {
+async function fetchManualRepos(deps: SyncDeps, src: SourceRow, nowIso: string, errors: string[]): Promise<RepoTarget[]> {
   const { db, client } = deps;
   const rows = db.all<{ id: number; node_id: string; key: string }>(
-    `SELECT id, node_id, ${repoKeySql('repos')} AS key FROM repos WHERE tracked_by = 'manual' AND removed_at IS NULL ORDER BY id`,
+    `SELECT id, node_id, ${repoKeySql('repos')} AS key FROM repos WHERE source_id = ? AND tracked_by = 'manual' AND removed_at IS NULL ORDER BY id`,
+    [src.id],
   );
   const targets = new Map<number, RepoTarget>();
   await pool(chunked(rows, PROBE_CHUNK), 4, async (chunk) => {
@@ -437,8 +411,8 @@ async function fetchManualRepos(deps: SyncDeps, nowIso: string, errors: string[]
           markUnavailable(db, row.id, row.node_id, reasonOf(failure), nowIso);
           return;
         }
-        const { record, probe, problem } = readNode(db, node, res.errors, at, row.key, deps.tokenKind ?? null);
-        const id = refreshManual(db, record, nowIso);
+        const { record, probe, problem } = readNode(db, src, node, res.errors, at, row.key, deps.tokenKind ?? null);
+        const id = refreshManual(db, src, record, nowIso);
         if (id === null) return;
         if (probe) applyProbe(db, id, probe);
         targets.set(row.id, { id, record, probe, trackedBy: 'manual', problem });

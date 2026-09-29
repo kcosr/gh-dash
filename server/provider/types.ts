@@ -4,10 +4,10 @@
 //
 // Nothing implements these yet: the GitHub code is moved behind them in later changes (diffs first, then the sync).
 
-import type { Diff, DiffFile } from '../../shared/api';
+import type { Diff, DiffFile, ProviderKind } from '../../shared/api';
 import type { CommitRecord, IssueRecord, PrRecord, ReleaseRecord, RepoProbe, RepoRecord, StarRecord } from '../db/records';
 
-export type ProviderKind = 'github' | 'gitlab';
+export type { ProviderKind };
 
 /** The account a source's token belongs to. */
 export interface ViewerInfo {

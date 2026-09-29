@@ -5,7 +5,7 @@ import { createAdaptorServer } from '@hono/node-server';
 import { type AppDeps, createApp } from './api/app';
 import type { Config } from './config';
 import { type Db, openDb } from './db/db';
-import { getMeta } from './db/meta';
+import { GITHUB_SOURCE_ID, getSource } from './db/sources';
 import { type DiffCache, openDiffCache } from './diff/cache';
 import { DiffService } from './diff/service';
 import { GitHubDiffSources } from './github/diff-source';
@@ -72,7 +72,7 @@ export async function startServer(opts: StartOptions): Promise<RunningServer> {
       choice: config.tokenChoice,
       tokenFile: config.tokenFile,
       ghPath: config.ghPath,
-      viewer: () => getMeta(db, 'viewer'),
+      viewer: () => getSource(db, GITHUB_SOURCE_ID)?.viewer ?? null,
       log,
       ...opts.tokenOptions,
     });
@@ -114,7 +114,7 @@ export async function startServer(opts: StartOptions): Promise<RunningServer> {
     const fromFile = Object.values(config.sources).includes('file');
     log(
       `gh-dash ${config.version} on ${listeners.join(' and ') || 'no listener'} · token: ${tokenSettled ? tokens.peek().source : 'resolving'} · ` +
-        `viewer: ${getMeta(db, 'viewer')?.login ?? 'unknown'} · sync: ${config.syncEnabled ? 'on' : 'off'} · ` +
+        `viewer: ${getSource(db, GITHUB_SOURCE_ID)?.viewer?.login ?? 'unknown'} · sync: ${config.syncEnabled ? 'on' : 'off'} · ` +
         `me-emails: ${config.myEmails.length} from ${config.sources.myEmails === 'file' ? 'config' : 'env'} · db: ${config.dbPath} · ` +
         `diff cache: ${cache.path}${fromFile ? ` · config: ${config.configPath}` : ''}`,
     );

@@ -11,6 +11,10 @@
  * optional fields are fine; renames/removals are not.
  */
 
+/** The kind of code host a source is. */
+export type ProviderKind = 'github' | 'gitlab';
+/** The host of the built-in github.com source (`Repo.source`). Its keys are `owner/name`; every other source's carry the host. */
+export const GITHUB_HOST = 'github.com';
 /** 'internal': a GitHub Enterprise repository visible to every member of the enterprise. */
 export type Visibility = 'public' | 'private' | 'internal';
 export type VisibilityFilter = 'all' | Visibility;

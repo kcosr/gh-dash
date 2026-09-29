@@ -3,8 +3,8 @@ import { bucketIndex, DAY_MS, isoSec, localDateSql, makeBuckets, median, type Of
 import type { Db, Param } from './db';
 import { addRepoScope, meSql, type QueryCtx, type Scope, Where } from './filters';
 import { EVENT_SOURCES, type EventSource, sourceWhere } from './lists';
-import { getMeta } from './meta';
 import { repoKeySql } from './repo-key';
+import { GITHUB_SOURCE_ID, getSource } from './sources';
 
 const SLICES = 12;
 const TOP_CONTRIBUTORS = 20;
@@ -344,7 +344,7 @@ function contributors(db: Db, commits: Group[], merges: Group[]): StatsResponse[
       )
       .map((r): [number, Actor] => [r.id, { login: r.login, name: r.name, avatarUrl: r.avatar, isMe: false }]),
   );
-  const viewer = getMeta(db, 'viewer');
+  const viewer = getSource(db, GITHUB_SOURCE_ID)?.viewer;
   const label = (a: Actor) => a.login ?? a.name ?? '';
   return top
     .map(([id, p]) => {

@@ -303,12 +303,112 @@ function rewriteSavedViews(db: Db): void {
   }
 }
 
+// Repositories from several code hosts ("sources"): github.com is source 1, created here (for new databases too) and
+// never removed. Every repo belongs to a source and gets its public key as a column (`owner/name` on github.com,
+// `<host>/<full path>` elsewhere; see repo-key.ts). node_id stops being globally unique: GitLab ids like
+// gid://gitlab/Project/5 exist on every instance, so it is unique per source. The rebuild copies ids, and the
+// AUTOINCREMENT high-water mark is carried over explicitly: DROP TABLE deletes the old table's sqlite_sequence row,
+// and a deleted repo's id must never come back (see v5). The copy leaves repos_new a sequence row even when it copies
+// nothing (seq 0; schema.test.ts pins that, for a table emptied by deletes). Also new: the provider's star count at the
+// last stars pass, and the commits an MR landed as (GitLab links commits to MRs by these), with their indexes.
+const SOURCES = `
+CREATE TABLE sources (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind TEXT NOT NULL,
+  host TEXT NOT NULL,
+  base_url TEXT NOT NULL,
+  name TEXT NOT NULL,
+  viewer_id TEXT,
+  viewer_login TEXT,
+  viewer_name TEXT,
+  viewer_avatar TEXT,
+  viewer_emails TEXT NOT NULL DEFAULT '[]',
+  last_sync TEXT,
+  rate_limit TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX sources_host ON sources(host);
+INSERT INTO sources (id, kind, host, base_url, name, created_at)
+  VALUES (1, 'github', 'github.com', 'https://github.com', 'GitHub', strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));
+CREATE TABLE repos_new (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_id INTEGER NOT NULL REFERENCES sources(id),
+  key TEXT NOT NULL,
+  node_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  name_with_owner TEXT NOT NULL,
+  owner TEXT NOT NULL,
+  description TEXT,
+  url TEXT NOT NULL,
+  visibility TEXT NOT NULL CHECK (visibility IN ('public', 'private', 'internal')),
+  is_archived INTEGER NOT NULL DEFAULT 0,
+  is_fork INTEGER NOT NULL DEFAULT 0,
+  language_name TEXT,
+  language_color TEXT,
+  topics TEXT NOT NULL DEFAULT '[]',
+  default_branch TEXT,
+  stars INTEGER NOT NULL DEFAULT 0,
+  forks INTEGER NOT NULL DEFAULT 0,
+  open_prs INTEGER NOT NULL DEFAULT 0,
+  open_issues INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  pushed_at TEXT,
+  pinned INTEGER NOT NULL DEFAULT 0,
+  hidden INTEGER NOT NULL DEFAULT 0,
+  removed_at TEXT,
+  tracked_by TEXT NOT NULL DEFAULT 'owned',
+  added_at TEXT,
+  unavailable_at TEXT,
+  unavailable_reason TEXT,
+  UNIQUE (source_id, node_id)
+);
+INSERT INTO repos_new (id, source_id, key, node_id, name, name_with_owner, owner, description, url, visibility, is_archived,
+  is_fork, language_name, language_color, topics, default_branch, stars, forks, open_prs, open_issues, created_at, pushed_at,
+  pinned, hidden, removed_at, tracked_by, added_at, unavailable_at, unavailable_reason)
+SELECT id, 1, name_with_owner, node_id, name, name_with_owner, owner, description, url, visibility, is_archived,
+  is_fork, language_name, language_color, topics, default_branch, stars, forks, open_prs, open_issues, created_at, pushed_at,
+  pinned, hidden, removed_at, tracked_by, added_at, unavailable_at, unavailable_reason FROM repos;
+UPDATE sqlite_sequence SET seq = max(seq, ifnull((SELECT seq FROM sqlite_sequence WHERE name = 'repos'), 0)) WHERE name = 'repos_new';
+DROP TABLE repos;
+ALTER TABLE repos_new RENAME TO repos;
+CREATE UNIQUE INDEX repos_key ON repos(key COLLATE NOCASE) WHERE removed_at IS NULL;
+ALTER TABLE sync_state ADD COLUMN stars_count INTEGER;
+ALTER TABLE pull_requests ADD COLUMN merge_commit_oid TEXT;
+ALTER TABLE pull_requests ADD COLUMN squash_commit_oid TEXT;
+CREATE INDEX pull_requests_landed ON pull_requests(merge_commit_oid, squash_commit_oid);
+CREATE INDEX pr_commits_oid ON pr_commits(oid);
+`;
+
+/**
+ * The GitHub account (`meta.viewer`) and rate limit (`meta.rateLimit`) the database recorded become source 1's. The
+ * run-level keys (lastSync, lastFullSyncAt, syncLock, nextSyncAt, sessionSecret) stay in meta.
+ */
+function moveViewerMeta(db: Db): void {
+  const read = (key: string): unknown => {
+    const row = db.get<{ value: string }>('SELECT value FROM meta WHERE key = ?', [key]);
+    return row ? JSON.parse(row.value) : null;
+  };
+  const viewer = read('viewer') as { id?: unknown; login?: unknown; name?: unknown; avatarUrl?: unknown } | null;
+  if (viewer && typeof viewer.login === 'string') {
+    const text = (v: unknown) => (typeof v === 'string' ? v : null);
+    db.run('UPDATE sources SET viewer_id = ?, viewer_login = ?, viewer_name = ?, viewer_avatar = ? WHERE id = 1', [
+      text(viewer.id), viewer.login, text(viewer.name), text(viewer.avatarUrl),
+    ]);
+  }
+  const rl = read('rateLimit') as { limit?: unknown; remaining?: unknown; resetAt?: unknown } | null;
+  if (rl && typeof rl.limit === 'number' && typeof rl.remaining === 'number' && typeof rl.resetAt === 'string') {
+    db.run('UPDATE sources SET rate_limit = ? WHERE id = 1', [JSON.stringify({ limit: rl.limit, remaining: rl.remaining, resetAt: rl.resetAt })]);
+  }
+  db.run(`DELETE FROM meta WHERE key IN ('viewer', 'rateLimit')`);
+}
+
 const MIGRATIONS: Migration[] = [
   { name: 'initial', version: 1, destructive: false, sql: V1 },
   { name: 'commits-repo-index', version: 2, destructive: false, sql: V2 },
   { name: 'commits-head', version: 3, destructive: false, sql: V3 },
   { name: 'pr-head-oid', version: 4, destructive: false, sql: V4 },
   { name: 'repos-v5', version: 5, destructive: true, rebuild: true, sql: REPOS_REBUILD, up: rewriteSavedViews },
+  { name: 'sources', version: 6, destructive: true, rebuild: true, sql: SOURCES, up: moveViewerMeta },
 ];
 
 /** The schema version this build creates and understands. */

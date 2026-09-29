@@ -6,6 +6,7 @@ import { repoKey, repoKeySql, resolveRepo, resolveRepoIds } from './repo-key';
 
 interface RepoRow {
   id: number;
+  key: string;
   name: string;
   name_with_owner: string;
   owner: string;

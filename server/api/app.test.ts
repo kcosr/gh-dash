@@ -4,7 +4,8 @@ import { join } from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import { type Config, loadConfig } from '../config';
-import { getMeta, setMeta } from '../db/meta';
+import { setMeta } from '../db/meta';
+import { GITHUB_SOURCE_ID, getSource } from '../db/sources';
 import { upsertCommit, upsertOwned } from '../db/write';
 import { DiffCache } from '../diff/cache';
 import { DiffService } from '../diff/service';
@@ -13,7 +14,7 @@ import { SyncManager } from '../sync/manager';
 import { fakeGitHub, page, type Reply, restFile, sha } from '../test/github';
 import { fakeGraphQL, prNode, repoNode } from '../test/graphql';
 import { Tracking } from '../github/tracking';
-import { addManualRepo, seedDb } from '../test/seed';
+import { addManualRepo, GITHUB, seedDb, setViewer } from '../test/seed';
 import { DESKTOP_SECRET_HEADER } from '../../shared/desktop';
 import { testTokens } from '../test/tokens';
 import { type AppDeps, type AppTransport, createApp } from './app';
@@ -90,7 +91,7 @@ describe('HTTP API', () => {
 
   it('takes GitHub Enterprise internal repositories as their own visibility', async () => {
     const db = seedDb();
-    const corp = upsertOwned(db, {
+    const corp = upsertOwned(db, GITHUB, {
       nodeId: 'R_corp', name: 'corp', nameWithOwner: 'alice/corp', owner: 'alice', description: null, url: 'https://github.com/alice/corp',
       visibility: 'internal', isArchived: false, isFork: false, languageName: null, languageColor: null, topics: [], defaultBranch: 'main',
       stars: 0, forks: 0, createdAt: '2025-01-01T00:00:00Z', pushedAt: '2026-09-25T00:00:00Z',
@@ -415,7 +416,7 @@ describe('adding and removing repositories', () => {
       backfill: { commits: 240, prs: 60, issues: 12, releases: 4, requests: 6 },
     } } });
     expect(res.body!.repo.backfill.since).toMatch(/^\d{4}-\d\d-\d\dT/);
-    expect(getMeta(t.db, 'rateLimit')).toEqual({ limit: 5000, remaining: 4990, resetAt: '2099-01-01T00:00:00Z' });
+    expect(getSource(t.db, GITHUB_SOURCE_ID)!.rateLimit).toEqual({ limit: 5000, remaining: 4990, resetAt: '2099-01-01T00:00:00Z' });
     t.gql.state.size.prs = null;
     expect((await t.call('GET', '/repo-lookup?repo=bob/tool')).body).toMatchObject({ ok: true, repo: { backfill: { prs: null, requests: null } } });
     expect((await t.call('GET', '/repo-lookup?repo=app')).status).toBe(400);
@@ -483,12 +484,12 @@ describe('adding and removing repositories', () => {
       return res;
     });
     t.gql.state.others.push(repoNode('carol/lib'));
-    t.db.run(`DELETE FROM meta WHERE key = 'viewer'`);
+    setViewer(t.db, null);
     const [a, b] = await Promise.all([t.call('POST', '/repos', { repo: 'bob/tool' }), t.call('POST', '/repos', { repo: 'carol/lib' })]);
     await t.idle();
     expect([a.status, b.status]).toEqual([201, 409]);
-    expect(b.body).toMatchObject({ error: 'This database belongs to @alice, but the GitHub token is for @mallory. Switch back to @alice, or use a different database.' });
-    expect(getMeta(t.db, 'viewer')).toMatchObject({ id: 'U_alice', login: 'alice' });
+    expect(b.body).toMatchObject({ error: "This database's GitHub account is @alice, but the token is for @mallory. Switch back to @alice, or use a different database." });
+    expect(getSource(t.db, GITHUB_SOURCE_ID)!.viewer).toMatchObject({ id: 'U_alice', login: 'alice' });
     expect(t.db.get(`SELECT 1 FROM repos WHERE owner = 'carol'`)).toBeUndefined();
   });
 
@@ -516,7 +517,7 @@ describe('adding and removing repositories', () => {
     t.gql.state.viewer = { id: 'U_mallory', login: 'mallory', name: null, avatarUrl: null };
     delete t.gql.state.errors['bob/tool'];
     const mismatch = await t.call('POST', '/repos', { repo: 'bob/tool' });
-    expect(mismatch).toMatchObject({ status: 409, body: { error: expect.stringContaining('but the GitHub token is for @mallory') } });
+    expect(mismatch).toMatchObject({ status: 409, body: { error: expect.stringContaining('but the token is for @mallory') } });
     expect((await t.call('GET', '/repo-lookup?repo=bob/tool')).status).toBe(409);
     expect(t.db.get(`SELECT 1 FROM repos WHERE owner = 'bob'`)).toBeUndefined();
 
@@ -580,12 +581,12 @@ describe('adding and removing repositories', () => {
 
   it('checks the account on every candidates answer, cached ones included', async () => {
     const t = trackApp();
-    t.db.run(`DELETE FROM meta WHERE key = 'viewer'`);
+    setViewer(t.db, null);
     expect((await t.call('GET', '/repo-candidates')).status).toBe(200);
     // Meanwhile the database was claimed by another account (Bob added a repo with his token); Alice's lists are cached.
-    setMeta(t.db, 'viewer', { id: 'U_bob', login: 'bob', name: null, avatarUrl: null });
+    setViewer(t.db, { id: 'U_bob', login: 'bob', name: null, avatarUrl: null });
     const requests = t.gh.requests.length;
-    expect(await t.call('GET', '/repo-candidates')).toMatchObject({ status: 409, body: { error: expect.stringContaining('but the GitHub token is for @alice') } });
+    expect(await t.call('GET', '/repo-candidates')).toMatchObject({ status: 409, body: { error: expect.stringContaining('but the token is for @alice') } });
     expect(t.gh.requests.length).toBe(requests);
   });
 
@@ -784,7 +785,7 @@ describe('account and instance', () => {
   it('reports the account behind the token, validating it once, and re-checks on request', async () => {
     const db = seedDb();
     const gh = fakeGitHub({ '/graphql': viewer('alice', { 'x-oauth-scopes': 'repo' }) });
-    const app = accountApp(testTokens('ghp_x', { fetchImpl: gh.fetchImpl, viewer: () => getMeta(db, 'viewer') }), {}, {}, db);
+    const app = accountApp(testTokens('ghp_x', { fetchImpl: gh.fetchImpl, viewer: () => getSource(db, GITHUB_SOURCE_ID)?.viewer ?? null }), {}, {}, db);
     const account = async (method = 'GET', path = '/api/v1/account') => (await app.request(path, { method })).json();
     // GET never waits for GitHub: the new token is validated in the background.
     expect(await account()).toMatchObject({ source: 'env', locked: true, kind: 'classic' });
@@ -799,7 +800,7 @@ describe('account and instance', () => {
     gh.routes['/graphql'] = viewer('mallory');
     expect(await account('POST', '/api/v1/account/check')).toMatchObject({ login: 'mallory', dbLogin: 'Alice', mismatch: true });
     expect(gh.requests).toHaveLength(2);
-    setMeta(db, 'viewer', { login: 'mallory', name: null, avatarUrl: null });
+    setViewer(db, { login: 'mallory', name: null, avatarUrl: null });
     expect(await account()).toMatchObject({ mismatch: false });
 
     const none = await (await accountApp().request('/api/v1/account')).json();

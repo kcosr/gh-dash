@@ -3,6 +3,7 @@
  * Kept free of React so they're unit-tested (shared/account-view.test.ts).
  */
 import type { AccountStatus, ConfigSource, InstanceInfo, TokenKind, TokenSource } from '../../../shared/api';
+import { EXPIRY_WARN_DAYS } from '../../../shared/credentials';
 import type { DesktopConfig, DesktopConfigPatch } from '../../../shared/desktop';
 import { DAY, dayDiff, fmtDateY } from './time';
 
@@ -44,8 +45,7 @@ export function tokenAccess(scopes: string[] | null): 'full' | 'public' | null {
 
 /** Tokens that expire when GitHub says nothing (personal access tokens have an expiry unless created without one). */
 const PAT_KINDS: ReadonlySet<TokenKind> = new Set(['fine-grained', 'classic', 'personal']);
-/** Warn this long before a token expires. */
-export const EXPIRY_WARN_DAYS = 14;
+export { EXPIRY_WARN_DAYS };
 
 /**
  * The token's expiry for display: "expires Oct 3, 2026" (warn within 14 days, with "in 5 days"), "expired …",

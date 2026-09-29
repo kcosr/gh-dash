@@ -46,9 +46,11 @@ export async function glabToken(path: string, host: string, io: Pick<CliIo, 'env
   try {
     stored = (await run(['config', 'get', 'token', '--host', host])).stdout.trim();
   } catch (err) {
-    const fatal = runFailure(err as ExecError, path);
+    const e = err as ExecError;
+    const fatal = runFailure(e, path);
     if (fatal) return none(fatal);
-    configFailed = firstLine(err as ExecError);
+    // What glab said, if anything (not Node's "Command failed: …", which only repeats the command).
+    configFailed = e.stderr?.trim() ? firstLine(e) : null;
   }
   if (stored) {
     if (!HEADER_SAFE.test(stored)) return none('glab config get token printed something other than a token');

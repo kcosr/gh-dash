@@ -122,7 +122,7 @@ function item(o: Partial<ThreadListItem> & { at: number }): ThreadListItem {
   const id = rest.id ?? ++seq;
   return {
     id, kind: 'pr', repo: 'alice/app', number: 1, commitOid: 'a'.repeat(40), baseOid: null, path: 'src/a.ts', side: 'new', startLine: 1, endLine: 1,
-    snippet: null, status: 'open', resolvedAt: null, createdAt: '2026-09-01T00:00:00.000Z', updatedAt: new Date(Date.UTC(2026, 8, 1, 0, at)).toISOString(),
+    snippet: null, status: 'open', resolvedAt: null, resolvedBy: null, createdAt: '2026-09-01T00:00:00.000Z', updatedAt: new Date(Date.UTC(2026, 8, 1, 0, at)).toISOString(),
     comments: [{ id: id * 10, author: { id: 1, kind: 'self', name: 'You' }, body: `thread ${id}`, createdAt: '2026-09-01T00:00:00.000Z', editedAt: null }],
     targetTitle: 'A PR', prState: 'open', targetUrl: 'https://github.com/alice/app/pull/1', earlierPush: false,
     ...rest,

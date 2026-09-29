@@ -16,7 +16,7 @@ let id = 0;
 function thread(over: Partial<CommentThread>): CommentThread {
   return {
     id: ++id, kind: 'pr', repo: 'app', number: 1, commitOid: HEAD, baseOid: null, path: 'a.ts', side: 'new', startLine: 2, endLine: 2,
-    snippet: 'one', status: 'open', resolvedAt: null, createdAt: '', updatedAt: '', comments: [], ...over,
+    snippet: 'one', status: 'open', resolvedAt: null, resolvedBy: null, createdAt: '', updatedAt: '', comments: [], ...over,
   };
 }
 const shownIn = (sides: Record<string, Record<string, number[]>>) => (path: string, side: 'old' | 'new', line: number) => !!sides[path]?.[side]?.includes(line);

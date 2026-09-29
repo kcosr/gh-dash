@@ -788,6 +788,45 @@ export interface Principal {
   name: string;
 }
 
+/**
+ * An agent that writes comments through MCP (GET /agents): a principal of kind 'agent' with a token. The token is shown
+ * once, when it is made (desktop: Settings → Agents; headless: the `agents` command), and is stored only as a hash.
+ * Revoking it keeps the agent's comments, attributed to it.
+ */
+export interface Agent {
+  /** The principal's id. */
+  id: number;
+  name: string;
+  /** The token's first characters, to tell tokens apart; null once revoked. */
+  tokenPrefix: string | null;
+  createdAt: string;
+  lastUsedAt: string | null;
+  revokedAt: string | null;
+}
+
+/** What happened to a comment or thread (the comment event log, shown in Activity as type 'comment'). */
+export type CommentEventKind = 'thread_opened' | 'replied' | 'edited' | 'comment_deleted' | 'resolved' | 'reopened' | 'thread_deleted';
+
+/** A comment event in the Activity feed. Events outlive their thread and comment: what they were is copied in. */
+export interface CommentActivity {
+  eventId: number;
+  threadId: number;
+  /** False once the thread is deleted. */
+  live: boolean;
+  /** Who did it (also the event's `actor`, as a name without a login: `isMe` for you, an agent otherwise). */
+  by: Principal;
+  /** What the thread is on; `title` is the PR's title or the commit's headline, null when not synced. */
+  target: { kind: 'pr'; number: number; title: string | null } | { kind: 'commit'; oid: string; title: string | null };
+  /** The revision the thread was made on. */
+  commitOid: string;
+  path: string | null;
+  side: CommentSide | null;
+  startLine: number | null;
+  endLine: number | null;
+  /** The comment's text for comment events, the thread's first comment for thread events: plain, at most 280 chars. */
+  excerpt: string | null;
+}
+
 /** Which side of the diff a line thread is on: the old file (deletions) or the new one (additions). */
 export type CommentSide = 'old' | 'new';
 export type ThreadStatus = 'open' | 'resolved';
@@ -841,6 +880,8 @@ export interface CommentThread extends ThreadAnchor {
   baseOid: string | null;
   status: ThreadStatus;
   resolvedAt: string | null;
+  /** Who resolved it; null while open (and for threads resolved before this was recorded). */
+  resolvedBy: Principal | null;
   createdAt: string;
   /** Last activity: a comment added, edited or deleted, or the status changed. */
   updatedAt: string;
@@ -882,7 +923,31 @@ export interface ThreadListQuery extends Pick<ScopeQuery, 'repos' | 'source' | '
   sort?: ThreadSort;
   /** 'md' returns every matching thread as text/markdown; there is no CSV (400). */
   format?: Exclude<ListFormat, 'csv'>;
+  /** Who opened the thread: 'self' (you), 'agents' (any agent), or one agent's principal id. Default: anyone. */
+  author?: 'self' | 'agents' | number;
+  /** 'you': open threads whose last comment isn't yours (someone is waiting on you). */
+  waiting?: 'you';
 }
+
+/** Where an agent asks the app to look (MCP `show`): a thread, or a file of a PR's or commit's diff. */
+export interface ShowTarget {
+  repo: string;
+  /** A PR number, or a full commit oid: the diff to open. */
+  pr?: number;
+  commit?: string;
+  threadId?: number;
+  path?: string;
+}
+
+/**
+ * GET /stream (text/event-stream): what the server tells open windows as it happens. `comments`: a thread changed, so
+ * lists, counts and the diff's threads are refetched. `show`: an agent asks the window to open something (a chip,
+ * unless the window follows agents). `agents`: an agent was added or revoked.
+ */
+export type StreamMessage =
+  | { type: 'comments'; repo: string; kind: 'pr' | 'commit'; number: number | null; commitOid: string; threadId: number; event: CommentEventKind; by: Principal }
+  | { type: 'show'; id: string; agent: Principal; target: ShowTarget; message: string | null; at: string }
+  | { type: 'agents' };
 
 /** A thread in GET /threads: the thread, and what it is on. */
 export interface ThreadListItem extends CommentThread {
@@ -967,6 +1032,12 @@ export interface ThreadListResponse extends ListResponse<ThreadListItem> {
 // GET    /api/v1/threads    ThreadListQuery    -> ThreadListResponse | text/markdown   (every thread in scope, across PRs
 //          and commits: status open by default, newest activity first; format=md groups them per PR or commit)
 // GET    /api/v1/threads/:id                   -> CommentThread
+// GET    /api/v1/agents                        -> { items: Agent[] }   (made and revoked only by the desktop app or the
+//          headless `agents` command, never over HTTP)
+// GET    /api/v1/stream                        -> text/event-stream of StreamMessage (`data: <json>`; a comment line every
+//          25 s keeps proxies from closing it)
+// POST   /mcp                                  -> MCP over Streamable HTTP (JSON responses), `Authorization: Bearer <agent
+//          token>`; the agent's comments are attributed to it. GET /mcp: 405.
 // PATCH  /api/v1/threads/:id   {status}        -> CommentThread
 // DELETE /api/v1/threads/:id                   -> 204
 // POST   /api/v1/threads/:id/comments {body}   -> CommentThread (with the reply)

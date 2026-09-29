@@ -81,6 +81,8 @@ export function hydrate(db: Db, rows: ThreadRow[]): CommentThread[] {
     snippet: r.snippet,
     status: r.status,
     resolvedAt: r.resolved_at,
+    // Who resolved it is recorded from schema v8 (the MCP wave); until then, nobody.
+    resolvedBy: null,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     comments: byThread.get(r.id)!,

@@ -58,7 +58,7 @@ describe('comment threads', () => {
     expect(t).toEqual({
       id: t.id, kind: 'pr', repo: 'alice/app', number: 2, commitOid: HEAD, baseOid: BASE,
       path: 'src/a.ts', side: 'new', startLine: 3, endLine: 4, snippet: 'const a = 1;\nconst b = 2;',
-      status: 'open', resolvedAt: null, createdAt: T0, updatedAt: T0,
+      status: 'open', resolvedAt: null, resolvedBy: null, createdAt: T0, updatedAt: T0,
       comments: [{ id: expect.any(Number), author: me, body: 'Why?', createdAt: T0, editedAt: null }],
     });
     expect(open(pr(), { ...general, path: 'src/a.ts' })).toMatchObject({ path: 'src/a.ts', side: null, startLine: null });

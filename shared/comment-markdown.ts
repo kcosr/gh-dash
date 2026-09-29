@@ -28,6 +28,34 @@ function fence(code: string): string {
   return '`'.repeat(Math.max(3, longest + 1));
 }
 
+/** The most an excerpt holds: what Activity and agents see of a comment. */
+export const EXCERPT_CHARS = 280;
+
+/**
+ * A comment as one line of plain text, at most `max` characters (an ellipsis marks a cut). Markdown's syntax goes: links
+ * and images keep their text, code fences and inline code their code; quote, list and heading marks and HTML tags go;
+ * whitespace collapses. Counted in code points, so a cut never splits one.
+ */
+export function commentExcerpt(body: string, max = EXCERPT_CHARS): string {
+  const plain = body
+    .replace(/\r\n?/g, '\n')
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/^[ \t]*(?:```|~~~).*$/gm, '')
+    .replace(/^[ \t]*>[ \t]?/gm, '')
+    .replace(/^[ \t]*#{1,6}[ \t]+/gm, '')
+    .replace(/^[ \t]*(?:[-*+]|\d+[.)])[ \t]+(?:\[[ xX]\][ \t]+)?/gm, '')
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/<\/?[A-Za-z][^<>\n]*>/g, '')
+    .replace(/(\*\*|__)(.+?)\1/g, '$2')
+    .replace(/~~(.+?)~~/g, '$1')
+    .replace(/(`+)(.+?)\1/g, '$2')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const chars = Array.from(plain);
+  return chars.length <= max ? plain : `${chars.slice(0, max - 1).join('').trimEnd()}…`;
+}
+
 const extension = (path: string) => /\.([\w+-]+)$/.exec(path)?.[1] ?? '';
 const lineRange = (start: number, end: number) => (start === end ? `line ${start}` : `lines ${start}–${end}`);
 

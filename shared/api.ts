@@ -34,12 +34,13 @@ export type Who = 'me' | 'others' | 'everyone';
 export type PrState = 'open' | 'merged' | 'closed';
 export type PrStateFilter = PrState | 'all';
 export type IssueState = 'open' | 'closed';
-export type EventType = 'commit' | 'pr' | 'issue' | 'release' | 'star';
+/** `comment`: local review comments (the comment event log): who opened, answered, resolved... which thread. */
+export type EventType = 'commit' | 'pr' | 'issue' | 'release' | 'star' | 'comment';
 export type Bucket = 'day' | 'week' | 'month';
 export type GroupBy = 'day' | 'week' | 'month' | 'repo';
 export type ListFormat = 'json' | 'md' | 'csv';
 
-export const EVENT_TYPES: EventType[] = ['commit', 'pr', 'issue', 'release', 'star'];
+export const EVENT_TYPES: EventType[] = ['commit', 'pr', 'issue', 'release', 'star', 'comment'];
 
 // ---------------------------------------------------------------------------
 // Entities
@@ -219,7 +220,12 @@ export type ActivityEvent =
   | { type: 'pr'; kind: 'opened' | 'merged' | 'closed'; at: string; repo: string; actor: Actor; pr: PullRequest }
   | { type: 'issue'; kind: 'opened' | 'closed'; at: string; repo: string; actor: Actor; issue: Issue }
   | { type: 'release'; at: string; repo: string; actor: Actor | null; release: Release }
-  | { type: 'star'; at: string; repo: string; actor: Actor };
+  | { type: 'star'; at: string; repo: string; actor: Actor }
+  /**
+   * A comment written, changed or deleted, or a thread resolved or reopened, in gh-dash (never on the code host). The
+   * actor is a principal: no login or avatar, `isMe` for the dashboard's user, an agent otherwise.
+   */
+  | { type: 'comment'; kind: CommentEventKind; at: string; repo: string; actor: Actor; comment: CommentActivity };
 
 export interface RepoSet {
   id: number;

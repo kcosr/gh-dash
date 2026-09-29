@@ -1,4 +1,5 @@
-import type { CommentThread, Principal, ThreadAnchor, ThreadComment, ThreadStatus } from '../../shared/api';
+import type { CommentEventKind, CommentThread, Principal, ThreadAnchor, ThreadComment, ThreadStatus } from '../../shared/api';
+import { commentExcerpt } from '../../shared/comment-markdown';
 import type { Db } from './db';
 import { repoKeySql } from './repo-key';
 
@@ -30,6 +31,8 @@ export interface ThreadRow {
   snippet: string | null;
   status: ThreadStatus;
   resolved_at: string | null;
+  /** Who resolved it (schema v8 on); null while open, and for threads resolved before it was recorded. */
+  resolved_by: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -59,7 +62,7 @@ const toComment = (r: CommentRow): ThreadComment => ({
   editedAt: r.edited_at,
 });
 
-/** Threads with their comments (two queries, whatever the number of threads), in the order of `rows`. */
+/** Threads with their comments and resolvers (three queries at most, whatever the number of threads), in the order of `rows`. */
 export function hydrate(db: Db, rows: ThreadRow[]): CommentThread[] {
   if (rows.length === 0) return [];
   const byThread = new Map<number, ThreadComment[]>(rows.map((r) => [r.id, []]));
@@ -67,6 +70,12 @@ export function hydrate(db: Db, rows: ThreadRow[]): CommentThread[] {
     JSON.stringify(rows.map((r) => r.id)),
   ]);
   for (const c of comments) byThread.get(c.thread_id)!.push(toComment(c));
+  const resolverIds = [...new Set(rows.flatMap((r) => (r.resolved_by === null ? [] : [r.resolved_by])))];
+  const resolvers = new Map(
+    resolverIds.length
+      ? db.all<Principal>('SELECT id, kind, name FROM principals WHERE id IN (SELECT value FROM json_each(?))', [JSON.stringify(resolverIds)]).map((p) => [p.id, p])
+      : [],
+  );
   return rows.map((r) => ({
     id: r.id,
     kind: r.pr_number === null ? 'commit' : 'pr',
@@ -81,8 +90,7 @@ export function hydrate(db: Db, rows: ThreadRow[]): CommentThread[] {
     snippet: r.snippet,
     status: r.status,
     resolvedAt: r.resolved_at,
-    // Who resolved it is recorded from schema v8 (the MCP wave); until then, nobody.
-    resolvedBy: null,
+    resolvedBy: r.resolved_by === null ? null : (resolvers.get(r.resolved_by) ?? null),
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     comments: byThread.get(r.id)!,
@@ -118,6 +126,30 @@ export function getThread(db: Db, id: number): CommentThread | null {
   return hydrate(db, db.all<ThreadRow>(`${THREAD_SELECT} WHERE t.id = ?`, [id]))[0] ?? null;
 }
 
+/**
+ * Records a write in the comment event log, inside the write's transaction. The thread's place (repo, target, anchor)
+ * is copied from its row, so for a delete this runs first; `text` is the comment's words (the thread's first comment for
+ * thread events), kept as a plain excerpt. Returns the event's id.
+ */
+function logEvent(
+  db: Db,
+  actor: Principal,
+  kind: CommentEventKind,
+  threadId: number,
+  commentId: number | null,
+  text: string | null,
+  now: string,
+): number {
+  return db.run(
+    `INSERT INTO comment_events (at, actor_id, kind, repo_id, pr_number, commit_oid, thread_id, comment_id, path, side, start_line, end_line, excerpt)
+     SELECT ?, ?, ?, repo_id, pr_number, commit_oid, id, ?, path, side, start_line, end_line, ? FROM comment_threads WHERE id = ?`,
+    [now, actor.id, kind, commentId, text === null ? null : commentExcerpt(text), threadId],
+  ).lastInsertRowid;
+}
+
+const firstBody = (db: Db, threadId: number): string | null =>
+  db.get<{ body: string }>('SELECT body FROM comments WHERE thread_id = ? ORDER BY id LIMIT 1', [threadId])?.body ?? null;
+
 /** Opens a thread with its first comment. The anchor must be one of ThreadAnchor's three levels (CHECK constraints). */
 export function createThread(db: Db, target: ThreadTarget, input: ThreadInput, author: Principal, now = nowIso()): CommentThread {
   const { anchor } = input;
@@ -130,7 +162,9 @@ export function createThread(db: Db, target: ThreadTarget, input: ThreadInput, a
         anchor.path, anchor.side, anchor.startLine, anchor.endLine, anchor.snippet, now, now,
       ],
     ).lastInsertRowid;
-    db.run('INSERT INTO comments (thread_id, author_id, body, created_at) VALUES (?, ?, ?, ?)', [threadId, author.id, input.body, now]);
+    const commentId = db.run('INSERT INTO comments (thread_id, author_id, body, created_at) VALUES (?, ?, ?, ?)', [threadId, author.id, input.body, now])
+      .lastInsertRowid;
+    logEvent(db, author, 'thread_opened', threadId, commentId, input.body, now);
     return threadId;
   });
   return getThread(db, id)!;
@@ -142,8 +176,10 @@ const touch = (db: Db, threadId: number, now: string) => db.run('UPDATE comment_
 export function addComment(db: Db, threadId: number, author: Principal, body: string, now = nowIso()): CommentThread | null {
   const added = db.tx(() => {
     if (!db.get('SELECT 1 FROM comment_threads WHERE id = ?', [threadId])) return false;
-    db.run('INSERT INTO comments (thread_id, author_id, body, created_at) VALUES (?, ?, ?, ?)', [threadId, author.id, body, now]);
+    const commentId = db.run('INSERT INTO comments (thread_id, author_id, body, created_at) VALUES (?, ?, ?, ?)', [threadId, author.id, body, now])
+      .lastInsertRowid;
     touch(db, threadId, now);
+    logEvent(db, author, 'replied', threadId, commentId, body, now);
     return true;
   });
   return added ? getThread(db, threadId) : null;
@@ -169,16 +205,19 @@ export const mayEdit = (actor: Principal, authorId: number): boolean => actor.id
 
 /**
  * Authors may delete what they wrote; the dashboard's own user may delete anything (an agent's noise included), as
- * it's their database. A thread counts as written by its first comment's author.
+ * it's their database. A thread counts as written by its first comment's author. (An agent deleting a thread needs
+ * more: services/comments.ts.)
  */
 export const mayDelete = (actor: Principal, authorId: number): boolean => actor.kind === 'self' || actor.id === authorId;
 
-export function editComment(db: Db, id: number, body: string, now = nowIso()): CommentThread | null {
+/** Changes a comment's words, as `actor` (its author: the caller checks). null when there is no such comment. */
+export function editComment(db: Db, id: number, body: string, actor: Principal, now = nowIso()): CommentThread | null {
   const ref = getCommentRef(db, id);
   if (!ref) return null;
   db.tx(() => {
     db.run('UPDATE comments SET body = ?, edited_at = ? WHERE id = ?', [body, now, id]);
     touch(db, ref.threadId, now);
+    logEvent(db, actor, 'edited', ref.threadId, id, body, now);
   });
   return getThread(db, ref.threadId);
 }
@@ -187,30 +226,43 @@ export function editComment(db: Db, id: number, body: string, now = nowIso()): C
  * Deletes a comment. The first comment is the thread's opening statement: deleting it deletes the whole thread,
  * replies included (thread null), rather than leaving replies to nothing. null when there is no such comment.
  */
-export function deleteComment(db: Db, id: number, now = nowIso()): { thread: CommentThread | null } | null {
+export function deleteComment(db: Db, id: number, actor: Principal, now = nowIso()): { thread: CommentThread | null } | null {
   const ref = getCommentRef(db, id);
   if (!ref) return null;
   if (ref.first) {
-    deleteThread(db, ref.threadId);
+    deleteThread(db, ref.threadId, actor, now);
     return { thread: null };
   }
   db.tx(() => {
+    const body = db.get<{ body: string }>('SELECT body FROM comments WHERE id = ?', [id])!.body;
+    logEvent(db, actor, 'comment_deleted', ref.threadId, id, body, now);
     db.run('DELETE FROM comments WHERE id = ?', [id]);
     touch(db, ref.threadId, now);
   });
   return { thread: getThread(db, ref.threadId) };
 }
 
-/** Resolves or reopens a thread; null when it doesn't exist. Setting the current status again changes nothing. */
-export function setThreadStatus(db: Db, id: number, status: ThreadStatus, now = nowIso()): CommentThread | null {
-  db.run(
-    `UPDATE comment_threads SET status = ?, resolved_at = ?, updated_at = ? WHERE id = ? AND status <> ?`,
-    [status, status === 'resolved' ? now : null, now, id, status],
-  );
+/**
+ * Resolves or reopens a thread, as `actor` (who resolved it is kept; reopening clears it); null when it doesn't exist.
+ * Setting the current status again changes nothing, and records nothing.
+ */
+export function setThreadStatus(db: Db, id: number, status: ThreadStatus, actor: Principal, now = nowIso()): CommentThread | null {
+  db.tx(() => {
+    const resolved = status === 'resolved';
+    const changed = db.run(
+      `UPDATE comment_threads SET status = ?, resolved_at = ?, resolved_by = ?, updated_at = ? WHERE id = ? AND status <> ?`,
+      [status, resolved ? now : null, resolved ? actor.id : null, now, id, status],
+    ).changes;
+    if (changed) logEvent(db, actor, resolved ? 'resolved' : 'reopened', id, null, firstBody(db, id), now);
+  });
   return getThread(db, id);
 }
 
-/** Deletes a thread and its comments; false when it doesn't exist. */
-export function deleteThread(db: Db, id: number): boolean {
-  return db.run('DELETE FROM comment_threads WHERE id = ?', [id]).changes > 0;
+/** Deletes a thread and its comments, as `actor`; false when it doesn't exist. */
+export function deleteThread(db: Db, id: number, actor: Principal, now = nowIso()): boolean {
+  return db.tx(() => {
+    if (!db.get('SELECT 1 FROM comment_threads WHERE id = ?', [id])) return false;
+    logEvent(db, actor, 'thread_deleted', id, null, firstBody(db, id), now);
+    return db.run('DELETE FROM comment_threads WHERE id = ?', [id]).changes > 0;
+  });
 }

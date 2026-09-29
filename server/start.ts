@@ -3,6 +3,7 @@ import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { createAdaptorServer } from '@hono/node-server';
 import { type AppDeps, createApp } from './api/app';
+import { CommentBus } from './comments/bus';
 import type { Config } from './config';
 import { readConfigFile } from './config-file';
 import { type Db, openDb } from './db/db';
@@ -44,6 +45,8 @@ export interface RunningServer {
   sources: SourceRegistry;
   sync: SyncManager;
   diffs: DiffService;
+  /** What happens to comments and agents: every listener's app shares it (GET /stream, MCP); desktop main's agent changes emit on it. */
+  bus: CommentBus;
   /**
    * Re-reads config.json's `sources` and `glabPath` (plus the environment's, headless) and applies them to `sources`,
    * validating the tokens of the sources it (re)built in the background: the desktop app's `reload-sources`. Updates
@@ -72,7 +75,10 @@ export async function startServer(opts: StartOptions): Promise<RunningServer> {
   let cache: DiffCache | null = null;
   const servers: Server[] = [];
   let socketPath: string | null = null;
+  const bus = new CommentBus(log);
   const closeAll = async () => {
+    // Open streams (GET /stream) end first, so their connections go with the idle ones instead of after the grace period.
+    bus.close();
     await Promise.all(servers.map(closeServer));
     if (socketPath) removeSocket(socketPath);
     db.close();
@@ -106,7 +112,7 @@ export async function startServer(opts: StartOptions): Promise<RunningServer> {
     const sourcesReady = sources.check(sources.apply({ glabPath: config.glabPath, sources: config.sourceConfigs }));
     // Every source's account (the others' failures are logged by the manager).
     const viewerReady = sync.ensureViewer().catch((err: Error) => log(`[startup] could not fetch GitHub viewer: ${err.message}`));
-    const deps: AppDeps = { db, config, sync, diffs, tokens, sources };
+    const deps: AppDeps = { db, config, sync, diffs, tokens, sources, bus };
 
     let apiUrl: string | null = null;
     let bound: string | null = null;
@@ -156,7 +162,7 @@ export async function startServer(opts: StartOptions): Promise<RunningServer> {
 
     let closing: Promise<void> | null = null;
     return {
-      config, db, tokens, sources, sync, diffs, reloadSources, apiUrl, socketPath,
+      config, db, tokens, sources, sync, diffs, bus, reloadSources, apiUrl, socketPath,
       close: () =>
         (closing ??= (async () => {
           await sync.shutdown();

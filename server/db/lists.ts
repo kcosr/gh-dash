@@ -1,11 +1,14 @@
 import type {
   ActivityEvent,
+  CommentActivity,
+  CommentEventKind,
   CommentFilter,
   Commit,
   EventType,
   Facets,
   Issue,
   IssueState,
+  PrincipalKind,
   PrStateFilter,
   PullRequest,
   PullRequestDetail,
@@ -13,8 +16,10 @@ import type {
   Star,
 } from '../../shared/api';
 import { localDateSql, offsetSegments } from '../lib/time';
+import { SELF_PRINCIPAL_ID } from './comments';
 import type { Db, Param } from './db';
 import {
+  addLike,
   addRange,
   addRepoScope,
   addText,
@@ -26,6 +31,7 @@ import {
   Where,
 } from './filters';
 import { repoKeySql, resolveRepo } from './repo-key';
+import { prCommitHeadlineSql } from './thread-list';
 import {
   type CommitRow,
   type IssueRow,
@@ -260,15 +266,23 @@ export function listStars(db: Db, ctx: QueryCtx, scope: Scope, page: Page): List
 export interface EventSource {
   type: EventType;
   kind: 'opened' | 'merged' | 'closed' | null;
+  /** The kind from a column instead (comment events: CommentEventKind). */
+  kindCol?: string;
   /** Short unique code, prefix of the event key used for stable ordering. */
   code: string;
   table: string;
   alias: string;
   at: string;
+  /** `at` has milliseconds (gh-dash's own timestamps), so the range compares with bounds that have them too. */
+  atMs?: boolean;
   extra?: string;
-  /** Actor columns for the who filter; null = never "me" (stars). */
-  who: { login: string; email?: string } | null;
-  text: { table: FtsTable; like: string[] } | null;
+  /**
+   * The who filter: actor columns, compared with each source's account (see meSql); or `self`, a predicate for "the
+   * dashboard's user" (comment events: the principal); null = never "me" (stars).
+   */
+  who: { login: string; email?: string } | { self: string } | null;
+  /** Words for `q`: the FTS table and the LIKE fallback's columns; no table = LIKE only. null = no text to match. */
+  text: { table: FtsTable | null; like: string[] } | null;
 }
 
 export const EVENT_SOURCES: EventSource[] = [
@@ -303,12 +317,17 @@ export const EVENT_SOURCES: EventSource[] = [
   // Stargazers are only synced for repos the viewer owns; this keeps any left from before a repo was transferred away
   // out of activity and stats.
   { type: 'star', kind: null, code: 's', table: 'stars', alias: 's', at: 's.starred_at', extra: `r.tracked_by = 'owned'`, who: null, text: null },
+  // The comment event log: "me" is the dashboard's user, everyone else an agent. `q` matches the excerpt or the file.
+  {
+    type: 'comment', kind: null, kindCol: 'ce.kind', code: 'm', table: 'comment_events', alias: 'ce', at: 'ce.at', atMs: true,
+    who: { self: `ce.actor_id = ${SELF_PRINCIPAL_ID}` }, text: { table: null, like: ['ce.excerpt', 'ce.path'] },
+  },
 ];
 
 interface EventRow {
   at: string;
   type: EventType;
-  kind: 'opened' | 'merged' | 'closed' | null;
+  kind: 'opened' | 'merged' | 'closed' | CommentEventKind | null;
   eid: number;
   repo: string;
   ek: string;
@@ -319,11 +338,21 @@ export function sourceWhere(src: EventSource, ctx: QueryCtx, scope: Scope, ignor
   const w = new Where();
   addRepoScope(w, scope, ctx, ignoreRepos);
   if (src.extra) w.add(src.extra);
-  addRange(w, src.at, scope);
-  if (src.who) addWho(w, scope.who, ctx, src.who.login, src.who.email);
-  else if (scope.who === 'me') w.add('0');
-  if (src.text) addText(w, scope.q, src.text.table, src.alias, src.text.like);
-  else if (scope.q) w.add('0');
+  addRange(w, src.at, scope, src.atMs);
+  if (!src.who) {
+    if (scope.who === 'me') w.add('0');
+  } else if ('self' in src.who) {
+    if (scope.who !== 'everyone') w.add(scope.who === 'me' ? src.who.self : `NOT (${src.who.self})`);
+  } else {
+    addWho(w, scope.who, ctx, src.who.login, src.who.email);
+  }
+  if (!src.text) {
+    if (scope.q) w.add('0');
+  } else if (src.text.table) {
+    addText(w, scope.q, src.text.table, src.alias, src.text.like);
+  } else {
+    addLike(w, scope.q, src.text.like);
+  }
   return w;
 }
 
@@ -334,7 +363,7 @@ function eventUnion(ctx: QueryCtx, scope: Scope, types: EventType[] | null, igno
     if (types && !types.includes(src.type)) continue;
     const w = sourceWhere(src, ctx, scope, ignoreRepos);
     parts.push(
-      `SELECT ${src.at} AS at, '${src.type}' AS type, ${src.kind ? `'${src.kind}'` : 'NULL'} AS kind, ${src.alias}.id AS eid, ` +
+      `SELECT ${src.at} AS at, '${src.type}' AS type, ${src.kindCol ?? (src.kind ? `'${src.kind}'` : 'NULL')} AS kind, ${src.alias}.id AS eid, ` +
         `${repoKeySql('r')} AS repo, '${src.code}' || printf('%012d', ${src.alias}.id) AS ek ` +
         `FROM ${src.table} ${src.alias} JOIN repos r ON r.id = ${src.alias}.repo_id WHERE ${w.toSql()}`,
     );
@@ -404,6 +433,45 @@ export function listActivity(
   return { items: hydrateEvents(db, ctx, rows), nextCursor: next, total, facets };
 }
 
+interface CommentEventRow {
+  id: number;
+  thread_id: number;
+  live: number;
+  actor_id: number;
+  actor_kind: PrincipalKind;
+  actor_name: string;
+  pr_number: number | null;
+  commit_oid: string;
+  target_title: string | null;
+  path: string | null;
+  side: CommentActivity['side'];
+  start_line: number | null;
+  end_line: number | null;
+  excerpt: string | null;
+}
+
+// What an event copied of its thread, plus what is known now: who the actor is, whether the thread is still there, and
+// the title of what it is on (as GET /threads finds it, the pr_commits fallback included).
+const COMMENT_EVENT_SELECT =
+  'ce.*, (SELECT kind FROM principals WHERE id = ce.actor_id) AS actor_kind, (SELECT name FROM principals WHERE id = ce.actor_id) AS actor_name, ' +
+  'EXISTS (SELECT 1 FROM comment_threads WHERE id = ce.thread_id) AS live, ' +
+  'CASE WHEN ce.pr_number IS NOT NULL THEN (SELECT title FROM pull_requests WHERE repo_id = ce.repo_id AND number = ce.pr_number) ' +
+  `ELSE COALESCE((SELECT headline FROM commits WHERE repo_id = ce.repo_id AND oid = ce.commit_oid), ${prCommitHeadlineSql('ce')}) END AS target_title`;
+
+const toCommentActivity = (r: CommentEventRow): CommentActivity => ({
+  eventId: r.id,
+  threadId: r.thread_id,
+  live: !!r.live,
+  by: { id: r.actor_id, kind: r.actor_kind, name: r.actor_name },
+  target: r.pr_number !== null ? { kind: 'pr', number: r.pr_number, title: r.target_title } : { kind: 'commit', oid: r.commit_oid, title: r.target_title },
+  commitOid: r.commit_oid,
+  path: r.path,
+  side: r.side,
+  startLine: r.start_line,
+  endLine: r.end_line,
+  excerpt: r.excerpt,
+});
+
 function hydrateEvents(db: Db, ctx: QueryCtx, rows: EventRow[]): ActivityEvent[] {
   const isMe = isMeFn(ctx);
   const ids = (type: EventType) => idList([...new Set(rows.filter((r) => r.type === type).map((r) => r.eid))]);
@@ -420,6 +488,7 @@ function hydrateEvents(db: Db, ctx: QueryCtx, rows: EventRow[]): ActivityEvent[]
   const issues = load<IssueRow, Issue>('issue', 'issues', 'i', (r) => toIssue(r, isMe));
   const releases = load<ReleaseRow, Release>('release', 'releases', 'rel', (r) => toRelease(r, isMe));
   const stars = load<StarRow, Star>('star', 'stars', 's', toStar);
+  const comments = load<CommentEventRow, CommentActivity>('comment', 'comment_events', 'ce', toCommentActivity, COMMENT_EVENT_SELECT);
 
   return rows.map((e): ActivityEvent => {
     const base = { at: e.at, repo: e.repo };
@@ -430,7 +499,7 @@ function hydrateEvents(db: Db, ctx: QueryCtx, rows: EventRow[]): ActivityEvent[]
       }
       case 'pr': {
         const pr = prs.get(e.eid)!;
-        return { type: 'pr', kind: e.kind!, ...base, actor: pr.author, pr };
+        return { type: 'pr', kind: e.kind as 'opened' | 'merged' | 'closed', ...base, actor: pr.author, pr };
       }
       case 'issue': {
         const issue = issues.get(e.eid)!;
@@ -443,6 +512,12 @@ function hydrateEvents(db: Db, ctx: QueryCtx, rows: EventRow[]): ActivityEvent[]
       }
       case 'star':
         return { type: 'star', ...base, actor: stars.get(e.eid)!.user };
+      case 'comment': {
+        const comment = comments.get(e.eid)!;
+        // A principal, not an account: no login or avatar.
+        const actor = { login: null, name: comment.by.name, avatarUrl: null, isMe: comment.by.kind === 'self' };
+        return { type: 'comment', kind: e.kind as CommentEventKind, ...base, actor, comment };
+      }
     }
   });
 }

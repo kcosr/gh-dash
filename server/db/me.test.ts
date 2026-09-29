@@ -205,6 +205,7 @@ describe('lists across sources', () => {
         case 'issue': return `issue:${e.kind} ${e.issue.id}`;
         case 'release': return `release ${e.release.id}`;
         case 'star': return `star ${e.repo}`;
+        case 'comment': return `comment:${e.kind} ${e.repo}`;
       }
     };
     const range = days('2026-09-20', '2026-09-27');

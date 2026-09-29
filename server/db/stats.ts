@@ -78,7 +78,8 @@ function fetchGroups(db: Db, ctx: QueryCtx, scope: Scope, segments: OffsetSegmen
     params.push(...p);
   };
   const day = localDateSql(s.at, segments);
-  const me = opts.mine && s.who ? meSql(ctx, s.who.login, s.who.email) : { sql: '0', params: [] as Param[] };
+  // Only account-based sources (commits, merges) feed the "mine" counts.
+  const me = opts.mine && s.who && 'login' in s.who ? meSql(ctx, s.who.login, s.who.email) : { sql: '0', params: [] as Param[] };
   col(`${repoKeySql('r')} AS repo`);
   col('r.source_id AS source');
   col('r.visibility AS visibility');

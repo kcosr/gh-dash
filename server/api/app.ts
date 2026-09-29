@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
+import { CommentBus } from '../comments/bus';
 import type { Config } from '../config';
 import type { Db } from '../db/db';
 import type { DiffService } from '../diff/service';
@@ -13,6 +14,7 @@ import { docsPage } from './docs';
 import { HttpError, origin } from './http';
 import { openApiDocument } from './openapi';
 import { accountRoutes } from './routes/account';
+import { agentRoutes } from './routes/agents';
 import { commentRoutes } from './routes/comments';
 import { diffRoutes } from './routes/diffs';
 import { instanceRoutes } from './routes/instance';
@@ -20,6 +22,7 @@ import { listRoutes } from './routes/lists';
 import { repoRoutes } from './routes/repos';
 import { sourceRoutes } from './routes/sources';
 import { statsRoutes } from './routes/stats';
+import { streamRoutes } from './routes/stream';
 import { systemRoutes } from './routes/system';
 import { installStatic } from './static';
 
@@ -45,6 +48,11 @@ export interface AppDeps {
   localApiUrl?: () => string | null;
   /** Adding repositories (lookups and candidates on any source); by default over `tokens`, `sources` and `sync`. */
   tracking?: Tracking;
+  /**
+   * What happens to comments and agents, as it happens (GET /stream, MCP): one per server, shared by its listeners'
+   * apps (startServer passes it). By default a bus of this app's own.
+   */
+  bus?: CommentBus;
 }
 
 export type AppTransport = { kind: 'tcp' } | { kind: 'desktop'; secret: string };
@@ -53,6 +61,7 @@ export function createApp(input: AppDeps): Hono {
   const deps: AppDeps = {
     ...input,
     tracking: input.tracking ?? new Tracking({ db: input.db, tokens: input.tokens, sources: input.sources, sync: input.sync, tz: input.config.defaultTz }),
+    bus: input.bus ?? new CommentBus(),
   };
   const { config } = deps;
   // The sources API needs a registry; without one (tests) github.com is the only source it knows.
@@ -86,6 +95,8 @@ export function createApp(input: AppDeps): Hono {
   app.route('/api/v1', statsRoutes(deps));
   app.route('/api/v1', diffRoutes(deps));
   app.route('/api/v1', commentRoutes(deps));
+  app.route('/api/v1', agentRoutes(deps));
+  app.route('/api/v1', streamRoutes(deps));
   app.route('/api/v1', accountRoutes(deps));
   app.route('/api/v1', sourceRoutes({ ...deps, sources }));
   app.route('/api/v1', instanceRoutes(deps));

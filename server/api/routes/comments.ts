@@ -16,6 +16,7 @@ import {
   mayEdit,
   SELF_PRINCIPAL_ID,
   setThreadStatus,
+  threadRepo,
   type ThreadTarget,
 } from '../../db/comments';
 import type { Db } from '../../db/db';
@@ -94,6 +95,15 @@ function repoIdForKey(db: Db, key: string): number {
 }
 
 /**
+ * The rule repoIdForKey applies, for a thread reached by its id (or a comment's): 404 unless the thread exists in a
+ * repo that isn't removed. A removed repo's threads are kept, and come back with the repo if the sync finds it again.
+ */
+function requireLiveThread(db: Db, threadId: number, what: 'Thread' | 'Comment' = 'Thread'): void {
+  const owner = threadRepo(db, threadId);
+  if (!owner || owner.removed) throw new HttpError(404, `${what} not found`);
+}
+
+/**
  * Who is acting. Every request is the dashboard's own user today; once agents get API tokens, this is where a token
  * maps to its principal.
  */
@@ -162,41 +172,52 @@ export function commentRoutes({ db }: AppDeps): Hono {
     return c.json(createThread(db, target, input, actingPrincipal(db)));
   });
 
-  r.get('/threads/:id', (c) => c.json(found(getThread(db, idParam(c.req.param('id'))), 'Thread')));
+  // By id: every route first checks the thread's repo, as the list routes do through repoIdForKey.
+  const liveThreadId = (c: Context) => {
+    const id = idParam(c.req.param('id')!);
+    requireLiveThread(db, id);
+    return id;
+  };
+  const liveComment = (c: Context) => {
+    const id = idParam(c.req.param('id')!);
+    const ref = found(getCommentRef(db, id), 'Comment');
+    requireLiveThread(db, ref.threadId, 'Comment');
+    return { id, ...ref };
+  };
+
+  r.get('/threads/:id', (c) => c.json(getThread(db, liveThreadId(c))));
 
   r.patch('/threads/:id', async (c) => {
-    const id = idParam(c.req.param('id'));
+    const id = liveThreadId(c);
     const { status } = parseWith(statusBody, await jsonBody(c));
-    return c.json(found(setThreadStatus(db, id, status), 'Thread'));
+    return c.json(setThreadStatus(db, id, status));
   });
 
   r.delete('/threads/:id', (c) => {
-    const thread = found(getThread(db, idParam(c.req.param('id'))), 'Thread');
+    const thread = getThread(db, liveThreadId(c))!;
     if (!mayDelete(actingPrincipal(db), thread.comments[0]!.author.id)) throw new HttpError(403, 'Only its author can delete this thread');
     deleteThread(db, thread.id);
     return c.body(null, 204);
   });
 
   r.post('/threads/:id/comments', async (c) => {
-    const id = idParam(c.req.param('id'));
+    const id = liveThreadId(c);
     const { body } = parseWith(replyBody, await jsonBody(c));
-    return c.json(found(addComment(db, id, actingPrincipal(db), body), 'Thread'));
+    return c.json(addComment(db, id, actingPrincipal(db), body));
   });
 
   r.patch('/comments/:id', async (c) => {
-    const id = idParam(c.req.param('id'));
+    const comment = liveComment(c);
     const { body } = parseWith(replyBody, await jsonBody(c));
-    const ref = found(getCommentRef(db, id), 'Comment');
-    if (!mayEdit(actingPrincipal(db), ref.authorId)) throw new HttpError(403, 'You can only edit your own comments');
-    return c.json(editComment(db, id, body));
+    if (!mayEdit(actingPrincipal(db), comment.authorId)) throw new HttpError(403, 'You can only edit your own comments');
+    return c.json(editComment(db, comment.id, body));
   });
 
   // The first comment's author is the thread's: deleting it deletes the thread, which mayDelete allows them.
   r.delete('/comments/:id', (c) => {
-    const id = idParam(c.req.param('id'));
-    const ref = found(getCommentRef(db, id), 'Comment');
-    if (!mayDelete(actingPrincipal(db), ref.authorId)) throw new HttpError(403, 'Only its author can delete this comment');
-    return c.json(deleteComment(db, id));
+    const comment = liveComment(c);
+    if (!mayDelete(actingPrincipal(db), comment.authorId)) throw new HttpError(403, 'Only its author can delete this comment');
+    return c.json(deleteComment(db, comment.id));
   });
 
   return r;

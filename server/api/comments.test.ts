@@ -142,6 +142,40 @@ describe('comment threads API', () => {
     }
   });
 
+  it("serves no thread of a removed repo, by id or by target, until the repo is back", async () => {
+    const { db, json, send } = makeApp();
+    const t = (await json('POST', '/prs/app/2/threads', lineThread)).body;
+    const reply = (await json('POST', `/threads/${t.id}/comments`, { body: 'Because.' })).body.comments[1]!;
+    const commitThread = (await json('POST', `/commits/app/${COMMIT}/threads`, { body: 'x' })).body;
+    const before = db.all('SELECT * FROM comments ORDER BY id');
+    db.run("UPDATE repos SET removed_at = '2026-09-29T00:00:00Z' WHERE name = 'app'");
+    const routes = [
+      ['GET', `/threads/${t.id}`, undefined, 'Thread not found'],
+      ['PATCH', `/threads/${t.id}`, { status: 'resolved' }, 'Thread not found'],
+      ['DELETE', `/threads/${t.id}`, undefined, 'Thread not found'],
+      ['DELETE', `/threads/${commitThread.id}`, undefined, 'Thread not found'],
+      ['POST', `/threads/${t.id}/comments`, { body: 'More' }, 'Thread not found'],
+      ['PATCH', `/comments/${reply.id}`, { body: 'Edited' }, 'Comment not found'],
+      ['DELETE', `/comments/${reply.id}`, undefined, 'Comment not found'],
+      ['DELETE', `/comments/${t.comments[0]!.id}`, undefined, 'Comment not found'],
+      ['GET', '/prs/app/2/threads', undefined, 'Repository not found'],
+      ['POST', '/prs/app/2/threads', lineThread, 'Repository not found'],
+      ['GET', `/commits/app/${COMMIT}/threads`, undefined, 'Repository not found'],
+      ['POST', `/commits/app/${COMMIT}/threads`, { body: 'x' }, 'Repository not found'],
+    ] as const;
+    for (const [method, path, body, error] of routes) {
+      const res = await send(method, path, body);
+      expect(res.status, `${method} ${path}`).toBe(404);
+      expect(await res.json(), `${method} ${path}`).toEqual({ error });
+    }
+    // Nothing changed underneath, and it all comes back with the repo.
+    expect(db.all('SELECT * FROM comments ORDER BY id')).toEqual(before);
+    expect(db.get<{ status: string }>('SELECT status FROM comment_threads WHERE id = ?', [t.id])!.status).toBe('open');
+    db.run("UPDATE repos SET removed_at = NULL WHERE name = 'app'");
+    expect((await json('GET', `/threads/${t.id}`)).body.comments.map((c) => c.body)).toEqual(['Why?', 'Because.']);
+    expect((await json('PATCH', `/comments/${reply.id}`, { body: 'Edited' })).status).toBe(200);
+  });
+
   it("lets the dashboard user delete an agent's comments but not edit them", async () => {
     const { db, json } = makeApp();
     const t = (await json('POST', '/prs/app/2/threads', lineThread)).body;

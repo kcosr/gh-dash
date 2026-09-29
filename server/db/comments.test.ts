@@ -15,6 +15,7 @@ import {
   mayEdit,
   SELF_PRINCIPAL_ID,
   setThreadStatus,
+  threadRepo,
   type ThreadTarget,
 } from './comments';
 import type { Db } from './db';
@@ -89,6 +90,14 @@ describe('comment threads', () => {
     expect(listThreads(db, commit()).map((t) => t.id)).toEqual([c.id]);
     // A commit thread whose oid is some PR's head is still not that PR's.
     expect(listThreads(db, { repoId: app, kind: 'commit', oid: HEAD })).toEqual([]);
+  });
+
+  it("names a thread's repo and whether the sync removed it", () => {
+    const t = open(pr(), general);
+    expect(threadRepo(db, t.id)).toEqual({ repoId: app, removed: false });
+    db.run("UPDATE repos SET removed_at = '2026-09-29T00:00:00Z' WHERE id = ?", [app]);
+    expect(threadRepo(db, t.id)).toEqual({ repoId: app, removed: true });
+    expect(threadRepo(db, 9999)).toBeNull();
   });
 
   it('outlives the PR row (a transfer re-creates it) but not the repo', () => {

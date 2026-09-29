@@ -102,6 +102,15 @@ export function listThreads(db: Db, target: ThreadTarget): CommentThread[] {
   return hydrate(db, rows);
 }
 
+/** The repo a thread belongs to, and whether the sync has marked it removed; null when there is no such thread. */
+export function threadRepo(db: Db, threadId: number): { repoId: number; removed: boolean } | null {
+  const row = db.get<{ repo_id: number; removed: number }>(
+    'SELECT t.repo_id, r.removed_at IS NOT NULL AS removed FROM comment_threads t JOIN repos r ON r.id = t.repo_id WHERE t.id = ?',
+    [threadId],
+  );
+  return row ? { repoId: row.repo_id, removed: !!row.removed } : null;
+}
+
 export function getThread(db: Db, id: number): CommentThread | null {
   return hydrate(db, db.all<ThreadRow>(`${THREAD_SELECT} WHERE t.id = ?`, [id]))[0] ?? null;
 }

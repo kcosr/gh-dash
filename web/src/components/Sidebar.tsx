@@ -12,14 +12,16 @@ import {
   useSettings,
   useViews,
 } from '../api/hooks';
+import { ctxOf } from '../lib/contexts';
 import { DAY } from '../lib/time';
 import { OVERLAY_KEYS, canonicalQuery, encodeParams, passesRepoFilters, useUrlState } from '../lib/urlState';
 import { cx } from '../lib/util';
 import { Icon } from './Icon';
 import { MenuButton } from './Menu';
 import { RepoName } from './RepoName';
-import { useRepoLabel, useWords } from './repoMapContext';
+import { useRepoLabel, useSourceCtx, useWords } from './repoMapContext';
 import { Seg } from './Seg';
+import { SourceBadge, sourceTitle } from './SourceBadge';
 import { useToast } from './Toasts';
 import { useUI } from './ui';
 
@@ -71,6 +73,8 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const toast = useToast();
   const label = useRepoLabel();
   const w = useWords().pr;
+  const { current, badges, byHost } = useSourceCtx();
+  const ctx = current?.host ?? null;
   const createSet = useCreateSet();
   const deleteSet = useDeleteSet();
   const createView = useCreateView();
@@ -79,7 +83,9 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const [filter, setFilter] = useState('');
   const [showInactive, setShowInactive] = useState(false);
 
-  const all = repos.data ?? [];
+  // The context's repos: the sidebar lists, selects and counts only these (a set made here holds only these).
+  const everything = repos.data ?? [];
+  const all = useMemo(() => (ctx ? everything.filter((r) => r.source === ctx) : everything), [everything, ctx]);
   const scope = useMemo(() => defaultScope(all, settings.data), [all, settings.data]);
   const selected = useMemo(() => new Set(s.repos ?? scope), [s.repos, scope]);
   const includeForks = !!settings.data?.includeForks;
@@ -122,6 +128,17 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
     return valid.length === selected.size && valid.every((k) => selected.has(k));
   };
   const curQuery = canonicalQuery(location.search);
+  // Sets and saved views belong to no context; where they list follows from what they hold. In a source's context: the
+  // sets whose repos are all on it, and the views saved in it (their query names it). In All: every one.
+  const setsHere = useMemo(() => {
+    const list = sets.data ?? [];
+    const byKey = new Map(everything.map((r) => [r.key, r.source]));
+    return ctx ? list.filter((st) => st.repos.every((k) => (byKey.get(k) ?? ctx) === ctx)) : list;
+  }, [sets.data, everything, ctx]);
+  const viewsHere = useMemo(() => {
+    const list = views.data ?? [];
+    return ctx ? list.filter((v) => ctxOf(v.query) === ctx) : list;
+  }, [views.data, ctx]);
 
   const newSet = () => {
     if (!inScope.length) { toast('Select some repositories first'); return; }
@@ -152,6 +169,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
     const syncing = r.syncedAt === null && !r.unavailable;
     const openPrs = `${r.stats.openPrs} open ${repoProvider(r).pr.many}`;
     const description = [
+      badges ? `On ${sourceTitle(byHost.get(r.source) ?? { host: r.source, name: r.source })}` : '',
       r.visibility === 'private' ? 'Private' : r.visibility === 'internal' ? 'Internal' : '',
       r.unavailable ? `Unavailable: ${r.unavailable.reason}` : '', syncing ? 'Syncing' : '',
       r.isArchived ? 'Archived' : '', r.hidden ? 'Hidden' : '', r.isFork ? 'Fork' : '',
@@ -180,6 +198,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
           onClick={() => { set({ repos: [r.key], ...(onNavigate ? { pr: null, diff: null } : {}) }); onNavigate?.(); }}
         >
           <span className="repo-name">
+            {badges && <SourceBadge host={r.source} />}
             <RepoName repo={r.key} className="rname" />
             {r.visibility === 'private' && <span className="lk" title="Private"><Icon name="lock" /></span>}
             {r.visibility === 'internal' && <span className="lk" title="Internal"><Icon name="lock" /></span>}
@@ -261,7 +280,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
         <span>Sets</span>
         <button type="button" className="mini" title="New set from selection" aria-label="New set from selection" onClick={newSet}>+</button>
       </div>
-      {(sets.data ?? []).map((st) => (
+      {setsHere.map((st) => (
         <div
           key={st.id}
           className={cx('set-item', sameSel(st.repos) && 'on')}
@@ -285,13 +304,13 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
           </button>
         </div>
       ))}
-      {sets.data && !sets.data.length && <div className="side-empty">Select repos, then + to save a set</div>}
+      {sets.data && !setsHere.length && <div className="side-empty">Select repos, then + to save a set</div>}
 
       <div className="side-h">
         <span>Saved views</span>
         <button type="button" className="mini" title="Save current filters as a view" aria-label="Save current view" onClick={saveView}>+</button>
       </div>
-      {(views.data ?? []).map((v) => {
+      {viewsHere.map((v) => {
         const on = v.path === location.pathname && canonicalQuery(v.query) === curQuery;
         const go = () => { navigate(`${v.path}${v.query ? `?${v.query}` : ''}`); onNavigate?.(); };
         return (
@@ -318,7 +337,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
           </div>
         );
       })}
-      {views.data && !views.data.length && <div className="side-empty">+ saves the current filters</div>}
+      {views.data && !viewsHere.length && <div className="side-empty">+ saves the current filters</div>}
     </aside>
   );
 }

@@ -4,6 +4,7 @@ import {
   defaultRepoScope,
   inputHost,
   matchRepoRef,
+  paletteRefKeys,
   parseGitHubInput,
   parseGitLabInput,
   parseRepoInput,
@@ -352,10 +353,17 @@ describe('the palette reference', () => {
     ['my.repo_x#1', 'my.repo_x', '1'],
     ['Kcosr/Gh-Dash#007', 'Kcosr/Gh-Dash', '007'],
   ])('matches %s', (text, repoPart, number) => {
-    expect(matchRepoRef(text)).toEqual({ repo: repoPart, number });
+    expect(matchRepoRef(text)).toEqual({ repo: repoPart, sep: '#', number });
   });
 
-  it.each(['', 'gh-dash', 'gh-dash#', '#12', 'gh dash#1', 'a//b#1', '/a#1', 'a/#1', 'a/b/#1', 'a#1b', 'a#x', 'a#1#2', 'a@b#1'])('does not match %j', (text) => {
+  it.each([
+    ['app!12', 'app', '12'],
+    ['gitlab.example.com/platform/team/app!3', 'gitlab.example.com/platform/team/app', '3'],
+  ])('matches the MR reference %s', (text, repoPart, number) => {
+    expect(matchRepoRef(text)).toEqual({ repo: repoPart, sep: '!', number });
+  });
+
+  it.each(['', 'gh-dash', 'gh-dash#', 'gh-dash!', '#12', '!12', 'gh dash#1', 'a//b#1', '/a#1', 'a/#1', 'a/b/#1', 'a#1b', 'a#x', 'a#1#2', 'a!1#2', 'a#1!2', 'a@b#1'])('does not match %j', (text) => {
     expect(matchRepoRef(text)).toBeNull();
   });
 
@@ -368,6 +376,30 @@ describe('the palette reference', () => {
     expect(repoRefKeys('TWIN', many).sort()).toEqual(['a/twin', 'b/twin']);
     expect(repoRefKeys('nope', many)).toEqual([]);
     expect(repoRefKeys('team/proj', many)).toEqual([]);
+  });
+
+  describe('by kind and context', () => {
+    const GL = 'gitlab.example.com';
+    const gl = (path: string, trackedBy: TrackedBy = 'owned') =>
+      repo(`${GL}/${path}`, { source: GL, provider: 'gitlab', nameWithOwner: path, owner: path.slice(0, path.lastIndexOf('/')) }, trackedBy);
+    const both = [repo('alice/app'), repo('alice/tool'), gl('alice/app'), gl('platform/team/svc', 'manual')];
+    const keys = (text: string, context: string | null = null) => paletteRefKeys(matchRepoRef(text)!, both, context);
+
+    it('reads ! as a GitLab MR, and anything else as text', () => {
+      expect(keys('app!3')).toEqual([`${GL}/alice/app`]);
+      expect(keys('svc!3', 'github.com')).toEqual([`${GL}/platform/team/svc`]);
+      expect(keys('tool!3')).toBeNull(); // only on GitHub: a text search, as before
+      expect(keys('nope!3')).toBeNull();
+    });
+
+    it('reads # as a GitHub PR, the context first, then leniently any repo', () => {
+      expect(keys('app#3')).toEqual(['alice/app']);
+      expect(keys('app#3', 'github.com')).toEqual(['alice/app']);
+      expect(keys('app#3', GL)).toEqual([`${GL}/alice/app`]); // in GitLab's context, its app
+      expect(keys('svc#3')).toEqual([`${GL}/platform/team/svc`]); // no GitHub repo of that name
+      expect(keys('tool#3', GL)).toEqual(['alice/tool']); // not in the context: anywhere
+      expect(keys('nope#3')).toEqual([]);
+    });
   });
 });
 

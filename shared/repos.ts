@@ -90,16 +90,16 @@ export function repoLabel<R extends RepoIdent>(key: string, repos: RepoSource<R>
 }
 
 // ---------------------------------------------------------------------------
-// "<repo>#<n>" references typed into the command palette
+// "<repo>#<n>" and "<repo>!<n>" references typed into the command palette
 // ---------------------------------------------------------------------------
 
-/** `key#123`, where the repo part is a key (`owner/name`, possibly nested) or a bare name. */
-export const REPO_REF_RE = /^([\w.-]+(?:\/[\w.-]+)*)#(\d+)$/;
+/** `key#123` (a GitHub PR) or `key!123` (a GitLab MR), where the repo part is a key (`owner/name`, possibly nested) or a bare name. */
+export const REPO_REF_RE = /^([\w.-]+(?:\/[\w.-]+)*)([#!])(\d+)$/;
 
 /** Match a palette query against `REPO_REF_RE`. `number` stays a string: it is typed as a prefix. */
-export function matchRepoRef(text: string): { repo: string; number: string } | null {
+export function matchRepoRef(text: string): { repo: string; sep: '#' | '!'; number: string } | null {
   const m = REPO_REF_RE.exec(text);
-  return m ? { repo: m[1]!, number: m[2]! } : null;
+  return m ? { repo: m[1]!, sep: m[2] as '#' | '!', number: m[3]! } : null;
 }
 
 /**
@@ -111,6 +111,30 @@ export function repoRefKeys<R extends RepoIdent>(part: string, repos: RepoSource
   if (key) return [key];
   const lower = part.toLowerCase();
   return list(repos).filter((r) => r.name.toLowerCase() === lower).map((r) => r.key);
+}
+
+/**
+ * The repos a palette reference means (`repoRefKeys` over narrowing pools, the first that matches wins):
+ *  - `name!n` is a GitLab MR: GitLab repos only, the context's first. None: null, it isn't a reference (so a GitHub
+ *    user's `x!12` stays a text search);
+ *  - `name#n` is a GitHub PR: GitHub repos of the context, then any of the context's (GitLab users type `#` too), then
+ *    GitHub repos, then any. None: [], the server decides.
+ * `context`: the context's source host; null in All.
+ */
+export function paletteRefKeys<R extends RepoIdent & Pick<Repo, 'provider'>>(
+  ref: { repo: string; sep: '#' | '!' },
+  repos: RepoSource<R>,
+  context: string | null,
+): string[] | null {
+  const all = list(repos);
+  const here = (pool: readonly R[]) => (context ? pool.filter((r) => r.source === context) : null);
+  const ofKind = all.filter((r) => r.provider === (ref.sep === '!' ? 'gitlab' : 'github'));
+  const pools = ref.sep === '!' ? [here(ofKind), ofKind] : [here(ofKind), here(all), ofKind, all];
+  for (const pool of pools) {
+    const keys = pool ? repoRefKeys(ref.repo, pool) : [];
+    if (keys.length) return keys;
+  }
+  return ref.sep === '!' ? null : [];
 }
 
 // ---------------------------------------------------------------------------

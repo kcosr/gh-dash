@@ -7,12 +7,14 @@ import type { PrWords } from '../../../shared/provider';
 import { getTheme, setTheme } from '../lib/storage';
 import type { Theme } from '../lib/storage';
 import { fmtNum, fmtTime, relFuture, relLong } from '../lib/time';
+import { ALL, useSwitchContext } from '../lib/contexts';
 import { carrySearch, viewFromPath } from '../lib/urlState';
 import { useNow } from '../lib/util';
 import { MOD_K } from './bits';
-import { Icon } from './Icon';
+import { Icon, ProviderIcon } from './Icon';
 import type { IconName } from './Icon';
-import { useRepoLabel, useWords } from './repoMapContext';
+import { useRepoLabel, useSourceCtx, useWords } from './repoMapContext';
+import { sourceTitle } from './SourceBadge';
 import { useToast } from './Toasts';
 import { useUI } from './ui';
 
@@ -65,7 +67,9 @@ export function TopBar({ theme, onToggleTheme, onOpenSidebar, sidebarOpen = fals
   const view = viewFromPath(location.pathname);
   const { openPalette } = useUI();
   const w = useWords().pr;
-  const carry = carrySearch(location.search);
+  const { current, multi } = useSourceCtx();
+  // Settings is context-free (its URL has none): its tabs lead back to the context you came from.
+  const carry = view === 'settings' ? (current ? `?source=${encodeURIComponent(current.host)}` : '') : carrySearch(location.search);
   const navRef = useRef<HTMLElement>(null);
   useEffect(() => {
     const nav = navRef.current;
@@ -81,7 +85,7 @@ export function TopBar({ theme, onToggleTheme, onOpenSidebar, sidebarOpen = fals
   }, [view]);
 
   return (
-    <header className="topbar">
+    <header className={multi ? 'topbar has-ctx' : 'topbar'}>
       {onOpenSidebar && <button type="button" className="btn icon" onClick={onOpenSidebar}
         aria-label="Open sidebar" aria-haspopup="dialog" aria-controls="mobile-sidebar" aria-expanded={sidebarOpen}>
         <Icon name="list" />
@@ -94,6 +98,7 @@ export function TopBar({ theme, onToggleTheme, onOpenSidebar, sidebarOpen = fals
       <Link to={`/prs${carry}`} className="brand" aria-label="gh-dash home">
         <span className="mark"><Icon name="pulse" /></span><span className="brand-name">gh-dash</span>
       </Link>
+      <ContextSwitcher />
       <nav ref={navRef} className="nav" aria-label="Main">
         {NAV.map((n) => {
           const on = n.views.includes(view);
@@ -120,6 +125,36 @@ export function TopBar({ theme, onToggleTheme, onOpenSidebar, sidebarOpen = fals
         <Icon name="sliders" />
       </Link>
     </header>
+  );
+}
+
+/**
+ * GitHub | GitLab | All (design §7.1): a quiet segmented control, shown only with two sources or more. Each context
+ * keeps its own place; switching is one navigation to it. Names give way to the marks on narrow screens (tooltips keep
+ * them).
+ */
+function ContextSwitcher() {
+  const { sources, multi, current } = useSourceCtx();
+  const switchTo = useSwitchContext();
+  const view = viewFromPath(useLocation().pathname);
+  if (!multi) return null;
+  const on = current?.host ?? ALL;
+  const options = [
+    ...sources.map((s) => ({ value: s.host, kind: s.kind, name: s.name, title: `${sourceTitle(s)}: only its repositories` })),
+    { value: ALL, kind: null, name: 'All', title: 'All sources' },
+  ];
+  return (
+    <div className="seg ctx-switch" role="group" aria-label="Source">
+      {options.map((o) => (
+        <button key={o.value} type="button" className={o.value === on ? 'on' : undefined} aria-pressed={o.value === on}
+          title={o.title} aria-label={o.name}
+          // On Settings (context-free) the current one also leads back to its place.
+          onClick={() => { if (o.value !== on || view === 'settings') switchTo(o.value); }}>
+          {o.kind && <ProviderIcon kind={o.kind} />}
+          <span className={o.kind ? 'ctx-name' : undefined}>{o.name}</span>
+        </button>
+      ))}
+    </div>
   );
 }
 

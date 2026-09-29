@@ -30,14 +30,27 @@ fragment ProbeFields on Project {
   latestReleases: releases(first: 3, sort: CREATED_DESC) { nodes { tagName upcomingRelease } }
 }`;
 
+/** The account. Queries that list projects carry it along (the sync claims the account they were read for). */
+const VIEWER_FIELDS = `currentUser { id ${USER} }`;
+
 export const VIEWER = `
 query Viewer {
-  currentUser { id ${USER} }
+  ${VIEWER_FIELDS}
+}`;
+
+/**
+ * The account with the addresses its commits may carry, which is what "me" means on GitLab commits (they name no
+ * account). Kept out of the sync's own queries: it is the one place a field the token may not read would fail.
+ */
+export const VIEWER_ACCOUNT = `
+query ViewerAccount {
+  currentUser { id ${USER} publicEmail commitEmail emails { nodes { email } } }
 }`;
 
 /** Projects in the viewer's personal namespace (archived ones included: GitLab's default). */
 export const OWNED_PROJECTS = `
 query OwnedProjects($after: String, $first: Int!) {
+  ${VIEWER_FIELDS}
   projects(personal: true, first: $first, after: $after) {
     pageInfo { hasNextPage endCursor }
     nodes { ...ProjectFields }
@@ -47,7 +60,45 @@ ${PROJECT_FIELDS}`;
 
 export const PROJECT = `
 query Project($path: ID!) {
+  ${VIEWER_FIELDS}
   project(fullPath: $path) { ...ProjectFields ...ProbeFields }
+}
+${PROJECT_FIELDS}
+${PROBE_FIELDS}`;
+
+/** Tracked projects by global id (25 at a time); ones the token can no longer see are not listed. */
+export const MANUAL_PROJECTS = `
+query ManualProjects($ids: [ID!], $first: Int!) {
+  projects(ids: $ids, first: $first) { nodes { ...ProjectFields ...ProbeFields } }
+}
+${PROJECT_FIELDS}
+${PROBE_FIELDS}`;
+
+/** One tracked project by global id, with the viewer to claim. */
+export const PROJECT_BY_NODE = `
+query ProjectByNode($ids: [ID!], $first: Int!) {
+  ${VIEWER_FIELDS}
+  projects(ids: $ids, first: $first) { nodes { ...ProjectFields ...ProbeFields } }
+}
+${PROJECT_FIELDS}
+${PROBE_FIELDS}`;
+
+/**
+ * The Add dialog's lookup, in one request: the project and its probe, what the token may read of it, and the size of
+ * its first sync (items updated since `$since`, all releases).
+ */
+export const PROJECT_LOOKUP = `
+query ProjectLookup($path: ID!, $since: Time!) {
+  ${VIEWER_FIELDS}
+  project(fullPath: $path) {
+    ...ProjectFields
+    ...ProbeFields
+    userPermissions { downloadCode readMergeRequest }
+    issuesEnabled
+    recentMergeRequests: mergeRequests(updatedAfter: $since) { count }
+    recentIssues: issues(updatedAfter: $since, types: [ISSUE]) { count }
+    releaseCount: releases { count }
+  }
 }
 ${PROJECT_FIELDS}
 ${PROBE_FIELDS}`;

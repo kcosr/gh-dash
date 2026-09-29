@@ -29,6 +29,14 @@ export interface GqlViewer extends GqlUser {
   id: string;
 }
 
+/** The viewer with the addresses its commits may carry (each nullable: hidden, or not set). */
+export interface GqlViewerAccount extends GqlViewer {
+  publicEmail: string | null;
+  /** The address new commits are made with: a private noreply one for accounts that hide their email. */
+  commitEmail: string | null;
+  emails: { nodes: { email: string }[] } | null;
+}
+
 export interface GqlLabels {
   /** `color` is "#rrggbb". */
   nodes: { title: string; color: string }[];
@@ -132,16 +140,49 @@ export interface GqlRelease {
   links: { selfUrl: string | null } | null;
 }
 
+/** What the Add dialog's lookup adds to a project: what the token may read, and the counts sizing its first sync. */
+export interface GqlLookup {
+  /** Null while GitLab shows the token no permissions. */
+  userPermissions: { downloadCode: boolean | null; readMergeRequest: boolean | null } | null;
+  /** False when the feature is turned off or the token's role can't read issues. */
+  issuesEnabled: boolean | null;
+  recentMergeRequests: { count: number } | null;
+  recentIssues: { count: number } | null;
+  releaseCount: { count: number } | null;
+}
+
 export interface ViewerData {
   currentUser: GqlViewer | null;
 }
 
+export interface ViewerAccountData {
+  currentUser: GqlViewerAccount | null;
+}
+
+/** The viewer rides along with the list, so the sync can claim it without a request of its own. */
 export interface OwnedProjectsData {
+  currentUser: GqlViewer | null;
   projects: Connection<GqlProject>;
 }
 
 export interface ProjectData {
+  currentUser: GqlViewer | null;
   project: (GqlProject & GqlProbe) | null;
+}
+
+/** Projects by global id; ones the token can't see (or that are gone) are simply not listed. */
+export interface ManualProjectsData {
+  projects: { nodes: (GqlProject & GqlProbe)[] };
+}
+
+export interface ProjectByNodeData {
+  currentUser: GqlViewer | null;
+  projects: { nodes: (GqlProject & GqlProbe)[] };
+}
+
+export interface ProjectLookupData {
+  currentUser: GqlViewer | null;
+  project: (GqlProject & GqlProbe & GqlLookup) | null;
 }
 
 export interface ProbesData {
@@ -177,6 +218,22 @@ export interface RestUser {
   username: string;
   name: string | null;
   avatar_url: string | null;
+}
+
+/** A project of `GET /projects` (the full entity: the simple one has no visibility). */
+export interface RestProject {
+  id: number;
+  path: string;
+  path_with_namespace: string;
+  description: string | null;
+  visibility: 'public' | 'internal' | 'private';
+  archived?: boolean;
+  /** Present for a fork whose upstream the token can see. */
+  forked_from_project?: { id: number } | null;
+  star_count: number;
+  last_activity_at: string | null;
+  /** `kind` is 'user' for a personal namespace (its full_path is the username). */
+  namespace: { kind: 'user' | 'group'; full_path: string };
 }
 
 export interface RestIssue {

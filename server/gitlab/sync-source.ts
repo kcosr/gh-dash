@@ -16,21 +16,54 @@ import type {
   ViewerAccount,
   ViewerInfo,
 } from '../provider/types';
+import { notFound, unreadable } from './access';
 import { GitLabClient } from './client';
-import { mapCommit, mapIssue, mapMergeRequest, mapProbe, mapProject, mapRelease, mapStar, mapViewer, releaseCreatedAt } from './map';
-import { MERGE_REQUESTS, OWNED_PROJECTS, PROBES, PROJECT, RECHECK_MERGE_REQUESTS, RELEASES, VIEWER } from './queries';
+import {
+  mapCandidate,
+  mapCommit,
+  mapIssue,
+  mapMergeRequest,
+  mapProbe,
+  mapProject,
+  mapRelease,
+  mapStar,
+  mapViewer,
+  mapViewerEmails,
+  releaseCreatedAt,
+} from './map';
+import {
+  MANUAL_PROJECTS,
+  MERGE_REQUESTS,
+  OWNED_PROJECTS,
+  PROBES,
+  PROJECT,
+  PROJECT_BY_NODE,
+  PROJECT_LOOKUP,
+  RECHECK_MERGE_REQUESTS,
+  RELEASES,
+  VIEWER,
+  VIEWER_ACCOUNT,
+} from './queries';
 import { encodeSegment, GitLabRestClient, type RestPage } from './rest';
 import { GitLabError, GitLabTransport, type GitLabOptions } from './transport';
 import type {
   Connection,
+  GqlProbe,
+  GqlProject,
+  GqlViewer,
+  ManualProjectsData,
   MergeRequestsData,
   OwnedProjectsData,
   ProbesData,
+  ProjectByNodeData,
   ProjectData,
+  ProjectLookupData,
   ReleasesData,
   RestCommit,
   RestIssue,
+  RestProject,
   RestStarrer,
+  ViewerAccountData,
   ViewerData,
 } from './types';
 
@@ -42,8 +75,13 @@ const ISSUE_PAGE = 50;
 const RELEASE_PAGE = 20;
 /** Each project costs Gitaly calls for its default branch and head commit. */
 const PROJECT_PAGE = 50;
-/** Projects probed per request. */
-const PROBE_CHUNK = 25;
+/** Projects probed, or read by global id, per request. */
+const ID_CHUNK = 25;
+/** Most projects the Add dialog lists: 10 REST pages of 100. */
+const MAX_CANDIDATES = 1000;
+const CANDIDATE_PAGE = 100;
+/** Candidates offered as suggestions: the most recently active (the caller drops the ones already tracked). */
+const SUGGESTED = 8;
 const COMMIT_PAGE = 100;
 const STAR_PAGE = 100;
 /** Most starrers listed in one round; beyond, they're paged newest first (the sync doesn't diff unstars past 3000). */
@@ -67,8 +105,9 @@ type StarsPage = Page<StarRecord> & { totalCount: number };
  * (commits with stats, issues with who closed them, starrers). A round's sections are fetched in parallel, one request
  * each (stars: one per 100 starrers).
  *
- * Repositories added by hand (refresh, repoByNode) and the Add dialog (candidates, lookup) aren't answered yet: those
- * calls reject.
+ * Every read that lists projects or looks one up carries the viewer (`currentUser`) in the same request, for the sync to
+ * claim. A project the token can't see is simply absent from GitLab's answers, and reads as 'not-found' (GitLab doesn't
+ * say why: doesn't exist, or the account isn't a member).
  */
 export class GitLabSyncSource implements SyncSource {
   readonly kind = 'gitlab';
@@ -100,39 +139,76 @@ export class GitLabSyncSource implements SyncSource {
     return this.transport.base;
   }
 
-  /** The emails aren't read yet: none. */
+  /**
+   * The token's account with its addresses. The addresses are best effort: if GitLab refuses the query that reads them
+   * (a field the token's scope can't see), the account is read without them, and "me" on commits falls back to the
+   * configured addresses.
+   */
   async viewer(): Promise<ViewerAccount> {
-    return { ...(await this.currentUser()), emails: [] };
+    let data: ViewerAccountData;
+    try {
+      data = await this.graphql.query<ViewerAccountData>(VIEWER_ACCOUNT);
+    } catch (err) {
+      if (!(err instanceof GitLabError) || err.kind !== 'graphql') throw err;
+      return { ...(await this.currentUser()), emails: [] };
+    }
+    const user = this.account(data.currentUser);
+    return { ...user, emails: mapViewerEmails(data.currentUser!) };
   }
 
   /**
-   * Projects in the viewer's personal namespace; group projects are for explicit tracking, not "mine". The viewer is
-   * read after the list, in a request of its own.
+   * Projects in the viewer's personal namespace; group projects are for explicit tracking, not "mine". The viewer comes
+   * with every page; one that changes mid-list fails the list as 'auth'.
    */
   async ownedRepos(): Promise<{ viewer: ViewerInfo; repos: RepoRecord[] }> {
     const repos: RepoRecord[] = [];
+    let viewer: ViewerInfo | null = null;
     let after: string | null = null;
     do {
       const data: OwnedProjectsData = await this.graphql.query<OwnedProjectsData>(OWNED_PROJECTS, { after, first: PROJECT_PAGE });
+      const page = this.account(data.currentUser);
+      if (viewer && viewer.id !== page.id) {
+        throw new GitLabError('auth', `The GitLab token's account changed while listing projects (${viewer.login}, then ${page.login})`);
+      }
+      viewer = page;
       repos.push(...data.projects.nodes.map((p) => mapProject(p, this.base)));
       after = data.projects.pageInfo.hasNextPage ? data.projects.pageInfo.endCursor : null;
     } while (after);
-    return { viewer: await this.currentUser(), repos };
+    return { viewer: viewer!, repos };
   }
 
-  refresh(_repos: TrackedRepo[]): Promise<RefreshResult> {
-    return unsupported('refresh repositories added by hand');
+  /**
+   * Projects added by hand, by global id (which follows renames and transfers), 25 to a request. One GitLab doesn't
+   * list is 'not-found': deleted, or the token lost its membership (GitLab doesn't say which). A request that fails for
+   * a reason other than the token or a rate limit leaves its projects out, and says why in `errors`.
+   */
+  async refresh(repos: TrackedRepo[]): Promise<RefreshResult> {
+    const out: RefreshResult = { reads: new Map(), errors: [] };
+    for (let i = 0; i < repos.length; i += ID_CHUNK) {
+      const chunk = repos.slice(i, i + ID_CHUNK);
+      try {
+        const data = await this.graphql.query<ManualProjectsData>(MANUAL_PROJECTS, { ids: chunk.map((r) => r.nodeId), first: chunk.length });
+        const listed = new Map(data.projects.nodes.map((p) => [p.id, p]));
+        for (const t of chunk) out.reads.set(t.nodeId, this.read(listed.get(t.nodeId), t));
+      } catch (err) {
+        if (!(err instanceof GitLabError) || isFatalSourceError(err)) throw err;
+        out.errors.push(`projects ${i + 1}-${i + chunk.length} of ${repos.length}: ${err.message}`);
+      }
+    }
+    return out;
   }
 
-  repoByNode(_repo: TrackedRepo): Promise<{ viewer: ViewerInfo; read: RepoRead }> {
-    return unsupported('read a repository by node id');
+  async repoByNode(repo: TrackedRepo): Promise<{ viewer: ViewerInfo; read: RepoRead }> {
+    const data = await this.graphql.query<ProjectByNodeData>(PROJECT_BY_NODE, { ids: [repo.nodeId], first: 1 });
+    const viewer = this.account(data.currentUser);
+    return { viewer, read: this.read(data.projects.nodes.find((p) => p.id === repo.nodeId), repo) };
   }
 
-  /** Any project by its full path, then the viewer in a request of its own. */
+  /** Any project by its full path, with the viewer. */
   async repo(path: string): Promise<{ viewer: ViewerInfo; found: { record: RepoRecord; probe: RepoProbe } | null }> {
-    const { project } = await this.graphql.query<ProjectData>(PROJECT, { path });
-    const found = project ? { record: mapProject(project, this.base), probe: mapProbe(project) } : null;
-    return { viewer: await this.currentUser(), found };
+    const { currentUser, project } = await this.graphql.query<ProjectData>(PROJECT, { path });
+    const viewer = this.account(currentUser);
+    return { viewer, found: project ? { record: mapProject(project, this.base), probe: mapProbe(project) } : null };
   }
 
   /**
@@ -141,8 +217,8 @@ export class GitLabSyncSource implements SyncSource {
    */
   async probes(repos: RepoRecord[]): Promise<ProbeResult> {
     const out: ProbeResult = { probes: new Map(), errors: [] };
-    for (let i = 0; i < repos.length; i += PROBE_CHUNK) {
-      const ids = repos.slice(i, i + PROBE_CHUNK).map((r) => r.nodeId);
+    for (let i = 0; i < repos.length; i += ID_CHUNK) {
+      const ids = repos.slice(i, i + ID_CHUNK).map((r) => r.nodeId);
       try {
         const data = await this.graphql.query<ProbesData>(PROBES, { ids, first: ids.length });
         for (const p of data.projects.nodes) out.probes.set(p.id, mapProbe(p));
@@ -196,24 +272,71 @@ export class GitLabSyncSource implements SyncSource {
     return out;
   }
 
-  candidates(): Promise<RepoCandidates> {
-    return unsupported('list repositories to add');
+  /**
+   * The projects the token's account is a member of that aren't in its personal namespace (those are tracked
+   * automatically), most recently active first, up to 1000 (10 REST requests, and the viewer beside them). The full
+   * project entity is listed rather than the simple one, which has no visibility. The most recently active few double as
+   * suggestions; the caller drops the ones it tracks.
+   */
+  async candidates(): Promise<RepoCandidates> {
+    const listing = this.rest.all<RestProject>('/projects', MAX_CANDIDATES, {
+      query: { membership: true, archived: false, order_by: 'last_activity_at', sort: 'desc', per_page: CANDIDATE_PAGE },
+    });
+    const [viewer, { items: listed, total }] = await Promise.all([this.currentUser(), listing]);
+    const mine = viewer.login.toLowerCase();
+    const items = listed
+      .filter((p) => !(p.namespace.kind === 'user' && p.namespace.full_path.toLowerCase() === mine))
+      .map(mapCandidate);
+    return { viewer, items, suggested: items.slice(0, SUGGESTED), truncated: listed.length >= MAX_CANDIDATES && (total === null || total > MAX_CANDIDATES) };
   }
 
-  lookup(_path: string, _since: string): Promise<LookupRecord> {
-    return unsupported('look up a repository to add');
+  /**
+   * Whether the token can read a project, in one request: its record and probe, the counts that size its first sync,
+   * and what the token may read of it. Commits since `since` aren't counted (GitLab can't do that cheaply): null.
+   * A project the token sees but whose code, merge requests or issues it can't read is 'permission'. `owned` is a
+   * project in the viewer's personal namespace, which is what the sync tracks as theirs.
+   */
+  async lookup(path: string, since: string): Promise<LookupRecord> {
+    const { currentUser, project } = await this.graphql.query<ProjectLookupData>(PROJECT_LOOKUP, { path, since });
+    const viewer = this.account(currentUser);
+    if (!project) return { ok: false, viewer, path, access: notFound(path) };
+    const denied = unreadable(project.fullPath, project);
+    if (denied) return { ok: false, viewer, path: project.fullPath, access: denied };
+    const record = mapProject(project, this.base);
+    const probe = mapProbe(project);
+    const counts: BackfillCounts = {
+      commits: null,
+      prs: project.recentMergeRequests?.count ?? null,
+      issues: project.recentIssues?.count ?? null,
+      releases: project.releaseCount?.count ?? 0,
+      openPrs: probe.openPrs,
+      openIssues: probe.openIssues,
+    };
+    return { ok: true, viewer, record, probe, owned: record.owner.toLowerCase() === viewer.login.toLowerCase(), counts };
   }
 
-  /** GitLab can't count a branch's commits cheaply (BackfillCounts.commits is null), so the size isn't known. */
+  /**
+   * Null: the size of a first sync depends on its commits, which GitLab can't count cheaply (lookup reports them as
+   * unknown), and the Add dialog then shows "size unknown".
+   */
   requestsFor(_counts: BackfillCounts): number | null {
     return null;
   }
 
+  /** The project as read by node id, or why not. */
+  private read(project: (GqlProject & GqlProbe) | undefined, tracked: TrackedRepo): RepoRead {
+    if (!project) return { ok: false, access: notFound(tracked.path) };
+    return { ok: true, record: mapProject(project, this.base), probe: mapProbe(project), denied: [], problem: null };
+  }
+
+  /** The account of a response that carried `currentUser`. GitLab answers a bad token with a 401, but never sync as nobody. */
+  private account(user: GqlViewer | null): ViewerInfo {
+    if (!user) throw new GitLabError('auth', 'GitLab did not recognise the token (no current user)');
+    return mapViewer(user, this.base);
+  }
+
   private async currentUser(): Promise<ViewerInfo> {
-    const data = await this.graphql.query<ViewerData>(VIEWER);
-    // GitLab answers a bad token with a 401, but never sync as nobody.
-    if (!data.currentUser) throw new GitLabError('auth', 'GitLab did not recognise the token (no current user)');
-    return mapViewer(data.currentUser, this.base);
+    return this.account((await this.graphql.query<ViewerData>(VIEWER)).currentUser);
   }
 
   /**
@@ -370,9 +493,6 @@ function markOf(fresh: RestStarrer[], previous: StarMark | null): StarMark {
   return { at, logins: [...kept, ...logins].slice(-MAX_MARKED) };
 }
 
-/** The SyncSource calls GitLab doesn't answer yet. */
-const unsupported = (what: string): Promise<never> => Promise.reject(new Error(`GitLab sources can't ${what} yet`));
-
 /** Issues proper (not incidents, tasks or test cases), with label colors; the same set the probe counts. */
 const ISSUE_FILTER = { issue_type: 'issue', with_labels_details: true } as const;
 
@@ -383,9 +503,9 @@ function toPage<N, T>(conn: Connection<N> | null, map: (node: N) => T): Page<T> 
   return { items: nodes(conn).map(map), hasMore: !!conn?.pageInfo.hasNextPage, endCursor: conn?.pageInfo.endCursor ?? null };
 }
 
-/** The project of a response: null when it no longer exists or the token can no longer see it. */
+/** The project of a response, or a 'not-found' error with the access failure the sync stores for a repo it lost. */
 function existing<P>(data: { project: P | null }, repo: RepoRecord): P {
-  if (!data.project) throw new GitLabError('not-found', `GitLab project not found: ${repo.nameWithOwner}`);
+  if (!data.project) throw new GitLabError('not-found', `GitLab project not found: ${repo.nameWithOwner}`, { access: notFound(repo.nameWithOwner) });
   return data.project;
 }
 

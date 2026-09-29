@@ -1,7 +1,7 @@
 import type { DiffFile, Label, Visibility } from '../../shared/api';
 import type { ActorRecord, CommitRecord, IssueRecord, PrCommitRecord, PrRecord, ReleaseRecord, RepoProbe, RepoRecord, StarRecord } from '../db/records';
 import { isoSec } from '../lib/time';
-import type { ViewerInfo } from '../provider/types';
+import type { RepoCandidateRecord, ViewerInfo } from '../provider/types';
 import { countLines, hunks } from './patch';
 import type {
   GqlCommit,
@@ -12,9 +12,11 @@ import type {
   GqlRelease,
   GqlUser,
   GqlViewer,
+  GqlViewerAccount,
   RestCommit,
   RestDiff,
   RestIssue,
+  RestProject,
   RestStarrer,
   RestUser,
 } from './types';
@@ -80,6 +82,16 @@ export function mapViewer(u: GqlViewer, base: string): ViewerInfo {
   return { id: u.id, login: u.username, name: u.name || null, avatarUrl: absolute(u.avatarUrl, base) };
 }
 
+/** The viewer's public, commit and other addresses, lower-cased (commit emails are matched that way), once each. */
+export function mapViewerEmails(u: GqlViewerAccount): string[] {
+  const all = [u.publicEmail, u.commitEmail, ...(u.emails?.nodes ?? []).map((e) => e.email)];
+  const clean = all.flatMap((e) => {
+    const email = e?.trim().toLowerCase();
+    return email?.includes('@') ? [email] : [];
+  });
+  return [...new Set(clean)];
+}
+
 /**
  * `pushedAt` is when the default branch last moved, as its head commit's date: the sync compares it to decide whether
  * to walk the commits, and lastActivityAt (which GitLab moves at most hourly) would hide pushes. Repositories without
@@ -106,6 +118,25 @@ export function mapProject(p: GqlProject, base: string): RepoRecord {
     forks: p.forksCount,
     createdAt: utc(p.createdAt ?? EPOCH),
     pushedAt: utcOrNull(head ?? p.lastActivityAt),
+  };
+}
+
+/**
+ * A project of the REST list of the token's memberships, as the Add dialog lists it. `pushedAt` is the last activity
+ * (the list has no push time), and a fork counts only when its upstream is visible to the token.
+ */
+export function mapCandidate(p: RestProject): RepoCandidateRecord {
+  return {
+    nodeId: `gid://gitlab/Project/${p.id}`,
+    name: p.path,
+    nameWithOwner: p.path_with_namespace,
+    owner: p.namespace.full_path,
+    description: p.description || null,
+    visibility: mapVisibility(p.visibility),
+    isArchived: !!p.archived,
+    isFork: !!p.forked_from_project,
+    stars: p.star_count,
+    pushedAt: utcOrNull(p.last_activity_at),
   };
 }
 

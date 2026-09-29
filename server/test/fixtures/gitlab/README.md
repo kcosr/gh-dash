@@ -11,8 +11,11 @@ in REST (`avatar_url`).
 | File | Response of |
 | --- | --- |
 | `viewer.json` | GraphQL `Viewer` (`currentUser`) |
-| `owned-projects.json` | GraphQL `OwnedProjects` (`projects(personal: true)`) |
-| `project.json` | GraphQL `Project` (`project(fullPath:)` with probe fields) |
+| `viewer-account.json` | GraphQL `ViewerAccount` (`currentUser` with `publicEmail`, `commitEmail`, `emails`) |
+| `owned-projects.json` | GraphQL `OwnedProjects` (`currentUser` and `projects(personal: true)`) |
+| `project.json` | GraphQL `Project` (`currentUser` and `project(fullPath:)` with probe fields) |
+| `lookup.json` | GraphQL `ProjectLookup` (that project plus `userPermissions`, `issuesEnabled` and the counts) |
+| `member-projects.json` | REST `GET /projects?membership=true` (the full entity, newest activity first) |
 | `probes.json` | GraphQL `Probes` (`projects(ids:)`) |
 | `merge-requests.json` | GraphQL `MergeRequests` (`project.mergeRequests`) |
 | `releases.json` | GraphQL `Releases` (`project.releases`) |
@@ -33,6 +36,14 @@ URLs, and compare. Worth checking in particular:
 - `merge-requests.json`: `workItemRelations` (null unless the `explicit_mr_work_item_relations` flag is on), the order
   of `commits` (expected newest first), `mergeUser` on an open MR with auto-merge set, `closedAt` on a merged MR, and
   that `diffStatsSummary` is present for merged MRs whose source branch is gone.
+- `viewer-account.json` / `lookup.json`: the field names the Add dialog and "me" depend on (`emails { nodes { email } }`,
+  `commitEmail`, `userPermissions { downloadCode readMergeRequest }`, `issuesEnabled`, `updatedAfter` on
+  `mergeRequests` / `issues`, `count` on `releases`), and what a Guest gets for them on a private project.
+- `merge-requests.json`: `mergeCommitSha` / `squashCommitSha` on merged MRs of each merge method (merge commit, squash,
+  fast-forward), and that they are null on open and closed ones.
+- `member-projects.json`: that `simple=true` really leaves out `visibility` (the sync source lists the full entity for
+  that reason), `forked_from_project` on a fork whose upstream the token can't see, and `namespace.kind` for a project
+  shared from another user's personal namespace.
 - `owned-projects.json` / `project.json`: `repository.tree.lastCommit` for a non-empty and an empty repository,
   `languages` right after a push (empty until GitLab detects them), relative `avatarUrl`s under a relative root.
 - `probes.json`: `count` on the open merge request and issue connections, and `projects(ids:)` with archived projects.

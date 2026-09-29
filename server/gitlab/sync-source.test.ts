@@ -1,15 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import type { RepoRecord } from '../db/records';
+import { accessLost } from '../provider/access';
 import type { RoundResult } from '../provider/types';
 import commitsFixture from '../test/fixtures/gitlab/commits.json';
 import issuesFixture from '../test/fixtures/gitlab/issues.json';
+import lookupFixture from '../test/fixtures/gitlab/lookup.json';
+import memberProjectsFixture from '../test/fixtures/gitlab/member-projects.json';
 import mergeRequestsFixture from '../test/fixtures/gitlab/merge-requests.json';
 import ownedFixture from '../test/fixtures/gitlab/owned-projects.json';
 import probesFixture from '../test/fixtures/gitlab/probes.json';
 import projectFixture from '../test/fixtures/gitlab/project.json';
 import releasesFixture from '../test/fixtures/gitlab/releases.json';
 import starrersFixture from '../test/fixtures/gitlab/starrers.json';
+import viewerAccountFixture from '../test/fixtures/gitlab/viewer-account.json';
 import viewerFixture from '../test/fixtures/gitlab/viewer.json';
+import { fakeInstance } from '../test/gitlab-instance';
 import { BASE, fakeGitLab, graphql, page, sha, type Handler } from '../test/gitlab';
 import { mapProject } from './map';
 import { GitLabSyncSource } from './sync-source';
@@ -49,10 +54,14 @@ function fakeStarrers(count: number, opts: { counted?: boolean; minute?: (i: num
 const fail = (p: Promise<unknown>) => p.then(() => { throw new Error('expected a failure'); }, (e: unknown) => e as GitLabError);
 
 describe('GitLabSyncSource: account and projects', () => {
-  it('reads the viewer, and treats a missing current user as a token problem', async () => {
-    const { source } = setup({ '/api/graphql': graphql({ Viewer: () => viewerFixture }) });
-    expect(await source.viewer()).toMatchObject({ id: 'gid://gitlab/User/2', login: 'alice' });
-    const anonymous = setup({ '/api/graphql': graphql({ Viewer: () => ({ currentUser: null }) }) });
+  it('reads the viewer with its addresses, and treats a missing current user as a token problem', async () => {
+    const { source, requests } = setup({ '/api/graphql': graphql({ ViewerAccount: () => viewerAccountFixture }) });
+    expect(await source.viewer()).toEqual({
+      id: 'gid://gitlab/User/2', login: 'alice', name: 'Alice A', avatarUrl: 'https://gitlab.example.com/gitlab/uploads/-/system/user/avatar/2/avatar.png',
+      emails: ['alice@example.com', '2-alice@users.noreply.gitlab.example.com', 'alice@corp.example.com'],
+    });
+    expect(requests).toEqual(['graphql ViewerAccount']);
+    const anonymous = setup({ '/api/graphql': graphql({ ViewerAccount: () => ({ currentUser: null }) }) });
     expect(await fail(anonymous.source.viewer())).toMatchObject({ kind: 'auth' });
     const revoked = setup({ '/api/graphql': { status: 401, body: { errors: [{ message: 'Invalid token' }] } } });
     expect(await fail(revoked.source.viewer())).toMatchObject({ kind: 'auth', status: 401, message: expect.stringContaining('Invalid token') });
@@ -60,30 +69,68 @@ describe('GitLabSyncSource: account and projects', () => {
     expect(source.rateLimit).toBeNull();
   });
 
-  it('lists the projects of the personal namespace, following GraphQL cursors', async () => {
+  it('reads the viewer without addresses when GitLab refuses the query for them', async () => {
+    // The addresses are best effort: "me" on commits then comes from the configured ones.
+    const { source, requests } = setup({
+      '/api/graphql': (req) =>
+        (req.body as { query: string }).query.includes('query ViewerAccount')
+          ? { body: { errors: [{ message: 'Field emails is not accessible', path: ['currentUser', 'emails'] }] } }
+          : { body: { data: viewerFixture } },
+    });
+    expect(await source.viewer()).toMatchObject({ login: 'alice', emails: [] });
+    expect(requests).toEqual(['graphql ViewerAccount', 'graphql Viewer']);
+    // A token that is refused is not a missing field: no second try.
+    const revoked = setup({ '/api/graphql': { status: 401, body: { errors: [{ message: 'Invalid token' }] } } });
+    expect(await fail(revoked.source.viewer())).toMatchObject({ kind: 'auth' });
+    expect(revoked.requests).toEqual(['graphql ViewerAccount']);
+  });
+
+  it('lists the projects of the personal namespace, following GraphQL cursors, with the viewer they were read for', async () => {
     const first = clone(ownedFixture);
     first.projects.pageInfo = { hasNextPage: true, endCursor: 'cursor-1' };
     first.projects.nodes = first.projects.nodes.slice(0, 1);
     const second = clone(ownedFixture);
     second.projects.nodes = second.projects.nodes.slice(1);
-    const { source, vars, calls } = setup({ '/api/graphql': graphql({ OwnedProjects: (v) => (v.after ? second : first), Viewer: () => viewerFixture }) });
-    expect((await source.ownedRepos()).repos.map((r) => r.nameWithOwner)).toEqual(['alice/app', 'alice/corp.tools']);
+    const { source, vars, calls, requests } = setup({ '/api/graphql': graphql({ OwnedProjects: (v) => (v.after ? second : first) }) });
+    const { viewer, repos } = await source.ownedRepos();
+    expect(repos.map((r) => r.nameWithOwner)).toEqual(['alice/app', 'alice/corp.tools']);
+    expect(viewer).toMatchObject({ id: 'gid://gitlab/User/2', login: 'alice' });
     expect(vars('OwnedProjects')).toEqual([{ after: null, first: 50 }, { after: 'cursor-1', first: 50 }]);
     expect((calls[0]!.body as { query: string }).query).toContain('projects(personal: true');
+    // The viewer rides along with each page: no request of its own.
+    expect(requests).toEqual(['graphql OwnedProjects', 'graphql OwnedProjects']);
+    expect(repos.map((r) => r.visibility)).toEqual(['public', 'internal']);
   });
 
-  it('reads one project by its full path, with its probe; null when GitLab has none', async () => {
-    const { source, vars } = setup({
-      '/api/graphql': graphql({ Project: (v) => (v.path === 'team/platform/api' ? projectFixture : { project: null }), Viewer: () => viewerFixture }),
+  it('fails a list whose account changes between pages, and one read as nobody', async () => {
+    const first = clone(ownedFixture);
+    first.projects.pageInfo = { hasNextPage: true, endCursor: 'cursor-1' };
+    const second = clone(ownedFixture);
+    second.currentUser = { ...second.currentUser, id: 'gid://gitlab/User/3', username: 'bob' };
+    const { source } = setup({ '/api/graphql': graphql({ OwnedProjects: (v) => (v.after ? second : first) }) });
+    expect(await fail(source.ownedRepos())).toMatchObject({ kind: 'auth', message: expect.stringContaining('account changed') });
+    const anonymous = setup({ '/api/graphql': graphql({ OwnedProjects: () => ({ currentUser: null, projects: clone(ownedFixture).projects }) }) });
+    expect(await fail(anonymous.source.ownedRepos())).toMatchObject({ kind: 'auth' });
+  });
+
+  it('reads one project by its full path, with its probe and the viewer; null when GitLab has none', async () => {
+    const { source, vars, requests } = setup({
+      '/api/graphql': graphql({
+        Project: (v) => (v.path === 'team/platform/api' ? projectFixture : { currentUser: viewerFixture.currentUser, project: null }),
+      }),
     });
-    const { found } = await source.repo('team/platform/api');
+    const { viewer, found } = await source.repo('team/platform/api');
+    expect(viewer).toMatchObject({ id: 'gid://gitlab/User/2', login: 'alice' });
     expect(found?.record).toMatchObject({ nodeId: 'gid://gitlab/Project/40', owner: 'team/platform', name: 'api' });
     expect(found?.probe).toEqual({
       openPrs: 3, openIssues: 7, latestPrUpdatedAt: '2026-09-27T09:20:00Z', latestIssueUpdatedAt: '2026-09-26T16:00:00Z',
       releaseTags: ['v2.1.0', 'v2.0.0'], latestStarredAt: null,
     });
-    expect((await source.repo('team/platform/gone')).found).toBeNull();
+    const missing = await source.repo('team/platform/gone');
+    expect([missing.found, missing.viewer.login]).toEqual([null, 'alice']);
     expect(vars('Project')).toEqual([{ path: 'team/platform/api' }, { path: 'team/platform/gone' }]);
+    // The viewer rides along: one request each.
+    expect(requests).toEqual(['graphql Project', 'graphql Project']);
   });
 
   it('probes projects by global id in chunks; a chunk that fails leaves its projects out', async () => {
@@ -108,6 +155,185 @@ describe('GitLabSyncSource: account and projects', () => {
   it('stops probing on a token problem', async () => {
     const { source } = setup({ '/api/graphql': { status: 401, body: { errors: [{ message: 'Invalid token' }] } } });
     expect(await fail(source.probes([APP]))).toMatchObject({ kind: 'auth' });
+  });
+});
+
+describe('GitLabSyncSource: repos added by hand', () => {
+  const API = { nodeId: 'gid://gitlab/Project/40', path: 'team/platform/api' };
+  const nodeIds = (v: Record<string, unknown>) => v.ids as string[];
+  const projectNode = (id: string) => ({ ...clone(projectFixture.project), id });
+
+  it('reads tracked projects by global id, 25 to a request, and reports the ones GitLab does not list as not found', async () => {
+    const tracked = Array.from({ length: 30 }, (_, i) => ({ nodeId: `gid://gitlab/Project/${100 + i}`, path: `team/p${i}` }));
+    const gone = new Set([tracked[3]!.nodeId, tracked[27]!.nodeId]);
+    const { source, vars, requests } = setup({
+      '/api/graphql': graphql({ ManualProjects: (v) => ({ projects: { nodes: nodeIds(v).filter((id) => !gone.has(id)).map(projectNode) } }) }),
+    });
+    const { reads, errors } = await source.refresh(tracked);
+    expect(errors).toEqual([]);
+    expect(vars('ManualProjects').map((v) => [nodeIds(v).length, v.first])).toEqual([[25, 25], [5, 5]]);
+    expect(requests).toEqual(['graphql ManualProjects', 'graphql ManualProjects']);
+    expect([...reads.keys()]).toEqual(tracked.map((t) => t.nodeId));
+    const ok = reads.get(tracked[0]!.nodeId)!;
+    expect(ok).toMatchObject({ ok: true, denied: [], problem: null, record: { nodeId: tracked[0]!.nodeId, nameWithOwner: 'team/platform/api' } });
+    expect(ok.ok && ok.probe).toMatchObject({ openPrs: 3, releaseTags: ['v2.1.0', 'v2.0.0'] });
+    // The stored path names it, since GitLab shows nothing of it.
+    expect(reads.get(tracked[3]!.nodeId)).toEqual({
+      ok: false,
+      access: {
+        problem: 'not-found',
+        message: "GitLab doesn't show team/p3 to this token: it doesn't exist, or you aren't a member.",
+        hint: 'Private projects need membership (Reporter or higher). Check the path, or ask a maintainer.',
+      },
+    });
+    expect(reads.get(tracked[27]!.nodeId)).toMatchObject({ ok: false, access: { problem: 'not-found' } });
+  });
+
+  it('asks nothing for nothing, and leaves out the projects of a request that fails, saying why', async () => {
+    const tracked = Array.from({ length: 30 }, (_, i) => ({ nodeId: `gid://gitlab/Project/${100 + i}`, path: `team/p${i}` }));
+    const { source, requests } = setup({
+      '/api/graphql': (req) => {
+        const ids = nodeIds((req.body as { variables: Record<string, unknown> }).variables);
+        return ids.length === 5 ? { body: { errors: [{ message: 'Internal server error' }] } } : { body: { data: { projects: { nodes: ids.map(projectNode) } } } };
+      },
+    });
+    expect(await source.refresh([])).toEqual({ reads: new Map(), errors: [] });
+    expect(requests).toEqual([]);
+    const { reads, errors } = await source.refresh(tracked);
+    expect(errors).toEqual(['projects 26-30 of 30: Internal server error']);
+    expect(reads.size).toBe(25);
+    expect(reads.has(tracked[27]!.nodeId)).toBe(false);
+  });
+
+  it('stops reading on a token problem', async () => {
+    const { source } = setup({ '/api/graphql': { status: 401, body: { errors: [{ message: 'Invalid token' }] } } });
+    expect(await fail(source.refresh([API]))).toMatchObject({ kind: 'auth' });
+    expect(await fail(source.repoByNode(API))).toMatchObject({ kind: 'auth' });
+  });
+
+  it('reads one tracked project by global id with the viewer in the same request; not found when GitLab lists none', async () => {
+    const { source, vars, requests } = setup({
+      '/api/graphql': graphql({
+        ProjectByNode: (v) => ({ currentUser: viewerFixture.currentUser, projects: { nodes: nodeIds(v).filter((id) => id === API.nodeId).map(projectNode) } }),
+      }),
+    });
+    const hit = await source.repoByNode(API);
+    expect(hit.viewer).toMatchObject({ id: 'gid://gitlab/User/2', login: 'alice' });
+    expect(hit.read).toMatchObject({ ok: true, record: { nodeId: API.nodeId, nameWithOwner: 'team/platform/api' }, denied: [], problem: null });
+    const miss = await source.repoByNode({ nodeId: 'gid://gitlab/Project/99', path: 'bob/gone' });
+    expect(miss.viewer.login).toBe('alice');
+    expect(miss.read).toMatchObject({ ok: false, access: { problem: 'not-found', message: expect.stringContaining('bob/gone') } });
+    expect(vars('ProjectByNode')).toEqual([{ ids: [API.nodeId], first: 1 }, { ids: ['gid://gitlab/Project/99'], first: 1 }]);
+    expect(requests).toEqual(['graphql ProjectByNode', 'graphql ProjectByNode']);
+    const anonymous = setup({ '/api/graphql': graphql({ ProjectByNode: () => ({ currentUser: null, projects: { nodes: [] } }) }) });
+    expect(await fail(anonymous.source.repoByNode(API))).toMatchObject({ kind: 'auth' });
+  });
+});
+
+describe('GitLabSyncSource: the Add dialog', () => {
+  const SINCE = '2025-09-29T00:00:00Z';
+  const lookupRoute = (project: unknown) => ({ '/api/graphql': graphql({ ProjectLookup: () => ({ currentUser: viewerFixture.currentUser, project }) }) });
+
+  it('lists the projects the token is a member of, newest activity first, without the ones in its personal namespace', async () => {
+    const { source, requests } = setup({
+      '/api/graphql': graphql({ Viewer: () => viewerFixture }),
+      '/api/v4/projects': page(memberProjectsFixture, null, { 'x-total': '5' }),
+    });
+    const c = await source.candidates();
+    expect(c.viewer).toMatchObject({ id: 'gid://gitlab/User/2', login: 'alice' });
+    // alice/app and alice/corp.tools are hers, and tracked automatically; bob/tool is in another user's namespace.
+    expect(c.items.map((r) => r.nameWithOwner)).toEqual(['team/platform/api', 'bob/tool', 'team/docs']);
+    expect(c.items[1]).toMatchObject({ nodeId: 'gid://gitlab/Project/21', owner: 'bob', visibility: 'internal', isFork: true });
+    expect(c.suggested).toEqual(c.items);
+    expect(c.truncated).toBe(false);
+    expect(requests).toContain('/api/v4/projects?membership=true&archived=false&order_by=last_activity_at&sort=desc&per_page=100&page=1');
+    expect(requests).toHaveLength(2);
+  });
+
+  it('suggests the eight most recently active, and stops at 1000 projects (10 pages), saying there are more', async () => {
+    const listed = Array.from({ length: 1200 }, (_, i) => ({ ...clone(memberProjectsFixture[0]!), id: 1000 + i, path: `p${i}`, path_with_namespace: `team/p${i}` }));
+    const { source, requests } = setup({
+      '/api/graphql': graphql({ Viewer: () => viewerFixture }),
+      '/api/v4/projects': (req) => {
+        const n = Number(req.url.searchParams.get('page'));
+        return page(listed.slice((n - 1) * 100, n * 100), n * 100 < listed.length ? n + 1 : null, { 'x-total': String(listed.length) });
+      },
+    });
+    const c = await source.candidates();
+    expect(c.items).toHaveLength(1000);
+    expect(c.suggested.map((r) => r.name)).toEqual(Array.from({ length: 8 }, (_, i) => `p${i}`));
+    expect(c.truncated).toBe(true);
+    expect(requests.filter((r) => r.startsWith('/api/v4/projects'))).toHaveLength(10);
+
+    // Exactly a thousand is not truncated.
+    const exact = setup({
+      '/api/graphql': graphql({ Viewer: () => viewerFixture }),
+      '/api/v4/projects': (req) => {
+        const n = Number(req.url.searchParams.get('page'));
+        return page(listed.slice((n - 1) * 100, Math.min(n * 100, 1000)), n < 10 ? n + 1 : null, { 'x-total': '1000' });
+      },
+    });
+    expect((await exact.source.candidates()).truncated).toBe(false);
+  });
+
+  it('looks a project up in one request: record, probe, owned or not, and the size of its first sync', async () => {
+    const { source, vars, requests } = setup(lookupRoute(lookupFixture.project));
+    const hit = await source.lookup('team/platform/api', SINCE);
+    if (!hit.ok) throw new Error(hit.access.message);
+    expect(hit.viewer.login).toBe('alice');
+    expect(hit.record).toMatchObject({ nodeId: 'gid://gitlab/Project/40', nameWithOwner: 'team/platform/api', owner: 'team/platform' });
+    expect(hit.probe).toMatchObject({ openPrs: 3, openIssues: 7, releaseTags: ['v2.1.0', 'v2.0.0'] });
+    // Commits since the backfill start can't be counted cheaply: size unknown.
+    expect(hit.counts).toEqual({ commits: null, prs: 12, issues: 30, releases: 4, openPrs: 3, openIssues: 7 });
+    expect(hit.owned).toBe(false);
+    expect(vars('ProjectLookup')).toEqual([{ path: 'team/platform/api', since: SINCE }]);
+    expect(requests).toEqual(['graphql ProjectLookup']);
+  });
+
+  it('counts a project in the personal namespace as owned, whatever the case of the username', async () => {
+    const own = { ...clone(lookupFixture.project), fullPath: 'Alice/app', path: 'app', namespace: { fullPath: 'Alice' } };
+    const { source } = setup(lookupRoute(own));
+    const hit = await source.lookup('Alice/app', SINCE);
+    expect(hit.ok && hit.owned).toBe(true);
+    // Another user's personal namespace, and a group that only looks similar, are not hers.
+    for (const namespace of ['alice-team', 'bob']) {
+      const other = setup(lookupRoute({ ...own, fullPath: `${namespace}/app`, namespace: { fullPath: namespace } }));
+      const l = await other.source.lookup(`${namespace}/app`, SINCE);
+      expect(l.ok && l.owned).toBe(false);
+    }
+  });
+
+  it('explains a project GitLab does not show: it may not exist, or the token is not a member', async () => {
+    const { source } = setup(lookupRoute(null));
+    const miss = await source.lookup('bob/gone', SINCE);
+    expect(miss).toMatchObject({ ok: false, viewer: { login: 'alice' }, path: 'bob/gone', access: { problem: 'not-found', message: expect.stringContaining('bob/gone') } });
+  });
+
+  it('refuses a project the token sees but cannot read all of, naming the provider spelling and what is missing', async () => {
+    const seen = (patch: Record<string, unknown>) => setup(lookupRoute({ ...clone(lookupFixture.project), ...patch }));
+    const noCode = await seen({ userPermissions: { downloadCode: false, readMergeRequest: true } }).source.lookup('team/Platform/api', SINCE);
+    expect(noCode).toMatchObject({ ok: false, path: 'team/platform/api', access: { problem: 'permission', message: 'The token can see team/platform/api but not its code.' } });
+    const noIssues = await seen({ issuesEnabled: false }).source.lookup('team/platform/api', SINCE);
+    expect(noIssues).toMatchObject({ ok: false, access: { problem: 'permission', message: 'The token can see team/platform/api but not its issues.' } });
+    const noMrs = await seen({ userPermissions: { downloadCode: true, readMergeRequest: false }, issuesEnabled: false }).source.lookup('team/platform/api', SINCE);
+    expect(noMrs).toMatchObject({ ok: false, access: { message: 'The token can see team/platform/api but not its merge requests and issues.' } });
+    // Counts that GitLab did not give are unknown, not zero.
+    const unknown = await seen({ recentMergeRequests: null, recentIssues: null, releaseCount: null }).source.lookup('team/platform/api', SINCE);
+    expect(unknown.ok && unknown.counts).toEqual({ commits: null, prs: null, issues: null, releases: 0, openPrs: 3, openIssues: 7 });
+  });
+
+  it('cannot tell what a first sync costs, as it cannot count the commits', () => {
+    const { source } = setup({});
+    expect(source.requestsFor({ commits: null, prs: 12, issues: 30, releases: 4, openPrs: 3, openIssues: 7 })).toBeNull();
+    expect(source.requestsFor({ commits: 500, prs: 12, issues: 30, releases: 4, openPrs: 3, openIssues: 7 })).toBeNull();
+  });
+
+  it('answers all of it from the fake instance', async () => {
+    const fake = fakeInstance();
+    const source = new GitLabSyncSource({ baseUrl: BASE, token: 'glpat-test-token', fetchImpl: fake.fetchImpl, sleep: async () => {} });
+    expect((await source.candidates()).items.map((r) => r.nameWithOwner)).toEqual(['team/platform/api', 'bob/tool', 'team/docs']);
+    const own = await source.lookup('alice/app', SINCE);
+    expect(own.ok && own.owned).toBe(true);
   });
 });
 
@@ -155,7 +381,10 @@ describe('GitLabSyncSource: rounds', () => {
     const off = setup({ '/api/graphql': graphql({ MergeRequests: () => ({ project: { mergeRequests: null } }) }) });
     expect((await off.source.round(APP, { openPrs: { after: null } })).openPrs).toEqual({ items: [], hasMore: false, endCursor: null });
     const gone = setup({ '/api/graphql': graphql({ MergeRequests: () => ({ project: null }) }) });
-    expect(await fail(gone.source.round(APP, { prs: { after: null } }))).toMatchObject({ kind: 'not-found', message: expect.stringContaining('alice/app') });
+    const err = await fail(gone.source.round(APP, { prs: { after: null } }));
+    expect(err).toMatchObject({ kind: 'not-found', message: expect.stringContaining('alice/app') });
+    // Why, in GitLab's words: the sync marks a repo added by hand unavailable with it.
+    expect(accessLost(err)).toMatchObject({ problem: 'not-found', message: expect.stringContaining('alice/app') });
   });
 
   it('pages issues over REST by update time (all) or creation time (open), with page numbers as cursors', async () => {
@@ -379,6 +608,8 @@ describe('GitLabSyncSource: recheck', () => {
 
   it('fails rather than report everything gone when the project itself is', async () => {
     const { source } = setup({ '/api/graphql': graphql({ RecheckMergeRequests: () => ({ project: null }) }) });
-    expect(await fail(source.recheck(APP, [5], []))).toMatchObject({ kind: 'not-found' });
+    const err = await fail(source.recheck(APP, [5], []));
+    expect(err).toMatchObject({ kind: 'not-found' });
+    expect(accessLost(err)).toMatchObject({ problem: 'not-found' });
   });
 });

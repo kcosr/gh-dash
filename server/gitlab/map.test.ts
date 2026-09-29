@@ -1,16 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import commitsFixture from '../test/fixtures/gitlab/commits.json';
 import issuesFixture from '../test/fixtures/gitlab/issues.json';
+import memberProjectsFixture from '../test/fixtures/gitlab/member-projects.json';
 import mergeRequestsFixture from '../test/fixtures/gitlab/merge-requests.json';
 import ownedFixture from '../test/fixtures/gitlab/owned-projects.json';
 import probesFixture from '../test/fixtures/gitlab/probes.json';
 import projectFixture from '../test/fixtures/gitlab/project.json';
 import releasesFixture from '../test/fixtures/gitlab/releases.json';
 import starrersFixture from '../test/fixtures/gitlab/starrers.json';
+import viewerAccountFixture from '../test/fixtures/gitlab/viewer-account.json';
 import viewerFixture from '../test/fixtures/gitlab/viewer.json';
 import { BASE } from '../test/gitlab';
 import {
   labelColor,
+  mapCandidate,
   mapCommit,
   mapIssue,
   mapMergeRequest,
@@ -19,6 +22,7 @@ import {
   mapRelease,
   mapStar,
   mapViewer,
+  mapViewerEmails,
   mapVisibility,
   messageParts,
   releaseCreatedAt,
@@ -32,7 +36,9 @@ import type {
   ReleasesData,
   RestCommit,
   RestIssue,
+  RestProject,
   RestStarrer,
+  ViewerAccountData,
   ViewerData,
 } from './types';
 
@@ -79,6 +85,15 @@ describe('GitLab → rows: viewer and projects', () => {
       name: 'Alice A',
       avatarUrl: 'https://gitlab.example.com/gitlab/uploads/-/system/user/avatar/2/avatar.png',
     });
+  });
+
+  it("maps the viewer's addresses: public, commit and other, lower-cased, once each, only real addresses", () => {
+    expect(mapViewerEmails((viewerAccountFixture as ViewerAccountData).currentUser!)).toEqual([
+      'alice@example.com',
+      '2-alice@users.noreply.gitlab.example.com',
+      'alice@corp.example.com',
+    ]);
+    expect(mapViewerEmails({ ...(viewerAccountFixture as ViewerAccountData).currentUser!, publicEmail: null, commitEmail: ' ', emails: null })).toEqual([]);
   });
 
   it('maps projects: path as name, namespace as owner, head commit date as pushedAt', () => {
@@ -185,6 +200,17 @@ describe('GitLab → rows: issues, commits, releases, stars', () => {
       url: 'https://gitlab.example.com/gitlab/alice/app/-/commit/3333333333333333333333333333333333333333', additions: 12, deletions: 3, prNumber: null,
     });
     expect(direct).toMatchObject({ headline: 'Tweak config', body: '', committedAt: '2026-09-21T03:30:00Z', author: { email: 'alice@work.example' } });
+  });
+
+  it('maps a project of the membership list as a candidate: visibility, fork and last activity', () => {
+    const listed = (memberProjectsFixture as unknown as RestProject[]).map(mapCandidate);
+    expect(listed[0]).toEqual({
+      nodeId: 'gid://gitlab/Project/40', name: 'api', nameWithOwner: 'team/platform/api', owner: 'team/platform', description: 'Platform API',
+      visibility: 'private', isArchived: false, isFork: false, stars: 5, pushedAt: '2026-09-27T10:00:00Z',
+    });
+    expect(listed[2]).toMatchObject({ nameWithOwner: 'bob/tool', visibility: 'internal', isFork: true, description: "Bob's helper scripts" });
+    expect(listed[3]).toMatchObject({ name: 'docs', description: null });
+    expect(listed[4]).toMatchObject({ isArchived: true });
   });
 
   it('drops upcoming releases like drafts, and publishes historical ones at their release date', () => {

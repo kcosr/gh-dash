@@ -80,6 +80,23 @@ describe('wait_for_reply', () => {
     expect(await h.fails('wait_for_reply', { timeout_s: 301 })).toContain('timeout_s');
   });
 
+  it("scopes to a commit's own threads by a short SHA, and pages past 50 events", async () => {
+    const h = setup();
+    const oid = sha('c');
+    const onCommit = comments.createCommitThread(h.deps, h.agent, 'alice/app', oid, { body: 'On the commit' });
+    const cursor = h.lastEvent();
+    for (let i = 0; i < 51; i++) comments.reply(h.deps, h.self, onCommit.id, `Reply ${i}`);
+    await h.userReplies(h.mine.id, 'On the PR');
+    const first = await h.ok('wait_for_reply', { repo: 'alice/app', commit: oid.slice(0, 7), after: cursor });
+    expect(first.events).toHaveLength(50);
+    expect(first.more).toBe(true);
+    expect(first.events[0]).toMatchObject({ ref: `alice/app@${oid.slice(0, 7)}`, excerpt: 'Reply 0' });
+    const rest = await h.ok('wait_for_reply', { repo: 'alice/app', commit: oid.slice(0, 7), after: first.cursor, timeout_s: 1 });
+    expect(rest.events.map((e: { excerpt: string }) => e.excerpt)).toEqual(['Reply 50']);
+    expect(rest.more).toBeUndefined();
+    expect(await h.fails('wait_for_reply', { repo: 'alice/app', commit: 'fffffff' })).toContain('give its full SHA');
+  });
+
   it('stops waiting on notifications/cancelled, from another request', async () => {
     const h = setup();
     const res = h.post({ jsonrpc: '2.0', id: 'w1', method: 'tools/call', params: { name: 'wait_for_reply', arguments: { timeout_s: 60 } } });

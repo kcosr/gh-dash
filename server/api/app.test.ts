@@ -726,6 +726,25 @@ describe('adding and removing repositories', () => {
       expect(t.db.get('SELECT 1 FROM repos WHERE source_id <> 1')).toBeUndefined();
     });
 
+    it('reads pasted URLs against the configured URL when another instance stored another one, and /sources reports it', async () => {
+      const t = onGitLab();
+      // Another instance configures the same host at another scheme, port and relative root, and stores its URL.
+      ensureSource(t.db, { kind: 'gitlab', host: GL, baseUrl: 'http://gitlab.example.com:8080/other' });
+      ensureSource(t.db, { kind: 'gitlab', host: 'gitlab2.example.com', baseUrl: 'https://gitlab2.example.com/root' });
+      const url = `${GITLAB_BASE}/team/platform/api`;
+      expect((await t.call('GET', q(url))).body).toMatchObject({ ok: true, repo: { key: `${GL}/team/platform/api`, url } });
+      expect(await t.call('POST', '/repos', { repo: `${url}/-/issues` })).toMatchObject({ status: 201, body: { repo: { key: `${GL}/team/platform/api` } } });
+      // The web reads pastes against Source.url: where this server reaches it, the stored URL only for a source it doesn't configure.
+      const listed = (await t.call('GET', '/sources')).body!.items as { host: string; url: string; configured: boolean }[];
+      expect(listed.map((s) => [s.host, s.url, s.configured])).toEqual([
+        ['github.com', 'https://github.com', true],
+        [GL, GITLAB_BASE, true],
+        ['gitlab2.example.com', 'https://gitlab2.example.com/root', false],
+      ]);
+      expect((await t.call('GET', `/sources/${GL}`)).body).toMatchObject({ url: GITLAB_BASE });
+      await t.idle();
+    });
+
     it('reports merge requests or issues turned off, and adds the project all the same', async () => {
       // Alice's own corp.tools has its issues turned off.
       const t = onGitLab();

@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import { type Config, loadConfig } from '../config';
-import { setMeta } from '../db/meta';
+import { getMeta, setMeta } from '../db/meta';
 import { ensureSource, GITHUB_SOURCE_ID, getSource, tryClaimViewer } from '../db/sources';
 import { upsertCommit, upsertOwned } from '../db/write';
 import { DiffCache } from '../diff/cache';
@@ -18,7 +18,8 @@ import { addManualRepo, GITHUB, repoRecord, seedDb, seedGitLab, setViewer } from
 import { SourceRegistry } from '../sources/registry';
 import lookupFixture from '../test/fixtures/gitlab/lookup.json';
 import { BASE as GITLAB_BASE, type Handler as GitLabHandler } from '../test/gitlab';
-import { fakeInstance } from '../test/gitlab-instance';
+import { gate } from '../test/gate';
+import { syncInstance } from '../test/gitlab-instance';
 import type { RepoCandidate } from '../../shared/api';
 import { DESKTOP_SECRET_HEADER } from '../../shared/desktop';
 import { testTokens } from '../test/tokens';
@@ -409,15 +410,16 @@ describe('adding and removing repositories', () => {
     });
     const tokens = testTokens(token);
     const config = { ...loadConfig({}), webDir: '/nonexistent' };
-    const sync = new SyncManager({ db, schedule: false, tokens, log: () => {}, fetchImpl: gh.fetchImpl });
     const githubDiffs = new GitHubDiffSources({ tokens });
     const diffs = new DiffService({ db, cache: new DiffCache(':memory:'), sources: githubDiffs, log: () => {} });
-    const gl = gitlab ? fakeInstance(gitlab.over, GITLAB_BASE, gitlab.ops) : null;
+    const gl = gitlab ? syncInstance(gitlab.over, gitlab.ops) : null;
+    /** The sync's GitHub requests, which can be held back (a sync that keeps running). */
+    const syncing = gate();
     const sources = gl
       ? new SourceRegistry({
           db,
           env: gitlab!.token === null ? {} : { GITLAB_TOKEN: gitlab!.token ?? 'gl-test-alice' },
-          github: { tokens: tokens.credentials, diffs: githubDiffs },
+          github: { tokens: tokens.credentials, diffs: githubDiffs, fetchImpl: syncing.wrap(gh.fetchImpl) },
           log: () => {},
           seams: { fetchImpl: gl.fetchImpl, sleep: async () => {}, exec: async () => { throw new Error('glab must not run in tests'); } },
         })
@@ -426,6 +428,8 @@ describe('adding and removing repositories', () => {
       glabPath: null,
       sources: [{ kind: 'gitlab', host: 'gitlab.example.com', baseUrl: GITLAB_BASE, tokenChoice: 'auto', tokenFile: null, tokenEnv: 'GITLAB_TOKEN', from: 'env' }],
     }) ?? [];
+    // With a GitLab source, the manager syncs every source, as startServer's does.
+    const sync = new SyncManager({ db, schedule: false, tokens, sources, log: () => {}, fetchImpl: syncing.wrap(gh.fetchImpl) });
     const tracking = new Tracking({ db, tokens, sources, sync, tz: 'UTC', fetchImpl: wrap(gh.fetchImpl), sleep: async () => {} });
     const deps: AppDeps = { db, config, sync, diffs, tokens, sources, tracking };
     const app = createApp(deps);
@@ -436,7 +440,7 @@ describe('adding and removing repositories', () => {
     const idle = () => vi.waitFor(() => expect(sync.status().running).toBe(false));
     /** What was asked of GitLab, leaving out the background check of a new token. */
     const glAsked = () => gl!.requests.filter((r) => !/CredentialCheck|personal_access_tokens/.test(r));
-    return { app, db, gql, gh, sync, call, idle, deps, sources, gl, glId: glRuntime?.id ?? 0, glAsked };
+    return { app, db, gql, gh, sync, call, idle, deps, sources, gl, glId: glRuntime?.id ?? 0, glAsked, syncing };
   }
 
   it('looks a repository up: a preview with the size of its first sync', async () => {
@@ -745,17 +749,19 @@ describe('adding and removing repositories', () => {
       expect(await off.call('POST', '/repos', { repo: 'team/platform/api', source: GL })).toMatchObject({ status: 201, body: { repo: { key: `${GL}/team/platform/api` } } });
     });
 
-    it("adds a project, claims the source's account, and leaves its first sync to the multi-source manager", async () => {
+    it("adds a project, claims the source's account, and starts its first sync on GitLab", async () => {
       const t = onGitLab();
       const github = getSource(t.db, GITHUB_SOURCE_ID)!.viewer;
       const res = await t.call('POST', '/repos', { repo: 'https://gitlab.example.com/gitlab/team/platform/api/-/issues', includeInDefault: false });
-      expect(res).toMatchObject({ status: 201, body: { sync: 'queued', repo: {
+      expect(res).toMatchObject({ status: 201, body: { sync: 'started', repo: {
         key: `${GL}/team/platform/api`, source: GL, provider: 'gitlab', owner: 'team/platform', name: 'api', trackedBy: 'manual', hidden: true,
         url: 'https://gitlab.example.com/gitlab/team/platform/api', stats: { openPrs: 3, openIssues: 7 }, unavailable: null,
       } } });
       expect(res.body!.repo.addedAt).toMatch(/^\d{4}-/);
-      // No GitHub run for it (a GitHub run would refuse it): step 5's manager syncs it.
-      expect(t.sync.status().running).toBe(false);
+      // A run of GitLab's alone: GitHub isn't asked anything.
+      await t.idle();
+      expect(t.db.get('SELECT s.synced_at FROM sync_state s JOIN repos r ON r.id = s.repo_id WHERE r.key = ?', [`${GL}/team/platform/api`])).toEqual({ synced_at: expect.any(String) });
+      expect(getMeta(t.db, 'lastSync')).toMatchObject({ repo: `${GL}/team/platform/api`, errors: [] });
       expect(t.gh.requests).toEqual([]);
       expect(getSource(t.db, t.glId)!.viewer).toMatchObject({ id: 'gid://gitlab/User/2', login: 'alice' });
       expect(getSource(t.db, GITHUB_SOURCE_ID)!.viewer).toEqual(github);
@@ -771,6 +777,18 @@ describe('adding and removing repositories', () => {
       expect(await t.call('POST', '/repos', { repo: 'alice/app', source: GL })).toMatchObject({
         status: 409, body: { error: `You own ${GL}/alice/app, so it's tracked automatically.`, details: { key: `${GL}/alice/app`, trackedBy: 'owned', hidden: false } },
       });
+    });
+
+    it('queues the first sync of a project added while a sync runs, then runs it on GitLab', async () => {
+      const t = onGitLab();
+      t.syncing.hold();
+      expect(await t.sync.start('manual', { source: 'github.com' })).toEqual({ ok: true });
+      expect(await t.call('POST', '/repos', { repo: 'team/platform/api', source: GL })).toMatchObject({ status: 201, body: { sync: 'queued' } });
+      expect(t.glAsked()).toEqual(['graphql ProjectLookup']);
+      t.syncing.release();
+      await vi.waitFor(() => expect(getMeta(t.db, 'lastSync')).toMatchObject({ repo: `${GL}/team/platform/api`, errors: [] }));
+      await t.idle();
+      expect(t.glAsked()).toContain('graphql ProjectByNode');
     });
 
     it('removes a project added by hand, by its key or by its path with the source; owned ones are hidden instead', async () => {

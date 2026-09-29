@@ -48,8 +48,15 @@ const REFRESH_CHUNK = 25;
 const REFRESH_CALLS = 4;
 
 export interface SyncRequest {
+  /** One repository: a key, or on github.com an owned repo's short name (with `source`, its path there). */
   repo?: string;
+  /** Ignore the high-water marks: re-read the backfill window and re-diff stars. */
   full?: boolean;
+  /**
+   * The source (a host) whose repositories to sync; absent: the repo's source, else every source. The manager's
+   * choice (design §4.6): runSync syncs the source it is given.
+   */
+  source?: string;
 }
 
 export interface SyncProgress {
@@ -229,10 +236,13 @@ function writeTx<T>(db: Db, t: { id: number; record: RepoRecord }, fn: () => T):
   });
 }
 
+/** The token is for another account than the one the source's data belongs to (the message says which, and the fix). */
+export class AccountMismatch extends Error {}
+
 /** Runs before anything is written: a token for another account fails the sync and leaves the database as it was. */
 function claimViewer(db: Db, src: SourceRow, v: ClaimedViewer): void {
   const mismatch = tryClaimViewer(db, src.id, v);
-  if (mismatch) throw new Error(mismatch);
+  if (mismatch) throw new AccountMismatch(mismatch);
 }
 
 /**

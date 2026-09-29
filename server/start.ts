@@ -95,14 +95,16 @@ export async function startServer(opts: StartOptions): Promise<RunningServer> {
     const tokenReady = tokens.check().then(() => {
       tokenSettled = true;
     });
-    const sync = new SyncManager({ db, schedule: config.syncEnabled, tokens, log });
     const githubDiffs = new GitHubDiffSources({ tokens, log });
     const sources = new SourceRegistry({ db, env: opts.env, github: { tokens: tokens.credentials, diffs: githubDiffs }, log, seams: opts.sourceOptions });
+    // Syncs every source the registry has configured, each with its own token and client.
+    const sync = new SyncManager({ db, schedule: config.syncEnabled, tokens, sources, log });
     // Each repo's diffs are fetched from the source it is on.
     const diffs = new DiffService({ db, cache, sources: new DiffRouter(sources), log });
     diffs.evict();
     // Checked in the background too; each logs who its token is for, an expiry close by, and write scopes.
     const sourcesReady = sources.check(sources.apply({ glabPath: config.glabPath, sources: config.sourceConfigs }));
+    // Every source's account (the others' failures are logged by the manager).
     const viewerReady = sync.ensureViewer().catch((err: Error) => log(`[startup] could not fetch GitHub viewer: ${err.message}`));
     const deps: AppDeps = { db, config, sync, diffs, tokens, sources };
 

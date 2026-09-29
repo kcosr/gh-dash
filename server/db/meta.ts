@@ -18,13 +18,25 @@ export interface RateLimitMeta {
   resetAt: string;
 }
 
+/** One source's part of a sync run, in the lock. */
+export interface SyncLockSource {
+  done: number;
+  total: number;
+  current: string | null;
+  /** False once this source's part has ended (the run may still be syncing others). */
+  running: boolean;
+}
+
 export interface SyncLockMeta {
   instance: string;
   pid: number;
   trigger: 'manual' | 'scheduled' | 'startup';
   startedAt: string;
   heartbeatAt: string;
+  /** The run's progress: its sources' parts added up. */
   progress: { done: number; total: number; current: string | null };
+  /** Each source the run syncs, by host. Absent in locks written by builds from before sources (they synced GitHub alone). */
+  sources?: Record<string, SyncLockSource>;
   /** Key of the one repository a single-repo run syncs. */
   repo?: string;
 }

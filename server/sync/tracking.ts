@@ -34,8 +34,8 @@ export const notASource = (host: string) => `${host} isn't a source here.`;
 /** The Sync manager's part: start a just-added repo's first sync, or queue it. */
 export interface FirstSync {
   /**
-   * `source` is the repo's source (a host). Until the multi-source manager (step 5), SyncManager syncs github.com only
-   * and answers 'queued' for any other (SyncManager.syncsSource is the hook).
+   * `source` is the repo's source (a host). A source this instance doesn't sync answers 'queued' (the instance that
+   * syncs it picks the repo up).
    */
   startOrQueue(req: { repo: string; source: string }): Promise<'started' | 'queued'>;
 }
@@ -114,7 +114,7 @@ export class Tracking {
     const runtime = this.opts.sources?.byHost(h) ?? null;
     if (!runtime) throw new HttpError(400, notASource(h));
     const open = runtime.syncSource;
-    if (!runtime.configured || !open) throw new HttpError(400, `${runtime.label} isn't configured on this server.`);
+    if (!runtime.configured) throw new HttpError(400, `${runtime.label} isn't configured on this server.`);
     // Every source but github.com is a GitLab instance in this wave.
     const baseUrl = runtime.row.baseUrl;
     return {

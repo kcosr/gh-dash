@@ -375,19 +375,52 @@ export interface InstanceInfo {
   };
 }
 
+/**
+ * GET /api/v1/sync/status. One sync runs at a time; inside it, each source syncs on its own (`sources`). The run-level
+ * fields (running, trigger, progress, the last run, the next one) cover every source: `lastResult.errors` names the
+ * source of every error but github.com's. `rateLimit`, `tokenSource` and `viewer` are github.com's, as they always
+ * were; `sources` has each source's own.
+ */
 export interface SyncStatus {
   running: boolean;
   trigger: 'manual' | 'scheduled' | 'startup' | null;
+  /** The run's progress: its sources' added up. */
   progress: { done: number; total: number; current: string | null } | null;
   lastSyncAt: string | null;
   lastSyncDurationMs: number | null;
   lastResult: { newItems: number; errors: string[] } | null;
   nextSyncAt: string | null;
+  /** github.com's. */
   rateLimit: { limit: number; remaining: number; resetAt: string } | null;
+  /** github.com's. */
   tokenSource: TokenSource;
+  /** github.com's account. */
   viewer: string | null;
   /** Key of the one repository a single-repo sync is syncing (e.g. one just added); null for a full sync. */
   repo?: string | null;
+  /** Every source this database knows, github.com first: each one's part of the sync. */
+  sources: SourceSyncStatus[];
+}
+
+/** One source's part of the sync (SyncStatus.sources). */
+export interface SourceSyncStatus {
+  /** The source's host: 'github.com', 'gitlab.example.com'. */
+  source: string;
+  /** Its part of the current run is still going. */
+  running: boolean;
+  progress: { done: number; total: number; current: string | null } | null;
+  /** When its last sync (all its repositories, or one) ended. */
+  lastSyncAt: string | null;
+  lastResult: { newItems: number; errors: string[] } | null;
+  rateLimit: { limit: number; remaining: number; resetAt: string } | null;
+  tokenSource: TokenSource;
+  /** The account its data belongs to. */
+  viewer: string | null;
+  /**
+   * Why it isn't syncing: it isn't configured on this server, it has no token (why not), or the token is for another
+   * account than its data's. null when nothing stands in the way.
+   */
+  problem: string | null;
 }
 
 // ---------------------------------------------------------------------------

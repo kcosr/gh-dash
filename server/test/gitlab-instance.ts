@@ -254,3 +254,34 @@ export function fakeInstance(over: Record<string, Handler> = {}, base = BASE, op
     base,
   );
 }
+
+/**
+ * The fake instance for whole syncs (the sync, the manager): empty lists for the projects other than alice/app that the
+ * sync reads over REST, and, since the GraphQL fixtures are single pages that say more follow, any later page empty and
+ * the last. `owned` edits the owned projects GitLab lists. `over` and `ops` as for fakeInstance.
+ */
+export function syncInstance(over: Record<string, Handler> = {}, ops: Ops = {}) {
+  const owned = structuredClone(ownedFixture);
+  const fake = fakeInstance({
+    '/api/v4/projects/12/issues': page([], null),
+    '/api/v4/projects/12/starrers': page([], null, { 'x-total': '0' }),
+    '/api/v4/projects/40/issues': page([], null),
+    '/api/v4/projects/40/repository/commits': page([], null),
+    ...over,
+  }, BASE, ops);
+  const answer = fake.routes['/api/graphql'];
+  // A fixed reply in `over` (say, a 401) answers everything.
+  if (typeof answer !== 'function') return { ...fake, owned };
+  fake.routes['/api/graphql'] = (req) => {
+    const { query, variables } = req.body as { query: string; variables?: { after?: string | null } };
+    if (/query OwnedProjects\b/.test(query)) return { body: { data: owned } };
+    const reply = answer(req);
+    if (!variables?.after) return reply;
+    const body = structuredClone(reply.body) as { data?: { project?: Record<string, unknown> | null } };
+    for (const conn of Object.values(body.data?.project ?? {})) {
+      if (conn && typeof conn === 'object' && 'pageInfo' in conn) Object.assign(conn, { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } });
+    }
+    return { ...reply, body };
+  };
+  return { ...fake, owned };
+}

@@ -9,9 +9,8 @@ import { ensureSource, GITHUB_SOURCE_ID, getSource } from '../db/sources';
 import { notFound } from '../gitlab/access';
 import { GitLabSyncSource } from '../gitlab/sync-source';
 import { reasonOf } from '../provider/access';
-import { BASE, type Handler, page, type Reply } from '../test/gitlab';
-import { fakeInstance } from '../test/gitlab-instance';
-import ownedFixture from '../test/fixtures/gitlab/owned-projects.json';
+import { BASE, type Handler } from '../test/gitlab';
+import { syncInstance } from '../test/gitlab-instance';
 import { addManualRepo } from '../test/seed';
 import { runSync, type SyncRequest } from './sync';
 
@@ -21,39 +20,10 @@ const HOST = 'gitlab.example.com';
 const gid = (id: number) => `gid://gitlab/Project/${id}`;
 const sha = (c: string) => c.repeat(40).slice(0, 40);
 
-/**
- * The fake instance, with empty lists for the projects other than alice/app that the sync reads over REST. Its GraphQL
- * fixtures are single pages that say more follow: here any later page is empty and the last. `owned` edits the owned
- * projects GitLab lists.
- */
-function instance(over: Record<string, Handler> = {}) {
-  const owned = structuredClone(ownedFixture);
-  const fake = fakeInstance({
-    '/api/v4/projects/12/issues': page([], null),
-    '/api/v4/projects/12/starrers': page([], null, { 'x-total': '0' }),
-    '/api/v4/projects/40/issues': page([], null),
-    '/api/v4/projects/40/repository/commits': page([], null),
-    ...over,
-  });
-  const answer = fake.routes['/api/graphql'] as Extract<Handler, (...args: never[]) => Reply>;
-  fake.routes['/api/graphql'] = (req) => {
-    const { query, variables } = req.body as { query: string; variables?: { after?: string | null } };
-    if (/query OwnedProjects\b/.test(query)) return { body: { data: owned } };
-    const reply = answer(req);
-    if (!variables?.after) return reply;
-    const body = structuredClone(reply.body) as { data?: { project?: Record<string, unknown> | null } };
-    for (const conn of Object.values(body.data?.project ?? {})) {
-      if (conn && typeof conn === 'object' && 'pageInfo' in conn) Object.assign(conn, { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } });
-    }
-    return { ...reply, body };
-  };
-  return { ...fake, owned };
-}
-
 function setup(over: Record<string, Handler> = {}) {
   const db = openDb(':memory:');
   const gl = ensureSource(db, { kind: 'gitlab', host: HOST, baseUrl: BASE });
-  const fake = instance(over);
+  const fake = syncInstance(over);
   const sync = (req: SyncRequest = {}, at = NOW, concurrency?: number) => {
     const source = new GitLabSyncSource({ baseUrl: BASE, token: 'glpat-test-token', fetchImpl: fake.fetchImpl, sleep: async () => {} });
     return runSync({ db, source, src: getSource(db, gl.id)!, settings: DEFAULT_SETTINGS, now: () => at, concurrency }, req);

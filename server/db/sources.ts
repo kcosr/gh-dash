@@ -190,6 +190,11 @@ export function setSourceRateLimit(db: Db, sourceId: number, rl: RateLimitMeta):
   ]);
 }
 
+/** Records the source's own part of the sync run that just ended (the manager, per source). */
+export function setSourceLastSync(db: Db, sourceId: number, last: SourceSyncMeta): void {
+  db.run('UPDATE sources SET last_sync = ? WHERE id = ?', [JSON.stringify(last), sourceId]);
+}
+
 /**
  * Removes a source and everything tracked on it, in one write transaction: its repos (which cascades to every child
  * table and the full-text indexes, as removing one repo does), then its row. github.com can't be removed. Refusing a

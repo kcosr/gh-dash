@@ -24,10 +24,10 @@ import { useUI } from './ui';
 
 const NAV: { path: string; label: (w: PrWords) => string; icon: IconName; views: string[] }[] = [
   { path: '/prs', label: (w) => w.nav, icon: 'merge', views: ['prs'] },
-  { path: '/comments', label: () => 'Comments', icon: 'comment', views: ['comments'] },
   { path: '/issues', label: () => 'Issues', icon: 'issue', views: ['issues'] },
-  { path: '/activity', label: () => 'Activity', icon: 'pulse', views: ['activity'] },
+  { path: '/comments', label: () => 'Comments', icon: 'comment', views: ['comments'] },
   { path: '/repos', label: () => 'Repositories', icon: 'book', views: ['repos', 'repo'] },
+  { path: '/activity', label: () => 'Activity', icon: 'pulse', views: ['activity'] },
   { path: '/insights', label: () => 'Insights', icon: 'chart', views: ['insights'] },
 ];
 

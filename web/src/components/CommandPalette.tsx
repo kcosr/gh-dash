@@ -172,7 +172,7 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggle
     const vs = (views.data ?? []).filter((v) => has(v.name));
     if (vs.length) out.push({ title: 'Saved views', items: vs.map((v) => ({ key: `view:${v.id}`, icon: ic('bookmark'), label: v.name, run: () => navigate(`${v.path}${v.query ? `?${v.query}` : ''}`) })) });
 
-    const nav: [string, string, IconName][] = [[w.nav, '/prs', 'merge'], ['Comments', '/comments', 'comment'], ['Issues', '/issues', 'issue'], ['Activity', '/activity', 'pulse'], ['Repositories', '/repos', 'book'], ['Insights', '/insights', 'chart'], ['Settings', '/settings', 'sliders']];
+    const nav: [string, string, IconName][] = [[w.nav, '/prs', 'merge'], ['Issues', '/issues', 'issue'], ['Comments', '/comments', 'comment'], ['Repositories', '/repos', 'book'], ['Activity', '/activity', 'pulse'], ['Insights', '/insights', 'chart'], ['Settings', '/settings', 'sliders']];
     const navItems = nav.filter(([l]) => has(l)).map(([l, p, i]) => ({ key: `go:${p}`, icon: ic(i), label: l, run: () => go(p) }));
     if (navItems.length) out.push({ title: 'Go to', items: navItems });
 

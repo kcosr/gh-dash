@@ -67,11 +67,10 @@ describe('config.json entries', () => {
     expect(withMethod({ kind: 'gitlab', url: A, tokenEnv: 'WORK_GITLAB_TOKEN', tokenSource: 'app' }, 'glab', null)).toEqual({ kind: 'gitlab', url: A, tokenEnv: 'WORK_GITLAB_TOKEN', tokenSource: 'glab' });
   });
 
-  it('adds and removes entries; the only source keeps GITLAB_TOKEN when a second one comes', () => {
+  it('adds and removes entries, naming no variable for any of them', () => {
     const one = config({ tokenSource: 'glab' });
-    expect(addEntry(one, { kind: 'gitlab', url: B, tokenSource: 'app' }, {})).toEqual({ sources: [{ kind: 'gitlab', url: A, tokenSource: 'glab' }, { kind: 'gitlab', url: B, tokenSource: 'app' }] });
-    expect(addEntry(one, { kind: 'gitlab', url: B, tokenSource: 'app' }, SET).sources![0]).toEqual({ kind: 'gitlab', url: A, tokenSource: 'glab', tokenEnv: 'GITLAB_TOKEN' });
-    expect(addEntry({ port: 4800 }, { kind: 'gitlab', url: B }, SET)).toEqual({ port: 4800, sources: [{ kind: 'gitlab', url: B }] });
+    expect(addEntry(one, { kind: 'gitlab', url: B, tokenSource: 'app' })).toEqual({ sources: [{ kind: 'gitlab', url: A, tokenSource: 'glab' }, { kind: 'gitlab', url: B, tokenSource: 'app' }] });
+    expect(addEntry({ port: 4800 }, { kind: 'gitlab', url: B })).toEqual({ port: 4800, sources: [{ kind: 'gitlab', url: B }] });
     const two = config({}, { url: B });
     expect(removeEntry(two, 0)).toEqual({ sources: [{ kind: 'gitlab', url: B }] });
     expect(removeEntry({ glabPath: '/x', sources: [{ kind: 'gitlab', url: A }] }, 0)).toEqual({ glabPath: '/x' });
@@ -79,26 +78,27 @@ describe('config.json entries', () => {
 });
 
 describe('GITLAB_TOKEN', () => {
-  it('is unset, or locks the only source', () => {
+  it('is unset, or offered: never the only source\'s by default', () => {
     expect(gitlabEnvState({}, {})).toBe('unset');
     expect(gitlabEnvState({}, { GITLAB_TOKEN: '  ' })).toBe('unset');
-    expect(gitlabEnvState({}, SET)).toBe('locks');
-    expect(gitlabEnvState(config({ tokenSource: 'glab' }), SET, 'gitlab.example.com')).toBe('locks');
-    expect(lockingEnv(config({ tokenSource: 'glab' }), 0, SET)).toBe('GITLAB_TOKEN');
-    expect(lockingEnv(config({ tokenSource: 'glab' }), 0, {})).toBeNull();
+    expect(gitlabEnvState({}, SET)).toBe('offered');
+    expect(gitlabEnvState(config({ tokenSource: 'glab' }), SET)).toBe('offered');
+    expect(gitlabEnvState(config({ tokenSource: 'glab' }), SET, 'gitlab.example.com')).toBe('offered');
+    expect(lockingEnv(config({ tokenSource: 'glab' }), 0, SET)).toBeNull();
+    expect(gitlabEnvState(config({ tokenEnv: 'WORK_TOKEN' }), SET)).toBe('offered');
   });
 
-  it('is taken by the only source when a second one is added, and offered when free', () => {
-    expect(gitlabEnvState(config({ tokenSource: 'glab' }), SET)).toBe('in-use');
-    expect(gitlabEnvState(config({ tokenEnv: 'WORK_TOKEN' }), SET)).toBe('offered');
-    const two = config({ tokenSource: 'glab' }, { url: B, tokenSource: 'app' });
-    expect(gitlabEnvState(two, SET)).toBe('offered');
-    expect(gitlabEnvState(two, SET, 'gitlab2.example.com')).toBe('offered');
-    expect(lockingEnv(two, 0, SET)).toBeNull();
+  it('is in use by the source whose entry names it, and locks that source while it is set', () => {
     const named = config({ tokenEnv: 'GITLAB_TOKEN' }, { url: B, tokenSource: 'app' });
     expect(gitlabEnvState(named, SET)).toBe('in-use');
     expect(gitlabEnvState(named, SET, 'gitlab2.example.com')).toBe('in-use');
+    expect(gitlabEnvState(named, SET, 'gitlab.example.com')).toBe('offered');
     expect(lockingEnv(named, 0, SET)).toBe('GITLAB_TOKEN');
+    expect(lockingEnv(named, 0, {})).toBeNull();
+    expect(lockingEnv(named, 1, SET)).toBeNull();
+    // The other one left alone by a removal doesn't inherit it.
+    expect(lockingEnv(removeEntry(named, 0), 0, SET)).toBeNull();
+    expect(gitlabEnvState(removeEntry(named, 0), SET)).toBe('offered');
   });
 });
 

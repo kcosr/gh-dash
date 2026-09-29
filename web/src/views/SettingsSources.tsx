@@ -153,7 +153,7 @@ function MethodPicker({ form, onChange, methods, target, desk, idPrefix }: {
       )}
       {form.method === 'env' && (
         <small className="muted">
-          <code>GITLAB_TOKEN</code> is set in the environment gh-dash was started from{desk.gitlabEnv === 'locks' ? ', so it is this source’s token while it is set.' : '.'}
+          <code>GITLAB_TOKEN</code> is set in the environment gh-dash was started from. gh-dash asks before sending it to this address, and then it is this source’s token while it is set.
         </small>
       )}
     </>
@@ -258,7 +258,7 @@ function ChangeToken({ s, desk, onDone }: { s: Source; desk: DesktopState; onDon
   const { setCredential } = useSourceActions();
   const toast = useToast();
   const now = useNow(60_000);
-  const methods = methodsFor(desk.gitlabEnv === 'locks' ? 'unset' : desk.gitlabEnv);
+  const methods = methodsFor(desk.gitlabEnv);
   const [form, setForm] = useState<CredentialForm>(() => newForm(methods));
   const [failed, setFailed] = useState<SourceCheck | null>(null);
   const [error, setError] = useState<string | null>(null);

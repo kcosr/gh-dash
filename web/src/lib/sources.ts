@@ -213,7 +213,6 @@ export function removeMode(
 
 /** The ways to sign in that the Add / Change forms offer, given GITLAB_TOKEN (DesktopState.gitlabEnv). */
 export function methodsFor(env: DesktopState['gitlabEnv'] | undefined): SourceMethod[] {
-  if (env === 'locks') return ['env'];
   return env === 'offered' ? ['app', 'glab', 'file', 'env'] : ['app', 'glab', 'file'];
 }
 

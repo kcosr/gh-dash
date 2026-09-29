@@ -4,7 +4,7 @@ import { gitlabTokenCreateUrl, gitlabWriteWarning } from '../../shared/credentia
 import { CredentialProvider } from '../credentials/provider';
 import { execError, fakeExec, fakeFs, type FakeFile } from '../test/credentials';
 import { BASE, fakeGitLab, graphql, type Handler } from '../test/gitlab';
-import { gitlabExpiry, gitlabSpec, gitlabTokenEnv, gitlabTokenKind } from './credentials';
+import { gitlabExpiry, gitlabSpec, gitlabTokenKind } from './credentials';
 
 const HOST = 'gitlab.example.com';
 const GLAB = '/usr/bin/glab';
@@ -57,12 +57,7 @@ function setup(o: Setup = {}) {
 }
 
 describe('GitLab credentials: resolution', () => {
-  it('GITLAB_TOKEN locks the source only when it is the only GitLab source; tokenEnv names another variable', async () => {
-    expect(gitlabTokenEnv(undefined, 1)).toBe('GITLAB_TOKEN');
-    expect(gitlabTokenEnv(null, 2)).toBeNull();
-    expect(gitlabTokenEnv(' WORK_GITLAB_TOKEN ', 2)).toBe('WORK_GITLAB_TOKEN');
-    expect(gitlabTokenEnv('WORK_GITLAB_TOKEN', 1)).toBe('WORK_GITLAB_TOKEN');
-
+  it('the source\'s variable, when set, is its token and locks the method', async () => {
     const locked = setup({ env: { GITLAB_TOKEN: ` ${PAT} `, PATH: '' }, choice: 'app' });
     expect(await locked.tokens.get()).toMatchObject({ token: PAT, source: 'env' });
     expect(await locked.tokens.account()).toMatchObject({ source: 'env', choice: 'app', locked: true, env: 'GITLAB_TOKEN', kind: 'personal' });

@@ -54,7 +54,6 @@ describe('drafts', () => {
     expect(methodsFor('unset')).toEqual(['app', 'glab', 'file']);
     expect(methodsFor('in-use')).toEqual(['app', 'glab', 'file']);
     expect(methodsFor('offered')).toEqual(['app', 'glab', 'file', 'env']);
-    expect(methodsFor('locks')).toEqual(['env']);
   });
 });
 

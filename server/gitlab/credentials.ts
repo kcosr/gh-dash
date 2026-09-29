@@ -38,16 +38,6 @@ export function gitlabTokenKind(token: string): TokenKind {
   return token.startsWith('glpat-') ? 'personal' : 'unknown';
 }
 
-/**
- * The variable that locks a GitLab source: its own `tokenEnv`, else GITLAB_TOKEN when it is the only GitLab source.
- * With several, a source without `tokenEnv` has no env lock (GITLAB_TOKEN can't say which one it is for).
- */
-export function gitlabTokenEnv(tokenEnv: string | null | undefined, gitlabSources: number): string | null {
-  const own = tokenEnv?.trim();
-  if (own) return own;
-  return gitlabSources === 1 ? GITLAB_TOKEN_ENV : null;
-}
-
 /** "GitLab (gitlab.example.com)": what logs and errors call the source. */
 export function gitlabLabel(host: string): string {
   return `GitLab (${host})`;
@@ -147,7 +137,7 @@ export function gitlabNotes(baseUrl: string, v: Validation, now: number): string
 }
 
 export interface GitLabCredentialConfig {
-  /** The variable that locks this source (see gitlabTokenEnv); null = none. */
+  /** The variable that locks this source (SourceConfig.tokenEnv); null = none. */
   tokenEnv: string | null;
   /** GH_DASH_GLAB_PATH / glabPath: the glab executable, when it isn't on PATH or in a standard location. */
   glabPath: string | null;

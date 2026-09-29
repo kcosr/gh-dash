@@ -160,7 +160,8 @@ Declare a GitLab source in `config.json`:
 
 `url` is the instance's address, including its relative root if it has one; its host name is the
 source's identity. `tokenFile` is an absolute path. `tokenEnv` names the environment variable
-that holds the token (default `GITLAB_TOKEN`, when there is only one GitLab source). A headless
+that holds the token (default on a headless server: `GITLAB_TOKEN`, when there is only one GitLab
+source; the desktop app has no default). A headless
 server can declare one GitLab source with `GH_DASH_GITLAB_URL` instead, and choose its token
 with `GITLAB_TOKEN`, `GITLAB_TOKEN_FILE` or `GH_DASH_GITLAB_TOKEN_SOURCE`. Restart after edits.
 
@@ -290,9 +291,9 @@ the name `gh-dash` and only the `read_api` scope filled in. **Test connection** 
 the GitLab version, the token's scopes and expiry, and warns about scopes that can change things;
 the source is added only after a successful test, and its first sync starts without a restart.
 Each source can be checked again, switched to another token (tested first), or removed with its
-data. `GITLAB_TOKEN` in the app's environment is the token of the only GitLab source, as
-`GITHUB_TOKEN` is GitHub's; the app asks before sending it to an address the first time. The app writes the sources to its `config.json`; the tokens themselves
-never go there, nor to the database.
+data. `GITLAB_TOKEN` in the app's environment is one more way to sign a source in: the app asks
+before sending it to that address, and it is never any source's token by default. The app writes
+the sources to its `config.json`; the tokens themselves never go there, nor to the database.
 
 **Local API.** Turn it on in **Settings** to reach the API from browsers, curl and scripts
 (`/api/docs`). It listens on `127.0.0.1` only, unless you allow other devices on the network,

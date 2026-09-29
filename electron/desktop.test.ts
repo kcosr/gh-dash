@@ -4,6 +4,8 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AccountStatus, SourceAccount, SourceCheck, TokenChoice } from '../shared/api';
 import type { SourceTestDraft } from '../shared/desktop';
+import { readConfigFile } from '../server/config-file';
+import { loadSources } from '../server/sources/config';
 import { Desktop } from './desktop';
 import type { ServerChild, StartResult } from './server-child';
 import type { TokenStore } from './token-store';
@@ -395,11 +397,11 @@ describe('GitLab sources', () => {
     await expect(quiet.testSource({ kind: 'gitlab', url: URL, method: 'env' })).rejects.toThrow("GITLAB_TOKEN wasn't sent");
   });
 
-  it('lets GITLAB_TOKEN sign a source in only when it is set, and never another way while it locks the source', async () => {
+  it('lets GITLAB_TOKEN sign a source in only when it is set and free, and never another way while it locks the source', async () => {
     await expect(desktop.testSource({ kind: 'gitlab', url: URL, method: 'env' })).rejects.toThrow("GITLAB_TOKEN isn't set");
     env.GITLAB_TOKEN = 'glpat-from-env';
-    expect((await desktop.state()).gitlabEnv).toBe('locks');
-    await expect(desktop.addSource({ kind: 'gitlab', url: URL, method: 'glab' })).rejects.toThrow('so it is always this source');
+    // Offered, never implied: even the first source signs in with it only when asked to (and main's dialog agrees).
+    expect((await desktop.state()).gitlabEnv).toBe('offered');
     await desktop.addSource({ kind: 'gitlab', url: URL, method: 'env' });
     expect(gl.testSource).toHaveBeenLastCalledWith({ url: URL, method: 'env', tokenEnv: 'GITLAB_TOKEN' });
     expect(readConfig().sources).toEqual([{ kind: 'gitlab', url: URL, tokenEnv: 'GITLAB_TOKEN' }]);
@@ -413,6 +415,19 @@ describe('GitLab sources', () => {
       { kind: 'gitlab', url: URL, tokenEnv: 'GITLAB_TOKEN' },
       { kind: 'gitlab', url: 'https://gitlab2.example.com', tokenSource: 'glab' },
     ]);
+  });
+
+  it('does not hand GITLAB_TOKEN to the source a removal leaves alone, on this reload or a later start', async () => {
+    env.GITLAB_TOKEN = 'glpat-not-a-real-token';
+    await desktop.addSource({ kind: 'gitlab', url: URL, method: 'env' });
+    await desktop.addSource({ kind: 'gitlab', url: 'https://gitlab2.example.com', method: 'app', token: 'glpat-good-b', remember: false });
+    await desktop.removeSource(HOST);
+    expect(readConfig().sources).toEqual([{ kind: 'gitlab', url: 'https://gitlab2.example.com', tokenSource: 'app' }]);
+    // What the child loads from that config.json, now and at every later start: no variable for the remaining source.
+    expect(loadSources({ ...env, GH_DASH_DESKTOP: '1' }, readConfigFile(configPath)).sources.map((s) => [s.host, s.tokenEnv])).toEqual([['gitlab2.example.com', null]]);
+    expect(confirmEnv.mock.calls).toEqual([[HOST]]);
+    // Free again, behind main's dialog.
+    expect((await desktop.state()).gitlabEnv).toBe('offered');
   });
 
   it('changes a token only after the new one passes its test', async () => {

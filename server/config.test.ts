@@ -296,6 +296,16 @@ describe('GitLab sources', () => {
     ]);
   });
 
+  it('never gives GITLAB_TOKEN to a source by default in the desktop app: only an entry that names it has it', () => {
+    const dir = temp();
+    const desktop = (data: Record<string, unknown>) => load(data, { GH_DASH_DESKTOP: '1', GH_DASH_DATA_DIR: dir, GITLAB_TOKEN: 'glpat-not-a-real-token' });
+    // The only source, as when the app starts with GITLAB_TOKEN set, or after the one that named it was removed.
+    expect(desktop({ sources: [gitlab('https://gitlab.example.com', { tokenSource: 'app' })] }).sourceConfigs[0]!.tokenEnv).toBeNull();
+    expect(desktop({ sources: [gitlab('https://gitlab.example.com', { tokenEnv: 'GITLAB_TOKEN' })] }).sourceConfigs[0]!.tokenEnv).toBe('GITLAB_TOKEN');
+    // Headless keeps the default.
+    expect(load({ sources: [gitlab('https://gitlab.example.com', { tokenSource: 'glab' })] }).sourceConfigs[0]!.tokenEnv).toBe('GITLAB_TOKEN');
+  });
+
   it('refuses github.com, other kinds, duplicate hosts and bad URLs, naming the entry', () => {
     const bad = (data: Record<string, unknown>) => {
       const path = json(data);
@@ -403,7 +413,7 @@ describe('GitLab sources', () => {
     const env = { GH_DASH_DESKTOP: '1', GH_DASH_DATA_DIR: dir, GH_DASH_GITLAB_URL: 'https://gitlab2.example.com', GITLAB_TOKEN_FILE: '/run/t' };
     const config = load({ sources: [gitlab('https://gitlab.example.com', { tokenSource: 'app' })] }, env);
     expect(config.sourceConfigs).toEqual([
-      { kind: 'gitlab', host: 'gitlab.example.com', baseUrl: 'https://gitlab.example.com', tokenChoice: 'app', tokenFile: null, tokenEnv: 'GITLAB_TOKEN', from: 'file' },
+      { kind: 'gitlab', host: 'gitlab.example.com', baseUrl: 'https://gitlab.example.com', tokenChoice: 'app', tokenFile: null, tokenEnv: null, from: 'file' },
     ]);
     expect(() => load({ glabPath: 'glab' }, env)).toThrow(/glabPath in .*config\.json must be an absolute path: glab/);
     expect(() => loadConfig({ ...env, GH_DASH_GLAB_PATH: 'glab' })).toThrow('GH_DASH_GLAB_PATH must be an absolute path: glab');

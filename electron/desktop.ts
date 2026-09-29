@@ -266,14 +266,12 @@ export class Desktop {
     throw new ConfigInputError(`${what} failed: ${result.error}`);
   }
 
-  /** Whether `method` can sign in the source at `host` (null: a new one), given GITLAB_TOKEN. */
+  /** Whether `method` can sign in the source at `host` (null: a new one): GITLAB_TOKEN only when it is set and free. */
   private checkMethod(config: ConfigFile, host: string | null, method: SourceMethod) {
+    if (method !== 'env') return;
     const env = gitlabEnvState(config, this.env, host);
-    if (method === 'env' && env !== 'locks' && env !== 'offered') {
+    if (env !== 'offered') {
       throw new ConfigInputError(env === 'in-use' ? `${GITLAB_TOKEN} is already another GitLab source's token.` : `${GITLAB_TOKEN} isn't set in the environment gh-dash was started from.`);
-    }
-    if (method !== 'env' && env === 'locks') {
-      throw new ConfigInputError(`${GITLAB_TOKEN} is set in the environment gh-dash was started from, so it is always this source's token. To sign in another way, quit gh-dash, unset ${GITLAB_TOKEN} and start it again.`);
     }
   }
 
@@ -356,7 +354,7 @@ export class Desktop {
       const check = this.addConflict(await this.d.child.testSource(await this.testDraft(baseUrl, host, draft)), loaded.data);
       if (!check.ok) return { check, saved: false, remembered: false };
       const entry = withMethod({ kind: 'gitlab', url: check.url }, draft.method, draft.method === 'file' ? this.fileFor(host) : null);
-      await this.applySources(loaded, addEntry(loaded.data, entry, this.env), `Adding ${check.host}`);
+      await this.applySources(loaded, addEntry(loaded.data, entry), `Adding ${check.host}`);
       let remembered = false;
       if (draft.method === 'app') {
         this.sourceAppTokens.set(check.host, draft.token);

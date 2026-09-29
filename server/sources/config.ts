@@ -24,8 +24,8 @@ export interface SourceConfig {
   /** Absolute path of a file holding just the token; null when none. */
   tokenFile: string | null;
   /**
-   * The variable that, when set, is the token and locks the method: the entry's own tokenEnv, else GITLAB_TOKEN when
-   * this is the only GitLab source or the one GH_DASH_GITLAB_URL names; null = none.
+   * The variable that, when set, is the token and locks the method: the entry's own tokenEnv, else (headless only)
+   * GITLAB_TOKEN when this is the only GitLab source or the one GH_DASH_GITLAB_URL names; null = none.
    */
   tokenEnv: string | null;
   /** config.json, or the environment when GH_DASH_GITLAB_URL declares or overrides it. */
@@ -123,8 +123,12 @@ export function loadSources(env: NodeJS.ProcessEnv, file: LoadedConfigFile | nul
 
   const sources = drafts.map((d): SourceConfig => {
     const own = d.tokenEnv?.trim() || null;
-    // GITLAB_TOKEN is the only source's, or the one GH_DASH_GITLAB_URL named: nothing else says which it is for.
-    const tokenEnv = own ?? (drafts.length === 1 || (d === envSource && env[GITLAB_ENV.url]?.trim()) ? GITLAB_TOKEN_ENV : null);
+    // Headless, GITLAB_TOKEN is the only source's, or the one GH_DASH_GITLAB_URL named: nothing else says which it is
+    // for. Never by default in the desktop app, where the renderer names the host: there a source uses it only when its
+    // entry names it, which main writes after its own dialog. (Otherwise a source left alone by a removal, or found
+    // alone when the app is started with the variable set, would be sent it unasked.)
+    const implied = !desktop && (drafts.length === 1 || (d === envSource && !!env[GITLAB_ENV.url]?.trim()));
+    const tokenEnv = own ?? (implied ? GITLAB_TOKEN_ENV : null);
     return {
       kind: 'gitlab',
       host: d.host,

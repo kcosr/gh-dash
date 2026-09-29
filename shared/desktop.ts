@@ -162,11 +162,10 @@ export interface DesktopState {
    */
   glab: { path: string | null; chosen: boolean };
   /**
-   * GITLAB_TOKEN in the app's environment, for a new GitLab source: `unset`; `locks` (there's no GitLab source yet, so
-   * a new one is the only one, and the variable is always its token); `offered` (one of the ways to sign in);
-   * `in-use` (it is another source's token).
+   * GITLAB_TOKEN in the app's environment, for a new GitLab source: `unset`; `offered` (one of the ways to sign in,
+   * sent only after main's dialog); `in-use` (another source's entry names it). It is never a source's by default.
    */
-  gitlabEnv: 'unset' | 'locks' | 'offered' | 'in-use';
+  gitlabEnv: 'unset' | 'offered' | 'in-use';
 }
 
 /** A GitLab source in the app's config.json. */

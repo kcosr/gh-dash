@@ -8,7 +8,7 @@ import { posix, win32 } from 'node:path';
 import { type ConfigFile, type SourceConfigEntry, sourceUrl } from '../server/config-file';
 import { defaultExec, findCli } from '../server/credentials/cli';
 import { glabCli } from '../server/credentials/glab';
-import { GITLAB_TOKEN_ENV, gitlabTokenEnv } from '../server/gitlab/credentials';
+import { GITLAB_TOKEN_ENV } from '../server/gitlab/credentials';
 import type { CredentialDraft, DesktopState, SourceDraft, SourceMethod } from '../shared/desktop';
 import { ConfigInputError } from './config';
 
@@ -94,33 +94,23 @@ export function sourceIndex(config: ConfigFile, host: string): number {
 const envSet = (env: NodeJS.ProcessEnv, name: string) => !!env[name]?.trim();
 
 /**
- * Whether GITLAB_TOKEN can sign in the source at `host` (null: a new one), by the server's rules (server/sources/config.ts):
- * it is the default variable of the only GitLab source, and a source's own `tokenEnv` otherwise.
+ * Whether GITLAB_TOKEN can sign in the source at `host` (null: a new one). In the app a source uses it only when its
+ * entry names it (`tokenEnv`, see server/sources/config.ts), which main writes after its own dialog; it is never any
+ * source's by default.
  * - `unset`: it isn't set in the app's environment.
- * - `locks`: the source is (or would be) the only one, so the variable is always its token, whatever else is chosen.
- * - `in-use`: another source's token.
+ * - `in-use`: another source's entry names it.
  * - `offered`: free, as one of the ways to sign in (written as the entry's `tokenEnv`).
  */
 export function gitlabEnvState(config: ConfigFile, env: NodeJS.ProcessEnv, host: string | null = null): DesktopState['gitlabEnv'] {
   if (!envSet(env, GITLAB_TOKEN_ENV)) return 'unset';
-  const entries = config.sources ?? [];
   const i = host === null ? -1 : sourceIndex(config, host);
-  const count = i < 0 ? entries.length + 1 : entries.length;
-  const others = entries.filter((_, j) => j !== i);
-  // With two sources or more nothing gets GITLAB_TOKEN by default, except the only source so far, which keeps it by
-  // naming it when a second one is added (addEntry).
-  const pinned = i < 0 && others.length === 1;
-  const taken = others.some((e) => (e.tokenEnv?.trim() || (pinned ? GITLAB_TOKEN_ENV : null)) === GITLAB_TOKEN_ENV);
-  if (taken) return 'in-use';
-  const own = i < 0 ? null : entries[i]!.tokenEnv?.trim() || null;
-  if (count === 1 && (own === null || own === GITLAB_TOKEN_ENV)) return 'locks';
-  return 'offered';
+  const taken = (config.sources ?? []).some((e, j) => j !== i && e.tokenEnv?.trim() === GITLAB_TOKEN_ENV);
+  return taken ? 'in-use' : 'offered';
 }
 
-/** The variable that locks the source at config.json `sources[i]` right now, if it is set; null when nothing does. */
+/** The variable that locks the source at config.json `sources[i]` right now: the one its entry names, when it is set. */
 export function lockingEnv(config: ConfigFile, i: number, env: NodeJS.ProcessEnv): string | null {
-  const entries = config.sources ?? [];
-  const name = gitlabTokenEnv(entries[i]?.tokenEnv, entries.length);
+  const name = config.sources?.[i]?.tokenEnv?.trim() || null;
   return name && envSet(env, name) ? name : null;
 }
 
@@ -145,14 +135,9 @@ export function withMethod(entry: SourceConfigEntry, method: SourceMethod | null
   return next;
 }
 
-/**
- * config.json with a new source at the end. When the only source so far relies on GITLAB_TOKEN by default (and it is
- * set), that source keeps it by naming it: with two sources the default no longer applies.
- */
-export function addEntry(config: ConfigFile, entry: SourceConfigEntry, env: NodeJS.ProcessEnv): ConfigFile {
-  const entries = [...(config.sources ?? [])];
-  if (entries.length === 1 && !entries[0]!.tokenEnv?.trim() && envSet(env, GITLAB_TOKEN_ENV)) entries[0] = { ...entries[0]!, tokenEnv: GITLAB_TOKEN_ENV };
-  return { ...config, sources: [...entries, entry] };
+/** config.json with a new source at the end. */
+export function addEntry(config: ConfigFile, entry: SourceConfigEntry): ConfigFile {
+  return { ...config, sources: [...(config.sources ?? []), entry] };
 }
 
 /** config.json without the source at `sources[i]` (and without `sources` once empty). */

@@ -34,8 +34,9 @@ export const sourceConfigSchema = z.object({
   /** With `file`: an absolute path to a file holding just the token; re-read on use. */
   tokenFile: z.string().trim().min(1).nullable().optional(),
   /**
-   * The variable that, when set, is the token and locks the method. Default: GITLAB_TOKEN when this is the only
-   * GitLab source (or the one GH_DASH_GITLAB_URL names); with several, none.
+   * The variable that, when set, is the token and locks the method. Default on a headless server: GITLAB_TOKEN when
+   * this is the only GitLab source (or the one GH_DASH_GITLAB_URL names); with several, none. The desktop app has no
+   * default: it names GITLAB_TOKEN here only after asking.
    */
   tokenEnv: z.string().trim().regex(ENV_NAME, 'must be an environment variable name').nullable().optional(),
 });

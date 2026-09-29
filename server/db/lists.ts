@@ -112,10 +112,10 @@ export interface PrFilter {
   comments?: CommentFilter;
 }
 
-const PR_FROM = 'pull_requests p JOIN repos r ON r.id = p.repo_id';
+export const PR_FROM = 'pull_requests p JOIN repos r ON r.id = p.repo_id';
 // Threads are keyed by repo and number (not p.id), so they match the PR's current row.
 const PR_THREADS = 'FROM comment_threads t WHERE t.repo_id = p.repo_id AND t.pr_number = p.number';
-const PR_SELECT =
+export const PR_SELECT =
   `p.*, ${repoKeySql('r')} AS repo, r.source_id AS source_id, ` +
   `(SELECT count(*) ${PR_THREADS}) AS threads, (SELECT count(*) ${PR_THREADS} AND t.status = 'open') AS unresolved_threads`;
 

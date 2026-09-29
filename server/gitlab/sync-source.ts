@@ -35,6 +35,12 @@ const STAR_PAGE = 100;
 const MAX_STARS = 3000;
 /** Listings of a project's starrers tried before giving up on one whose count keeps moving. */
 const STAR_LISTINGS = 2;
+/**
+ * Most logins a stars cursor keeps for its boundary time (stars in the same millisecond). A page holds 100, and more
+ * than a handful in one millisecond isn't something GitLab produces; past the cap, a repeated star can end the sync's
+ * pass early (it catches up on the next sync).
+ */
+const MAX_MARKED = 100;
 /** Pages read to find the last page of starrers when GitLab doesn't count them (over 10,000): a binary search's worth. */
 const STAR_SEEK_PAGES = 30;
 
@@ -218,8 +224,8 @@ export class GitLabSyncSource implements SyncSource {
    *   whose X-Total moved is read again (once; then 'transient');
    * - beyond: one page a round from the last page backwards. New stars land after the pages still to read, but an
    *   unstar further back shifts starrers already handed out into the next page, where the sync would stop at them as
-   *   known: the cursor ("<page>:<ms>:<login>") keeps the next page to read and the oldest star handed out, and
-   *   anything not older than that is left out.
+   *   known: the cursor ("<page>:<ms>:<login>,<login>…") keeps the next page to read, the time of the oldest star
+   *   handed out and everyone handed out at that time, and later pages leave those and anything newer out.
    * `totalCount` is GitLab's count of that same list, which leaves out private profiles and blocked users, so it can
    * be below the project's star count; GitLab stops counting at 10,000, where the star count stands in.
    */
@@ -250,12 +256,14 @@ export class GitLabSyncSource implements SyncSource {
     }
   }
 
-  /** Page `n` of the starrers, newest first, without those `oldest` or newer (handed out already); the next round reads page n - 1. */
-  private starPage(repo: RepoRecord, n: number, res: RestPage<RestStarrer[]>, oldest: StarMark | null): StarsPage {
-    const fresh = newestFirst(res.body).filter((s) => !oldest || olderThan(s, oldest));
-    const last = fresh.at(-1);
-    const mark = last ? { at: Date.parse(last.starred_since), login: last.user.username } : oldest;
-    const endCursor = n > 1 ? `${n - 1}${mark ? `:${mark.at}:${mark.login}` : ''}` : null;
+  /**
+   * Page `n` of the starrers, newest first, without the ones handed out already (`mark` and newer); the next round
+   * reads page n - 1 with the mark moved to the oldest star of this page.
+   */
+  private starPage(repo: RepoRecord, n: number, res: RestPage<RestStarrer[]>, mark: StarMark | null): StarsPage {
+    const fresh = newestFirst(res.body).filter((s) => !mark || olderThan(s, mark));
+    const next = fresh.length ? markOf(fresh, mark) : mark;
+    const endCursor = n > 1 ? `${n - 1}${next ? `:${next.at}:${next.logins.join(',')}` : ''}` : null;
     return { items: fresh.map((s) => mapStar(s, this.base)), hasMore: n > 1, endCursor, totalCount: res.total ?? repo.stars };
   }
 
@@ -287,16 +295,27 @@ export class GitLabSyncSource implements SyncSource {
  */
 const newestFirst = (starrers: RestStarrer[]) => [...starrers].reverse().sort((a, b) => Date.parse(b.starred_since) - Date.parse(a.starred_since));
 
-/** A star handed out by a backward walk through the starrers: its full-precision time and who. */
+/** How far a backward walk through the starrers got: the oldest time handed out, and everyone handed out at it. */
 interface StarMark {
   at: number;
-  login: string;
+  logins: string[];
 }
 
-/** Whether `s` is older than `mark`; a star at the very same millisecond counts unless it is the marked one. */
+/** Whether `s` wasn't handed out yet: older than the mark, or at its very millisecond but not among its logins. */
 function olderThan(s: RestStarrer, mark: StarMark): boolean {
   const at = Date.parse(s.starred_since);
-  return at < mark.at || (at === mark.at && s.user.username !== mark.login);
+  return at < mark.at || (at === mark.at && !mark.logins.includes(s.user.username));
+}
+
+/**
+ * The mark after handing out `fresh` (newest first, not empty): its oldest time, with the logins at it so far, in
+ * GitLab's order reversed. Capped, it keeps the last ones, listed first by GitLab: an unstar shifts those back first.
+ */
+function markOf(fresh: RestStarrer[], previous: StarMark | null): StarMark {
+  const at = Date.parse(fresh.at(-1)!.starred_since);
+  const logins = fresh.filter((s) => Date.parse(s.starred_since) === at).map((s) => s.user.username);
+  const kept = previous?.at === at ? previous.logins : [];
+  return { at, logins: [...kept, ...logins].slice(-MAX_MARKED) };
 }
 
 /** Issues proper (not incidents, tasks or test cases), with label colors; the same set the probe counts. */
@@ -325,10 +344,11 @@ function pageCursor(cursor: string): number {
   return Number(cursor);
 }
 
+/** GitLab usernames have no commas, so the boundary's logins are comma-separated. */
 function starCursor(cursor: string): { page: number; oldest: StarMark | null } {
   const m = /^(\d+)(?::(\d+):(.+))?$/.exec(cursor);
   if (!m) throw new Error(`Invalid stars cursor: ${cursor}`);
-  return { page: Number(m[1]), oldest: m[2] ? { at: Number(m[2]), login: m[3]! } : null };
+  return { page: Number(m[1]), oldest: m[2] ? { at: Number(m[2]), logins: m[3]!.split(',') } : null };
 }
 
 function commitCursor(cursor: string): { page: number; head: string } {

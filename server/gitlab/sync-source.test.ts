@@ -28,11 +28,12 @@ function setup(routes: Record<string, Handler>) {
 }
 
 /**
- * A project's starrers as GitLab pages them: oldest first, 100 a page, u1 … u<count>, one a minute. Without
- * `counted` there is no X-Total, as beyond 10,000. `unstar(i)` takes u<i> out, shifting the pages after it.
+ * A project's starrers as GitLab pages them: oldest first, 100 a page, u1 … u<count>, one a minute unless `minute`
+ * says otherwise. Without `counted` there is no X-Total, as beyond 10,000. `unstar(i)` takes u<i> out, shifting the
+ * pages after it.
  */
-function fakeStarrers(count: number, opts: { counted?: boolean } = {}) {
-  const at = (i: number) => new Date(Date.UTC(2020, 0, 1) + i * 60_000).toISOString();
+function fakeStarrers(count: number, opts: { counted?: boolean; minute?: (i: number) => number } = {}) {
+  const at = (i: number) => new Date(Date.UTC(2020, 0, 1) + (opts.minute?.(i) ?? i) * 60_000).toISOString();
   const ids = Array.from({ length: count }, (_, i) => i + 1);
   const handler: Handler = (req) => {
     const p = Number(req.url.searchParams.get('page'));
@@ -289,26 +290,48 @@ describe('GitLabSyncSource: rounds', () => {
     expect(requests).toEqual([1, 31, 30, 1].map((p) => `/api/v4/projects/11/starrers?per_page=100&page=${p}`));
   });
 
-  it('never repeats a star in a later page when an older star goes mid-walk (the sync would stop at it)', async () => {
-    // Stored: u1 … u3000. New since: u3001 … u3200. The sync's incremental pass stops at the first star it knows.
-    const stargazers = fakeStarrers(3200);
-    const { source } = setup({ '/api/v4/projects/11/starrers': stargazers.handler });
-    const known = new Set(stargazers.logins(3000, 1));
+  /**
+   * The sync's incremental stars pass over `source`: rounds until a page has a star it knows (stored before, or added
+   * by an earlier round), running `between` after each round. Returns the stars it added.
+   */
+  async function incrementalStars(source: GitLabSyncSource, repo: RepoRecord, known: Set<string>, between: (round: number) => void) {
     const added: string[] = [];
     let after: string | null = null;
     for (let round = 1; round <= 5; round++) {
-      const stars: NonNullable<RoundResult['stars']> = (await source.round({ ...APP, stars: 3200 }, { stars: { after } })).stars!;
-      const fresh = stars.items.findIndex((s) => known.has(s.login));
-      for (const s of fresh === -1 ? stars.items : stars.items.slice(0, fresh)) {
+      const stars: NonNullable<RoundResult['stars']> = (await source.round(repo, { stars: { after } })).stars!;
+      const stop = stars.items.findIndex((s) => known.has(s.login));
+      for (const s of stop === -1 ? stars.items : stars.items.slice(0, stop)) {
         known.add(s.login);
         added.push(s.login);
       }
-      // u1 unstars after the first round: every page shifts back by one, and page 31 would start with u3101 again.
-      if (round === 1) stargazers.unstar(1);
-      if (fresh !== -1 || !stars.hasMore) break;
+      between(round);
+      if (stop !== -1 || !stars.hasMore) break;
       after = stars.endCursor;
     }
+    return added;
+  }
+
+  it('never repeats a star in a later page when an older star goes mid-walk (the sync would stop at it)', async () => {
+    // Stored: u1 … u3000. New since: u3001 … u3200. u1 unstars after the first round: every page shifts back by one,
+    // and page 31 would start with u3101 again.
+    const stargazers = fakeStarrers(3200);
+    const { source } = setup({ '/api/v4/projects/11/starrers': stargazers.handler });
+    const added = await incrementalStars(source, { ...APP, stars: 3200 }, new Set(stargazers.logins(3000, 1)), (round) => {
+      if (round === 1) stargazers.unstar(1);
+    });
     expect(added).toEqual(stargazers.logins(3200, 3001));
+  });
+
+  it('leaves out every star already handed out at the boundary time, not just one', async () => {
+    // As above, but u3101, u3102 and u3103 starred in the same instant, and two stars go (u1, u2): page 31 then starts
+    // with u3102 and u3103 again.
+    const stargazers = fakeStarrers(3200, { minute: (i) => (i === 3102 || i === 3103 ? 3101 : i) });
+    const { source } = setup({ '/api/v4/projects/11/starrers': stargazers.handler });
+    const added = await incrementalStars(source, { ...APP, stars: 3200 }, new Set(stargazers.logins(3000, 1)), (round) => {
+      if (round === 1) [1, 2].forEach(stargazers.unstar);
+    });
+    expect(added.sort()).toEqual(stargazers.logins(3200, 3001).sort());
+    expect(added).toHaveLength(200);
   });
 
   it('finds the newest starrers beyond 10,000, where GitLab stops counting, from the project star count', async () => {

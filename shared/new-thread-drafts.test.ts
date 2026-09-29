@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  getOpenNewDraft, listNewDrafts, loadNewDraft, newDraftKey, newDraftsVersion, openNewDraft, removeNewDraft, setNewDraftBody, setOpenNewDraft,
+  getOpenNewDraft, isSendingDraft, listNewDrafts, loadNewDraft, newDraftKey, newDraftsVersion, openNewDraft, removeNewDraft, sendingDrafts, setNewDraftBody,
+  setOpenNewDraft, setSendingDraft,
 } from '../web/src/diff/drafts';
 
 /** sessionStorage, in memory. */
@@ -43,6 +44,26 @@ describe('new-thread drafts', () => {
     expect(newDraftsVersion()).toBe(before + 1);
     setNewDraftBody(d.key, 'late keystroke');
     expect(loadNewDraft(d.key)).toBeNull();
+  });
+
+  it('removes only the version that was sent', () => {
+    const d = openNewDraft('app#2', anchor(R1));
+    setNewDraftBody(d.key, 'newer edits');
+    removeNewDraft(d.key, 'what was sent');
+    expect(loadNewDraft(d.key)?.body).toBe('newer edits');
+    removeNewDraft(d.key, 'newer edits');
+    expect(loadNewDraft(d.key)).toBeNull();
+  });
+
+  it('knows which drafts are being sent, for any viewer, and says when that changes', () => {
+    const before = newDraftsVersion();
+    setSendingDraft('k', true);
+    setSendingDraft('k', true);
+    expect(isSendingDraft('k')).toBe(true);
+    expect([...sendingDrafts()]).toEqual(['k']);
+    setSendingDraft('k', false);
+    expect(isSendingDraft('k')).toBe(false);
+    expect(newDraftsVersion()).toBe(before + 2);
   });
 
   it('remembers which draft is open, and drops records that are not whole', () => {

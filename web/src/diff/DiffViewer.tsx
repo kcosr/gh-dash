@@ -22,7 +22,8 @@ import { cx } from '../lib/util';
 import { CommentsColumn } from './CommentsColumn';
 import { FileHeader, HEADER_HEIGHT } from './FileHeader';
 import {
-  getOpenNewDraft, listNewDrafts, loadNewDraft, newDraftsVersion, type NewThreadDraft, openNewDraft, removeNewDraft, setOpenNewDraft, subscribeNewDrafts,
+  getOpenNewDraft, isSendingDraft, listNewDrafts, loadNewDraft, newDraftsVersion, type NewThreadDraft, openNewDraft, removeNewDraft, sendingDrafts,
+  setOpenNewDraft, setSendingDraft, subscribeNewDrafts,
 } from './drafts';
 import { createCurrentFile, FileList, type CurrentFile } from './FileList';
 import { buildFiles, parseFiles, type ViewerFile } from './model';
@@ -680,17 +681,17 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
     for (const host of scroller.current?.querySelectorAll<HTMLElement>('diffs-container') ?? []) paintThreadLines(host);
   };
   const { actions } = comments;
-  // Drafts being sent, by key: the composer that sent one may be set aside (Esc) and the draft reopened meanwhile; it
-  // stays read-only until the answer, which then closes only a composer still showing that draft.
-  const [sending, setSending] = useState<ReadonlySet<string>>(new Set());
-  const sendingRef = useRef(sending);
-  sendingRef.current = sending;
-  const markSending = useCallback((key: string, on: boolean) => setSending((cur) => {
-    const next = new Set(cur);
-    if (on) next.add(key);
-    else next.delete(key);
-    return next;
-  }), []);
+  // Drafts being sent (drafts.ts, by key): the composer that sent one may be set aside (Esc), or this viewer replaced
+  // (Back, Forward), and the draft reopened meanwhile; it stays read-only until the answer, which removes the version
+  // sent and closes only a composer still showing that draft.
+  const sending = useMemo(() => sendingDrafts(), [draftsVersion]);
+  // A draft sent (or discarded) by another viewer, one this one replaced, goes from here too.
+  useEffect(() => {
+    if (open && !loadNewDraft(open.key)) {
+      showDraft(null);
+      view.current?.clearSelectedLines();
+    }
+  }, [open, draftsVersion, showDraft]);
   // A send can finish after the reader has left this diff (Back, another diff): the draft and the cached threads are
   // settled all the same, but only a viewer still showing the diff focuses the new thread (its URL setter would
   // otherwise take the reader back).
@@ -702,12 +703,12 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
   // As it was started (see DraftAnchor), whatever the diff shows now.
   const submitDraft = useCallback(async (body: string) => {
     const cur = openRef.current;
-    if (!cur || sendingRef.current.has(cur.key)) return;
-    markSending(cur.key, true);
+    if (!cur || isSendingDraft(cur.key)) return;
+    setSendingDraft(cur.key, true);
     try {
       const { path, side, startLine, endLine, commitOid, baseOid: base, snippet } = cur.anchor;
       const t = await actions.create({ commitOid, baseOid: base, path, side, startLine, endLine, snippet, body });
-      removeNewDraft(cur.key);
+      removeNewDraft(cur.key, body);
       if (!mounted.current) return;
       if (openRef.current?.key === cur.key) {
         showDraft(null);
@@ -715,9 +716,9 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
       }
       focusThread(t.id);
     } finally {
-      markSending(cur.key, false);
+      setSendingDraft(cur.key, false);
     }
-  }, [actions, focusThread, markSending, showDraft]);
+  }, [actions, focusThread, showDraft]);
   // A draft set aside, open again where it shows now.
   const resumeDraft = useCallback((key: string) => {
     const d = loadNewDraft(key);

@@ -52,7 +52,8 @@ function validAnchor(v: DraftAnchor | undefined): v is DraftAnchor {
     && typeof v.snippet === 'string' && v.snippet.split('\n').length === v.endLine - v.startLine + 1;
 }
 
-// Which drafts exist changes rarely (one opens, is sent or discarded): the viewer lists them, and listens for that.
+// Which drafts exist, or are being sent, changes rarely (one opens, is sent or discarded): the viewer lists them, and
+// listens for that.
 const listeners = new Set<() => void>();
 let version = 0;
 const changed = () => {
@@ -99,13 +100,27 @@ export function setNewDraftBody(key: string, body: string): void {
   if (d && d.body !== body) store({ ...d, body });
 }
 
-export function removeNewDraft(key: string): void {
+/** Removes a draft; with `body`, only if that's still its text (a sent version, not newer edits). */
+export function removeNewDraft(key: string, body?: string): void {
   try {
     if (sessionStorage.getItem(NEW + key) === null) return;
+    if (body !== undefined && loadNewDraft(key)?.body !== body) return;
     sessionStorage.removeItem(NEW + key);
   } catch {
     return;
   }
+  changed();
+}
+
+// Drafts being sent, by key. Module-wide, not a viewer's: a viewer that mounts while one is on its way (Back, then
+// Forward) shows it read-only too.
+const sendingKeys = new Set<string>();
+export const isSendingDraft = (key: string) => sendingKeys.has(key);
+export const sendingDrafts = (): ReadonlySet<string> => new Set(sendingKeys);
+export function setSendingDraft(key: string, on: boolean): void {
+  if (sendingKeys.has(key) === on) return;
+  if (on) sendingKeys.add(key);
+  else sendingKeys.delete(key);
   changed();
 }
 

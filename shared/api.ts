@@ -11,6 +11,10 @@
  * optional fields are fine; renames/removals are not.
  */
 
+/** The kind of code host a source is. */
+export type ProviderKind = 'github' | 'gitlab';
+/** The host of the built-in github.com source (`Repo.source`). Its keys are `owner/name`; every other source's carry the host. */
+export const GITHUB_HOST = 'github.com';
 /** 'internal': a GitHub Enterprise repository visible to every member of the enterprise. */
 export type Visibility = 'public' | 'private' | 'internal';
 export type VisibilityFilter = 'all' | Visibility;
@@ -60,10 +64,14 @@ export interface RepoStats {
 
 export interface Repo {
   /**
-   * Identity everywhere in the API and in URLs (`repos=` lists, path params, every `repo` field): "owner/name"
-   * (GitLab later: "group/sub/project"). `name` is the short name.
+   * Identity everywhere in the API and in URLs (`repos=` lists, path params, every `repo` field): "owner/name" on
+   * github.com, "<host>/<full path>" on every other source (e.g. "gitlab.example.com/platform/team/app"). Opaque:
+   * read `source` for the host rather than parsing it. `name` is the short name.
    */
   key: string;
+  /** The source's host ("github.com", "gitlab.example.com"): which code host the repo is on. */
+  source: string;
+  provider: ProviderKind;
   name: string;
   nameWithOwner: string;
   owner: string;

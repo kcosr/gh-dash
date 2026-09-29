@@ -7,14 +7,13 @@ import type { AddRepoResponse, RepoCandidate, RepoCandidatesResponse, RepoLookup
 import { parseRepoInput } from '../../shared/repos';
 import { HttpError } from '../api/http';
 import type { Db } from '../db/db';
-import { getMeta, setMeta } from '../db/meta';
 import { getRepo } from '../db/repos';
 import { getSettings } from '../db/settings';
+import { GITHUB_SOURCE_ID, getSource, setSourceRateLimit, tryClaimViewer, viewerMismatch } from '../db/sources';
 import { addManual, applyProbe } from '../db/write';
 import { DAY_MS, isoSec } from '../lib/time';
 import type { AccessFailure } from '../provider/access';
 import { defaultSleep } from '../provider/transport';
-import { tryClaimViewer, viewerMismatch } from '../sync/sync';
 import { noTokenMessage, tokenKind, type TokenSupply } from '../token';
 import { accessFailure, notFound } from './access';
 import { GitHubClient } from './client';
@@ -118,23 +117,27 @@ export class Tracking {
       graphql: new GitHubClient({
         token, fetchImpl: watched, sleep, maxAttempts: 2, maxRetryWaitMs: 10_000,
         // Lookups spend GraphQL points too: keep the budget the header shows current.
-        onRateLimit: (rl) => setMeta(this.opts.db, 'rateLimit', { limit: rl.limit, remaining: rl.remaining, resetAt: rl.resetAt }),
+        onRateLimit: (rl) => setSourceRateLimit(this.opts.db, GITHUB_SOURCE_ID, rl),
       }),
       rest: new GitHubRestClient({ token, fetchImpl: watched, sleep }),
     };
   }
 
-  /** The viewer must be this database's account: results for another one would be wrong here. */
+  /** The viewer must be the github.com source's account: results for another one would be wrong here. */
   private checkViewer(viewer: GqlViewer): void {
-    const mismatch = viewerMismatch(getMeta(this.opts.db, 'viewer'), viewer);
+    const mismatch = viewerMismatch(this.github(), viewer);
     if (mismatch) throw new HttpError(409, mismatch);
   }
 
-  /** How each live repo with one of these node ids is tracked. */
+  private github() {
+    return getSource(this.opts.db, GITHUB_SOURCE_ID)!;
+  }
+
+  /** How each live github.com repo with one of these node ids is tracked. */
   private trackedBy(nodeIds: string[]): Map<string, { trackedBy: TrackedBy; hidden: boolean }> {
     const rows = this.opts.db.all<{ node_id: string; tracked_by: string; hidden: number }>(
-      'SELECT node_id, tracked_by, hidden FROM repos WHERE removed_at IS NULL AND node_id IN (SELECT value FROM json_each(?))',
-      [JSON.stringify(nodeIds)],
+      'SELECT node_id, tracked_by, hidden FROM repos WHERE source_id = ? AND removed_at IS NULL AND node_id IN (SELECT value FROM json_each(?))',
+      [GITHUB_SOURCE_ID, JSON.stringify(nodeIds)],
     );
     return new Map(rows.map((r) => [r.node_id, { trackedBy: r.tracked_by === 'manual' ? 'manual' : 'owned', hidden: !!r.hidden }]));
   }
@@ -242,9 +245,9 @@ export class Tracking {
     const now = isoSec(this.now());
     const res = db.tx(() => {
       // Again under the write lock: another add, or a sync, may have claimed the database since the lookup.
-      const mismatch = tryClaimViewer(db, l.viewer);
+      const mismatch = tryClaimViewer(db, GITHUB_SOURCE_ID, l.viewer);
       if (mismatch) throw new HttpError(409, mismatch);
-      const added = addManual(db, mapRepo(r), { hidden: !includeInDefault }, now);
+      const added = addManual(db, this.github(), mapRepo(r), { hidden: !includeInDefault }, now);
       if (added.added) applyProbe(db, added.id, mapProbe(r));
       return added;
     });

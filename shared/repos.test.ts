@@ -18,7 +18,7 @@ function repo(key: string, over: Partial<Repo> = {}, trackedBy: TrackedBy = 'own
   const i = key.lastIndexOf('/');
   const name = i < 0 ? key : key.slice(i + 1);
   return {
-    key, name, nameWithOwner: i < 0 ? `alice/${key}` : key, owner: i < 0 ? 'alice' : key.slice(0, i), description: null,
+    key, source: 'github.com', provider: 'github', name, nameWithOwner: i < 0 ? `alice/${key}` : key, owner: i < 0 ? 'alice' : key.slice(0, i), description: null,
     url: `https://github.com/${key}`, visibility: 'public', isArchived: false, isFork: false, language: null, topics: [],
     defaultBranch: 'main', stars: 0, forks: 0, createdAt: '2026-01-01T00:00:00Z', pushedAt: null, lastActivityAt: null,
     pinned: false, hidden: false, setIds: [], syncedAt: null, trackedBy, addedAt: null, unavailable: null,

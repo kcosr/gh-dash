@@ -10,11 +10,11 @@
 // Repositories are named to a source by their provider path (RepoRecord.nameWithOwner: GitHub "owner/name", GitLab
 // "group/subgroup/project"), never by this app's key, and by node id once tracked.
 
-import type { Diff, DiffFile } from '../../shared/api';
+import type { Diff, DiffFile, ProviderKind } from '../../shared/api';
 import type { CommitRecord, IssueRecord, PrRecord, ReleaseRecord, RepoProbe, RepoRecord, StarRecord } from '../db/records';
 import type { AccessFailure } from './access';
 
-export type ProviderKind = 'github' | 'gitlab';
+export type { ProviderKind };
 
 /** The account a source's token belongs to. */
 export interface ViewerInfo {

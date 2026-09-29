@@ -1,9 +1,9 @@
 import type { Ownership, VisibilityFilter, Who } from '../../shared/api';
 import { isoSec } from '../lib/time';
 import type { Db, Param } from './db';
-import { getMeta } from './meta';
 import { REPO_IDS_FOR_KEYS } from './repo-key';
 import { getSettings } from './settings';
+import { GITHUB_SOURCE_ID, getSource } from './sources';
 
 /** Parsed, validated scope shared by every list/stats query. Times are UTC ms; `to` is exclusive. */
 export interface Scope {
@@ -21,7 +21,7 @@ export interface Scope {
 
 /** Per-request facts needed to evaluate "me" and the default selection. */
 export interface QueryCtx {
-  /** Lower-cased viewer login, or null before the first sync. */
+  /** Lower-cased login of the github.com account, or null before the first sync. */
   viewer: string | null;
   /** Lower-cased commit emails that count as me. */
   myEmails: string[];
@@ -32,7 +32,7 @@ export interface QueryCtx {
 export function loadQueryCtx(db: Db, envEmails: readonly string[] = []): QueryCtx {
   const settings = getSettings(db);
   return {
-    viewer: getMeta(db, 'viewer')?.login.toLowerCase() ?? null,
+    viewer: getSource(db, GITHUB_SOURCE_ID)?.viewer?.login.toLowerCase() ?? null,
     myEmails: [...new Set([...settings.myEmails, ...envEmails].map((e) => e.toLowerCase()))],
     includeForks: settings.includeForks,
   };

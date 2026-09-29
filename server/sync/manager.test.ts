@@ -3,7 +3,8 @@ import { openDb } from '../db/db';
 import { deleteMeta, getMeta, setMeta } from '../db/meta';
 import { fakeGitHub } from '../test/github';
 import { fakeGraphQL, prNode, repoNode } from '../test/graphql';
-import { addManualRepo } from '../test/seed';
+import { addManualRepo, GITHUB, setViewer } from '../test/seed';
+import { GITHUB_SOURCE_ID, getSource } from '../db/sources';
 import { addManual } from '../db/write';
 import { mapRepo } from '../github/map';
 import { supplyOf, testTokens } from '../test/tokens';
@@ -75,7 +76,7 @@ describe('SyncManager', () => {
   });
 
   it('forgets the token when GitHub rejects it', async () => {
-    db.run("DELETE FROM meta WHERE key = 'viewer'");
+    setViewer(db, null);
     vi.stubGlobal('fetch', vi.fn(async () => new Response('{"message":"Bad credentials"}', { status: 401 })));
     try {
       const tokens = supplyOf(() => 'revoked');
@@ -122,18 +123,19 @@ describe('ensureViewer', () => {
     const own = openDb(':memory:');
     const logs: string[] = [];
     const m = new SyncManager({ db: own, schedule: false, tokens: testTokens('t'), log: (line) => logs.push(line) });
-    setMeta(own, 'viewer', { login: 'Alice', name: 'Alice A', avatarUrl: null });
+    setViewer(own, { login: 'Alice', name: 'Alice A', avatarUrl: null });
+    const viewer = () => getSource(own, GITHUB_SOURCE_ID)!.viewer;
 
     answerAs('U_mallory', 'mallory');
     await m.ensureViewer();
-    expect(getMeta(own, 'viewer')).toEqual({ login: 'Alice', name: 'Alice A', avatarUrl: null });
+    expect(viewer()).toEqual({ id: null, login: 'Alice', name: 'Alice A', avatarUrl: null, emails: [] });
     expect(logs).toEqual([
-      '[sync] warning: This database belongs to @Alice, but the GitHub token is for @mallory. Switch back to @Alice, or use a different database.',
+      "[sync] warning: This database's GitHub account is @Alice, but the token is for @mallory. Switch back to @Alice, or use a different database.",
     ]);
 
     answerAs('U_alice', 'alice');
     await m.ensureViewer();
-    expect(getMeta(own, 'viewer')).toEqual({ id: 'U_alice', login: 'alice', name: null, avatarUrl: null });
+    expect(viewer()).toEqual({ id: 'U_alice', login: 'alice', name: null, avatarUrl: null, emails: [] });
     // Known by id: no more requests.
     const fetch = answerAs('U_mallory', 'mallory');
     await m.ensureViewer();
@@ -210,7 +212,7 @@ describe('syncing repos added by hand', () => {
     t.add('carol/lib');
     t.hold();
     expect(await t.m.startOrQueue({ repo: 'carol/lib' })).toBe('started');
-    const revived = addManual(t.db, mapRepo(repoNode('bob/tool')), { hidden: false }, '2026-09-29T01:00:00Z');
+    const revived = addManual(t.db, GITHUB, mapRepo(repoNode('bob/tool')), { hidden: false }, '2026-09-29T01:00:00Z');
     expect(revived).toMatchObject({ added: true });
     expect(await t.m.startOrQueue({ repo: 'bob/tool' })).toBe('queued');
     t.gql.state.ops.length = 0;
@@ -226,7 +228,7 @@ describe('syncing repos added by hand', () => {
     expect(await t.m.startOrQueue({ repo: 'bob/tool' })).toBe('started');
     await t.idle();
     t.db.run(`UPDATE repos SET removed_at = '2026-09-29T00:00:00Z' WHERE name_with_owner = 'bob/tool'`);
-    addManual(t.db, mapRepo(repoNode('bob/tool')), { hidden: false }, '2026-09-29T01:00:00Z');
+    addManual(t.db, GITHUB, mapRepo(repoNode('bob/tool')), { hidden: false }, '2026-09-29T01:00:00Z');
     setMeta(t.db, 'lastFullSyncAt', new Date().toISOString());
     t.gql.state.ops.length = 0;
     t.m.startScheduler();
@@ -308,7 +310,7 @@ describe('syncing repos added by hand', () => {
     t.add('bob/tool');
     t.add('carol/gone');
     t.db.run(`UPDATE repos SET unavailable_at = '2026-09-29T00:00:00Z', unavailable_reason = 'x' WHERE name_with_owner = 'carol/gone'`);
-    t.db.run(`INSERT INTO repos (node_id, name, name_with_owner, owner, url, visibility, created_at) VALUES ('R_alice/app', 'app', 'alice/app', 'alice', 'u', 'public', 'x')`);
+    t.db.run(`INSERT INTO repos (source_id, key, node_id, name, name_with_owner, owner, url, visibility, created_at) VALUES (1, 'alice/app', 'R_alice/app', 'app', 'alice/app', 'alice', 'u', 'public', 'x')`);
     t.hold();
     await t.m.start('manual');
     expect(t.m.status()).toMatchObject({ repo: null, progress: { total: 2 } });

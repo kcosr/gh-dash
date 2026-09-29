@@ -2,7 +2,10 @@ import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import { Db, openDb } from './db';
-import { migrate, SCHEMA_VERSION } from './schema';
+import { migrate, SCHEMA_VERSION, versionOf } from './schema';
+
+/** The repos rebuild's tests look at the database it leaves: they stop there. */
+const V5 = { upTo: versionOf('repos-v5') };
 
 const V4_SQL = readFileSync(new URL('../test/fixtures/schema-v4.sql', import.meta.url), 'utf8');
 
@@ -20,12 +23,16 @@ function v4(seed: (db: Db) => void = seedV4): Db {
 const REPO_COLS = `id, node_id, name, name_with_owner, owner, description, url, visibility, is_archived, is_fork, language_name,
   language_color, topics, default_branch, stars, forks, open_prs, open_issues, created_at, pushed_at, pinned, hidden, removed_at`;
 
+/** Whether repos has its source and key columns (the `sources` migration ran). */
+const keyed = (db: Db) => db.all<{ name: string }>('PRAGMA table_info(repos)').some((c) => c.name === 'key');
+
 function repo(db: Db, id: number, name: string, over: { owner?: string; visibility?: string; removedAt?: string | null; pinned?: number; hidden?: number } = {}) {
   const owner = over.owner ?? 'alice';
   const nwo = `${owner}/${name.replace(/~\d+$/, '')}`;
-  db.run(`INSERT INTO repos (${REPO_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 'TypeScript', '#3178c6', '["dash"]', 'main', 3, 1, 2, 1,
+  const [cols, vals] = keyed(db) ? [`source_id, key, ${REPO_COLS}`, [1, nwo]] : [REPO_COLS, []];
+  db.run(`INSERT INTO repos (${cols}) VALUES (${vals.map(() => '?, ').join('')}?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 'TypeScript', '#3178c6', '["dash"]', 'main', 3, 1, 2, 1,
     '2025-01-01T00:00:00Z', '2026-09-25T00:00:00Z', ?, ?, ?)`, [
-    id, `R_${id}`, name, nwo, owner, `${name} repo`, `https://github.com/${nwo}`, over.visibility ?? 'public',
+    ...vals, id, `R_${id}`, name, nwo, owner, `${name} repo`, `https://github.com/${nwo}`, over.visibility ?? 'public',
     over.pinned ?? 0, over.hidden ?? 0, over.removedAt ?? null,
   ]);
 }
@@ -74,9 +81,9 @@ describe('migration to repo keys (repos rebuild)', () => {
     const db = v4();
     const before = counts(db);
     const oldRows = db.all(`SELECT ${REPO_COLS} FROM repos ORDER BY id`);
-    migrate(db, true);
+    migrate(db, true, V5);
 
-    expect(version(db)).toBe(SCHEMA_VERSION);
+    expect(version(db)).toBe(versionOf('repos-v5'));
     expect(counts(db)).toEqual(before);
     expect(db.all(`SELECT ${REPO_COLS} FROM repos ORDER BY id`)).toEqual(oldRows);
     expect(db.all('SELECT repo_id, position FROM repo_set_members ORDER BY position')).toEqual([{ repo_id: 2, position: 0 }, { repo_id: 1, position: 1 }]);
@@ -90,7 +97,7 @@ describe('migration to repo keys (repos rebuild)', () => {
 
   it('backfills every existing repo as owned', () => {
     const db = v4();
-    migrate(db, true);
+    migrate(db, true, V5);
     expect(db.all('SELECT DISTINCT tracked_by, added_at, unavailable_at, unavailable_reason FROM repos')).toEqual([
       { tracked_by: 'owned', added_at: null, unavailable_at: null, unavailable_reason: null },
     ]);
@@ -100,7 +107,7 @@ describe('migration to repo keys (repos rebuild)', () => {
 
   it('keys repos by owner/name among live repos, case-insensitively', () => {
     const db = v4();
-    migrate(db, true);
+    migrate(db, true, V5);
     const idx = db.all<{ name: string; unique: number; partial: number }>('PRAGMA index_list(repos)');
     expect(idx.find((i) => i.name === 'repos_key')).toMatchObject({ unique: 1, partial: 1 });
     // Only node_id is unique inline: the short name no longer is.
@@ -120,7 +127,7 @@ describe('migration to repo keys (repos rebuild)', () => {
 
   it("widens visibility to 'internal' and takes tracked_by without a CHECK", () => {
     const db = v4();
-    migrate(db, true);
+    migrate(db, true, V5);
     repo(db, 4, 'corp', { owner: 'acme', visibility: 'internal' });
     expect(() => repo(db, 5, 'x', { visibility: 'secret' })).toThrow(/CHECK constraint failed/);
     db.run(`UPDATE repos SET tracked_by = 'manual', added_at = '2026-09-29T00:00:00Z' WHERE id = 4`);
@@ -129,7 +136,7 @@ describe('migration to repo keys (repos rebuild)', () => {
 
   it('keeps foreign keys pointing at the new table: deleting a repo cascades, FTS included', () => {
     const db = v4();
-    migrate(db, true);
+    migrate(db, true, V5);
     db.run('DELETE FROM repos WHERE id = 1');
     for (const t of ['sync_state', 'pull_requests', 'commits', 'issues', 'releases', 'stars', 'repo_set_members']) {
       expect(db.get<{ n: number }>(`SELECT count(*) AS n FROM ${t} WHERE repo_id = 1`)!.n, t).toBe(0);
@@ -147,7 +154,7 @@ describe('migration to repo keys (repos rebuild)', () => {
       repo(d, 3, 'app~3', { removedAt: '2026-01-01T00:00:00Z' });
       repo(d, 4, 'other');
     });
-    migrate(db, true);
+    migrate(db, true, V5);
     const rows = db.all<{ id: number; removed_at: string | null }>('SELECT id, removed_at FROM repos ORDER BY id');
     expect(rows[0]!.removed_at).toMatch(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/);
     expect(rows.slice(1)).toEqual([{ id: 2, removed_at: null }, { id: 3, removed_at: '2026-01-01T00:00:00Z' }, { id: 4, removed_at: null }]);
@@ -217,11 +224,12 @@ describe('migration to repo keys (repos rebuild)', () => {
 
   it('never hands out the id of a deleted repo again (AUTOINCREMENT), also after migrating', () => {
     for (const db of [v4(), openDb(':memory:')]) {
-      if (version(db) === 4) migrate(db, true);
+      if (version(db) === 4) migrate(db, true, V5);
       else repo(db, 1, 'a');
       const max = db.get<{ id: number }>('SELECT max(id) AS id FROM repos')!.id;
       db.run('DELETE FROM repos WHERE id = ?', [max]);
-      const { lastInsertRowid } = db.run(`INSERT INTO repos (node_id, name, name_with_owner, owner, url, visibility, created_at) VALUES ('R_new', 'new', 'x/new', 'x', 'u', 'public', 'x')`);
+      const [cols, vals] = keyed(db) ? ['source_id, key, ', `1, 'x/new', `] : ['', ''];
+      const { lastInsertRowid } = db.run(`INSERT INTO repos (${cols}node_id, name, name_with_owner, owner, url, visibility, created_at) VALUES (${vals}'R_new', 'new', 'x/new', 'x', 'u', 'public', 'x')`);
       expect(lastInsertRowid).toBe(max + 1);
     }
   });
@@ -296,5 +304,213 @@ describe('saved views on migration', () => {
       ['/repos/nope', 'who=me'],
       ['/repos', 'repos=alice/a'],
     ]);
+  });
+});
+
+describe('migration to sources', () => {
+  const SOURCES = versionOf('sources');
+  const VIEWER = { id: 'U_alice', login: 'alice', name: 'Alice A', avatarUrl: 'https://avatars.example/alice' };
+  const RATE = { limit: 5000, remaining: 4321, resetAt: '2026-09-29T12:00:00Z' };
+
+  /**
+   * A database as it was just before `sources`, with foreign keys on: seedV4's rows (two live repos, a removed one,
+   * data in every table), a repo added by hand that became unavailable, and a repo with the highest id deleted, so the
+   * id sequence is ahead of max(id). meta holds the GitHub account and rate limit, and the run-level keys.
+   */
+  function beforeSources(seed: (db: Db) => void = seedBeforeSources): Db {
+    const sqlite = new DatabaseSync(':memory:');
+    sqlite.exec('PRAGMA foreign_keys = ON');
+    const db = new Db(sqlite);
+    migrate(db, true, { upTo: SOURCES - 1 });
+    seed(db);
+    return db;
+  }
+
+  function seedBeforeSources(db: Db): void {
+    seedV4(db);
+    db.run(`UPDATE meta SET value = ? WHERE key = 'viewer'`, [JSON.stringify(VIEWER)]);
+    for (const [key, value] of [['rateLimit', RATE], ['lastSync', { at: 'x', errors: [] }], ['lastFullSyncAt', 'x'], ['sessionSecret', 's']] as const) {
+      db.run('INSERT INTO meta (key, value) VALUES (?, ?)', [key, JSON.stringify(value)]);
+    }
+    repo(db, 4, 'tool', { owner: 'bob' });
+    db.run(`UPDATE repos SET tracked_by = 'manual', added_at = '2026-09-28T00:00:00Z', unavailable_at = '2026-09-29T00:00:00Z', unavailable_reason = 'gone' WHERE id = 4`);
+    db.run(`INSERT INTO sync_state (repo_id, synced_at) VALUES (4, '2026-09-28T00:00:00Z')`);
+    repo(db, 10, 'deleted');
+    db.run('DELETE FROM repos WHERE id = 10');
+  }
+
+  const V5_REPO_COLS = `${REPO_COLS}, tracked_by, added_at, unavailable_at, unavailable_reason`;
+  const meta = (db: Db) => db.all<{ key: string; value: string }>('SELECT key, value FROM meta ORDER BY key');
+  const source1 = (db: Db) => db.get<Record<string, unknown>>('SELECT * FROM sources WHERE id = 1');
+  const seq = (db: Db) => db.get<{ seq: number }>(`SELECT seq FROM sqlite_sequence WHERE name = 'repos'`)?.seq ?? null;
+  const insert = (db: Db, id: number | null, sourceId: number, key: string, nodeId: string, removedAt: string | null = null) =>
+    db.run(`INSERT INTO repos (id, source_id, key, node_id, name, name_with_owner, owner, url, visibility, created_at, removed_at)
+      VALUES (?, ?, ?, ?, 'app', 'alice/app', 'alice', 'u', 'public', 'x', ?)`, [id, sourceId, key, nodeId, removedAt]).lastInsertRowid;
+
+  it('keeps every row of every table, and foreign keys and full-text search working', () => {
+    const db = beforeSources();
+    const before = counts(db);
+    const oldRepos = db.all(`SELECT ${V5_REPO_COLS} FROM repos ORDER BY id`);
+    const children = Object.fromEntries(TABLES.filter((t) => t !== 'meta' && t !== 'repos').map((t) => [t, db.all(`SELECT * FROM ${t} ORDER BY 1, 2`)]));
+    migrate(db, true);
+
+    expect(version(db)).toBe(SCHEMA_VERSION);
+    // Two meta keys moved into the github.com source's row.
+    expect(counts(db)).toEqual({ ...before, meta: before.meta! - 2 });
+    expect(db.all(`SELECT ${V5_REPO_COLS} FROM repos ORDER BY id`)).toEqual(oldRepos);
+    for (const [t, rows] of Object.entries(children)) {
+      // New columns (NULL) aside, the child rows are the same.
+      const now = db.all<Record<string, unknown>>(`SELECT * FROM ${t} ORDER BY 1, 2`).map((r) => {
+        const { stars_count: _s, merge_commit_oid: _m, squash_commit_oid: _q, ...rest } = r;
+        return rest;
+      });
+      expect(now, t).toEqual(rows);
+    }
+    expectFtsIntact(db);
+    expect(db.all('PRAGMA foreign_key_check')).toEqual([]);
+    expect(foreignKeys(db)).toBe(1);
+    expect(db.all<{ table: string }>('PRAGMA foreign_key_list(repos)').map((f) => f.table)).toEqual(['sources']);
+    for (const t of ['sync_state', 'pull_requests', 'commits', 'issues', 'releases', 'stars', 'repo_set_members']) {
+      expect(db.all<{ table: string }>(`PRAGMA foreign_key_list(${t})`).map((f) => f.table), t).toContain('repos');
+    }
+    // Deleting a repo still cascades.
+    db.run('DELETE FROM repos WHERE id = 1');
+    expect(db.get<{ n: number }>('SELECT count(*) AS n FROM commits WHERE repo_id = 1')!.n).toBe(0);
+    expectFtsIntact(db);
+  });
+
+  it('puts every repo on github.com, keyed by its owner/name', () => {
+    const db = beforeSources();
+    migrate(db, true);
+    expect(db.all('SELECT id, source_id, key, name_with_owner FROM repos ORDER BY id')).toEqual([
+      { id: 1, source_id: 1, key: 'alice/a', name_with_owner: 'alice/a' },
+      { id: 2, source_id: 1, key: 'alice/b', name_with_owner: 'alice/b' },
+      { id: 3, source_id: 1, key: 'alice/a', name_with_owner: 'alice/a' },
+      { id: 4, source_id: 1, key: 'bob/tool', name_with_owner: 'bob/tool' },
+    ]);
+    expect(db.all('SELECT id, kind, host, base_url, name FROM sources')).toEqual([
+      { id: 1, kind: 'github', host: 'github.com', base_url: 'https://github.com', name: 'GitHub' },
+    ]);
+  });
+
+  it("moves meta.viewer and meta.rateLimit into github.com's row; run-level keys stay", () => {
+    const db = beforeSources();
+    migrate(db, true);
+    expect(source1(db)).toMatchObject({
+      viewer_id: 'U_alice', viewer_login: 'alice', viewer_name: 'Alice A', viewer_avatar: 'https://avatars.example/alice', viewer_emails: '[]',
+      last_sync: null, rate_limit: JSON.stringify(RATE), created_at: expect.stringMatching(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/),
+    });
+    expect(meta(db).map((m) => m.key)).toEqual(['lastFullSyncAt', 'lastSync', 'sessionSecret']);
+  });
+
+  it('keeps an account stored by login only (no id), and leaves an unclaimed database unclaimed', () => {
+    const byLogin = beforeSources((d) => {
+      seedV4(d); // meta.viewer is {"login":"alice"}
+    });
+    migrate(byLogin, true);
+    expect(source1(byLogin)).toMatchObject({ viewer_id: null, viewer_login: 'alice', viewer_name: null, viewer_avatar: null, rate_limit: null });
+
+    const fresh = beforeSources(() => {});
+    migrate(fresh, true);
+    expect(source1(fresh)).toMatchObject({ viewer_id: null, viewer_login: null, rate_limit: null });
+    expect(meta(fresh)).toEqual([]);
+  });
+
+  it('never hands out the id of a deleted repo again: the sequence is carried over', () => {
+    const db = beforeSources();
+    expect(seq(db)).toBe(10);
+    migrate(db, true);
+    expect(seq(db)).toBe(10);
+    expect(insert(db, null, 1, 'x/new', 'R_new')).toBe(11);
+  });
+
+  it('carries the sequence over when every repo was deleted', () => {
+    const db = beforeSources((d) => {
+      repo(d, 7, 'gone');
+      d.run('DELETE FROM repos');
+    });
+    expect(seq(db)).toBe(7);
+    migrate(db, true);
+    expect(seq(db)).toBe(7);
+    expect(insert(db, null, 1, 'x/new', 'R_new')).toBe(8);
+  });
+
+  it('makes node ids unique per source and keys unique among live repos', () => {
+    const db = beforeSources();
+    migrate(db, true);
+    db.run(`INSERT INTO sources (id, kind, host, base_url, name, created_at) VALUES (2, 'gitlab', 'gitlab.example.com', 'https://gitlab.example.com', 'GitLab', 'x'),
+      (3, 'gitlab', 'gitlab2.example.com', 'https://gitlab2.example.com', 'gitlab2.example.com', 'x')`);
+    // The same GitLab project id on two instances: two repos.
+    insert(db, null, 2, 'gitlab.example.com/alice/app', 'gid://gitlab/Project/5');
+    insert(db, null, 3, 'gitlab2.example.com/alice/app', 'gid://gitlab/Project/5');
+    expect(() => insert(db, null, 2, 'gitlab.example.com/alice/other', 'gid://gitlab/Project/5')).toThrow(/UNIQUE constraint failed: repos\.source_id, repos\.node_id/);
+    // One live row per key, in any case; removed rows don't count.
+    expect(() => insert(db, null, 2, 'GitLab.example.com/Alice/App', 'gid://gitlab/Project/6')).toThrow(/UNIQUE constraint failed: repos\.key/);
+    insert(db, null, 2, 'gitlab.example.com/alice/app', 'gid://gitlab/Project/7', '2026-09-01T00:00:00Z');
+    expect(db.all<{ name: string; coll: string; key: number }>('PRAGMA index_xinfo(repos_key)').filter((c) => c.key)).toMatchObject([{ name: 'key', coll: 'NOCASE' }]);
+    // A repo must belong to a source that exists.
+    expect(() => insert(db, null, 9, 'nowhere.example.com/x/y', 'gid://gitlab/Project/8')).toThrow(/FOREIGN KEY/);
+    // Hosts are unique.
+    expect(() => db.run(`INSERT INTO sources (kind, host, base_url, name, created_at) VALUES ('gitlab', 'gitlab.example.com', 'https://gitlab.example.com/x', 'GitLab', 'x')`)).toThrow(/UNIQUE constraint failed: sources\.host/);
+  });
+
+  it('adds the star count, the landed commits of a pull request, and their indexes', () => {
+    const db = beforeSources();
+    migrate(db, true);
+    const cols = (t: string) => db.all<{ name: string }>(`PRAGMA table_info(${t})`).map((c) => c.name);
+    expect(cols('sync_state')).toContain('stars_count');
+    expect(cols('pull_requests')).toEqual(expect.arrayContaining(['merge_commit_oid', 'squash_commit_oid']));
+    const idx = (name: string) => db.all<{ name: string }>(`PRAGMA index_info(${name})`).map((c) => c.name);
+    expect(idx('pull_requests_landed')).toEqual(['merge_commit_oid', 'squash_commit_oid']);
+    expect(idx('pr_commits_oid')).toEqual(['oid']);
+  });
+
+  it('rolls back to the version before when the rebuilt schema would leave a dangling reference', () => {
+    const db = beforeSources();
+    db.exec('PRAGMA foreign_keys = OFF');
+    db.run(`INSERT INTO stars (repo_id, login, starred_at) VALUES (99, 'x', 'x')`);
+    db.exec('PRAGMA foreign_keys = ON');
+    const before = counts(db);
+    const metaBefore = meta(db);
+    const oldSql = reposSql(db);
+
+    expect(() => migrate(db, true)).toThrow(new RegExp(`1 row .*stars → repos.*still schema v${SOURCES - 1}`));
+    expect(version(db)).toBe(SOURCES - 1);
+    expect(reposSql(db)).toBe(oldSql);
+    expect(db.get(`SELECT name FROM sqlite_master WHERE name IN ('sources', 'repos_new', 'sources_host')`)).toBeUndefined();
+    expect(counts(db)).toEqual(before);
+    expect(meta(db)).toEqual(metaBefore);
+    expect(seq(db)).toBe(10);
+    expect(foreignKeys(db)).toBe(1);
+  });
+
+  it('is left to an instance that syncs', () => {
+    const db = beforeSources();
+    expect(() => migrate(db, false)).toThrow(`Database schema v${SOURCES - 1} needs destructive migration v${SOURCES}`);
+    expect(version(db)).toBe(SOURCES - 1);
+  });
+
+  it('creates github.com as source 1 in new databases too, with room for more sources', () => {
+    const db = openDb(':memory:');
+    expect(db.all('SELECT id, kind, host, base_url, name, viewer_login FROM sources')).toEqual([
+      { id: 1, kind: 'github', host: 'github.com', base_url: 'https://github.com', name: 'GitHub', viewer_login: null },
+    ]);
+    const { lastInsertRowid } = db.run(`INSERT INTO sources (kind, host, base_url, name, created_at) VALUES ('gitlab', 'gitlab.example.com', 'https://gitlab.example.com', 'GitLab', 'x')`);
+    expect(lastInsertRowid).toBe(2);
+  });
+});
+
+describe('migration names', () => {
+  it('number migrations by name, and stop where asked', () => {
+    expect(versionOf('repos-v5')).toBe(5);
+    expect(versionOf('sources')).toBeGreaterThan(versionOf('repos-v5'));
+    expect(versionOf('sources')).toBeLessThanOrEqual(SCHEMA_VERSION);
+    expect(() => versionOf('nope')).toThrow('No migration is called nope');
+    const db = new Db(new DatabaseSync(':memory:'));
+    migrate(db, true, { upTo: versionOf('repos-v5') });
+    expect(version(db)).toBe(versionOf('repos-v5'));
+    expect(db.get(`SELECT name FROM sqlite_master WHERE name = 'sources'`)).toBeUndefined();
+    migrate(db, true);
+    expect(version(db)).toBe(SCHEMA_VERSION);
   });
 });

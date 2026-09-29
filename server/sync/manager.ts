@@ -4,11 +4,12 @@ import type { Db } from '../db/db';
 import { deleteMeta, getMeta, type SyncLockMeta, setMeta } from '../db/meta';
 import { repoKeySql, resolveRepo } from '../db/repo-key';
 import { getSettings } from '../db/settings';
+import { GITHUB_SOURCE_ID, getSource, setSourceRateLimit, tryClaimViewer } from '../db/sources';
 import { GitHubClient } from '../github/client';
 import { VIEWER } from '../github/queries';
 import type { ViewerData } from '../github/types';
 import { tokenKind, type TokenSupply } from '../token';
-import { runSync, type SyncProgress, type SyncRequest, tryClaimViewer } from './sync';
+import { runSync, type SyncProgress, type SyncRequest } from './sync';
 
 /** A lock whose heartbeat is older than this belongs to a dead process. */
 const LOCK_STALE_MS = 90_000;
@@ -86,7 +87,8 @@ export class SyncManager {
   status(): SyncStatus {
     const lock = this.liveLock();
     const last = getMeta(this.db, 'lastSync');
-    const rl = getMeta(this.db, 'rateLimit');
+    const github = getSource(this.db, GITHUB_SOURCE_ID);
+    const rl = github?.rateLimit;
     return {
       running: !!lock,
       trigger: lock?.trigger ?? null,
@@ -97,22 +99,23 @@ export class SyncManager {
       nextSyncAt: getMeta(this.db, 'nextSyncAt'),
       rateLimit: rl ? { limit: rl.limit, remaining: rl.remaining, resetAt: rl.resetAt } : null,
       tokenSource: this.getTokenSource(),
-      viewer: getMeta(this.db, 'viewer')?.login ?? null,
+      viewer: github?.viewer?.login ?? null,
       repo: lock?.repo ?? null,
     };
   }
 
   /**
-   * Fetches the viewer once (1 API point) if the DB doesn't know it yet, or only by login (databases from before ids
-   * were stored). A token for another account is only reported here: the sync refuses it (see viewerMismatch).
+   * Fetches the GitHub viewer once (1 API point) if the github.com source doesn't know it yet, or only by login
+   * (databases from before ids were stored). A token for another account is only reported here: the sync refuses it
+   * (see viewerMismatch).
    */
   async ensureViewer(): Promise<void> {
-    if (getMeta(this.db, 'viewer')?.id) return;
+    if (getSource(this.db, GITHUB_SOURCE_ID)?.viewer?.id) return;
     const { token } = await this.tokens.get();
     if (!token) return;
     const client = this.client(token);
     const { viewer } = await client.query<ViewerData>(VIEWER);
-    const mismatch = tryClaimViewer(this.db, viewer);
+    const mismatch = tryClaimViewer(this.db, GITHUB_SOURCE_ID, viewer);
     if (mismatch) this.log(`[sync] warning: ${mismatch}`);
   }
 
@@ -125,7 +128,7 @@ export class SyncManager {
         if (res.status === 401) this.tokens.invalidate(token);
         return res;
       },
-      onRateLimit: (rl) => setMeta(this.db, 'rateLimit', { limit: rl.limit, remaining: rl.remaining, resetAt: rl.resetAt }),
+      onRateLimit: (rl) => setSourceRateLimit(this.db, GITHUB_SOURCE_ID, rl),
     });
   }
 

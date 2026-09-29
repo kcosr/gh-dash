@@ -33,7 +33,9 @@ const schemas: Record<string, Schema> = {
     weeklyCommits: { ...arr(int()), description: '12 Mon-start weeks (server tz), oldest first' },
   }),
   Repo: obj({
-    key: str('Identity in URLs, `repos=` lists and every `repo` field: owner/name'), name: str('Short name'), nameWithOwner: str(), owner: str(), description: nullable(str()), url: str(),
+    key: str('Identity in URLs, `repos=` lists and every `repo` field: owner/name on github.com, <host>/<path> on other sources'),
+    source: str('Host of the source the repo is on: github.com, or a GitLab host'), provider: enumOf('github', 'gitlab'),
+    name: str('Short name'), nameWithOwner: str(), owner: str(), description: nullable(str()), url: str(),
     visibility: enumOf('public', 'private', 'internal'), isArchived: bool, isFork: bool,
     language: nullable(obj({ name: str(), color: nullable(str()) })), topics: arr(str()), defaultBranch: nullable(str()),
     stars: int(), forks: int(), createdAt: dateTime, pushedAt: nullable(dateTime), lastActivityAt: nullable(dateTime),

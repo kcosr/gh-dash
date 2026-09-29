@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { type Db, openDb } from '../db/db';
 import { DEFAULT_SETTINGS } from '../db/settings';
 import { GitHubClient } from '../github/client';
@@ -15,24 +15,22 @@ import { testTokens } from '../test/tokens';
 import { SyncManager } from './manager';
 import { runSync } from './sync';
 
-/** Runs once, right after the next read of the stored viewer. */
+/** Runs once, right after the next read of a stored source (its viewer) through a watched handle. */
 const hook: { afterViewerRead: (() => void) | null } = { afterViewerRead: null };
 
-vi.mock('../db/meta', async (importActual) => {
-  const actual = await importActual<typeof import('../db/meta')>();
-  return {
-    ...actual,
-    getMeta: ((db, key) => {
-      const value = actual.getMeta(db, key);
-      if (key === 'viewer' && hook.afterViewerRead) {
-        const run = hook.afterViewerRead;
-        hook.afterViewerRead = null;
-        run();
-      }
-      return value;
-    }) as typeof actual.getMeta,
-  };
-});
+function watchViewerReads(db: Db): Db {
+  const get = db.get.bind(db);
+  db.get = (<T>(sql: string, params?: Parameters<Db['get']>[1]): T | undefined => {
+    const row = get<T>(sql, params);
+    if (/\bFROM sources\b/.test(sql) && /viewer_login/.test(sql) && hook.afterViewerRead) {
+      const run = hook.afterViewerRead;
+      hook.afterViewerRead = null;
+      run();
+    }
+    return row;
+  }) as Db['get'];
+  return db;
+}
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -45,7 +43,7 @@ function shared(): { db: Db; other: DatabaseSync; path: string } {
   const dir = mkdtempSync(join(tmpdir(), 'ghd-claim-'));
   dirs.push(dir);
   const path = join(dir, 'dash.db');
-  return { db: openDb(path), other: new DatabaseSync(path, { timeout: 0 }), path };
+  return { db: watchViewerReads(openDb(path)), other: new DatabaseSync(path, { timeout: 0 }), path };
 }
 
 /** The other process claims the database for Bob, as its POST /repos would; reports what happened. */
@@ -53,7 +51,7 @@ function otherClaims(other: DatabaseSync): () => string {
   let outcome = 'not tried';
   hook.afterViewerRead = () => {
     try {
-      other.exec(`INSERT INTO meta (key, value) VALUES ('viewer', '{"id":"U_bob","login":"bob","name":null,"avatarUrl":null}')`);
+      other.exec(`UPDATE sources SET viewer_id = 'U_bob', viewer_login = 'bob' WHERE id = 1`);
       outcome = 'claimed';
     } catch (err) {
       outcome = /locked|busy/i.test(String(err)) ? 'kept waiting' : String(err);
@@ -62,8 +60,7 @@ function otherClaims(other: DatabaseSync): () => string {
   return () => outcome;
 }
 
-const viewerOf = (other: DatabaseSync) =>
-  (JSON.parse((other.prepare(`SELECT value FROM meta WHERE key = 'viewer'`).get() as { value: string }).value) as { login: string }).login;
+const viewerOf = (other: DatabaseSync) => (other.prepare('SELECT viewer_login FROM sources WHERE id = 1').get() as { viewer_login: string }).viewer_login;
 
 describe('claiming the database for an account', () => {
   it('keeps another process out while a sync claims it', async () => {

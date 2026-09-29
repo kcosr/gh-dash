@@ -80,3 +80,14 @@ export function groupThreads<T extends ThreadListItem>(
   const flat = sort === 'file' ? [...blocks(sorted, (t) => t.repo).values()].flatMap(fileOrder) : sorted;
   return [make('', null, flat)];
 }
+
+/**
+ * The list with the threads held in view (resolved or reopened from it, see the view): `list` (the answer for the
+ * filters), then each held thread that `others` (the same scope and search without the status filter) has but `list`
+ * doesn't. A held thread that neither has (deleted, or no longer in scope) is gone; one `list` has again is its own.
+ */
+export function withHeld<T extends { id: number }>(list: readonly T[], others: readonly T[] | undefined, held: ReadonlySet<number>): T[] {
+  if (!held.size || !others) return [...list];
+  const ids = new Set(list.map((t) => t.id));
+  return [...list, ...others.filter((t) => held.has(t.id) && !ids.has(t.id))];
+}

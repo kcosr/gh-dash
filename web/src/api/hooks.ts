@@ -287,10 +287,15 @@ export function useReleases(q: ScopeQuery, enabled = true) {
 /** Threads in scope are few (a person's own review comments): the list fetches up to 1000 and groups them itself. */
 export const THREAD_LIMIT = 1000;
 
-export function useThreadList(q: ThreadListQuery) {
+/** GET /threads as the Comments list asks for it: its query key and function (up to THREAD_LIMIT threads). */
+export function threadListQuery(q: ThreadListQuery) {
   const params = { ...q, limit: q.limit ?? THREAD_LIMIT };
+  return { queryKey: qk.threadList(params), queryFn: () => api.threadList(params) };
+}
+
+export function useThreadList(q: ThreadListQuery) {
   const ready = useSourceReady(q.source);
-  return useQuery({ queryKey: qk.threadList(params), queryFn: () => api.threadList(params), placeholderData: keepPreviousData, enabled: ready });
+  return useQuery({ ...threadListQuery(q), placeholderData: keepPreviousData, enabled: ready });
 }
 
 /** The Comments tab's count: unresolved threads in scope (threadCountParams). Quietly absent when it can't be had. */

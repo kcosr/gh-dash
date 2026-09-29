@@ -3,17 +3,17 @@
  * not at all). A row opens the diff at its thread; it also opens in place to read the conversation and resolve it.
  * Replying stays in the diff.
  */
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
-import type { Me, ThreadKindFilter, ThreadListItem, ThreadStatusFilter } from '../../../shared/api';
+import type { Me, ThreadKindFilter, ThreadListItem, ThreadListResponse, ThreadStatusFilter } from '../../../shared/api';
 import { PROVIDERS, capitalize, refText } from '../../../shared/provider';
-import { threadActions, useMe, useThreadList } from '../api/hooks';
+import { threadActions, threadListQuery, useMe, useThreadList } from '../api/hooks';
 import { threadListParams } from '../lib/apiQuery';
 import { hasBlockingLayer, isTypingTarget } from '../lib/layers';
 import { plainPreview } from '../lib/markdown';
 import { fmtDateTime, plural, rel } from '../lib/time';
-import { groupThreads, threadTarget } from '../lib/threadList';
+import { groupThreads, threadTarget, withHeld } from '../lib/threadList';
 import type { ThreadGroupOf } from '../lib/threadList';
 import { useUrlState } from '../lib/urlState';
 import type { ThreadGroup, ThreadOrder } from '../lib/urlState';
@@ -36,7 +36,7 @@ import { ListSkeleton, NoReposSelected } from './PullRequests';
 const STATUS_WORD = { open: 'unresolved', resolved: 'resolved', all: '' } as const;
 /** Controls that handle their own keys (the row's own button is the list's, see onKey). */
 const CONTROLS = 'button, a[href], input, select, textarea, summary, [role="button"], [role="checkbox"], [role="link"], [role="menuitem"], [role="separator"]';
-const NONE = new Map<number, ThreadListItem>();
+const NO_IDS: ReadonlySet<number> = new Set();
 
 const rowButton = (id: number) => document.querySelector<HTMLElement>(`.cv-row[data-thread="${id}"] > .th-li`);
 
@@ -50,28 +50,33 @@ export function CommentsView() {
   const providerOf = useProviderOf();
   const label = useRepoLabel();
   const me = useMe().data;
-  const params = threadListParams(s);
+  const asked = threadListParams(s);
+  const filterKey = JSON.stringify(asked);
+  // One object per set of filters (not per render), for the callbacks that use it.
+  const params = useMemo(() => asked, [filterKey]);
   const list = useThreadList(params);
   const data = list.data;
-  const filterKey = JSON.stringify(params);
 
-  // The list holds still while you work through it, until the filters change: rows keep the place they had when first
-  // seen (a reply or a status change doesn't move them to the top), and a thread resolved or reopened here stays in
-  // view (the newer copy of the two), even once it no longer matches the status filter.
-  const [kept, setKept] = useState(() => ({ key: filterKey, rows: NONE }));
-  const keptRows = kept.key === filterKey ? kept.rows : NONE;
+  // A thread resolved or reopened here stays in view until the filters change, even when its new status is one the
+  // filter leaves out, so `e` again undoes it. Only its id is held; its row comes from the server, from a second answer
+  // without the status filter (same scope, search, kind), asked for only while something is held. A held thread that is
+  // deleted or leaves the scope (its repo hidden or removed) is in neither answer, and goes. A filter change lets go.
+  const [held, setHeld] = useState(() => ({ key: filterKey, ids: NO_IDS }));
+  if (held.key !== filterKey) setHeld({ key: filterKey, ids: NO_IDS });
+  const heldIds = held.key === filterKey ? held.ids : NO_IDS;
+  const othersQuery = useMemo(() => threadListQuery({ ...params, status: 'all', sort: undefined }), [params]);
+  const holding = heldIds.size > 0 && s.status !== 'all';
+  const others = useQuery({ ...othersQuery, enabled: holding });
+  // The list also holds still: rows keep the place they had when first seen (a reply or a status change doesn't move
+  // them to the top) until the filters change.
   const seen = useRef({ key: filterKey, at: new Map<number, string>() });
   const items = useMemo(() => {
     if (seen.current.key !== filterKey) seen.current = { key: filterKey, at: new Map() };
     const at = seen.current.at;
-    const byId = new Map((data?.items ?? []).map((t) => [t.id, t]));
-    for (const t of keptRows.values()) {
-      const cur = byId.get(t.id);
-      if (!cur || cur.updatedAt < t.updatedAt) byId.set(t.id, t);
-    }
-    for (const t of byId.values()) if (!at.has(t.id)) at.set(t.id, t.updatedAt);
-    return [...byId.values()];
-  }, [data, keptRows, filterKey]);
+    const list = withHeld(data?.items ?? [], holding ? others.data?.items : undefined, heldIds);
+    for (const t of list) if (!at.has(t.id)) at.set(t.id, t.updatedAt);
+    return list;
+  }, [data, others.data, holding, heldIds, filterKey]);
   const groups = useMemo(() => {
     const at = seen.current.at;
     return groupThreads(items, s.threadGroup, s.threadSort, (t) => at.get(t.id) ?? t.updatedAt);
@@ -113,13 +118,22 @@ export function CommentsView() {
   const toggleStatus = useCallback(async (t: ThreadListItem) => {
     const status = t.status === 'open' ? 'resolved' : 'open';
     try {
+      if (s.status !== 'all') {
+        // Held (and the second answer in hand) before the change: both lists refetch after it, and the row mustn't
+        // leave in between.
+        const key = filterKey;
+        await qc.ensureQueryData(othersQuery);
+        setHeld((h) => (h.key === key && !h.ids.has(t.id) ? { key, ids: new Set(h.ids).add(t.id) } : h));
+      }
       const next = await threadActions(qc, threadTarget(t)).setStatus(t.id, status);
-      setKept((k) => ({ key: filterKey, rows: new Map(k.key === filterKey ? k.rows : NONE).set(t.id, { ...t, ...next }) }));
+      // The new status at once, in every list that has the thread; their refetch (threadActions) settles them.
+      qc.setQueriesData<ThreadListResponse>({ queryKey: ['thread-list'] }, (d) =>
+        d && { ...d, items: d.items.map((x) => (x.id === next.id ? { ...x, ...next } : x)) });
       toast(status === 'resolved' ? 'Resolved' : 'Reopened');
     } catch (e) {
       toast(`Couldn't update: ${(e as Error).message}`, { error: true });
     }
-  }, [qc, filterKey, toast]);
+  }, [qc, filterKey, othersQuery, s.status, toast]);
 
   /** A row's button took focus (Tab, a click, back from the diff): the cursor follows. */
   const onRowFocus = useCallback((id: number) => {

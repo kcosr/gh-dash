@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ThreadListItem } from './api';
 import { api } from '../web/src/api/client';
 import { exportTarget, exportUrl, threadCountParams, threadListParams } from '../web/src/lib/apiQuery';
-import { byFileOrder, groupThreads, sortThreads, threadTarget } from '../web/src/lib/threadList';
+import { byFileOrder, groupThreads, sortThreads, threadTarget, withHeld } from '../web/src/lib/threadList';
 import { carrySearch, defaultsFor, parseUrlState, patchSearch, viewFromPath } from '../web/src/lib/urlState';
 
 describe('Comments URL state', () => {
@@ -188,5 +188,35 @@ describe('Comments grouping and order', () => {
     expect(ids(g[0]!.items)).toEqual([5, 1, 7, 4, 3, 6, 2]);
     // The group still reports the real last activity.
     expect(g[0]!.lastAt).toBe(moved.updatedAt);
+  });
+});
+
+describe('Comments: threads held in view after a change from the list', () => {
+  const open = (id: number) => item({ id, at: id });
+  const resolved = (id: number) => item({ id, at: id, status: 'resolved' });
+  const ids = (xs: { id: number }[]) => xs.map((x) => x.id);
+
+  it('shows a held thread the filter now leaves out, from the answer without the status filter', () => {
+    // Unresolved: 2 was resolved from the list; the list's answer no longer has it, the other one does.
+    expect(ids(withHeld([open(1), open(3)], [open(1), resolved(2), open(3), resolved(4)], new Set([2])))).toEqual([1, 3, 2]);
+    // Only what was held: 4 (resolved elsewhere, or long ago) stays out.
+    expect(ids(withHeld([open(1)], [open(1), resolved(4)], new Set()))).toEqual([1]);
+  });
+
+  it('lets go of a held thread that was deleted or left the scope (neither answer has it)', () => {
+    expect(ids(withHeld([open(1), open(3)], [open(1), open(3)], new Set([2])))).toEqual([1, 3]);
+    // Its repo hidden from the default selection: both answers drop it together.
+    expect(ids(withHeld([open(3)], [open(3)], new Set([1, 2])))).toEqual([3]);
+  });
+
+  it("takes the list's own copy of a held thread that matches the filter again", () => {
+    const again = open(2);
+    const out = withHeld([open(1), again], [open(1), { ...again, updatedAt: '2000-01-01T00:00:00.000Z' }], new Set([2]));
+    expect(ids(out)).toEqual([1, 2]);
+    expect(out[1]).toBe(again);
+  });
+
+  it('shows the list alone until the other answer is in', () => {
+    expect(ids(withHeld([open(1)], undefined, new Set([2])))).toEqual([1]);
   });
 });

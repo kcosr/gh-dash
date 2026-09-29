@@ -87,6 +87,8 @@ const EXPAND_LINES = 20;
 const GAP = 12;
 /** Quiet time after a jump's last scroll event before the scroll position picks the file again. */
 const SETTLE_MS = 150;
+/** Keys that act while the compact comments column is open over the diff. */
+const COLUMN_KEYS = new Set(['c', 'n', 'p', 'r', 'e']);
 /** Keys that scroll the focused diff scroller (they end a jump's settling like a wheel does). */
 const SCROLL_KEYS = new Set(['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End']);
 
@@ -273,7 +275,8 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
   // The comments column likewise: a saved preference beside the diff, an overlay per visit on compact.
   const [columnOpen, setColumnOpen] = useState(false);
   const showColumn = compact ? columnOpen : prefs.comments;
-  useLayer(compact && columnOpen, () => setColumnOpen(false));
+  // The compact column is a layer of its own (Esc closes it first); the comment keys still work while it's on top.
+  const columnIsTop = useLayer(compact && columnOpen, () => setColumnOpen(false));
   const setColumn = useCallback((open: boolean) => (compact ? setColumnOpen(open) : updatePrefs({ comments: open })), [compact, updatePrefs]);
 
   // Collapsing: some files start folded (model.ts); each click flips a file and bumps its item version.
@@ -633,10 +636,13 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
     const el = document.querySelector(`.dth[data-thread="${id}"]`);
     const box = scroller.current?.getBoundingClientRect();
     const r = el?.getBoundingClientRect();
-    const onScreen = !!r && r.height > 0 && (el!.closest('.dcc') !== null || (!!box && r.bottom > box.top && r.top < box.bottom));
+    const inColumn = el?.closest('.dcc') != null;
+    // On compact, the open column covers the diff: an inline thread has to come out from under it.
+    const covered = live.current.compact && columnIsTop() && !inColumn;
+    const onScreen = !!r && r.height > 0 && !covered && (inColumn || (!!box && r.bottom > box.top && r.top < box.bottom));
     if (!onScreen) jumpToThread(id);
     setReplyRequest(id);
-  }, [jumpToThread]);
+  }, [jumpToThread, columnIsTop]);
   const toggleResolved = useCallback((t: CommentThread) => {
     actions.setStatus(t.id, t.status === 'open' ? 'resolved' : 'open').catch((e: unknown) => toast(`Couldn't update: ${(e as Error).message}`, { error: true }));
   }, [actions, toast]);
@@ -693,7 +699,10 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
   keyState.current = { navFiles, prefs, compact, ordered, focused, placements, showColumn, threadById };
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!isActive() || e.metaKey || e.ctrlKey || e.altKey || isTypingTarget(document.activeElement)) return;
+      if (e.metaKey || e.ctrlKey || e.altKey || isTypingTarget(document.activeElement)) return;
+      // The diff view on top, or the compact comments column over it (only the comment keys then). Under anything
+      // else (a composer, a dialog, the compact file list) the keys are its own.
+      if (!isActive() && !(columnIsTop() && COLUMN_KEYS.has(e.key))) return;
       const s = keyState.current;
       if (e.key === 'j' || e.key === 'k') {
         const i = indexOf.get(current.get() ?? '') ?? -1;
@@ -731,7 +740,7 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [isActive, indexOf, current, goTo, updatePrefs, focusThread, setColumn, replyToFocused, toggleResolved]);
+  }, [isActive, columnIsTop, indexOf, current, goTo, updatePrefs, focusThread, setColumn, replyToFocused, toggleResolved]);
 
   const renderHeader = useCallback((item: Item) => {
     const vf = byId.get(item.id);

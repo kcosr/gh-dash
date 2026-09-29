@@ -79,7 +79,8 @@ function sourcesApp(setup: Setup = {}) {
     sources.apply({ glabPath: null, sources: [] });
   }
   const config = { ...loadConfig({}), webDir: '/nonexistent' };
-  const diffs = new DiffService({ db, cache: new DiffCache(':memory:'), sources: githubDiffs, log: () => {} });
+  const cache = new DiffCache(':memory:');
+  const diffs = new DiffService({ db, cache, sources: githubDiffs, log: () => {} });
   const evict = vi.spyOn(diffs, 'evict');
   const sync = new SyncManager({ db, schedule: false, tokens, sources, log: () => {} });
   const deps: AppDeps = { db, config, sync, diffs, tokens, ...(setup.noRegistry ? {} : { sources }) };
@@ -88,7 +89,7 @@ function sourcesApp(setup: Setup = {}) {
     const res = await app.request(`/api/v1${path}`, { method, headers });
     return { status: res.status, body: res.status === 204 ? null : ((await res.json()) as any) };
   };
-  return { app, db, sources, gl, evict, call };
+  return { app, db, sources, gl, cache, evict, call };
 }
 
 const hosts = (items: Source[]) => items.map((s) => s.host);
@@ -262,10 +263,16 @@ describe('DELETE /sources/:source', () => {
     const onGitHub = Object.fromEntries(tables.map((table) => [table, rows(table, GITHUB_SOURCE_ID)]));
     expect(onGitLab).toMatchObject({ pull_requests: 3, commits: 4, issues: 2, releases: 1 });
     const prCommits = count(t.db, 'SELECT count(*) AS n FROM pr_commits');
+    // Diffs cached for a repo on each source.
+    const cached = (repo: string) => ({ key: `commit/${repo}/${'a'.repeat(40)}`, kind: 'commit' as const, repo, oid: 'a'.repeat(40), fetchedAt: 1, data: new Uint8Array([1, 2, 3]) });
+    t.cache.put(cached(`${GITLAB_HOST}/platform/app`));
+    t.cache.put(cached('alice/app'));
 
     const res = await t.call('DELETE', `/sources/${GITLAB_HOST}`);
     expect(res).toEqual({ status: 204, body: null });
     expect(t.evict).toHaveBeenCalledTimes(1);
+    expect(t.cache.get(cached('alice/app').key)).not.toBeNull();
+    expect(t.cache.get(cached(`${GITLAB_HOST}/platform/app`).key)).toBeNull();
 
     expect(sourceByHost(t.db, GITLAB_HOST)).toBeNull();
     expect(count(t.db, 'SELECT count(*) AS n FROM repos')).toBe(5);

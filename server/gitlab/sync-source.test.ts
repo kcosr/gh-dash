@@ -228,6 +228,32 @@ describe('GitLabSyncSource: rounds', () => {
     expect(requests).toEqual(['/api/v4/projects/11/starrers?per_page=100&page=1', '/api/v4/projects/11/starrers?per_page=100&page=2']);
   });
 
+  it('lists the starrers again when their count moved mid-listing (a shifted page could skip one), once', async () => {
+    const star = (login: string, day: number) => ({ starred_since: `2026-09-${String(day).padStart(2, '0')}T00:00:00.000Z`, user: { username: login, name: null, avatar_url: null } });
+    // a, b, c, d (two a page here). Between the pages of the first listing b unstars, c moves up to page 1, and the
+    // listing misses it: the sync would delete c's star.
+    let listing = 0;
+    const { source, requests } = setup({
+      '/api/v4/projects/11/starrers': (req) => {
+        const p = req.url.searchParams.get('page');
+        if (p === '1') listing++;
+        if (listing === 1) return p === '1' ? page([star('a', 1), star('b', 2)], 2, { 'x-total': '4' }) : page([star('d', 4)], null, { 'x-total': '3' });
+        return p === '1' ? page([star('a', 1), star('c', 3)], 2, { 'x-total': '3' }) : page([star('d', 4)], null, { 'x-total': '3' });
+      },
+    });
+    const stars = (await source.round(APP, { stars: { after: null } })).stars!;
+    expect(stars.items.map((s) => s.login)).toEqual(['d', 'c', 'a']);
+    expect(stars.totalCount).toBe(3);
+    expect(requests).toHaveLength(4);
+
+    const restless = setup({
+      '/api/v4/projects/11/starrers': (req) =>
+        req.url.searchParams.get('page') === '1' ? page([star('a', 1), star('b', 2)], 2, { 'x-total': '3' }) : page([star('d', 4)], null, { 'x-total': '2' }),
+    });
+    expect(await fail(restless.source.round(APP, { stars: { after: null } }))).toMatchObject({ kind: 'transient', message: expect.stringContaining('changing') });
+    expect(restless.requests).toHaveLength(4);
+  });
+
   it('reads the newest starrers first when there are too many to list at once, continuing backwards', async () => {
     const stargazers = fakeStarrers(3050);
     const { source, requests } = setup({ '/api/v4/projects/11/starrers': stargazers.handler });

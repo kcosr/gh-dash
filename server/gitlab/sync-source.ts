@@ -33,6 +33,8 @@ const COMMIT_PAGE = 100;
 const STAR_PAGE = 100;
 /** Most starrers listed in one round; beyond, they're paged newest first (the sync doesn't diff unstars past 3000). */
 const MAX_STARS = 3000;
+/** Listings of a project's starrers tried before giving up on one whose count keeps moving. */
+const STAR_LISTINGS = 2;
 /** Pages tried to find the last page of starrers when GitLab doesn't count them (over 10,000). */
 const STAR_SEEK_PAGES = 10;
 
@@ -170,7 +172,13 @@ export class GitLabSyncSource implements SyncSource {
     return toPage(existing(data, repo).mergeRequests, (m) => mapMergeRequest(m, this.base));
   }
 
-  /** Over REST, which (unlike GraphQL) says who closed an issue; the cursor is the next page number. */
+  /**
+   * Over REST, which (unlike GraphQL) says who closed an issue; the cursor is the next page number. Offset pages have a
+   * gap: an issue that leaves the list mid-walk (deleted, moved, retyped, or closed during the open pass) moves the rest
+   * up one, and the issue after it is skipped this time (an update only moves issues to the front: seen twice, not
+   * skipped). A skipped issue's open/closed state is caught on a later sync by the open-count check and recheck;
+   * other edits wait for its next update or a full sync. Pages aren't overlapped to close the gap.
+   */
   private async issues(repo: RepoRecord, after: string | null, state: 'all' | 'opened', order: Order): Promise<Page<IssueRecord>> {
     const res = await this.rest.page<RestIssue[]>(`/projects/${projectId(repo)}/issues`, {
       query: { ...ISSUE_FILTER, state, order_by: `${order}_at`, sort: 'desc', per_page: ISSUE_PAGE, page: after ? pageCursor(after) : 1 },
@@ -195,7 +203,9 @@ export class GitLabSyncSource implements SyncSource {
 
   /**
    * Starrers, most recent first. GitLab can't list them that way (it pages them oldest first, by id), so:
-   * - up to MAX_STARS: every page in this round, sorted here, as one page the sync can diff for unstars;
+   * - up to MAX_STARS: every page in this round, sorted here, as one page the sync can diff for unstars. Offset pages
+   *   shift when someone unstars mid-listing, skipping a starrer whose star the sync would then delete, so a listing
+   *   whose X-Total moved is read again (once; then 'transient');
    * - beyond: one page a round from the last page backwards, the cursor being the next page to read. Reading
    *   backwards, an unstar mid-way only shifts an already-read starrer into the next page (seen twice), and new stars
    *   land after the pages being read.
@@ -209,19 +219,24 @@ export class GitLabSyncSource implements SyncSource {
       const n = pageCursor(after);
       return this.starPage(repo, n, await read(n));
     }
-    const first = await read(1);
-    const total = first.total;
-    if (first.nextPage !== null && (total === null || total > MAX_STARS)) {
-      const last = total === null ? await this.lastStarPage(repo, read) : { n: Math.ceil(total / STAR_PAGE), res: null };
-      return this.starPage(repo, last.n, last.res ?? (await read(last.n)));
+    for (let listing = 1; ; listing++) {
+      const first = await read(1);
+      const total = first.total;
+      if (first.nextPage !== null && (total === null || total > MAX_STARS)) {
+        const last = total === null ? await this.lastStarPage(repo, read) : { n: Math.ceil(total / STAR_PAGE), res: null };
+        return this.starPage(repo, last.n, last.res ?? (await read(last.n)));
+      }
+      const items = [...first.body];
+      let steady = true;
+      for (let res = first, n = 1; res.nextPage !== null && res.nextPage > n && n < MAX_STARS / STAR_PAGE; ) {
+        n = res.nextPage;
+        res = await read(n);
+        items.push(...res.body);
+        steady &&= res.total === total;
+      }
+      if (steady) return { items: newestFirst(items.map((s) => mapStar(s, this.base))), hasMore: false, endCursor: null, totalCount: total ?? items.length };
+      if (listing >= STAR_LISTINGS) throw new GitLabError('transient', `The starrers of ${repo.nameWithOwner} kept changing while being listed`);
     }
-    const items = [...first.body];
-    for (let res = first, n = 1; res.nextPage !== null && res.nextPage > n && n < MAX_STARS / STAR_PAGE; ) {
-      n = res.nextPage;
-      res = await read(n);
-      items.push(...res.body);
-    }
-    return { items: newestFirst(items.map((s) => mapStar(s, this.base))), hasMore: false, endCursor: null, totalCount: total ?? items.length };
   }
 
   /** Page `n` of the starrers, newest first; the next round reads page n - 1. */

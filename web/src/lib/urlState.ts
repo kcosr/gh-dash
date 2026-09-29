@@ -21,6 +21,8 @@ export type FileFilter = 'commented' | 'unresolved';
 export type ThreadGroup = 'target' | 'repo' | 'none';
 /** The Comments list: by last activity (newest or oldest first), or each PR's or commit's threads in file order. */
 export type ThreadOrder = 'recent' | 'oldest' | 'file';
+/** Who opened a thread (GET /threads `author`): you, any agent, or one agent (its principal id). */
+export type ThreadAuthor = 'self' | 'agents' | number;
 
 export interface UrlState {
   /** The context: a source's host (`source=gitlab.example.com`), lower-case; null = All (param absent). */
@@ -64,6 +66,10 @@ export interface UrlState {
   threadGroup: ThreadGroup;
   /** The `sort` param on /comments (elsewhere it is `sort`). */
   threadSort: ThreadOrder;
+  /** Who opened the thread; null = anyone. */
+  author: ThreadAuthor | null;
+  /** Only open threads whose last comment isn't yours (`waiting=you`). */
+  waiting: boolean;
 }
 
 export type UrlPatch = Partial<UrlState>;
@@ -110,6 +116,8 @@ export function defaultsFor(view: ViewName): UrlState {
     kind: 'all',
     threadGroup: 'target',
     threadSort: 'recent',
+    author: null,
+    waiting: false,
   };
 }
 
@@ -117,6 +125,12 @@ const oneOf = <T extends string>(v: string | null, allowed: readonly T[], dflt: 
   v !== null && (allowed as readonly string[]).includes(v) ? (v as T) : dflt;
 
 const list = (v: string) => [...new Set(v.split(',').map((x) => x.trim()).filter(Boolean))];
+
+/** `author=self|agents|<principal id>`; anything else is anyone (null). */
+export function parseAuthor(v: string | null): ThreadAuthor | null {
+  if (v === 'self' || v === 'agents') return v;
+  return v !== null && /^[1-9]\d{0,9}$/.test(v) ? Number(v) : null;
+}
 
 export function parseUrlState(search: string, view: ViewName): UrlState {
   const p = new URLSearchParams(search);
@@ -167,11 +181,13 @@ export function parseUrlState(search: string, view: ViewName): UrlState {
     kind: threads ? oneOf(p.get('kind'), ['all', 'pr', 'commit'] as const, d.kind) : d.kind,
     threadGroup: threads ? oneOf(p.get('group'), ['target', 'repo', 'none'] as const, d.threadGroup) : d.threadGroup,
     threadSort: threads ? oneOf(p.get('sort'), ['recent', 'oldest', 'file'] as const, d.threadSort) : d.threadSort,
+    author: threads ? parseAuthor(p.get('author')) : d.author,
+    waiting: threads && p.get('waiting') === 'you',
   };
 }
 
 /** Param order in written URLs (unknown params are kept at the end). */
-const ORDER = ['source', 'repos', 'vis', 'own', 'who', 'range', 'from', 'to', 'state', 'status', 'kind', 'comments', 'group', 'density', 'rel', 'types', 'q', 'sort', 'layout', 'pr', 'diff', 'file', 'thread', 'only'];
+const ORDER = ['source', 'repos', 'vis', 'own', 'who', 'range', 'from', 'to', 'state', 'status', 'kind', 'author', 'waiting', 'comments', 'group', 'density', 'rel', 'types', 'q', 'sort', 'layout', 'pr', 'diff', 'file', 'thread', 'only'];
 
 /** Serialize a full state to params, omitting defaults for the view. */
 function toParams(s: UrlState, view: ViewName): [string, string][] {
@@ -187,8 +203,10 @@ function toParams(s: UrlState, view: ViewName): [string, string][] {
   if (s.state !== d.state) out.push(['state', s.state]);
   if (s.status !== d.status) out.push(['status', s.status]);
   if (s.kind !== d.kind) out.push(['kind', s.kind]);
-  if (s.comments) out.push(['comments', s.comments]);
   const threads = view === 'comments';
+  if (threads && s.author !== null) out.push(['author', String(s.author)]);
+  if (threads && s.waiting) out.push(['waiting', 'you']);
+  if (s.comments) out.push(['comments', s.comments]);
   if (threads ? s.threadGroup !== d.threadGroup : s.group !== d.group) out.push(['group', threads ? s.threadGroup : s.group]);
   if (s.density !== d.density) out.push(['density', s.density]);
   if (!s.rel) out.push(['rel', '0']);

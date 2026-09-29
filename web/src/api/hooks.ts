@@ -59,6 +59,8 @@ export const qk = {
   threads: (id: string) => ['threads', id] as const,
   /** GET /threads: the Comments list, and the tab's count (a synced PR's title and state come with each thread). */
   threadList: (q: ThreadListQuery) => ['thread-list', q] as const,
+  /** GET /agents: who may write comments through MCP. */
+  agents: ['agents'] as const,
   blob: (repo: string, ref: string, path: string) => ['blob', repo, ref, path] as const,
   diffCache: ['diff-cache'] as const,
   /** The Add dialog's lists and access checks: read from GitHub, never refetched by a sync. */
@@ -73,7 +75,7 @@ export const qk = {
  * refresh); a PR diff is revalidated when it's next opened (useDiff).
  */
 export const refetchAfterSync = (q: Query) =>
-  !['sync-status', 'diff', 'blob', 'threads', 'instance', 'desktop-state', 'repo-candidates', 'repo-lookup'].includes(q.queryKey[0] as string);
+  !['sync-status', 'diff', 'blob', 'threads', 'instance', 'desktop-state', 'repo-candidates', 'repo-lookup', 'agents'].includes(q.queryKey[0] as string);
 
 /**
  * Queries whose answers follow the default selection: every list or stats request without an explicit `repos=`
@@ -308,6 +310,20 @@ export function useUnresolvedCount(q: ThreadListQuery) {
     select: (d) => d.counts.open,
     placeholderData: keepPreviousData,
     enabled: ready,
+    retry: (count, err) => count < 1 && !isClientError(err),
+  });
+}
+
+/**
+ * The agents that may write comments through MCP (revoked ones too: their comments stay theirs), for Settings → Agents
+ * and the Comments list's Author filter. A server without agents (older) reads as none.
+ */
+export function useAgents() {
+  return useQuery({
+    queryKey: qk.agents,
+    queryFn: api.agents,
+    select: (d) => d.items,
+    staleTime: 60_000,
     retry: (count, err) => count < 1 && !isClientError(err),
   });
 }

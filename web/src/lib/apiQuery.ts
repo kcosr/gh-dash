@@ -64,6 +64,8 @@ export function threadListParams(s: UrlState): ThreadListQuery {
     q: s.q || undefined,
     status: s.status,
     kind: s.kind === 'all' ? undefined : s.kind,
+    author: s.author ?? undefined,
+    waiting: s.waiting ? 'you' : undefined,
     sort: s.threadSort === 'oldest' ? 'oldest' : undefined,
   };
 }

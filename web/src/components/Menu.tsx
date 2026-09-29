@@ -8,7 +8,7 @@ import { useLayer } from '../lib/layers';
  * (to the checked item, else the first) and back to the button on close, so keyboard users can reach the items:
  * arrow keys, Home and End move between them; Escape, Tab and a click outside close it.
  */
-export function MenuButton({ className, label, title, button, menuLabel, menuClass, width = 220, children }: {
+export function MenuButton({ className, label, title, button, menuLabel, menuClass, width = 220, align = 'end', children }: {
   className: string;
   /** The button's accessible name. */
   label: string;
@@ -18,6 +18,8 @@ export function MenuButton({ className, label, title, button, menuLabel, menuCla
   menuClass?: string;
   /** The menu's width, for aligning its right edge with the button's. */
   width?: number;
+  /** Which of the button's edges the menu lines up with: its right (default) or its left. */
+  align?: 'start' | 'end';
   children: (close: () => void) => ReactNode;
 }) {
   const [open, setOpen] = useState(false);
@@ -49,7 +51,8 @@ export function MenuButton({ className, label, title, button, menuLabel, menuCla
         <>
           <div className="pop-scrim" onClick={close} />
           <div ref={menu} className={`pop menu${menuClass ? ` ${menuClass}` : ''}`} role="menu" aria-label={menuLabel}
-            style={{ top: r.bottom + 4, left: Math.max(8, r.right - width), minWidth: width }} onKeyDown={onMenuKey}>
+            style={{ top: r.bottom + 4, left: align === 'end' ? Math.max(8, r.right - width) : Math.max(8, Math.min(r.left, window.innerWidth - width - 8)), minWidth: width }}
+            onKeyDown={onMenuKey}>
             {children(close)}
           </div>
         </>,

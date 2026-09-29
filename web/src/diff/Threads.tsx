@@ -10,6 +10,7 @@ import type { CommentThread, Me, ThreadComment } from '../../../shared/api';
 import type { ThreadPlacement } from '../../../shared/comment-placement';
 import type { useThreadActions } from '../api/hooks';
 import { Avatar } from '../components/Avatar';
+import { AgentMark } from '../components/bits';
 import { Icon } from '../components/Icon';
 import { Markdown } from '../components/Markdown';
 import { useToast } from '../components/Toasts';
@@ -74,7 +75,7 @@ function Author({ c }: { c: ThreadComment }) {
     <>
       <Avatar actor={actor} size={16} />
       <b className="dth-who">{self ? 'You' : c.author.name}</b>
-      {!self && <span className="dth-agent" title="Written by an agent through the API">agent</span>}
+      {!self && <AgentMark />}
     </>
   );
 }
@@ -285,7 +286,7 @@ export function ThreadCard({ thread, snippet = false, note }: { thread: CommentT
       <div className="dth resolved" data-thread={thread.id}>
         <button type="button" className="dth-sum" onClick={() => { s.setExpanded(thread.id, true); s.focus(thread.id); }} title="Show the resolved thread">
           <Icon name="check" />
-          <span className="dth-sum-t"><b>{first.author.kind === 'self' ? 'You' : first.author.name}</b>: {plainPreview(first.body, 160)}</span>
+          <span className="dth-sum-t"><b>{first.author.kind === 'self' ? 'You' : first.author.name}</b>{first.author.kind === 'agent' && <> <AgentMark /></>}: {plainPreview(first.body, 160)}</span>
           {thread.comments.length > 1 && <span className="dth-n">{thread.comments.length - 1} {plural(thread.comments.length - 1, 'reply', 'replies')}</span>}
         </button>
       </div>
@@ -297,7 +298,7 @@ export function ThreadCard({ thread, snippet = false, note }: { thread: CommentT
         <div className="dth-top">
           {resolved && (
             <button type="button" className="dth-state" onClick={() => { s.setExpanded(thread.id, false); if (focused) s.focus(null); }} title="Collapse">
-              <Icon name="check" />Resolved
+              <Icon name="check" />Resolved{thread.resolvedBy && <> by {thread.resolvedBy.kind === 'self' ? 'you' : thread.resolvedBy.name}</>}
             </button>
           )}
           {note}

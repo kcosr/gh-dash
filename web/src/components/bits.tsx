@@ -19,6 +19,11 @@ export function prIconClass(p: Pick<PullRequest, 'state' | 'isDraft'>): string {
   return p.state === 'open' && p.isDraft ? 'draft' : p.state;
 }
 
+/** After an agent's name wherever an author is shown: small and muted, so agents and you tell apart at a glance. */
+export function AgentMark() {
+  return <span className="agent-mark" title="An agent, writing through MCP">agent</span>;
+}
+
 /** Keep a toolbar label and its control together when the row wraps. */
 export function Ctl({ label, children }: { label: string; children: ReactNode }) {
   return <span className="ctl"><span className="lbl">{label}</span>{children}</span>;

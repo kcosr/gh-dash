@@ -2,6 +2,7 @@
 import type {
   AccountStatus,
   ActivityQuery,
+  Agent,
   AddRepoResponse,
   ActivityResponse,
   Commit,
@@ -220,6 +221,8 @@ export const api = {
   deleteComment: (commentId: number) => request<{ thread: CommentThread | null }>('DELETE', `/api/v1/comments/${commentId}`),
   /** Every thread in scope, across PRs and commits (the Comments list). */
   threadList: (q: ThreadListQuery) => get<ThreadListResponse>(apiUrl('threads', { ...q })),
+  /** The agents that may write comments through MCP (no tokens: those are shown once, where they are made). */
+  agents: () => get<{ items: Agent[] }>('/api/v1/agents'),
 
   settings: () => get<Settings>('/api/v1/settings'),
   patchSettings: (body: Partial<Settings>) => request<Settings>('PATCH', '/api/v1/settings', body),

@@ -8,6 +8,13 @@ import type { ThreadGroup, ThreadOrder } from './urlState';
 
 type Placed = Pick<CommentThread, 'id' | 'path' | 'startLine'>;
 
+/** ":12" or ":12–14"; '' for a thread on a whole file or on the PR or commit. */
+export const threadLines = (t: Pick<CommentThread, 'startLine' | 'endLine'>) =>
+  t.startLine === null ? '' : `:${t.startLine === t.endLine ? t.startLine : `${t.startLine}–${t.endLine}`}`;
+
+/** "path:12–14", "path" or "General": where a thread was made, in full. */
+export const threadPlace = (t: Pick<CommentThread, 'path' | 'startLine' | 'endLine'>) => `${t.path ?? 'General'}${threadLines(t)}`;
+
 /** Reading order without a diff at hand: general threads first, then by path and line. */
 export const byFileOrder = (a: Placed, b: Placed) =>
   (a.path ?? '').localeCompare(b.path ?? '') || (a.startLine ?? 0) - (b.startLine ?? 0) || a.id - b.id;

@@ -722,13 +722,18 @@ a.sync:hover .sync-text { color: var(--text); text-decoration: underline; text-u
 .cv-on .r { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .cv-tag { flex: none; padding: 0 6px; border: 1px solid var(--border-strong); border-radius: 999px; font-size: 11px; font-weight: 500; line-height: 16px; color: var(--muted); white-space: nowrap; }
 .cv-time { flex: none; min-width: 52px; text-align: right; font-size: 12px; color: var(--muted); white-space: nowrap; }
+.th-by { flex: none; display: inline-flex; align-items: baseline; gap: 4px; max-width: 30%; min-width: 0; font-size: 12px; font-weight: 550; color: var(--text-2); white-space: nowrap; }
+.th-by .nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.cv-by { flex: none; font-size: 12px; color: var(--muted); white-space: nowrap; }
+.cv-resolved { display: flex; align-items: center; gap: 5px; margin: 10px 0 0; font-size: 12px; color: var(--muted); }
+.cv-resolved svg { width: 12px; height: 12px; }
+.cv-resolved b { font-weight: 600; color: var(--text-2); }
 .cv-conv { grid-row: 2; grid-column: 2; max-width: 860px; margin: 0 10px 12px 2px; padding: 2px 0 2px 14px; border-left: 2px solid var(--accent); }
 .cv-row.resolved .cv-conv { border-left-color: var(--border-strong); }
 .cv-snip { margin: 0 0 10px; padding: 6px 10px; max-height: 9em; overflow: auto; border-radius: 6px; background: var(--surface-2); font: 11.5px/1.5 var(--mono); color: var(--text-2); white-space: pre; }
 .cv-c + .cv-c { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
 .cv-c-head { display: flex; align-items: center; gap: 6px; min-height: 18px; font-size: 12px; color: var(--muted); }
 .cv-c-head b { font-weight: 600; color: var(--text); }
-.cv-agent { padding: 0 5px; border: 1px solid var(--border-strong); border-radius: 999px; font-size: 10.5px; }
 .cv-md.md { max-width: 780px; margin-top: 4px; font-size: 13px; line-height: 1.55; }
 .cv-md.md p { margin: 0 0 6px; }
 .cv-md.md pre, .cv-md.md code { font-size: 12px; }
@@ -752,3 +757,6 @@ a.sync:hover .sync-text { color: var(--text); text-decoration: underline; text-u
   .cv-disc, .cv-row > .th-li { min-height: 44px; }
   .cv-foot .btn { height: 36px; }
 }
+
+/* Agents (MCP): the mark after an agent's name. */
+.agent-mark { flex: none; display: inline-block; padding: 0 5px; border: 1px solid var(--border-strong); border-radius: 999px; font-size: 10.5px; font-weight: 500; line-height: 15px; color: var(--muted); vertical-align: 1px; white-space: nowrap; }

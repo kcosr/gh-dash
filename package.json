@@ -76,6 +76,7 @@
     "npmRebuild": false,
     "publish": null,
     "electronFuses": {
+      "resetAdHocDarwinSignature": true,
       "runAsNode": false,
       "enableCookieEncryption": false,
       "enableNodeOptionsEnvironmentVariable": false,

@@ -157,8 +157,10 @@ npm run dist:desktop   # build installers for this OS into release/
 
 `npm run dist:desktop` produces an AppImage and a `.deb` on Linux, an NSIS installer on
 Windows, and a `.dmg` and `.zip` on macOS. The [Desktop app workflow](.github/workflows/desktop.yml)
-builds all three on pull requests. The builds are not signed: macOS asks you to confirm opening
-the app, and Windows SmartScreen warns. Signing and notarization are not set up yet.
+builds all three on pull requests. The builds are not signed with a developer certificate (macOS
+builds get an ad-hoc signature, which Apple silicon requires). A downloaded macOS build is blocked
+the first time: open it once, then allow it under **System Settings → Privacy & Security → Open
+Anyway**. Windows SmartScreen warns too. Signing and notarization are not set up yet.
 
 `npm ci` doesn't download Electron itself: Electron fetches its binary the first time it
 runs (`npm run desktop`), or run `npx install-electron` beforehand.

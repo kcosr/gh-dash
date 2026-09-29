@@ -727,6 +727,8 @@ a.sync:hover .sync-text { color: var(--text); text-decoration: underline; text-u
 .cv-md.md p { margin: 0 0 6px; }
 .cv-md.md pre, .cv-md.md code { font-size: 12px; }
 .cv-foot { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+/* The same count on Activity's commit lines (PrRow's CommentBadge). */
+.c-li .pr-comments { flex: none; margin-left: 0; }
 @container main (max-width: 640px) {
   .cv-row > .th-li { flex-wrap: wrap; row-gap: 2px; }
   .cv-row .th-where { max-width: none; margin-right: auto; }

@@ -1,5 +1,5 @@
 import { memo } from 'react';
-import type { PullRequest, Release } from '../../../shared/api';
+import type { CommentCounts, PullRequest, Release } from '../../../shared/api';
 import { plainPreview } from '../lib/markdown';
 import { isNewSinceLastVisit } from '../lib/storage';
 import { fmtDate, fmtDateTime, rel } from '../lib/time';
@@ -21,9 +21,8 @@ interface PrRowProps {
   onOpen: (pr: PullRequest) => void;
 }
 
-/** Local comment threads on the PR: the count, in the accent while any is unresolved. */
-function Comments({ pr }: { pr: PullRequest }) {
-  const c = pr.comments;
+/** Local comment threads on a PR or commit: the count, in the accent while any is unresolved; nothing when none. */
+export function CommentBadge({ c }: { c: CommentCounts | undefined }) {
   if (!c?.threads) return null;
   const title = `${c.threads} comment ${c.threads === 1 ? 'thread' : 'threads'}${c.unresolved ? `, ${c.unresolved} unresolved` : ', all resolved'}`;
   return <span className={cx('pr-comments', c.unresolved > 0 && 'open')} title={title} aria-label={title}><Icon name="comment" />{c.unresolved || c.threads}</span>;
@@ -52,7 +51,7 @@ export const PrRow = memo(function PrRow({ pr, density, cursor, active, onOpen }
       <article className={cls} onClick={open} tabIndex={-1} aria-label={pr.title} data-id={pr.id}>
         <span className={`pr-ic ${prIconClass(pr)}`}><Icon name={prIconName(pr)} /></span>
         <span className="t-repo"><RepoChip repo={pr.repo} /><span className="num">{p.prRef}{pr.number}</span></span>
-        <span className="t-title">{pr.title}{pr.isDraft && <span className="draft-tag">Draft</span>}<Labels labels={pr.labels} /><Comments pr={pr} /></span>
+        <span className="t-title">{pr.title}{pr.isDraft && <span className="draft-tag">Draft</span>}<Labels labels={pr.labels} /><CommentBadge c={pr.comments} /></span>
         <Avatar actor={pr.author} size={18} />
         {time}
         <GhLink url={pr.url} host={p.name} />
@@ -82,7 +81,7 @@ export const PrRow = memo(function PrRow({ pr, density, cursor, active, onOpen }
           </span>
           <span className="sep">·</span>
           <Diffstat add={pr.additions} del={pr.deletions} />
-          <Comments pr={pr} />
+          <CommentBadge c={pr.comments} />
         </div>
         {density === 'full'
           ? <Markdown source={pr.body} repo={pr.repo} />

@@ -266,7 +266,7 @@ const SCOPE: ParamDoc[] = [
   q('repos', 'Comma-separated repo keys (owner/name; the short name of a repo you own also works). Omitted: the default selection (non-archived, non-hidden, non-fork unless includeForks). Empty (`repos=`): no repos.', str(), 'kcosr/gh-dash,kcosr/tools'),
   q('visibility', 'Repo visibility filter (internal: GitHub Enterprise).', { ...enumOf('all', 'public', 'private', 'internal'), default: 'all' }),
   q('ownership', 'mine: repositories you own (tracked automatically); others: repositories added by hand.', { ...enumOf('all', 'mine', 'others'), default: 'all' }),
-  q('who', "'me' = the authenticated user (login, settings.myEmails or GH_DASH_MY_EMAILS); stars are always by others.", { ...enumOf('me', 'others', 'everyone'), default: 'everyone' }, 'me'),
+  q('who', "'me' = the authenticated user of each item's own source (its account's login or commit emails, plus settings.myEmails or GH_DASH_MY_EMAILS on every source); stars are always by others.", { ...enumOf('me', 'others', 'everyone'), default: 'everyone' }, 'me'),
   q('from', 'Start: YYYY-MM-DD (in tz), ISO datetime, or relative offset like -7d / -12w / -3m. Default: 29 days before today.', str(), '-30d'),
   q('to', 'End, inclusive: YYYY-MM-DD covers that whole day. Same formats as from. Default: end of today. Bounds must lie in 1970–2999 and span at most 7320 days (~20 years).', str()),
   q('tz', 'IANA timezone for date-only bounds and bucketing. Default: server timezone.', str(), 'Europe/Berlin'),

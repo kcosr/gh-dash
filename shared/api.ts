@@ -42,7 +42,10 @@ export interface Actor {
   login: string | null;
   name: string | null;
   avatarUrl: string | null;
-  /** True when this is the authenticated user (login match, or commit email in settings.myEmails). */
+  /**
+   * True when this is the authenticated user of the source the item is on: that source's account by login, or a commit
+   * email of it (settings.myEmails and GH_DASH_MY_EMAILS count on every source).
+   */
   isMe: boolean;
 }
 
@@ -264,6 +267,7 @@ export type TokenKind = 'fine-grained' | 'classic' | 'oauth' | 'app' | 'personal
 export const TOKEN_CREATE_URL =
   'https://github.com/settings/personal-access-tokens/new?name=gh-dash&description=Read-only+token+for+gh-dash&expires_in=366&metadata=read&contents=read&issues=read&pull_requests=read';
 
+/** GET /api/v1/me: the github.com account (source 1). Other sources have accounts of their own. */
 export interface Me {
   login: string;
   name: string | null;
@@ -457,7 +461,7 @@ export interface AddRepoResponse {
  *    An explicitly empty value (`repos=`) means "no repos" and returns nothing.
  *  - visibility: default 'all'.
  *  - ownership: default 'all'; 'mine' = repositories you own, 'others' = repositories added by hand.
- *  - who: default 'everyone'. 'me' matches Actor.isMe. Stars are always by others.
+ *  - who: default 'everyone'. 'me' matches Actor.isMe, judged per source. Stars are always by others.
  *  - from / to: 'YYYY-MM-DD' (interpreted in `tz`; `to` is inclusive through the end of that day),
  *    a full ISO datetime, or a relative offset like '-7d' / '-12w' / '-3m' (from now).
  *    Default range: last 30 days.

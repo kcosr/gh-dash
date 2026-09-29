@@ -110,7 +110,7 @@ export interface PrFilter {
 }
 
 const PR_FROM = 'pull_requests p JOIN repos r ON r.id = p.repo_id';
-const PR_SELECT = `p.*, ${repoKeySql('r')} AS repo`;
+const PR_SELECT = `p.*, ${repoKeySql('r')} AS repo, r.source_id AS source_id`;
 
 function prWhere(ctx: QueryCtx, scope: Scope, f: PrFilter, ignoreRepos: boolean): Where {
   const w = new Where();
@@ -174,7 +174,7 @@ export function listCommits(db: Db, ctx: QueryCtx, scope: Scope, page: Page): Li
   const isMe = isMeFn(ctx);
   const { rows, next, total } = runPaged<CommitRow>(db, {
     from: 'commits c JOIN repos r ON r.id = c.repo_id',
-    select: `c.*, ${repoKeySql('r')} AS repo`,
+    select: `c.*, ${repoKeySql('r')} AS repo, r.source_id AS source_id`,
     where: w,
     at: 'c.committed_at',
     keys: [repoKeySql('r'), 'c.oid'],
@@ -193,7 +193,7 @@ export function listIssues(db: Db, ctx: QueryCtx, scope: Scope, state: IssueStat
   const isMe = isMeFn(ctx);
   const { rows, next, total } = runPaged<IssueRow>(db, {
     from: 'issues i JOIN repos r ON r.id = i.repo_id',
-    select: `i.*, ${repoKeySql('r')} AS repo`,
+    select: `i.*, ${repoKeySql('r')} AS repo, r.source_id AS source_id`,
     where: w,
     at: 'i.activity_at',
     keys: [repoKeySql('r'), 'i.number'],
@@ -211,7 +211,7 @@ export function listReleases(db: Db, ctx: QueryCtx, scope: Scope, page: Page): L
   const isMe = isMeFn(ctx);
   const { rows, next, total } = runPaged<ReleaseRow>(db, {
     from: 'releases rel JOIN repos r ON r.id = rel.repo_id',
-    select: `rel.*, ${repoKeySql('r')} AS repo`,
+    select: `rel.*, ${repoKeySql('r')} AS repo, r.source_id AS source_id`,
     where: w,
     at: 'rel.published_at',
     keys: [repoKeySql('r'), 'rel.tag'],
@@ -396,7 +396,7 @@ function hydrateEvents(db: Db, ctx: QueryCtx, rows: EventRow[]): ActivityEvent[]
   const load = <R extends { id: number }, T>(type: EventType, table: string, alias: string, map: (row: R) => T) => {
     const out = new Map<number, T>();
     if (!rows.some((r) => r.type === type)) return out;
-    const sql = `SELECT ${alias}.*, ${repoKeySql('r')} AS repo FROM ${table} ${alias} JOIN repos r ON r.id = ${alias}.repo_id WHERE ${alias}.id IN (SELECT value FROM json_each(?))`;
+    const sql = `SELECT ${alias}.*, ${repoKeySql('r')} AS repo, r.source_id AS source_id FROM ${table} ${alias} JOIN repos r ON r.id = ${alias}.repo_id WHERE ${alias}.id IN (SELECT value FROM json_each(?))`;
     for (const row of db.all<R>(sql, [ids(type)])) out.set(row.id, map(row));
     return out;
   };

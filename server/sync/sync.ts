@@ -151,12 +151,25 @@ interface RepoTarget {
 
 type Section = 'commits' | 'prs' | 'issues' | 'openPrs' | 'openIssues' | 'releases' | 'stars';
 
+/**
+ * Runs `fn` over `items`, `concurrency` at a time. After the first failure no further items start, but the ones in
+ * flight are awaited before it is rethrown: once this settles, nothing it started can still write (the caller
+ * releases the sync lock then).
+ */
 async function pool<T>(items: T[], concurrency: number, fn: (item: T) => Promise<void>): Promise<void> {
   let next = 0;
+  let failure: { err: unknown } | null = null;
   const worker = async () => {
-    while (next < items.length) await fn(items[next++]!);
+    while (!failure && next < items.length) {
+      try {
+        await fn(items[next++]!);
+      } catch (err) {
+        failure ??= { err };
+      }
+    }
   };
   await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker));
+  if (failure) throw (failure as { err: unknown }).err;
 }
 
 const isFatal = (err: unknown) => err instanceof GitHubError && (err.kind === 'auth' || err.kind === 'rate-limit');

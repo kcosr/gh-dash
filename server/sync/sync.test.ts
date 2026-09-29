@@ -482,6 +482,27 @@ describe('repos added by hand', () => {
     expect(row('bob/tool')!.unavailable_at).toBeNull();
   });
 
+  it('on a fatal error, waits for the requests in flight before giving up (nothing is written after)', async () => {
+    // 26 repos added by hand: two MANUAL_REPOS chunks. The first is rate limited; the second answers later.
+    for (let i = 0; i < 25; i++) {
+      addManualRepo(db, `bob/r${i}`);
+      gh.fx.others.push(otherRepo(`bob/r${i}`));
+    }
+    gh.fx.nodeErrors['R_bob/tool'] = { type: 'RATE_LIMITED', message: 'API rate limit exceeded' };
+    const later = async (input: string | URL | Request, init?: RequestInit) => {
+      const ids = (JSON.parse(String(init?.body)) as { variables: { ids?: string[] } }).variables.ids ?? [];
+      if (ids.includes('R_bob/r24')) await new Promise((r) => setTimeout(r, 40));
+      return gh.fetchImpl(input as string, init!);
+    };
+    const client = new GitHubClient({ token: 't', fetchImpl: later as typeof fetch });
+    const err = await runSync({ db, client, settings: DEFAULT_SETTINGS, now: () => NOW + HOUR }).catch((e: unknown) => e);
+    expect(err).toMatchObject({ kind: 'rate-limit' });
+    const at = row('bob/r24');
+    await new Promise((r) => setTimeout(r, 100));
+    expect(row('bob/r24')).toEqual(at);
+    expect(at!.description).toBe('bob/r24 upstream');
+  });
+
   it('one repo failing with FORBIDDEN leaves the others to finish', async () => {
     gh.fx.detailErrors['alice/app'] = { type: 'FORBIDDEN', message: 'Resource not accessible by integration', path: ['repository', 'pullRequests'] };
     const res = await sync(NOW + HOUR, { full: true });

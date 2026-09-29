@@ -799,3 +799,17 @@ a.sync:hover .sync-text { color: var(--text); text-decoration: underline; text-u
 .agent-snip pre.code { flex: 1; min-width: 0; margin: 0; padding: 7px 10px; font-size: 11.5px; line-height: 1.55; background: var(--surface); white-space: pre-wrap; overflow-wrap: anywhere; word-break: normal; }
 .agent-snip > code.set-key { flex: 1; min-width: 0; padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); line-height: 1.5; }
 .agent-token .set-actions { margin-top: 12px; }
+/* Activity: comment events (a row's lines, or its one comment as the description). */
+.ev.comment .ev-ic { color: var(--accent-text); }
+.ev-text button.t { color: var(--text); font-weight: 550; text-align: left; }
+.ev-text button.t:hover { color: var(--accent-text); text-decoration: underline; text-underline-offset: 2px; }
+.c-li.cm-li { width: 100%; text-align: left; color: var(--text); }
+.c-li.cm-li > span { flex: none; }
+.c-li.cm-li > .cm-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+button.cm-li:hover .cm-text, button.cm-quote:hover { color: var(--accent-text); }
+.cm-where { max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 11.5px var(--mono); color: var(--text-2); }
+.cm-verb { font-size: 12px; color: var(--muted); }
+.cm-gone { font-size: 11px; color: var(--muted); }
+.cm-li.gone .cm-where, .cm-li.gone .cm-text, .cm-quote.gone .cm-text { color: var(--muted); text-decoration: line-through; text-decoration-color: var(--border-strong); }
+button.cm-quote { display: -webkit-box; text-align: left; }
+.cm-quote .cm-gone { margin-left: 6px; }

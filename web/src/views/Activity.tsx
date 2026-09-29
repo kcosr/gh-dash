@@ -3,10 +3,10 @@ import type { ReactNode } from 'react';
 import { EVENT_TYPES } from '../../../shared/api';
 import type { Actor, EventType, StatsBucket } from '../../../shared/api';
 import type { PrWords } from '../../../shared/provider';
-import { useActivityFeed, useRepoMap, useStats } from '../api/hooks';
+import { useActivityFeed, useMe, useRepoMap, useStats } from '../api/hooks';
 import { ActivityStrip } from '../charts';
 import { Avatar, AvatarStack } from '../components/Avatar';
-import { prIconName } from '../components/bits';
+import { AgentMark, prIconName } from '../components/bits';
 import { DateRangeButton } from '../components/DateRange';
 import { EmptyState, ErrorNote, ProgressBar } from '../components/EmptyState';
 import { CommentBadge } from '../components/PrRow';
@@ -19,8 +19,9 @@ import { Seg, WHO_OPTIONS } from '../components/Seg';
 import { useUI } from '../components/ui';
 import { NoReposSelected } from './PullRequests';
 import { activityParams, statsParams } from '../lib/apiQuery';
-import { groupFeed } from '../lib/grouping';
-import type { FeedDay, FeedRow } from '../lib/grouping';
+import { commentPlace, commentSummary, commentVerb, groupFeed } from '../lib/grouping';
+import { threadPlace } from '../lib/threadList';
+import type { CommentEvent, FeedDay, FeedRow } from '../lib/grouping';
 import { plainPreview } from '../lib/markdown';
 import { LAST_VISIT } from '../lib/storage';
 import type { ResolvedRange } from '../lib/range';
@@ -34,6 +35,7 @@ const TYPES: { type: EventType; label: string; icon: IconName; color: string }[]
   { type: 'issue', label: 'Issues', icon: 'issue', color: 'var(--open)' },
   { type: 'release', label: 'Releases', icon: 'tag', color: 'var(--release)' },
   { type: 'star', label: 'Stars', icon: 'starFill', color: 'var(--star)' },
+  { type: 'comment', label: 'Comments', icon: 'comment', color: 'var(--accent-text)' },
 ];
 
 const COMMITS_SHOWN = 3;
@@ -144,6 +146,7 @@ export function ActivityView() {
   const onExpand = useCallback((k: string) => setExpanded((e) => new Set(e).add(k)), []);
   const onOpenPr = useCallback((id: string) => set({ pr: id }), [set]);
   const onOpenDiff = useCallback((id: string) => set({ diff: id }), [set]);
+  const onOpenThread = useCallback((diff: string, thread: number) => set({ diff, thread }), [set]);
   const defaultBranch = useCallback((repo: string) => repoMap.get(repo)?.defaultBranch ?? 'main', [repoMap]);
 
   const toggleType = (t: EventType) => {
@@ -235,6 +238,7 @@ export function ActivityView() {
                   onExpand={onExpand}
                   onOpenPr={onOpenPr}
                   onOpenDiff={onOpenDiff}
+                  onOpenThread={onOpenThread}
                   activePr={s.pr}
                   defaultBranch={defaultBranch}
                 />
@@ -252,7 +256,7 @@ export function ActivityView() {
   );
 }
 
-const DaySection = memo(function DaySection({ day, count, dividerBefore, expanded, onExpand, onOpenPr, onOpenDiff, activePr, defaultBranch }: {
+const DaySection = memo(function DaySection({ day, count, dividerBefore, expanded, onExpand, onOpenPr, onOpenDiff, onOpenThread, activePr, defaultBranch }: {
   day: FeedDay;
   /** Events that day: facets.byDay when available (complete even while later pages are unloaded). */
   count: number;
@@ -261,6 +265,7 @@ const DaySection = memo(function DaySection({ day, count, dividerBefore, expande
   onExpand: (key: string) => void;
   onOpenPr: (id: string) => void;
   onOpenDiff: (id: string) => void;
+  onOpenThread: (diff: string, thread: number) => void;
   activePr: string | null;
   defaultBranch: (repo: string) => string;
 }) {
@@ -282,6 +287,7 @@ const DaySection = memo(function DaySection({ day, count, dividerBefore, expande
               onExpand={onExpand}
               onOpenPr={onOpenPr}
               onOpenDiff={onOpenDiff}
+              onOpenThread={onOpenThread}
               active={!!activePr && r.kind === 'event' && r.event.type === 'pr' && r.event.pr.id === activePr}
               defaultBranch={defaultBranch}
             />
@@ -294,18 +300,21 @@ const DaySection = memo(function DaySection({ day, count, dividerBefore, expande
 
 const Who = ({ actor }: { actor: Actor | null }) => <><Avatar actor={actor} size={18} /><b>{actorSubject(actor)}</b></>;
 
-const FeedItem = memo(function FeedItem({ row, expanded, onExpand, onOpenPr, onOpenDiff, active, defaultBranch }: {
+const FeedItem = memo(function FeedItem({ row, expanded, onExpand, onOpenPr, onOpenDiff, onOpenThread, active, defaultBranch }: {
   row: FeedRow;
   expanded: boolean;
   onExpand: (key: string) => void;
   onOpenPr: (id: string) => void;
   onOpenDiff: (id: string) => void;
+  onOpenThread: (diff: string, thread: number) => void;
   /** This row's PR is open in the drawer. */
   active: boolean;
   defaultBranch: (repo: string) => string;
 }) {
   let cls = '', icon: IconName = 'commit', text: ReactNode = null, sub: ReactNode = null;
   const providerOf = useProviderOf();
+  // Your comments carry no login (they are gh-dash's, not a code host's): your avatar is your account's, as on PRs.
+  const me = useMe().data;
   const repo = (key: string) => <RepoChip repo={key} className="ev-repo" />;
   // Commit links open the diff in-app; modifier and middle clicks still go to GitHub.
   const diffLink = (key: string, c: { oid: string; url: string }, className: string, children: ReactNode) => (
@@ -343,6 +352,33 @@ const FeedItem = memo(function FeedItem({ row, expanded, onExpand, onOpenPr, onO
         {' '}starred {repo(row.repo)}
       </>
     );
+  } else if (row.kind === 'comments') {
+    const evs = row.events;
+    const t = row.target;
+    const diff = t.kind === 'pr' ? `${row.repo}#${t.number}` : commitDiffId(row.repo, t.oid);
+    const ref = t.kind === 'pr' ? `${providerOf(row.repo).prRef}${t.number}` : `@${t.oid.slice(0, 7)}`;
+    const shown = evs.length <= COMMITS_SHOWN || expanded ? evs : evs.slice(0, COMMITS_SHOWN);
+    const mixed = new Set(evs.map((e) => e.kind)).size > 1;
+    cls = 'comment'; icon = evs.every((e) => e.kind === 'resolved') ? 'check' : 'comment';
+    text = (
+      <>
+        <Who actor={row.actor.isMe && me ? { ...row.actor, login: me.login, name: me.name ?? me.login } : row.actor} />
+        {evs[0]!.comment.by.kind === 'agent' && <AgentMark />} {commentSummary(evs)} in{' '}
+        {t.title && (
+          <button type="button" className="t" data-diff={t.kind === 'commit' ? diff : undefined} title={t.kind === 'pr' ? 'Details' : "View the commit's diff"}
+            onClick={() => (t.kind === 'pr' ? onOpenPr(diff) : onOpenDiff(diff))}>{t.title}</button>
+        )}
+        <span className="num"><RepoChip repo={row.repo} className="repo-ref" />{ref}</span>
+      </>
+    );
+    sub = evs.length === 1
+      ? <CommentLine e={evs[0]!} diff={diff} onOpen={onOpenThread} quote />
+      : (
+        <div className="c-box">
+          {shown.map((e) => <CommentLine key={e.comment.eventId} e={e} diff={diff} onOpen={onOpenThread} verb={mixed} />)}
+          {shown.length < evs.length && <button type="button" className="more" onClick={() => onExpand(row.key)}>Show {evs.length - shown.length} more</button>}
+        </div>
+      );
   } else {
     const e = row.event;
     if (e.type === 'pr') {
@@ -400,6 +436,30 @@ const FeedItem = memo(function FeedItem({ row, expanded, onExpand, onOpenPr, onO
     </div>
   );
 });
+
+/**
+ * One comment event: where (the file's name and lines; "General" for the whole PR or commit), what was said, when. It
+ * opens the diff at the thread, unless the thread is gone. `quote`: a row's only event, as the row's description
+ * (its place is in the row's words). `verb`: the row has several kinds of events, so each says what happened.
+ */
+function CommentLine({ e, diff, onOpen, quote = false, verb = false }: { e: CommentEvent; diff: string; onOpen: (diff: string, thread: number) => void; quote?: boolean; verb?: boolean }) {
+  const c = e.comment;
+  const place = commentPlace(c) ?? 'General';
+  const full = threadPlace(c);
+  const title = c.live ? `${full} · open the diff at this thread` : `${full} · the thread was deleted`;
+  const words = <>
+    {!quote && <span className="cm-where">{place}</span>}
+    {verb && <span className="cm-verb">{commentVerb(e.kind)}</span>}
+    <span className="cm-text">{c.excerpt ?? ''}</span>
+    {!c.live && e.kind !== 'thread_deleted' && <span className="cm-gone">deleted</span>}
+    {!quote && <time dateTime={e.at} title={fmtDateTime(e.at)}>{fmtTime(e.at)}</time>}
+  </>;
+  if (quote && !c.excerpt && c.live) return null;
+  const cls = quote ? `ev-desc cm-quote${c.live ? '' : ' gone'}` : `c-li cm-li${c.live ? '' : ' gone'}`;
+  return c.live
+    ? <button type="button" className={cls} data-diff={diff} title={title} onClick={() => onOpen(diff, c.threadId)}>{words}</button>
+    : <div className={cls} title={title}>{words}</div>;
+}
 
 function FeedSkeleton() {
   return (

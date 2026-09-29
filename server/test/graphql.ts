@@ -34,7 +34,7 @@ export function prNode(key: string, number: number, title: string, at = '2026-09
 
 export function fakeGraphQL() {
   const state = {
-    viewer: { id: 'U_alice', login: 'alice', name: 'Alice', avatarUrl: null as string | null },
+    viewer: { id: 'U_alice', login: 'alice', name: 'Alice' as string | null, avatarUrl: null as string | null },
     /** The viewer's own repositories. */
     owned: [] as RepoNode[],
     /** Other owners' repositories the token can read. */
@@ -45,6 +45,10 @@ export function fakeGraphQL() {
     errors: {} as Record<string, { type: string; message: string; field?: string }>,
     /** Operation names, with the node id or owner/name they asked for. */
     ops: [] as string[],
+    /** What RepoLookup counts since the backfill start; a count of null makes that search fail. */
+    size: { commits: 240, prs: 60 as number | null, issues: 12 as number | null, releases: 4 },
+    /** Keys of repositories the viewer contributed to (RepoSuggestions). */
+    suggested: [] as string[],
   };
   const all = () => [...state.owned, ...state.others];
   const find = (idOrKey: string) => all().find((r) => r.id === idOrKey || r.nameWithOwner.toLowerCase() === idOrKey.toLowerCase()) ?? null;
@@ -105,6 +109,27 @@ export function fakeGraphQL() {
         };
         break;
       }
+      case 'RepoLookup': {
+        const repo = read(`${String(v.owner)}/${String(v.name)}`, ['repository'], errors);
+        const search = (field: 'prs' | 'issues') => {
+          const n = state.size[field];
+          if (n === null) errors.push({ type: 'SERVICE_UNAVAILABLE', message: 'Search is unavailable', path: [field] });
+          return n === null ? null : { issueCount: n };
+        };
+        data = {
+          viewer,
+          repository: repo && {
+            ...repo, viewerPermission: 'READ', releases: { totalCount: state.size.releases },
+            defaultBranchRef: repo.defaultBranchRef && { ...repo.defaultBranchRef, target: { history: { totalCount: state.size.commits } } },
+          },
+          prs: search('prs'),
+          issues: search('issues'),
+        };
+        break;
+      }
+      case 'RepoSuggestions':
+        data = { viewer: { ...viewer, repositoriesContributedTo: { nodes: state.suggested.map((k) => find(k)) } } };
+        break;
       default:
         return { status: 200, body: { errors: [{ message: `fakeGraphQL: no ${op}` }] } };
     }

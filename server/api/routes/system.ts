@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import type { Me, Settings } from '../../../shared/api';
 import { getMeta } from '../../db/meta';
+import { resolveRepo } from '../../db/repo-key';
 import { getSettings, patchSettings, settingsPatchSchema } from '../../db/settings';
 import { noTokenMessage } from '../../token';
 import type { AppDeps } from '../app';
@@ -28,6 +29,12 @@ export function systemRoutes({ db, sync, config, diffs, tokens }: AppDeps): Hono
 
   r.post('/sync', async (c) => {
     const body = parseWith(syncBody, await jsonBody(c));
+    if (body.repo !== undefined) {
+      // A tracked repo is synced by its key; a bare name nothing tracks may be a repo the viewer just created.
+      const ref = resolveRepo(db, body.repo);
+      if (ref) body.repo = ref.key;
+      else if (body.repo.includes('/')) throw new HttpError(404, `${body.repo} isn't tracked. Add it first (POST /api/v1/repos).`);
+    }
     // Resolves the token afresh, so "Sync now" works right after `gh auth login` or a new token file.
     const res = await sync.start('manual', body);
     if (!res.ok && res.reason === 'running') return c.json({ error: 'A sync is already running', details: sync.status() }, 409);

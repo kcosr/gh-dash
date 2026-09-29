@@ -131,6 +131,13 @@ describe('GitHubClient', () => {
     expect(await client([clean]).c.queryPartial('query { x }')).toEqual({ data: { nodes: [{ id: 'R_a' }], rateLimit: RL }, errors: [] });
   });
 
+  it('queryPartial tolerates any error under an optional top-level field', async () => {
+    const errors = [{ type: 'SERVICE_UNAVAILABLE', path: ['prs'], message: 'search is down' }];
+    const reply = () => new Response(JSON.stringify({ data: { repository: { id: 'R' }, prs: null, rateLimit: RL }, errors }));
+    expect(await client([reply]).c.queryPartial('query { x }', {}, { optional: ['prs'] })).toMatchObject({ data: { prs: null }, errors });
+    await expect(client([reply]).c.queryPartial('query { x }')).rejects.toMatchObject({ kind: 'graphql' });
+  });
+
   it('queryPartial still throws for other errors, and for no data at all', async () => {
     const other = () => new Response(JSON.stringify({ data: { nodes: [null] }, errors: [{ type: 'INTERNAL', message: 'boom' }, { type: 'NOT_FOUND', message: 'x' }] }));
     await expect(client([other]).c.queryPartial('query { x }')).rejects.toMatchObject({ kind: 'graphql', message: 'boom; x' });

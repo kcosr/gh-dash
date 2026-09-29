@@ -120,7 +120,41 @@ const schemas: Record<string, Schema> = {
     rateLimit: nullable(obj({ limit: int(), remaining: int(), resetAt: dateTime })),
     tokenSource: enumOf('env', 'file', 'gh-cli', 'app', 'none'),
     viewer: nullable(str()),
+    repo: { ...nullable(str()), description: 'Key of the one repository a single-repo sync is syncing (e.g. one just added); null for a full sync' },
+  }, ['repo']),
+  RepoCandidate: obj({
+    key: str('owner/name'), owner: str(), name: str(), description: nullable(str()), visibility: enumOf('public', 'private', 'internal'),
+    isArchived: bool, isFork: bool, stars: int(), pushedAt: nullable(dateTime),
+    tracked: { ...nullable(enumOf('owned', 'manual')), description: 'How it is tracked already; null when it is not' },
   }),
+  RepoCandidatesResponse: obj({
+    items: { ...arr(ref('RepoCandidate')), description: 'Repositories you collaborate on or reach through an organization, most recently pushed first (at most 1000)' },
+    suggested: { ...arr(ref('RepoCandidate')), description: 'Untracked repositories of others you recently contributed to' },
+    truncated: { ...bool, description: 'More repositories exist than items lists' },
+    fetchedAt: dateTime,
+  }),
+  RepoPreview: {
+    allOf: [ref('RepoCandidate'), obj({
+      url: str(), openPrs: int(), openIssues: int(),
+      owned: { ...bool, description: 'You own it: tracked automatically, so it cannot be added' },
+      hidden: { ...nullable(bool), description: 'When tracked: left out of the default selection' },
+      backfill: {
+        ...obj({ since: dateTime, commits: nullable(int()), prs: nullable(int()), issues: nullable(int()), releases: int(), requests: nullable(int()) }),
+        description: 'What the first sync would fetch since `since` (null: unknown), and about how many GitHub requests',
+      },
+    })],
+  },
+  RepoLookup: {
+    oneOf: [
+      obj({ ok: { type: 'boolean', const: true }, repo: ref('RepoPreview') }),
+      obj({
+        ok: { type: 'boolean', const: false }, key: str(),
+        problem: { ...enumOf('not-found', 'sso', 'org-policy', 'permission'), description: "not-found: doesn't exist, or the token can't see it; sso: the organization requires SAML single sign-on; org-policy: an organization policy refuses the token; permission: the token sees the repository but not its pull requests, issues or code" },
+        message: str(), hint: nullable(str('What to do about it, for this kind of token')),
+      }),
+    ],
+  },
+  AddRepoResponse: obj({ repo: ref('Repo'), sync: { ...enumOf('started', 'queued'), description: 'queued: after the sync that is running' } }),
   AccountStatus: obj({
     source: { ...TOKEN_SOURCE, description: 'Where the token comes from right now' },
     choice: nullable(enumOf('auto', 'gh', 'file', 'app')),
@@ -319,7 +353,35 @@ export const ENDPOINTS: EndpointDoc[] = [
   ], response: { status: 200, schema: obj({ items: arr(ref('Repo')) }) } },
   { method: 'get', path: '/api/v1/repos/{repo}', tag: 'Repos', summary: 'One repo', params: [REPO], response: { status: 200, schema: ref('Repo') } },
   {
-    method: 'patch', path: '/api/v1/repos/{name}', tag: 'Repos', summary: 'Pin/unpin or hide/unhide a repo (local preference)',
+    method: 'get', path: '/api/v1/repo-candidates', tag: 'Repos', summary: 'Repositories of others the token can read, to add',
+    description: 'Cached for 5 minutes per token. Costs up to 10 REST requests and 1 GraphQL point. 503 without a token, 409 when the token is for another account than this database.',
+    params: [q('refresh', "'1' asks GitHub again instead of using the cache.", enumOf('1'))],
+    response: { status: 200, schema: ref('RepoCandidatesResponse') },
+  },
+  {
+    method: 'get', path: '/api/v1/repo-lookup', tag: 'Repos', summary: 'Whether the token can read a repository, with a preview',
+    description: 'One GraphQL request. `ok: false` explains why the token can\'t read it (200). 400 for input that names no GitHub repository, 503 without a token, 409 when the token is for another account, 429 rate limited.',
+    params: [{ ...q('repo', 'owner/name, a github.com URL (https or git@)', str(), 'dlvhdr/gh-dash'), required: true }],
+    response: { status: 200, schema: ref('RepoLookup') },
+  },
+  {
+    method: 'post', path: '/api/v1/repos', tag: 'Repos', summary: "Track a repository you don't own, and start its first sync",
+    description:
+      'Checks access again first. 400 bad input; 404 `{ details: { problem: "not-found", hint } }`; 403 `{ details: { problem: "sso" | "org-policy" | "permission", hint } }`; ' +
+      '409 `{ details: { key, trackedBy, hidden } }` when you own it (tracked automatically) or it is tracked already, or when the token is for another account; 503 without a token; 429 rate limited.',
+    body: {
+      schema: obj({ repo: str('owner/name or a github.com URL'), includeInDefault: { ...bool, default: true, description: 'Include in the default selection (hidden: false)' } }, ['includeInDefault']),
+      example: { repo: 'dlvhdr/gh-dash' },
+    },
+    response: { status: 201, schema: ref('AddRepoResponse') },
+  },
+  {
+    method: 'delete', path: '/api/v1/repos/{repo}', tag: 'Repos', summary: 'Stop tracking a repository you added',
+    description: 'Deletes its pull requests, issues, commits, releases and cached diffs from this dashboard, and its set memberships. Nothing changes on GitHub. 409 for a repository you own (hide it instead), 404 when unknown.',
+    params: [REPO], response: { status: 204, description: 'Removed' },
+  },
+  {
+    method: 'patch', path: '/api/v1/repos/{repo}', tag: 'Repos', summary: 'Pin/unpin or hide/unhide a repo (local preference)',
     params: [REPO], body: { schema: obj({ pinned: bool, hidden: bool }, ['pinned', 'hidden']), example: { pinned: true } },
     response: { status: 200, schema: ref('Repo') },
   },
@@ -377,7 +439,7 @@ export const ENDPOINTS: EndpointDoc[] = [
   {
     method: 'post', path: '/api/v1/sync', tag: 'Sync', summary: 'Start a sync now (409 if one is running)',
     description:
-      '`repo` (a key, or the short name of a repo you own) limits the sync to one repo; `full` ignores high-water marks, re-fetches the backfill window and re-diffs stars. ' +
+      '`repo` (a key, or the short name of a repo you own) limits the sync to one repo (404 when a key names no tracked repository: add it first); `full` ignores high-water marks, re-fetches the backfill window and re-diffs stars. ' +
       'The token is resolved afresh; without one the answer is 503 with the reason.',
     body: { schema: obj({ repo: str(), full: bool }, ['repo', 'full']), example: { full: true }, optional: true },
     response: { status: 202, schema: ref('SyncStatus') },

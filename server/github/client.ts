@@ -60,14 +60,15 @@ export class GitHubClient {
 
   /**
    * Like `query`, but a field the token can't see (NOT_FOUND) or may not read (FORBIDDEN) comes back null with its
-   * error, and the rest of the data is returned: one inaccessible repo doesn't sink a batch. Anything else throws.
+   * error, and the rest of the data is returned: one inaccessible repo doesn't sink a batch. Anything else throws,
+   * except errors of any kind under an `optional` top-level field (a nice-to-have, like a search count).
    */
   async queryPartial<T extends { rateLimit?: GqlRateLimit }>(
     query: string,
     variables: Record<string, unknown> = {},
-    opts: { signal?: AbortSignal } = {},
+    opts: { signal?: AbortSignal; optional?: string[] } = {},
   ): Promise<{ data: T; errors: GqlError[] }> {
-    return this.request<T>(query, variables, PARTIAL, opts.signal);
+    return this.request<T>(query, variables, PARTIAL, opts.signal, opts.optional ?? []);
   }
 
   private async request<T extends { rateLimit?: GqlRateLimit }>(
@@ -75,6 +76,7 @@ export class GitHubClient {
     variables: Record<string, unknown>,
     tolerated: Set<string>,
     signal: AbortSignal | undefined,
+    optional: string[] = [],
   ): Promise<{ data: T; errors: GqlError[] }> {
     if (!/^\s*query\b/.test(query)) throw new Error('Only read-only GraphQL queries are allowed');
     checkToken(this.opts.token);
@@ -84,7 +86,7 @@ export class GitHubClient {
     }
     return withRetries(this.opts, () => {
       if (signal?.aborted) throw new GitHubError('transient', 'Gave up waiting for GitHub (GraphQL)');
-      return this.attempt<T>(query, variables, tolerated, signal);
+      return this.attempt<T>(query, variables, tolerated, optional, signal);
     });
   }
 
@@ -92,6 +94,7 @@ export class GitHubClient {
     query: string,
     variables: Record<string, unknown>,
     tolerated: Set<string>,
+    optional: string[],
     signal: AbortSignal | undefined,
   ): Promise<{ data: T; errors: GqlError[] }> {
     this.requests++;
@@ -133,7 +136,8 @@ export class GitHubClient {
       this.opts.onRateLimit?.(rl);
     }
     const errors = body.errors ?? [];
-    if (errors.length && !(body.data && errors.every((e) => e.type !== undefined && tolerated.has(e.type)))) {
+    const ok = (e: GqlError) => (e.type !== undefined && tolerated.has(e.type)) || (e.path !== undefined && optional.includes(String(e.path[0])));
+    if (errors.length && !(body.data && errors.every(ok))) {
       const messages = errors.map((e) => e.message).join('; ');
       if (errors.some((e) => e.type === 'RATE_LIMITED')) throw new GitHubError('rate-limit', messages, { errors });
       if (/timeout|something went wrong/i.test(messages)) throw new RetryableError(messages, null);

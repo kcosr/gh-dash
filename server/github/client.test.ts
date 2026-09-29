@@ -117,7 +117,40 @@ describe('GitHubClient', () => {
     const partial = () =>
       new Response(JSON.stringify({ data: { repository: { pr7: null }, rateLimit: RL }, errors: [{ type: 'NOT_FOUND', message: 'Could not resolve' }] }));
     expect(await client([partial]).c.query('query { x }', {}, { allowNotFound: true })).toMatchObject({ repository: { pr7: null } });
-    await expect(client([partial]).c.query('query { x }')).rejects.toMatchObject({ kind: 'graphql' });
+    await expect(client([partial]).c.query('query { x }')).rejects.toMatchObject({ kind: 'not-found' });
+  });
+
+  it('queryPartial returns the data with path-tagged NOT_FOUND and FORBIDDEN errors', async () => {
+    const errors = [
+      { type: 'NOT_FOUND', path: ['nodes', 0], message: "Could not resolve to a node with the global id of 'R_x'" },
+      { type: 'FORBIDDEN', path: ['nodes', 2], message: 'Resource protected by organization SAML enforcement.' },
+    ];
+    const partial = () => new Response(JSON.stringify({ data: { nodes: [null, { id: 'R_b' }, null], rateLimit: RL }, errors }));
+    expect(await client([partial]).c.queryPartial('query { x }')).toEqual({ data: { nodes: [null, { id: 'R_b' }, null], rateLimit: RL }, errors });
+    const clean = () => ok({ nodes: [{ id: 'R_a' }] });
+    expect(await client([clean]).c.queryPartial('query { x }')).toEqual({ data: { nodes: [{ id: 'R_a' }], rateLimit: RL }, errors: [] });
+  });
+
+  it('queryPartial still throws for other errors, and for no data at all', async () => {
+    const other = () => new Response(JSON.stringify({ data: { nodes: [null] }, errors: [{ type: 'INTERNAL', message: 'boom' }, { type: 'NOT_FOUND', message: 'x' }] }));
+    await expect(client([other]).c.queryPartial('query { x }')).rejects.toMatchObject({ kind: 'graphql', message: 'boom; x' });
+    const limited = () => new Response(JSON.stringify({ data: { nodes: [null] }, errors: [{ type: 'RATE_LIMITED', message: 'API rate limit exceeded' }] }));
+    await expect(client([limited]).c.queryPartial('query { x }')).rejects.toMatchObject({ kind: 'rate-limit' });
+    const nothing = () => new Response(JSON.stringify({ data: null, errors: [{ type: 'FORBIDDEN', message: 'no' }] }));
+    await expect(client([nothing]).c.queryPartial('query { x }')).rejects.toMatchObject({ kind: 'forbidden' });
+    const timeout = () => new Response(JSON.stringify({ data: null, errors: [{ message: 'Something went wrong while executing your query. This may be the result of a timeout' }] }));
+    const retried = client([timeout, () => ok({ nodes: [] })]);
+    expect((await retried.c.queryPartial('query { x }')).errors).toEqual([]);
+    expect(retried.calls()).toBe(2);
+  });
+
+  it('classifies a failed query: all NOT_FOUND is not-found, any FORBIDDEN is forbidden; the errors stay attached', async () => {
+    const reply = (errors: object[]) => () => new Response(JSON.stringify({ data: { repository: null }, errors }));
+    const notFound = [{ type: 'NOT_FOUND', path: ['repository'], message: "Could not resolve to a Repository with the name 'o/n'." }];
+    const err = await client([reply(notFound)]).c.query('query { x }').catch((e: unknown) => e);
+    expect(err).toMatchObject({ kind: 'not-found', errors: notFound });
+    const forbidden = [{ type: 'FORBIDDEN', path: ['repository', 'openPrs'], message: 'Resource not accessible by personal access token' }];
+    await expect(client([reply([...forbidden, ...notFound])]).c.query('query { x }')).rejects.toMatchObject({ kind: 'forbidden', errors: [...forbidden, ...notFound] });
   });
 
   it('stops spending when the remaining budget is nearly exhausted', async () => {

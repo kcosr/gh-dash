@@ -7,6 +7,13 @@ export interface GqlRateLimit {
   cost: number;
 }
 
+/** One entry of a GraphQL response's `errors`. `path` names the field that failed (its value is null in `data`). */
+export interface GqlError {
+  type?: string;
+  message: string;
+  path?: (string | number)[];
+}
+
 export interface GqlPageInfo {
   hasNextPage: boolean;
   endCursor: string | null;

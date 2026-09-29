@@ -226,9 +226,10 @@ const V4 = `ALTER TABLE pull_requests ADD COLUMN head_oid TEXT;`;
 // writing through the API get rows of their own. Threads are keyed by repo and PR number or commit oid, not by
 // pull_requests.id: sync may delete and re-create a PR row (a transfer), and the user's comments must outlive that.
 // A thread's revision (commit_oid, base_oid) and snippet let a later revision of the PR's diff relocate it.
+// AUTOINCREMENT: ids end up in URLs, client caches and agents' hands, so a deleted one must never name something new.
 const V5 = `
 CREATE TABLE principals (
-  id INTEGER PRIMARY KEY,
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
   kind TEXT NOT NULL CHECK (kind IN ('self', 'agent')),
   name TEXT NOT NULL,
   created_at TEXT NOT NULL
@@ -236,7 +237,7 @@ CREATE TABLE principals (
 INSERT INTO principals (id, kind, name, created_at) VALUES (1, 'self', 'You', strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));
 
 CREATE TABLE comment_threads (
-  id INTEGER PRIMARY KEY,
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
   repo_id INTEGER NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
   pr_number INTEGER,
   commit_oid TEXT NOT NULL,
@@ -257,7 +258,7 @@ CREATE TABLE comment_threads (
 CREATE INDEX comment_threads_target ON comment_threads(repo_id, pr_number, commit_oid);
 
 CREATE TABLE comments (
-  id INTEGER PRIMARY KEY,
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
   thread_id INTEGER NOT NULL REFERENCES comment_threads(id) ON DELETE CASCADE,
   author_id INTEGER NOT NULL REFERENCES principals(id),
   body TEXT NOT NULL,

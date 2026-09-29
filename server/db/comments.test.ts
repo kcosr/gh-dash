@@ -148,6 +148,16 @@ describe('comment threads', () => {
     expect(listThreads(db, pr())).toEqual([]);
   });
 
+  it('never reuses the id of a deleted thread or comment (ids live on in URLs and clients)', () => {
+    const t = open(pr(), general);
+    const reply = addComment(db, t.id, me, 'x')!.comments[1]!;
+    deleteComment(db, reply.id);
+    deleteThread(db, t.id);
+    const next = open(pr(), general);
+    expect(next.id).toBeGreaterThan(t.id);
+    expect(next.comments[0]!.id).toBeGreaterThan(reply.id);
+  });
+
   it('lets authors edit their own words only, and the dashboard user delete anything', () => {
     expect(mayEdit(me, me.id)).toBe(true);
     expect(mayEdit(me, agent.id)).toBe(false);

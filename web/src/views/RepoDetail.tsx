@@ -11,6 +11,7 @@ import { Icon } from '../components/Icon';
 import { Labels } from '../components/Label';
 import { Markdown } from '../components/Markdown';
 import { RepoName } from '../components/RepoName';
+import { UnavailableNote } from '../components/RepoTracking';
 import { useRepoLabel } from '../components/repoMapContext';
 import { Seg, WHO_OPTIONS } from '../components/Seg';
 import { useUI } from '../components/ui';
@@ -103,7 +104,6 @@ export function RepoDetailView() {
             <div className="rh-top">
               <h1 title={label}><RepoName repo={repo.key} /></h1>
               <span className="vis-badge">{repo.visibility === 'private' ? <><Icon name="lock" />Private</> : repo.visibility === 'internal' ? <><Icon name="lock" title="Internal" />Internal</> : 'Public'}</span>
-              {repo.unavailable && <span className="vis-badge" title={repo.unavailable.reason}><Icon name="alert" />Unavailable</span>}
               {!repo.unavailable && repo.syncedAt === null && <span className="vis-badge">Syncing…</span>}
               {repo.isArchived && <span className="vis-badge">Archived</span>}
               {repo.isFork && <span className="vis-badge"><Icon name="fork" />Fork</span>}
@@ -119,6 +119,7 @@ export function RepoDetailView() {
               </button>
               <a className="btn primary" href={repo.url} target="_blank" rel="noopener noreferrer"><Icon name="ext" />Open on GitHub</a>
             </div>
+            {repo.unavailable && <UnavailableNote repo={repo} />}
             {repo.description && <p className="rh-desc">{repo.description}</p>}
             <div className="rc-stats rh-stats">
               {repo.language && <span><i className="lang" style={{ '--lc': repo.language.color ?? 'var(--muted)' } as CSSProperties} />{repo.language.name}</span>}

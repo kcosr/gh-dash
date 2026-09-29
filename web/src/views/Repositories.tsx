@@ -1,6 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import type { CSSProperties, KeyboardEvent } from 'react';
-import { createPortal } from 'react-dom';
+import { useMemo } from 'react';
+import type { CSSProperties } from 'react';
 import { Link } from 'react-router';
 import type { Repo, RepoSet } from '../../../shared/api';
 import { repoPath, selectRepos } from '../../../shared/repos';
@@ -12,12 +11,14 @@ import { EmptyState, ErrorNote, ProgressBar } from '../components/EmptyState';
 import { FilterInput } from '../components/FilterInput';
 import { FilterToolbar } from '../components/FilterToolbar';
 import { Icon } from '../components/Icon';
+import { MenuButton } from '../components/Menu';
+import { UnavailableNote, useConfirmRemoveRepo } from '../components/RepoTracking';
 import { RepoName } from '../components/RepoName';
 import { useRepoLabel } from '../components/repoMapContext';
 import { Seg } from '../components/Seg';
 import { useToast } from '../components/Toasts';
+import { useSyncNow } from '../components/TopBar';
 import { useUI } from '../components/ui';
-import { useLayer } from '../lib/layers';
 import { addDays, fmtDate, rel, startOfWeek } from '../lib/time';
 import { carrySearch, encodeParams, useUrlState } from '../lib/urlState';
 import type { RepoLayout, RepoSort } from '../lib/urlState';
@@ -37,7 +38,7 @@ export function RepositoriesView() {
   const repos = useRepos();
   const settings = useSettings();
   const sets = useSets();
-  const { openExport } = useUI();
+  const { openExport, openAddRepo } = useUI();
   const titles = useMemo(weekTitles, []);
   const setById = useMemo(() => new Map((sets.data ?? []).map((x) => [x.id, x])), [sets.data]);
 
@@ -56,6 +57,7 @@ export function RepositoriesView() {
           </Ctl>
           <span className="summary">{list.length} {list.length === 1 ? 'repository' : 'repositories'} · {nPinned} pinned</span>
           <span className="spacer" />
+          <button type="button" className="btn" onClick={openAddRepo}><Icon name="plus" />Add repository</button>
           <button type="button" className="btn" onClick={() => openExport('api')}><Icon name="braces" />API</button>
           <Seg<RepoLayout> className="sm" value={s.layout} onChange={(layout) => set({ layout })} ariaLabel="Layout" options={[
             { value: 'grid', label: <Icon name="grid" title="Cards" /> }, { value: 'list', label: <Icon name="list" title="Table" /> },
@@ -70,13 +72,17 @@ export function RepositoriesView() {
           <ErrorNote error={settings.error} onRetry={() => settings.refetch()} />
         ) : !repos.data || !settings.data ? (
           <div className="repo-grid">{Array.from({ length: 8 }, (_, i) => <div key={i} className="rcard skel-card" />)}</div>
+        ) : list.length === 0 && s.own === 'others' && !repos.data.some((r) => r.trackedBy !== 'owned') ? (
+          <EmptyState icon="book" title="No repositories from other owners" action={
+            <button type="button" className="btn" onClick={openAddRepo}><Icon name="plus" />Add repository</button>
+          }>Repositories you own are tracked automatically. Add others, such as an organization's or a project you contribute to.</EmptyState>
         ) : list.length === 0 ? (
           <EmptyState icon="book" title={s.repos?.length === 0 ? 'No repositories selected' : 'No repositories match'} action={
             <div className="empty-actions">
               {s.q && <button type="button" className="btn" onClick={() => set({ q: '' })}>Clear search</button>}
               {s.repos !== null && <button type="button" className="btn" onClick={() => set({ repos: null })}>Select default repositories</button>}
             </div>
-          }>Choose repositories in the sidebar, or change the visibility filter.</EmptyState>
+          }>Choose repositories in the sidebar, or change the ownership or visibility filter.</EmptyState>
         ) : s.layout === 'grid' ? (
           <div className="repo-grid">
             {list.map((r) => <RepoCard key={r.key} repo={r} search={search} sets={r.setIds.map((id) => setById.get(id)).filter((x): x is RepoSet => !!x)} titles={titles} />)}
@@ -107,30 +113,11 @@ function PinButton({ repo }: { repo: Repo }) {
 }
 
 function RepoMenu({ repo }: { repo: Repo }) {
-  const [open, setOpen] = useState(false);
-  const btn = useRef<HTMLButtonElement>(null);
-  const menu = useRef<HTMLDivElement>(null);
   const patch = usePatchRepo();
   const toast = useToast();
+  const sync = useSyncNow();
+  const confirmRemove = useConfirmRemoveRepo();
   const label = useRepoLabel()(repo.key);
-  // The menu is portaled to the end of <body>: move focus into it on open (arrow keys move between
-  // items) and back to the trigger on close, or keyboard users could never reach its items.
-  const close = () => { setOpen(false); btn.current?.focus({ preventScroll: true }); };
-  useLayer(open, close);
-  useEffect(() => { if (open) menu.current?.querySelector<HTMLElement>('.opt')?.focus(); }, [open]);
-  const onMenuKey = (e: KeyboardEvent<HTMLDivElement>) => {
-    // Continue normal tab order from the trigger when leaving the portaled menu.
-    if (e.key === 'Tab') { close(); return; }
-    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp' && e.key !== 'Home' && e.key !== 'End') return;
-    e.preventDefault();
-    const items = [...(menu.current?.querySelectorAll<HTMLElement>('.opt') ?? [])];
-    const i = items.indexOf(document.activeElement as HTMLElement);
-    const next = e.key === 'Home' ? 0 : e.key === 'End' ? items.length - 1
-      : (i + (e.key === 'ArrowUp' ? -1 : 1) + items.length) % items.length;
-    items[next]?.focus();
-  };
-  const r = btn.current?.getBoundingClientRect();
-  const act = (fn: () => void) => () => { close(); fn(); };
   const toggleHidden = () => {
     // Hiding a default-scope card unmounts this component before the mutation completes.
     void patch.mutateAsync({ key: repo.key, patch: { hidden: !repo.hidden } }).then(() => {
@@ -139,39 +126,47 @@ function RepoMenu({ repo }: { repo: Repo }) {
     }).catch((error: Error) => toast(`Couldn't update ${label}: ${error.message}`, { error: true }));
   };
   return (
-    <>
-      <button ref={btn} type="button" className="pin-btn" aria-haspopup="menu" aria-expanded={open} aria-label={`More actions for ${label}`} title="More" onClick={() => setOpen((o) => !o)}>
-        <Icon name="dots" />
-      </button>
-      {open && r && createPortal(
-        <>
-          <div className="pop-scrim" onClick={close} />
-          <div ref={menu} className="pop menu" role="menu" aria-label={`Actions for ${label}`} style={{ top: r.bottom + 4, left: Math.max(8, r.right - 220) }} onKeyDown={onMenuKey}>
+    <MenuButton className="pin-btn" label={`More actions for ${label}`} title="More" button={<Icon name="dots" />} menuLabel={`Actions for ${label}`}>
+      {(close) => {
+        const act = (fn: () => void) => () => { close(); fn(); };
+        return (
+          <>
             <button type="button" role="menuitem" className="opt" onClick={act(() => patch.mutate({ key: repo.key, patch: { pinned: !repo.pinned } }))}>
               <span className="ck"><Icon name="pin" /></span>{repo.pinned ? 'Unpin' : 'Pin'}
             </button>
             <button type="button" role="menuitem" className="opt" onClick={act(toggleHidden)}>
               <span className="ck"><Icon name={repo.hidden ? 'eye' : 'eyeOff'} /></span>{repo.hidden ? 'Unhide' : 'Hide from default scope'}
             </button>
-            <Link role="menuitem" className="opt" to={`/activity?${encodeParams([['repos', repo.key]])}`} onClick={() => setOpen(false)}>
+            {/* For a repo added by hand this also checks again whether the token can read it. */}
+            <button type="button" role="menuitem" className="opt" onClick={act(() => sync.run({ repo: repo.key }))}>
+              <span className="ck"><Icon name="sync" /></span>Sync now
+            </button>
+            <Link role="menuitem" className="opt" to={`/activity?${encodeParams([['repos', repo.key]])}`} onClick={close}>
               <span className="ck"><Icon name="pulse" /></span>Activity in this repo
             </Link>
             <a role="menuitem" className="opt" href={repo.url} target="_blank" rel="noopener noreferrer" onClick={close}>
               <span className="ck"><Icon name="ext" /></span>Open on GitHub
             </a>
-          </div>
-        </>,
-        document.body,
-      )}
-    </>
+            {repo.trackedBy === 'manual' && (
+              <>
+                <div className="menu-sep" role="separator" />
+                <button type="button" role="menuitem" className="opt" onClick={act(() => confirmRemove(repo))}>
+                  <span className="ck"><Icon name="trash" /></span>Remove…
+                </button>
+              </>
+            )}
+          </>
+        );
+      }}
+    </MenuButton>
   );
 }
 
 function VisBadge({ repo }: { repo: Repo }) {
+  // No "Unavailable" badge: the card says so in its note (UnavailableNote), where the reason and the actions are.
   return (
     <>
       <span className="vis-badge">{repo.visibility === 'private' ? <><Icon name="lock" />Private</> : repo.visibility === 'internal' ? <><Icon name="lock" title="Internal" />Internal</> : 'Public'}</span>
-      {repo.unavailable && <span className="vis-badge" title={repo.unavailable.reason}><Icon name="alert" />Unavailable</span>}
       {!repo.unavailable && repo.syncedAt === null && <span className="vis-badge">Syncing…</span>}
       {repo.isArchived && <span className="vis-badge">Archived</span>}
       {repo.isFork && <span className="vis-badge"><Icon name="fork" />Fork</span>}
@@ -192,7 +187,7 @@ function RepoCard({ repo: r, sets, titles, search }: { repo: Repo; sets: RepoSet
         <PinButton repo={r} />
         <RepoMenu repo={r} />
       </div>
-      <p className="rc-desc">{r.description ?? <span className="muted">No description</span>}</p>
+      {r.unavailable ? <UnavailableNote repo={r} compact /> : <p className="rc-desc">{r.description ?? <span className="muted">No description</span>}</p>}
       <div className="rc-stats">
         {r.language && <span><i className="lang" style={{ '--lc': r.language.color ?? 'var(--muted)' } as CSSProperties} />{r.language.name}</span>}
         {r.visibility === 'public' && (

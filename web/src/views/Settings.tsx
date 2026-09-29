@@ -14,6 +14,7 @@ import { dur, fmtBytes, fmtDateTime, fmtNum, fmtTime, plural, relFuture, relLong
 import { cx } from '../lib/util';
 import { AccountSection } from './SettingsAccount';
 import { InstanceSection } from './SettingsInstance';
+import { TrackedSection } from './SettingsTracked';
 
 /** A link to this API from outside the app; disabled with a hint while the Local API is off. */
 function ApiButton({ href, icon, children }: { href: string | null; icon: IconName; children: string }) {
@@ -174,13 +175,16 @@ export function SettingsView() {
           )}
           <AccountSection rateLimit={st?.rateLimit} />
 
+          <TrackedSection />
+
           <section className="card set-sec">
             <h2>Sync</h2>
             <dl className="kv">
               <dt>Status</dt>
               <dd>
                 {!st ? <span className="muted">unknown</span> : st.running
-                  ? <>Syncing{st.progress ? ` ${st.progress.done}/${st.progress.total} repos` : ''}{st.progress?.current ? <> · <code>{repoLabel(st.progress.current)}</code></> : null}</>
+                  ? st.repo ? <>Syncing <code>{repoLabel(st.repo)}</code></>
+                    : <>Syncing{st.progress ? ` ${st.progress.done}/${st.progress.total} repos` : ''}{st.progress?.current ? <> · <code>{repoLabel(st.progress.current)}</code></> : null}</>
                   : st.lastSyncAt ? <>Last synced {relLong(st.lastSyncAt)} ({fmtDateTime(st.lastSyncAt)}){st.lastSyncDurationMs != null ? ` in ${dur(st.lastSyncDurationMs)}` : ''}</> : 'Never synced'}
               </dd>
               <dt>Next sync</dt>

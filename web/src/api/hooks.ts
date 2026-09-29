@@ -45,6 +45,9 @@ export const qk = {
   diff: (id: string) => ['diff', id] as const,
   blob: (repo: string, ref: string, path: string) => ['blob', repo, ref, path] as const,
   diffCache: ['diff-cache'] as const,
+  /** The Add dialog's lists and access checks: read from GitHub, never refetched by a sync. */
+  repoCandidates: ['repo-candidates'] as const,
+  repoLookup: (key: string) => ['repo-lookup', key] as const,
 };
 
 /**
@@ -52,7 +55,8 @@ export const qk = {
  * from GitHub on demand, so a sync doesn't swap an open diff under the reader (the diff view has a
  * refresh); a PR diff is revalidated when it's next opened (useDiff).
  */
-export const refetchAfterSync = (q: Query) => !['sync-status', 'diff', 'blob', 'instance', 'desktop-state'].includes(q.queryKey[0] as string);
+export const refetchAfterSync = (q: Query) =>
+  !['sync-status', 'diff', 'blob', 'instance', 'desktop-state', 'repo-candidates', 'repo-lookup'].includes(q.queryKey[0] as string);
 
 // ---------------------------------------------------------------- reference data
 
@@ -330,6 +334,68 @@ export function usePatchRepo() {
     },
     onError: (_e, _v, ctx) => { if (ctx?.prev) qc.setQueryData(qk.repos, ctx.prev); },
     onSettled: () => qc.invalidateQueries({ queryKey: qk.repos }),
+  });
+}
+
+// ---------------------------------------------------------------- adding and removing repositories
+
+/**
+ * What the Add dialog offers: the token's repositories of other owners and recent contributions. Fetched only while
+ * the dialog is open; the server caches the lists for 5 minutes too, and the dialog filters them locally as you type.
+ */
+export function useRepoCandidates(enabled: boolean) {
+  return useQuery({
+    queryKey: qk.repoCandidates,
+    queryFn: () => api.repoCandidates(),
+    enabled,
+    staleTime: 5 * 60_000,
+    retry: (count, err) => count < 1 && !isClientError(err),
+  });
+}
+
+/** Whether the token can read the repo `key` (owner/name), with a preview; idle while `key` is null. One GraphQL point. */
+export function useRepoLookup(key: string | null) {
+  return useQuery({
+    queryKey: qk.repoLookup(key ?? ''),
+    queryFn: () => api.repoLookup(key!),
+    enabled: !!key,
+    staleTime: 60_000,
+    retry: false,
+  });
+}
+
+/** Tracking changed: previews and candidates carry "tracked" (the server recomputes it; lookups are asked again). */
+function trackingChanged(qc: QueryClient) {
+  qc.removeQueries({ queryKey: ['repo-lookup'] });
+  void qc.invalidateQueries({ queryKey: qk.repoCandidates });
+}
+
+export function useAddRepo() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.addRepo,
+    onSuccess: (res) => {
+      const prev = qc.getQueryData<{ items: Repo[] }>(qk.repos);
+      if (prev && !prev.items.some((r) => r.key === res.repo.key)) qc.setQueryData(qk.repos, { items: [...prev.items, res.repo] });
+      void qc.invalidateQueries({ queryKey: qk.repos });
+      // Its first sync started (or waits): the header shows it.
+      void qc.invalidateQueries({ queryKey: qk.sync });
+      trackingChanged(qc);
+    },
+  });
+}
+
+export function useRemoveRepo() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (key: string) => api.removeRepo(key),
+    onSuccess: (_r, key) => {
+      const prev = qc.getQueryData<{ items: Repo[] }>(qk.repos);
+      if (prev) qc.setQueryData(qk.repos, { items: prev.items.filter((r) => r.key !== key) });
+      // Its pull requests, issues, commits, releases and set memberships are gone as well.
+      void qc.invalidateQueries({ predicate: refetchAfterSync });
+      trackingChanged(qc);
+    },
   });
 }
 

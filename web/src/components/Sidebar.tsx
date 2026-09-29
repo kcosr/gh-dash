@@ -66,7 +66,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const settings = useSettings();
   const sets = useSets();
   const views = useViews();
-  const { openPrompt } = useUI();
+  const { openPrompt, openAddRepo } = useUI();
   const toast = useToast();
   const label = useRepoLabel();
   const createSet = useCreateSet();
@@ -230,10 +230,17 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
       )}
       {!repos.isPending && (
         <>
-          <div className="side-h"><span>Repositories</span>{!pinned.length && <span className="note">Open PRs / issues</span>}</div>
+          <div className="side-h">
+            <span>Repositories</span>
+            {!pinned.length && <span className="note">Open PRs / issues</span>}
+            <button type="button" className="mini" title="Add a repository" aria-label="Add repository" onClick={openAddRepo}>+</button>
+          </div>
           {main.map(item)}
           {noOthers ? (
-            <div className="side-empty">No repositories from other owners.</div>
+            <div className="side-empty">
+              No repositories from other owners.{' '}
+              <button type="button" className="side-link" onClick={openAddRepo}>Add repository</button>
+            </div>
           ) : !main.length && !inactive.length && <div className="side-empty">No matching repositories</div>}
           {inactive.length > 0 && (
             <>

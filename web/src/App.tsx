@@ -7,6 +7,8 @@ import { DiffView } from './components/DiffView';
 import { PrDrawer } from './components/Drawer';
 import { ExportModal } from './components/ExportModal';
 import { PromptDialog } from './components/PromptDialog';
+import { AddRepoDialog } from './components/AddRepoDialog';
+import { ConfirmDialog } from './components/ConfirmDialog';
 import { FirstSyncCard, NoTokenCard } from './components/Setup';
 import { Sidebar } from './components/Sidebar';
 import { useSidebarResize } from './components/SidebarResize';
@@ -127,7 +129,7 @@ function useGlobalKeys(openSidebarSearch?: () => void, toggleSidebar?: () => voi
       }
       if (isTypingTarget(document.activeElement) || e.metaKey || e.ctrlKey || e.altKey) return;
       // Also while the diff view is open (it's where the room helps most), but not behind a dialog.
-      if (e.key === '[' && toggleSidebar && !ui.paletteOpen && !ui.prompt && !ui.exportTab) {
+      if (e.key === '[' && toggleSidebar && !ui.paletteOpen && !ui.prompt && !ui.exportTab && !ui.addRepo && !ui.confirm) {
         e.preventDefault();
         toggleSidebar();
         return;
@@ -239,6 +241,8 @@ function Shell() {
         onToggleSidebar={canHideSide ? toggleSide : undefined} sidebarHidden={sideHidden} />}
       {ui.exportTab && <ExportModal initialTab={ui.exportTab} onClose={ui.closeExport} />}
       {ui.prompt && <PromptDialog req={ui.prompt} onClose={ui.closePrompt} />}
+      {ui.addRepo && <AddRepoDialog onClose={ui.closeAddRepo} />}
+      {ui.confirm && <ConfirmDialog req={ui.confirm} onClose={ui.closeConfirm} />}
     </>
   );
 }

@@ -18,6 +18,7 @@ import { Icon } from './Icon';
 import type { IconName } from './Icon';
 import { useRepoLabel, useRepoMapCtx } from './repoMapContext';
 import { useToast } from './Toasts';
+import { useUI } from './ui';
 
 /** `labelParts` draws a repo name: a muted owner, then the name (`label` is the same text, for matching). */
 interface Item { key: string; icon: ReactNode; label: string; labelParts?: [string, string]; right?: ReactNode; run: () => void }
@@ -49,6 +50,7 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggle
   const { s, view, location, navigate, set } = useUrlState();
   const repoParam = repoFromPath(location.pathname);
   const toast = useToast();
+  const { openAddRepo } = useUI();
   const repoLabel = useRepoLabel();
   const { repos: repoMap } = useRepoMapCtx();
   const repos = useRepos();
@@ -160,6 +162,7 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggle
     const t = exportTarget(view, s, repoParam);
     const acts: Item[] = [
       { key: 'do:sync', icon: ic('sync'), label: 'Sync now', run: onSync },
+      { key: 'do:addrepo', icon: ic('plus'), label: 'Add repository…', run: openAddRepo },
       { key: 'do:theme', icon: ic('moon'), label: 'Toggle dark mode', run: onToggleTheme },
       ...(onToggleSidebar ? [{ key: 'do:sidebar', icon: ic('list'), label: sidebarHidden ? 'Show sidebar' : 'Hide sidebar', run: onToggleSidebar }] : []),
       // Without a Local API there's no URL to copy or open: say how to get one instead.
@@ -172,7 +175,7 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggle
     ].filter((a) => has(a.label));
     if (acts.length) out.push({ title: 'Actions', items: acts });
     return out;
-  }, [q, repos.data, repoMap, repoLabel, views.data, prSearch.data, view, s, location.search, location.pathname, repoParam, onToggleSidebar, sidebarHidden, apiBase]);
+  }, [q, repos.data, repoMap, repoLabel, views.data, prSearch.data, view, s, location.search, location.pathname, repoParam, onToggleSidebar, sidebarHidden, apiBase, openAddRepo]);
 
   const flat = sections.flatMap((sec) => sec.items);
   const cur = Math.min(idx, Math.max(0, flat.length - 1));

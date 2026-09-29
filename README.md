@@ -39,8 +39,8 @@ npm start
 ```
 
 Open **http://127.0.0.1:4780**. The first sync starts automatically and fetches the
-last year of activity; progress appears in the header. Only repositories owned by
-the signed-in user are synced.
+last year of activity; progress appears in the header. Repositories owned by the
+signed-in user are synced automatically; add others by hand (see below).
 
 ## Using the dashboard
 
@@ -51,13 +51,22 @@ the signed-in user are synced.
 - **Issues:** browse open or closed issues, expand descriptions, and filter by creator, repository, or date.
 - **Activity:** browse a combined timeline and jump to a day using the activity strip.
 - **Repositories and Insights:** explore repository activity, contributors and trends.
+- **Other owners' repositories:** to follow an organization's repository or a project you
+  contribute to, use **Add repository** (the **+** in the sidebar, the Repositories page,
+  **Settings → Tracked repositories**, or the command palette). Pick one of the repositories
+  the token can read, or paste `owner/name` or a GitHub URL; gh-dash checks the token's access
+  and shows what the first sync will fetch before you add it. **Remove…** in a repository's
+  menu stops syncing it and deletes its data from the dashboard; nothing changes on GitHub.
+  A fine-grained token reads private repositories of a single owner only; a classic token or
+  the GitHub CLI can read every organization you belong to.
 - **Keyboard shortcuts:** `Ctrl/Cmd+K` opens search; `/` focuses the filter. In the PR
   list, use `j`/`k` to move, `Enter` to open details, `d` to view the diff, and `Esc` to close.
 
 Use **Settings** to adjust the sync interval, backfill window and fork inclusion.
 Add any unlinked commit emails under **My commit emails** so those commits count as yours.
 Click a sidebar repository row to focus on it; use its checkbox to add or remove it
-from your selection. The selection applies to Pull requests, Issues, Activity,
+from your selection. **All / Mine / Others** shows every repository, the ones you own, or the
+ones you added; the filter button next to the search box narrows them by visibility. The selection applies to Pull requests, Issues, Activity,
 Repositories, and Insights, and carries across tabs. Expand **Show inactive** to select
 archived, hidden, or forked repositories explicitly. Sidebar badges show nonzero open PR and issue counts as of the last sync.
 Click repository names in lists and activity to filter to them. Drag the sidebar's

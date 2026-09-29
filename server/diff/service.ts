@@ -2,13 +2,13 @@ import { promisify } from 'node:util';
 import { gunzip as gunzipCb, gzip as gzipCb } from 'node:zlib';
 import type { DiffCacheStats, Diff, DiffFile, DiffFileStatus } from '../../shared/api';
 import { HttpError } from '../api/http';
-import type { ResolvedToken } from '../config';
 import type { Db } from '../db/db';
 import { getSettings } from '../db/settings';
 import { GitHubClient } from '../github/client';
 import { GitHubRestClient } from '../github/rest';
 import { defaultSleep, GitHubError } from '../github/transport';
 import type { GqlRateLimit } from '../github/types';
+import { noTokenMessage, type TokenSupply } from '../token';
 import type { CacheEntry, DiffCache, PrEntry } from './cache';
 
 const gzip = promisify(gzipCb);
@@ -27,8 +27,6 @@ export const OPEN_PR_TTL_MS = 60 * 60_000;
 const BUILD_TIMEOUT_MS = 120_000;
 /** Full fetches of a PR diff before giving up on a PR that keeps changing underneath (each costs 3+ requests). */
 const PR_SNAPSHOT_ATTEMPTS = 2;
-/** After finding no token, don't run `gh auth token` (a blocking subprocess) again for this long. */
-const NO_TOKEN_RETRY_MS = 30_000;
 const MB = 1024 * 1024;
 
 // GitHub REST shapes (only the fields used here).
@@ -98,7 +96,8 @@ interface PrRow {
 export interface DiffServiceOptions {
   db: Db;
   cache: DiffCache;
-  resolveToken: () => ResolvedToken;
+  /** Where the GitHub token comes from (shared with the sync). */
+  tokens: TokenSupply;
   fetchImpl?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
   log?: (line: string) => void;
@@ -107,6 +106,7 @@ export interface DiffServiceOptions {
 }
 
 type Fetcher = (rest: GitHubRestClient, signal: AbortSignal) => Promise<Payload>;
+type Clients = { token: string; rest: GitHubRestClient; graphql: GitHubClient };
 
 const toFile = (f: RestFile): DiffFile => ({
   path: f.filename,
@@ -131,8 +131,6 @@ function checkPath(value: string): void {
   }
 }
 
-const noToken = () => new HttpError(503, 'No GitHub token: set GITHUB_TOKEN or run `gh auth login`');
-
 /**
  * Diffs and file contents fetched from GitHub's REST API on demand (never during sync) and kept in the diff
  * cache. Commits and file contents at a full SHA never change; PR diffs are revalidated as described at prDiff.
@@ -143,8 +141,7 @@ export class DiffService {
   private readonly opts: DiffServiceOptions;
   private readonly log: (line: string) => void;
   private readonly now: () => number;
-  private clients: { rest: GitHubRestClient; graphql: GitHubClient } | null = null;
-  private noTokenUntil = 0;
+  private clients: Clients | null = null;
   /** Identical requests in flight share one fetch (a double click doesn't spend twice). */
   private readonly inflight = new Map<string, Promise<Payload>>();
 
@@ -232,20 +229,25 @@ export class DiffService {
     return rows.length ? null : this.safely('lookup', () => this.cache.findCommit(repo.name, oid), null);
   }
 
-  private github(): { rest: GitHubRestClient; graphql: GitHubClient } {
-    if (this.clients) return this.clients;
-    if (this.now() < this.noTokenUntil) throw noToken();
-    const { token } = this.opts.resolveToken();
-    if (!token) {
-      this.noTokenUntil = this.now() + NO_TOKEN_RETRY_MS;
-      throw noToken();
-    }
+  /** Clients for the current token (which the provider caches): a new token, e.g. after `gh auth switch`, gets new ones. */
+  private async connect(): Promise<Clients> {
+    const resolved = await this.opts.tokens.get();
+    const { token } = resolved;
+    if (!token) throw new HttpError(503, noTokenMessage(resolved));
+    if (this.clients?.token === token) return this.clients;
     // Explicit defaults: an undefined option would override the clients' own.
     const { fetchImpl = fetch, sleep = defaultSleep } = this.opts;
     this.clients = {
+      token,
       rest: new GitHubRestClient({ token, fetchImpl, sleep }),
       graphql: new GitHubClient({ token, fetchImpl, sleep, maxAttempts: 2, maxRetryWaitMs: 10_000 }),
     };
+    return this.clients;
+  }
+
+  /** The clients of the fetch in progress (`fetching` connects first). */
+  private github(): Clients {
+    if (!this.clients) throw new HttpError(503, 'No GitHub token');
     return this.clients;
   }
 
@@ -260,7 +262,7 @@ export class DiffService {
 
   /** Runs a GitHub-backed fetch under the build deadline, mapping failures to API errors and logging what it cost. */
   private async fetching(label: string, fn: Fetcher): Promise<Payload> {
-    const gh = this.github();
+    const gh = await this.connect();
     const started = Date.now();
     const before = gh.rest.requests + gh.graphql.requests;
     try {
@@ -277,7 +279,11 @@ export class DiffService {
     } catch (err) {
       if (!(err instanceof GitHubError)) throw err;
       this.log(`[diff] ${label} failed: ${err.message}`);
-      if (err.kind === 'auth') this.clients = null; // pick up a new token next time
+      if (err.kind === 'auth') {
+        // Revoked or replaced: resolve the token again next time.
+        if (this.clients === gh) this.clients = null;
+        this.opts.tokens.invalidate(gh.token);
+      }
       throw httpError(err);
     }
   }
@@ -315,7 +321,7 @@ export class DiffService {
       if (hit) return hit;
     }
 
-    return this.once(`pr/${repo.name}/${number}/${refresh}`, () =>
+    const fetched = this.once(`pr/${repo.name}/${number}/${refresh}`, () =>
       this.fetching(`${repo.name}#${number}`, async (rest, signal) => {
         const base = `/repos/${enc(repo.owner)}/${enc(repo.name)}`;
         if (current && (await rest.sha(`${base}/commits/pull/${number}/head`, current.oid, { signal })) === current.oid) {
@@ -385,6 +391,24 @@ export class DiffService {
         }
       }),
     );
+    // When GitHub can't be asked, a cached copy that agrees with the last sync (same head and base branch) beats an
+    // error. refresh=1 wants GitHub's answer, so it fails instead.
+    if (refresh || !entry || entry.oid !== pr.head_oid || entry.baseRef !== pr.base_ref) return fetched;
+    return fetched.catch((err: unknown) => this.staleCopy(err, entry.key, `${repo.name}#${number}`));
+  }
+
+  /**
+   * The cached payload under `key` marked `stale: true`, for a fetch that failed with `err` because GitHub couldn't
+   * answer: no token (503), rate limited (429) or failing (502). Any other error, or a cache miss, rethrows `err`.
+   */
+  private async staleCopy(err: unknown, key: string, label: string): Promise<Payload> {
+    if (!(err instanceof HttpError) || ![429, 502, 503].includes(err.status)) throw err;
+    const hit = this.cached(key);
+    if (!hit) throw err;
+    this.log(`[diff] ${label}: serving the cached copy (${err.message})`);
+    // A diff can be megabytes of JSON: patch the flag in before the closing brace rather than parse and re-serialize.
+    const text = `${(await payloadText(hit)).slice(0, -1)},"stale":true}`;
+    return { gz: await gzip(text), text };
   }
 
   /** Whether a cached PR diff still matches the PR as of the last sync (head aside: see prDiff). */
@@ -425,7 +449,7 @@ export class DiffService {
           baseOid: first.parents[0]?.sha ?? null,
           headOid: first.sha,
           files: items.map(toFile),
-          totalFiles: items.length >= MAX_FILES ? await this.changedFiles(repo, first.sha, items.length) : items.length,
+          totalFiles: items.length >= MAX_FILES ? await this.changedFiles(repo, first.sha, items.length, signal) : items.length,
           additions: first.stats?.additions ?? items.reduce((n, f) => n + f.additions, 0),
           deletions: first.stats?.deletions ?? items.reduce((n, f) => n + f.deletions, 0),
           fetchedAt: new Date(this.now()).toISOString(),
@@ -437,10 +461,10 @@ export class DiffService {
     );
   }
 
-  /** The real file count of a commit whose list GitHub capped (1 GraphQL point); `fallback` if unavailable. */
-  private async changedFiles(repo: RepoRow, sha: string, fallback: number): Promise<number> {
+  /** The real file count of a commit whose list GitHub capped (1 GraphQL point); `fallback` if unavailable in time. */
+  private async changedFiles(repo: RepoRow, sha: string, fallback: number, signal: AbortSignal): Promise<number> {
     try {
-      const data = await this.github().graphql.query<ChangedFilesData>(CHANGED_FILES, { owner: repo.owner, name: repo.name, oid: sha });
+      const data = await this.github().graphql.query<ChangedFilesData>(CHANGED_FILES, { owner: repo.owner, name: repo.name, oid: sha }, { signal });
       return Math.max(fallback, data.repository?.object?.changedFilesIfAvailable ?? fallback);
     } catch (err) {
       this.log(`[diff] could not count the files of ${repo.name}@${sha.slice(0, 7)}: ${(err as Error).message}`);

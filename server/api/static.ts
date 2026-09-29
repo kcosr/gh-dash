@@ -16,18 +16,19 @@ export function installStatic(app: Hono, webDir: string): void {
 
   app.use('*', async (c, next) => {
     if (c.req.path.startsWith('/api/') || !existsSync(indexPath)) return next();
-    files ??= serveStatic({
-      root: webDir,
-      onFound: (path, ctx) => {
-        ctx.header('Cache-Control', path.includes('/assets/') ? 'public, max-age=31536000, immutable' : 'no-cache');
-      },
-    });
-    return files(c, next);
+    files ??= serveStatic({ root: webDir });
+    // A Response means a file was found (onFound runs after serveStatic built it, too late for headers). Decided by
+    // URL: the file path is native (backslashes on Windows) and includes webDir itself.
+    const res = await files(c, next);
+    if (res instanceof Response) res.headers.set('Cache-Control', c.req.path.startsWith('/assets/') ? 'public, max-age=31536000, immutable' : 'no-cache');
+    return res;
   });
 
   app.get('*', (c) => {
     if (!existsSync(indexPath)) return c.html(NOT_BUILT);
-    if (/\.[a-z0-9]+$/i.test(c.req.path)) return c.text('Not found', 404);
+    // Missing build assets and top-level files (favicon, robots.txt) are 404s. Any other path is a client-side
+    // route, dots included: /repos/user.github.io.
+    if (/^\/(assets\/|[^/]+\.[a-z0-9]+$)/i.test(c.req.path)) return c.text('Not found', 404);
     c.header('Cache-Control', 'no-cache');
     return c.html(readFileSync(indexPath, 'utf8'));
   });

@@ -1,10 +1,12 @@
 /** Typed client for the gh-dash API (contract: shared/api.ts). */
 import type {
+  AccountStatus,
   ActivityQuery,
   ActivityResponse,
   Commit,
   Diff,
   DiffCacheStats,
+  InstanceInfo,
   Issue,
   IssueQuery,
   ListResponse,
@@ -135,6 +137,12 @@ async function getText(url: string): Promise<string> {
 export const api = {
   health: () => get<{ ok: true; version: string }>('/api/health'),
   me: () => get<Me>('/api/v1/me'),
+  /** The GitHub account behind the server's token (never the token itself). */
+  account: () => get<AccountStatus>('/api/v1/account'),
+  /** Re-resolve the token and validate it with GitHub now. */
+  checkAccount: () => request<AccountStatus>('POST', '/api/v1/account/check'),
+  /** How this server runs: version, API URL, auth mode and instance settings with their sources. */
+  instance: () => get<InstanceInfo>('/api/v1/instance'),
 
   repos: () => get<{ items: Repo[] }>('/api/v1/repos'),
   repo: (name: string) => get<Repo>(`/api/v1/repos/${enc(name)}`),

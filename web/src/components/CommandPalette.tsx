@@ -4,7 +4,8 @@ import type { KeyboardEvent, ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import type { PullRequest } from '../../../shared/api';
 import { api } from '../api/client';
-import { useRepos, useViews } from '../api/hooks';
+import { useApiBase, useRepos, useViews } from '../api/hooks';
+import { API_OFF_HINT, apiLink } from '../lib/account';
 import { ALL_TIME_FROM, exportTarget, exportUrl } from '../lib/apiQuery';
 import { useFocusTrap, useLayer } from '../lib/layers';
 import { browserTz, fmtDate } from '../lib/time';
@@ -37,6 +38,7 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggle
   const toast = useToast();
   const repos = useRepos();
   const views = useViews();
+  const apiBase = useApiBase();
   const [q, setQ] = useState('');
   const [idx, setIdx] = useState(0);
   const dq = useDebounced(q.trim(), 160);
@@ -133,12 +135,17 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggle
       { key: 'do:sync', icon: ic('sync'), label: 'Sync now', run: onSync },
       { key: 'do:theme', icon: ic('moon'), label: 'Toggle dark mode', run: onToggleTheme },
       ...(onToggleSidebar ? [{ key: 'do:sidebar', icon: ic('list'), label: sidebarHidden ? 'Show sidebar' : 'Hide sidebar', run: onToggleSidebar }] : []),
-      { key: 'do:copyapi', icon: ic('braces'), label: 'Copy API URL for this view', run: async () => toast((await copyText(window.location.origin + exportUrl(t))) ? 'API URL copied' : 'Copy failed') },
-      { key: 'do:docs', icon: ic('doc'), label: 'Open API docs', run: () => window.open('/api/docs', '_blank', 'noopener') },
+      // Without a Local API there's no URL to copy or open: say how to get one instead.
+      apiBase
+        ? { key: 'do:copyapi', icon: ic('braces'), label: 'Copy API URL for this view', run: async () => toast((await copyText(apiLink(apiBase, exportUrl(t))!)) ? 'API URL copied' : 'Copy failed') }
+        : { key: 'do:copyapi', icon: ic('braces'), label: 'Copy API URL for this view', right: <span>Local API is off</span>, run: () => toast(API_OFF_HINT) },
+      apiBase
+        ? { key: 'do:docs', icon: ic('doc'), label: 'Open API docs', run: () => { window.open(apiLink(apiBase, '/api/docs')!, '_blank', 'noopener'); } }
+        : { key: 'do:docs', icon: ic('doc'), label: 'Open API docs', right: <span>Local API is off</span>, run: () => toast(API_OFF_HINT) },
     ].filter((a) => has(a.label));
     if (acts.length) out.push({ title: 'Actions', items: acts });
     return out;
-  }, [q, repos.data, views.data, prSearch.data, view, s, location.search, location.pathname, repoParam, onToggleSidebar, sidebarHidden]);
+  }, [q, repos.data, views.data, prSearch.data, view, s, location.search, location.pathname, repoParam, onToggleSidebar, sidebarHidden, apiBase]);
 
   const flat = sections.flatMap((sec) => sec.items);
   const cur = Math.min(idx, Math.max(0, flat.length - 1));

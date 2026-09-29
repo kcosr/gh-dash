@@ -30,7 +30,7 @@ fragment ProbeFields on Repository {
 export const VIEWER_REPOS = `
 query ViewerRepos($after: String) {
   viewer {
-    login name avatarUrl
+    id login name avatarUrl
     repositories(first: 100, after: $after, ownerAffiliations: OWNER, orderBy: { field: PUSHED_AT, direction: DESC }) {
       pageInfo { hasNextPage endCursor }
       nodes { ...RepoFields }
@@ -50,7 +50,7 @@ ${PROBE_FIELDS}`;
 export const VIEWER_REPO = `
 query ViewerRepo($name: String!) {
   viewer {
-    login name avatarUrl
+    id login name avatarUrl
     repository(name: $name) { ...RepoFields ...ProbeFields }
   }
   ${RATE_LIMIT}
@@ -60,7 +60,7 @@ ${PROBE_FIELDS}`;
 
 export const VIEWER = `
 query Viewer {
-  viewer { login name avatarUrl }
+  viewer { id login name avatarUrl }
   ${RATE_LIMIT}
 }`;
 

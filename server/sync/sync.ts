@@ -1,7 +1,6 @@
 import type { Settings } from '../../shared/api';
 import type { Db } from '../db/db';
-import type { ViewerMeta } from '../db/meta';
-import { setMeta } from '../db/meta';
+import { getMeta, setMeta, type ViewerMeta } from '../db/meta';
 import type { RepoProbe, RepoRecord } from '../db/records';
 import {
   applyProbe,
@@ -29,6 +28,7 @@ import { recheckQuery, REPO_DETAIL, REPO_PROBES, VIEWER_REPO, VIEWER_REPOS } fro
 import type {
   GqlIssue,
   GqlPullRequest,
+  GqlViewer,
   RecheckData,
   RepoDetailData,
   RepoProbesData,
@@ -185,13 +185,33 @@ export async function runSync(deps: SyncDeps, req: SyncRequest = {}): Promise<Sy
   return { repos: targets.length, newItems, errors, forksSkipped };
 }
 
-function saveViewer(db: Db, v: ViewerMeta): void {
-  setMeta(db, 'viewer', { login: v.login, name: v.name, avatarUrl: v.avatarUrl });
+/**
+ * Why the token's account mustn't sync into this database, or null if it may. A database belongs to the account that
+ * first synced it: adopting another one (say after `gh auth switch`) would mark every repo removed, rename same-named
+ * ones and mix both accounts' data. Compares node ids, or logins for databases stored without an id.
+ */
+export function viewerMismatch(stored: ViewerMeta | null, viewer: { id?: string | null; login: string }): string | null {
+  if (!stored) return null;
+  const same = stored.id && viewer.id ? stored.id === viewer.id : stored.login.toLowerCase() === viewer.login.toLowerCase();
+  if (same) return null;
+  return `This database belongs to @${stored.login}, but the GitHub token is for @${viewer.login}. Switch back to @${stored.login}, or use a different database.`;
+}
+
+/** Records the viewer as the database's account (its login, name and avatar may have changed). */
+export function saveViewer(db: Db, v: GqlViewer): void {
+  setMeta(db, 'viewer', { id: v.id, login: v.login, name: v.name, avatarUrl: v.avatarUrl });
+}
+
+/** Runs before anything is written: a token for another account fails the sync and leaves the database as it was. */
+function claimViewer(db: Db, v: GqlViewer): void {
+  const mismatch = viewerMismatch(getMeta(db, 'viewer'), v);
+  if (mismatch) throw new Error(mismatch);
+  saveViewer(db, v);
 }
 
 async function fetchOneRepo(deps: SyncDeps, name: string, nowIso: string): Promise<RepoTarget[]> {
   const data = await deps.client.query<ViewerRepoData>(VIEWER_REPO, { name });
-  saveViewer(deps.db, data.viewer);
+  claimViewer(deps.db, data.viewer);
   const node = data.viewer.repository;
   if (!node) throw new Error(`Repository not found on GitHub: ${name}`);
   const record = mapRepo(node);
@@ -210,7 +230,7 @@ async function fetchAllRepos(deps: SyncDeps, nowIso: string, errors: string[]): 
   let after: string | null = null;
   do {
     const data: ViewerReposData = await client.query<ViewerReposData>(VIEWER_REPOS, { after });
-    saveViewer(db, data.viewer);
+    claimViewer(db, data.viewer);
     const conn = data.viewer.repositories;
     records.push(...conn.nodes.map(mapRepo));
     after = conn.pageInfo.hasNextPage ? conn.pageInfo.endCursor : null;

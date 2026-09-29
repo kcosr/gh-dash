@@ -209,11 +209,97 @@ export interface Settings {
   diffCacheMb: number;
 }
 
+/**
+ * Where the server's GitHub token currently comes from:
+ *  - env: GITHUB_TOKEN in the process environment (or the headless env file); locks the choice.
+ *  - file: a token file the user owns (config `tokenFile` / GITHUB_TOKEN_FILE), re-read on use.
+ *  - gh-cli: the output of `gh auth token`.
+ *  - app: a token handed to the server by the desktop app (pasted, optionally remembered in the OS keychain).
+ *  - none: no usable token.
+ */
+export type TokenSource = 'env' | 'file' | 'gh-cli' | 'app' | 'none';
+
+/**
+ * Which source the user chose (persisted in config.json as `tokenSource`). `auto` is the headless default and
+ * keeps the legacy order GITHUB_TOKEN > token file > gh. The desktop app starts with no choice (null) and
+ * never falls back silently. GITHUB_TOKEN in the environment always wins (AccountStatus.locked).
+ */
+export type TokenChoice = 'auto' | 'gh' | 'file' | 'app';
+
+/** Token kind, from its prefix: github_pat_ fine-grained, ghp_ classic, gho_ OAuth (what gh uses), ghu_/ghs_ app tokens. */
+export type TokenKind = 'fine-grained' | 'classic' | 'oauth' | 'app' | 'unknown';
+
+/** Pre-filled fine-grained token page: read-only Metadata, Contents, Issues, Pull requests (repository access must be picked by hand). */
+export const TOKEN_CREATE_URL =
+  'https://github.com/settings/personal-access-tokens/new?name=gh-dash&description=Read-only+token+for+gh-dash&expires_in=366&metadata=read&contents=read&issues=read&pull_requests=read';
+
 export interface Me {
   login: string;
   name: string | null;
   avatarUrl: string | null;
-  tokenSource: 'env' | 'gh-cli' | 'none';
+  tokenSource: TokenSource;
+}
+
+/** GET /api/v1/account: the GitHub account behind the current token. Never includes the token. */
+export interface AccountStatus {
+  /** Effective source right now. */
+  source: TokenSource;
+  /** The configured choice; null = desktop app with nothing chosen yet. */
+  choice: TokenChoice | null;
+  /** GITHUB_TOKEN is set in the environment: the source can't be changed from the app. */
+  locked: boolean;
+  /** Login the token belongs to (from the last validation); null when unknown or no token. */
+  login: string | null;
+  name: string | null;
+  avatarUrl: string | null;
+  /** Login this database was synced for (meta.viewer); null for a fresh database. */
+  dbLogin: string | null;
+  /** The token belongs to a different account than the database: sync is refused until resolved. */
+  mismatch: boolean;
+  kind: TokenKind | null;
+  /** From GitHub-Authentication-Token-Expiration; null when the token doesn't expire or it's unknown. */
+  expiresAt: string | null;
+  /** Classic/OAuth scopes (X-OAuth-Scopes); null for fine-grained tokens or when unknown. */
+  scopes: string[] | null;
+  /** Owned repositories the token can see (total / private), from the last validation. */
+  repos: { total: number; private: number } | null;
+  /** Why there is no usable token, or why validation failed ("gh is not installed", "Bad credentials", ...). */
+  error: string | null;
+  /** GitHub CLI detection, for the one-click choice. `login` comes from gh's hosts.yml (no API call). */
+  gh: { available: boolean; path: string | null; login: string | null };
+  /** Configured token file path (not its contents); null when none. */
+  tokenFile: string | null;
+  /** When the token was last validated against GitHub. */
+  checkedAt: string | null;
+}
+
+/** Where an instance setting's value came from. */
+export type ConfigSource = 'default' | 'file' | 'env';
+
+/** GET /api/v1/instance: how this server is running. Secrets are never included, only whether they're set. */
+export interface InstanceInfo {
+  version: string;
+  /** Running inside the desktop app. */
+  desktop: boolean;
+  /**
+   * Base URL other clients (browser tabs, curl, scripts) can use for this API, e.g. "http://127.0.0.1:4780".
+   * null when nothing listens on the network (desktop app with the local API off). Links to /api/docs etc. use it.
+   */
+  apiUrl: string | null;
+  auth: { password: boolean; apiKey: boolean };
+  /** config.json path (whether or not it exists); null when config files are disabled. */
+  configPath: string | null;
+  /** Effective instance settings and where each came from, for display. */
+  settings: {
+    host: { value: string; source: ConfigSource };
+    port: { value: number; source: ConfigSource };
+    dbPath: { value: string; source: ConfigSource };
+    cacheDbPath: { value: string; source: ConfigSource };
+    sync: { value: boolean; source: ConfigSource };
+    allowedHosts: { value: string[]; source: ConfigSource };
+    tokenFile: { value: string | null; source: ConfigSource };
+    defaultTz: { value: string; source: ConfigSource };
+  };
 }
 
 export interface SyncStatus {
@@ -225,7 +311,7 @@ export interface SyncStatus {
   lastResult: { newItems: number; errors: string[] } | null;
   nextSyncAt: string | null;
   rateLimit: { limit: number; remaining: number; resetAt: string } | null;
-  tokenSource: 'env' | 'gh-cli' | 'none';
+  tokenSource: TokenSource;
   viewer: string | null;
 }
 
@@ -419,6 +505,11 @@ export interface Diff {
   fetchedAt: string;
   /** The PR's "Files changed" tab or the commit page on GitHub. */
   url: string;
+  /**
+   * Set when this cached copy was served because GitHub couldn't be asked whether it's still current
+   * (no token, rate limit, outage). Never set for refresh=1, which fails instead.
+   */
+  stale?: true;
 }
 
 export interface DiffCacheStats {
@@ -454,7 +545,7 @@ export interface DiffCacheStats {
 // GET    /api/v1/stars          ScopeQuery&PageQuery -> ListResponse<Star>
 // GET    /api/v1/stats          StatsQuery     -> StatsResponse
 // GET    /api/v1/sync/status                   -> SyncStatus
-// POST   /api/v1/sync           {repo?: string, full?: boolean} -> 202 SyncStatus (409 if already running)
+// POST   /api/v1/sync           {repo?: string, full?: boolean} -> 202 SyncStatus (409 if already running, 503 no token)
 // GET    /api/v1/prs/:repo/:number/diff  {refresh?: '1'} -> Diff
 // GET    /api/v1/commits/:repo/:oid/diff {refresh?: '1'} -> Diff     (oid: 7-40 hex chars; need not be synced)
 //          Diff errors: 404 unknown repo/PR/commit, 503 no GitHub token, 429 GitHub rate limit, 502 other GitHub failure.
@@ -463,9 +554,16 @@ export interface DiffCacheStats {
 //          404 missing, 415 binary, 413 too large
 // GET    /api/v1/diff-cache                    -> DiffCacheStats
 // DELETE /api/v1/diff-cache                    -> DiffCacheStats (after clearing)
+// GET    /api/v1/account                       -> AccountStatus
+// POST   /api/v1/account/check                 -> AccountStatus (re-resolve and re-validate the token now)
+//          GET /account never calls GitHub (a new token is validated in the background); InstanceInfo.apiUrl is the
+//          request's origin on a network listener, the Local API's URL (or null) on the desktop socket.
+// GET    /api/v1/instance                      -> InstanceInfo
 // GET    /api/v1/settings                      -> Settings
 // PATCH  /api/v1/settings       Partial<Settings> -> Settings
 // GET    /api/v1/openapi.json                  -> OpenAPI 3.1 document
 // GET    /api/docs                             -> human-readable API docs page (no external CDN)
+//          /api/health, /api/docs and /api/v1/openapi.json need no auth (they contain no data).
+//          Every request must carry an allowed Host (loopback, IP literal, or config allowedHosts), else 421.
 //
 // Errors: non-2xx responses have JSON body { error: string, details?: unknown }.

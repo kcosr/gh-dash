@@ -1,0 +1,66 @@
+# Desktop app: typecheck, test and build unsigned installers on Linux, Windows and macOS.
+# Nothing is published or signed (signing and notarization are follow-ups; see README "Desktop app").
+name: Desktop app
+
+on:
+  workflow_dispatch:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+
+      # No install scripts are needed: Electron 44 downloads its binary on first use (npx electron / npm run desktop),
+      # and electron-builder fetches its own copy for packaging. esbuild's postinstall is approved in package.json.
+      - run: npm ci
+
+      - run: npm run typecheck
+
+      - run: npm test
+
+      - name: Package (unsigned)
+        run: npm run dist:desktop
+        env:
+          # macOS: don't look for a signing identity in the keychain (unsigned build).
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+
+      # Apple silicon kills an app whose signature doesn't match its code (e.g. after flipping fuses), and
+      # nothing else here launches it: check the bundles' ad-hoc signatures, nested frameworks included.
+      - name: Verify macOS signatures
+        if: runner.os == 'macOS'
+        run: |
+          for app in release/mac*/gh-dash.app; do
+            codesign --verify --deep --strict --verbose=2 "$app"
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gh-dash-${{ runner.os }}
+          path: |
+            release/*.AppImage
+            release/*.deb
+            release/*.exe
+            release/*.dmg
+            release/*.zip
+          if-no-files-found: error
+          retention-days: 14

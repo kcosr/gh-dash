@@ -20,6 +20,10 @@ const obj = (properties: Record<string, Schema>, optional: string[] = []): Schem
   required: Object.keys(properties).filter((k) => !optional.includes(k)),
 });
 
+const TOKEN_SOURCE = enumOf('env', 'file', 'gh-cli', 'app', 'none');
+/** An instance setting with where it came from. */
+const setting = (value: Schema): Schema => obj({ value, source: enumOf('default', 'file', 'env') });
+
 const schemas: Record<string, Schema> = {
   Error: obj({ error: str(), details: {} }, ['details']),
   Actor: obj({ login: nullable(str()), name: nullable(str()), avatarUrl: nullable(str()), isMe: bool }),
@@ -98,7 +102,7 @@ const schemas: Record<string, Schema> = {
     includeForks: bool,
     diffCacheMb: { ...int(), minimum: 10, maximum: 10000, description: 'Diff cache size cap in MB' },
   }, ['myEmailsFromEnv']),
-  Me: obj({ login: str(), name: nullable(str()), avatarUrl: nullable(str()), tokenSource: enumOf('env', 'gh-cli', 'none') }),
+  Me: obj({ login: str(), name: nullable(str()), avatarUrl: nullable(str()), tokenSource: enumOf('env', 'file', 'gh-cli', 'app', 'none') }),
   SyncStatus: obj({
     running: bool,
     trigger: nullable(enumOf('manual', 'scheduled', 'startup')),
@@ -108,8 +112,43 @@ const schemas: Record<string, Schema> = {
     lastResult: nullable(obj({ newItems: int(), errors: arr(str()) })),
     nextSyncAt: nullable(dateTime),
     rateLimit: nullable(obj({ limit: int(), remaining: int(), resetAt: dateTime })),
-    tokenSource: enumOf('env', 'gh-cli', 'none'),
+    tokenSource: enumOf('env', 'file', 'gh-cli', 'app', 'none'),
     viewer: nullable(str()),
+  }),
+  AccountStatus: obj({
+    source: { ...TOKEN_SOURCE, description: 'Where the token comes from right now' },
+    choice: nullable(enumOf('auto', 'gh', 'file', 'app')),
+    locked: { ...bool, description: "GITHUB_TOKEN is set in the environment: the source can't be changed from the app" },
+    login: nullable(str('Account the token belongs to (from the last validation)')),
+    name: nullable(str()),
+    avatarUrl: nullable(str()),
+    dbLogin: nullable(str('Account this database was synced for')),
+    mismatch: { ...bool, description: 'The token is for another account than the database; syncs are refused' },
+    kind: nullable(enumOf('fine-grained', 'classic', 'oauth', 'app', 'unknown')),
+    expiresAt: nullable({ ...dateTime, description: "When the token expires; null if it doesn't or it's unknown" }),
+    scopes: nullable({ ...arr(str()), description: 'Classic and OAuth tokens only' }),
+    repos: nullable(obj({ total: int(), private: int() })),
+    error: nullable(str('Why there is no usable token, or why validation failed')),
+    gh: obj({ available: bool, path: nullable(str()), login: nullable(str("gh's active github.com login (from its hosts.yml)")) }),
+    tokenFile: nullable(str('Configured token file (never its contents)')),
+    checkedAt: nullable(dateTime),
+  }),
+  InstanceInfo: obj({
+    version: str(),
+    desktop: { ...bool, description: 'Running inside the desktop app' },
+    apiUrl: nullable(str('Base URL other clients can use for this API; null when nothing listens on the network')),
+    auth: obj({ password: bool, apiKey: bool }),
+    configPath: nullable(str('config.json path, whether or not it exists')),
+    settings: obj({
+      host: setting(str()),
+      port: setting(int()),
+      dbPath: setting(str()),
+      cacheDbPath: setting(str()),
+      sync: setting(bool),
+      allowedHosts: setting(arr(str())),
+      tokenFile: setting(nullable(str())),
+      defaultTz: setting(str()),
+    }),
   }),
   Tile: obj({ value: nullable(num), previous: nullable(num), spark: { ...arr(num), description: '12 equal slices of the range' } }),
   StatsBucket: obj({
@@ -150,7 +189,12 @@ const schemas: Record<string, Schema> = {
     deletions: int(),
     fetchedAt: { ...dateTime, description: 'When the diff was fetched from GitHub (earlier than the request when cached)' },
     url: str('The PR\'s "Files changed" tab or the commit page on GitHub'),
-  }),
+    stale: {
+      ...bool,
+      const: true,
+      description: "Present on a cached PR diff served because GitHub couldn't be asked whether it is still current (no token, rate limit, outage); never with refresh=1",
+    },
+  }, ['stale']),
   DiffCacheStats: obj({
     entries: int(),
     bytes: int('Bytes used by cached diffs and file contents (compressed)'),
@@ -207,6 +251,20 @@ export interface EndpointDoc {
 export const ENDPOINTS: EndpointDoc[] = [
   { method: 'get', path: '/api/health', tag: 'System', summary: 'Liveness check (never requires auth)', response: { status: 200, schema: obj({ ok: bool, version: str() }) } },
   { method: 'get', path: '/api/v1/me', tag: 'System', summary: 'Authenticated GitHub user and token source', response: { status: 200, schema: ref('Me') } },
+  {
+    method: 'get', path: '/api/v1/account', tag: 'System', summary: 'The GitHub account behind the token (never the token)',
+    description: 'Never calls GitHub: a new token is validated in the background (1 GraphQL point) and shown once that is done.',
+    response: { status: 200, schema: ref('AccountStatus') },
+  },
+  {
+    method: 'post', path: '/api/v1/account/check', tag: 'System', summary: 'Resolve the token again and re-validate it against GitHub',
+    response: { status: 200, schema: ref('AccountStatus') },
+  },
+  {
+    method: 'get', path: '/api/v1/instance', tag: 'System', summary: 'Version, API address and instance settings with their sources',
+    description: 'Secrets are never included, only whether a password and API key are set.',
+    response: { status: 200, schema: ref('InstanceInfo') },
+  },
   {
     method: 'get', path: '/api/v1/prs', tag: 'Lists', summary: 'Pull requests',
     description: 'Filtered and sorted on activityAt desc (tie-break repo, number). facets.byRepo ignores the repos filter.',
@@ -280,6 +338,8 @@ export const ENDPOINTS: EndpointDoc[] = [
     description:
       'Fetched from GitHub on first view and cached. While the last sync shows the same head and base branch and no update since, ' +
       'it is served without a GitHub request (open PRs are re-checked hourly, as the merge base can move). ' +
+      "When that re-check fails with 503, 429 or 502, a cached copy that matches the last sync's head and base branch is served " +
+      'instead, with `stale: true` (not with refresh=1). ' +
       'Errors: 404 unknown repo or PR, 503 no GitHub token, 429 GitHub rate limit (details.resetAt), 502 other GitHub failures, ' +
       '403 for cross-site browser requests.',
     params: [
@@ -306,7 +366,9 @@ export const ENDPOINTS: EndpointDoc[] = [
   { method: 'get', path: '/api/v1/sync/status', tag: 'Sync', summary: 'Sync progress, last result, next run and rate limit', response: { status: 200, schema: ref('SyncStatus') } },
   {
     method: 'post', path: '/api/v1/sync', tag: 'Sync', summary: 'Start a sync now (409 if one is running)',
-    description: '`repo` limits the sync to one repo; `full` ignores high-water marks, re-fetches the backfill window and re-diffs stars.',
+    description:
+      '`repo` limits the sync to one repo; `full` ignores high-water marks, re-fetches the backfill window and re-diffs stars. ' +
+      'The token is resolved afresh; without one the answer is 503 with the reason.',
     body: { schema: obj({ repo: str(), full: bool }, ['repo', 'full']), example: { full: true }, optional: true },
     response: { status: 202, schema: ref('SyncStatus') },
   },
@@ -316,8 +378,8 @@ export const ENDPOINTS: EndpointDoc[] = [
     body: { schema: { ...ref('Settings') }, example: { syncIntervalMinutes: 60, myEmails: ['me@example.com'] } },
     response: { status: 200, schema: ref('Settings') },
   },
-  { method: 'get', path: '/api/v1/openapi.json', tag: 'System', summary: 'This document', response: { status: 200, description: 'OpenAPI 3.1 JSON' } },
-  { method: 'get', path: '/api/docs', tag: 'System', summary: 'Human-readable API docs', response: { status: 200, description: 'HTML' } },
+  { method: 'get', path: '/api/v1/openapi.json', tag: 'System', summary: 'This document (never requires auth)', response: { status: 200, description: 'OpenAPI 3.1 JSON' } },
+  { method: 'get', path: '/api/docs', tag: 'System', summary: 'Human-readable API docs (never requires auth)', response: { status: 200, description: 'HTML' } },
 ];
 
 export function openApiDocument(version: string): Schema {
@@ -353,7 +415,8 @@ export function openApiDocument(version: string): Schema {
       version,
       description:
         'Read-only dashboard of GitHub activity across your own repositories. Timestamps are ISO-8601 UTC. ' +
-        'When GH_DASH_API_KEY is set, send `Authorization: Bearer <key>` or `X-API-Key: <key>`.',
+        'When GH_DASH_API_KEY is set, send `Authorization: Bearer <key>` or `X-API-Key: <key>`. ' +
+        'The server answers only requests addressed to localhost, an IP address or a name in GH_DASH_ALLOWED_HOSTS (else 421).',
     },
     servers: [{ url: '/' }],
     components: {

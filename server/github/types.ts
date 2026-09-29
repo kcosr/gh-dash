@@ -30,6 +30,8 @@ export interface GqlLabels {
 }
 
 export interface GqlViewer {
+  /** GraphQL node id: unlike the login, it survives a rename. */
+  id: string;
   login: string;
   name: string | null;
   avatarUrl: string | null;

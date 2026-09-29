@@ -25,9 +25,10 @@ changing your repositories.
 ## Getting started
 
 You need **Node.js 22.13 or newer** and a GitHub token with read access to your repositories.
-For a fine-grained token, select your repositories and grant **Metadata**, **Contents**,
+For a fine-grained token, choose **All repositories** and grant **Metadata**, **Contents**,
 **Pull requests** and **Issues** read access. Set it in the `GITHUB_TOKEN` environment
-variable, or sign in with `gh auth login` if you use the GitHub CLI.
+variable or a token file (`GITHUB_TOKEN_FILE`), or sign in with `gh auth login` if you use
+the GitHub CLI. For a desktop window instead of a server, see [Desktop app](#desktop-app).
 
 From the project directory:
 
@@ -71,22 +72,43 @@ Mobile filter bars start as a single summary row; tap Filters to expand or colla
 
 ## Configuration and deployment
 
-Optional config is read from `$XDG_CONFIG_HOME/gh-dash/env` (default
-`~/.config/gh-dash/env`), using `KEY=value` lines. Process environment variables
-override the file. Restart after edits; keep the file private (`chmod 600`) if it
-contains credentials. Shell expansion is not performed; use absolute paths in it.
+Settings come from environment variables, which can also be set in
+`$XDG_CONFIG_HOME/gh-dash/env` (default `~/.config/gh-dash/env`) as `KEY=value` lines.
+Shell expansion is not performed there; use absolute paths.
+
+They can also live in a JSON file, `$XDG_CONFIG_HOME/gh-dash/config.json` (or the path in
+`GH_DASH_CONFIG`). Its keys mirror the variables: `host`, `port`, `allowedHosts`, `db`,
+`cacheDb`, `sync`, `password`, `apiKey`, `myEmails`, `timezone` (`TZ`), `tokenSource`,
+`tokenFile` and `ghPath`. Lists are arrays and `sync` is a boolean; `null` clears
+`password`, `apiKey`, `tokenFile` and `ghPath`:
+
+```json
+{ "port": 4780, "db": "/srv/gh-dash/gh-dash.db", "allowedHosts": ["dash.example.com"], "tokenFile": "/etc/gh-dash/github-token" }
+```
+
+Precedence, lowest first: defaults, `config.json`, the env file, then process environment
+variables. A variable that is set wins even when empty. Unknown keys are logged and ignored;
+invalid values stop the server with a message naming the file. `GET /api/v1/instance` shows
+each effective setting and where it came from. Restart after edits, and keep files that
+contain credentials private (`chmod 600`); gh-dash warns about a readable `config.json`
+that holds a password or API key.
 
 | Environment variable | Default | Purpose |
 | --- | --- | --- |
-| `GITHUB_TOKEN` | GitHub CLI credentials | Read-only GitHub access |
+| `GITHUB_TOKEN` | Unset | Read-only GitHub access; wins over every other token source |
+| `GITHUB_TOKEN_FILE` | Unset | A file holding just the token, re-read on use, so replacing it needs no restart |
+| `GH_DASH_TOKEN_SOURCE` | `auto` | Without `GITHUB_TOKEN`: `auto` uses the token file if one is set, else the GitHub CLI; `file` or `gh` use only that |
+| `GH_DASH_GH_PATH` | `PATH`, then standard install locations | The GitHub CLI (`gh`) executable |
 | `HOST` / `PORT` | `127.0.0.1` / `4780` | Listen address |
+| `GH_DASH_ALLOWED_HOSTS` | Unset | Host names the server answers to besides `localhost` and IP addresses, comma-separated |
 | `GH_DASH_DB` | `$XDG_STATE_HOME/gh-dash/gh-dash.db` | Database location |
 | `GH_DASH_CACHE_DB` | `gh-dash-cache.db` next to the database | Diff cache location |
 | `GH_DASH_SYNC` | `on` | Set to `off` to disable automatic syncs |
 | `GH_DASH_PASSWORD` | Unset | Require a password to access the dashboard |
-| `GH_DASH_API_KEY` | Unset | Authenticate API clients with Bearer or `X-API-Key` |
+| `GH_DASH_API_KEY` | Unset | Key API clients send as Bearer or `X-API-Key`; not access control without a password (see below) |
 | `GH_DASH_MY_EMAILS` | Unset | Additional commit emails, comma-separated |
 | `TZ` | System timezone | Default timezone for API date grouping |
+| `GH_DASH_CONFIG` | `$XDG_CONFIG_HOME/gh-dash/config.json` | JSON config file (see above) |
 
 Without `XDG_STATE_HOME`, the database defaults to `~/.local/state/gh-dash/gh-dash.db`.
 Empty or relative XDG paths use the home defaults. UI settings remain in the database.
@@ -101,7 +123,19 @@ dropped first. The cache can be deleted at any time and left out of backups.
 For a persistent installation, adapt the [systemd unit](deploy/gh-dash.service).
 For remote access, use HTTPS through a reverse proxy such as the supplied
 [nginx example](deploy/nginx.conf.example) and set `GH_DASH_PASSWORD` or proxy authentication.
-An API key alone does **not** protect access to the dashboard.
+
+The server only answers requests addressed to `localhost`, a `*.localhost` name or an IP
+address, on any port; any other `Host` gets `421 Misdirected Request`. This blocks DNS
+rebinding, where a web page on a domain that resolves to your machine uses your browser to
+read and change your data. To reach the server by name, such as a LAN hostname or the public
+name a reverse proxy passes on (`proxy_set_header Host $http_host` in nginx), list the name in
+`GH_DASH_ALLOWED_HOSTS`, e.g. `GH_DASH_ALLOWED_HOSTS=dash.example.com`.
+
+An API key alone is **not** access control. Without `GH_DASH_PASSWORD`, opening any dashboard
+page issues a session cookie that also unlocks the API, so anyone who can reach the server
+can read everything. Set a password, or use proxy authentication, whenever others can reach
+the server; gh-dash logs a warning at startup when it listens beyond loopback with only an
+API key. `/api/health`, `/api/docs` and `/api/v1/openapi.json` never need credentials.
 
 ## API and exports
 
@@ -109,13 +143,73 @@ The **API** button shows the current view's URL. Lists can be exported as Markdo
 or CSV. Explore the endpoint reference at `/api/docs` and the OpenAPI document at
 `/api/v1/openapi.json` on your running instance.
 
+## Desktop app
+
+The desktop app runs gh-dash in its own window on macOS, Windows and Linux. It starts the
+server in the background and talks to it privately; nothing listens on the network unless you
+turn on the **Local API**. Links open in your browser.
+
+```sh
+npm ci
+npm run desktop        # build, then run the app from the checkout
+npm run dist:desktop   # build installers for this OS into release/
+```
+
+`npm run dist:desktop` produces an AppImage and a `.deb` on Linux, an NSIS installer on
+Windows, and a `.dmg` and `.zip` on macOS. The [Desktop app workflow](.github/workflows/desktop.yml)
+builds all three on pull requests. The builds are not signed with a developer certificate (macOS
+builds get an ad-hoc signature, which Apple silicon requires). A downloaded macOS build is blocked
+the first time: open it once, then allow it under **System Settings → Privacy & Security → Open
+Anyway**. Windows SmartScreen warns too. Signing and notarization are not set up yet.
+
+`npm ci` doesn't download Electron itself: Electron fetches its binary the first time it
+runs (`npm run desktop`), or run `npx install-electron` beforehand.
+
+**Where things live.** The app keeps its settings (`config.json`), window size, logs and any
+remembered token in its own folder, separate from the headless server's `~/.config/gh-dash`:
+
+| Linux | macOS | Windows |
+| --- | --- | --- |
+| `~/.config/gh-dash-desktop` | `~/Library/Application Support/gh-dash-desktop` | `%APPDATA%\gh-dash-desktop` |
+
+The database is `data/gh-dash.db` in that folder unless you pick another data folder in
+**Settings**. Picking a folder doesn't move an existing database: gh-dash uses the one in
+that folder or starts a new one. The app writes `config.json` from Settings. Unlike the
+headless server, it ignores `HOST`, `PORT`, `GH_DASH_*` and the other configuration variables
+from its environment, so Settings always shows what's in effect; `GITHUB_TOKEN` still applies.
+Logs, including the server's, are in `logs/main.log`.
+
+**GitHub account.** In **Settings → GitHub account**, either use the GitHub CLI (`gh auth token`;
+run `gh auth login` first) or paste a token. Apps opened from Finder, the Dock or a desktop launcher
+don't get your shell's `PATH`, so at startup the app asks your login shell for it (macOS and Linux)
+and also looks in the usual install folders. If `gh` still isn't found, use **Locate gh…** to pick it. **Remember on this device** stores a pasted token
+encrypted with the system keychain (macOS Keychain, Windows DPAPI, or GNOME Keyring/KWallet
+on Linux). Without a keychain, as on Linux desktops that have neither, the token is kept only
+until you quit. On macOS, an unsigned build may ask for keychain access after each update; if
+you deny it, the app forgets the token and asks again. `GITHUB_TOKEN` in the app's environment
+overrides both.
+
+**Local API.** Turn it on in **Settings** to reach the API from browsers, curl and scripts
+(`/api/docs`). It listens on `127.0.0.1` only, unless you allow other devices on the network,
+which requires a password. Add an API key for scripts, and list any host names other than
+`localhost` and IP addresses under allowed hosts. If its port is taken when the app starts, the
+app offers to turn the Local API off.
+
+**Linux.** When `/dev/shm` is smaller than 512 MB, as in many containers, the app passes
+`--disable-dev-shm-usage` to Chromium itself. The AppImage needs FUSE; without it, run it with
+`--appimage-extract-and-run`.
+
+Troubleshooting: `GH_DASH_DEBUG=1` enables reload and DevTools in the View menu, and
+`GH_DASH_DESKTOP_USER_DATA=/absolute/path` runs the app with a separate settings folder.
+
 ## Development
 
 ```sh
-npm run dev        # API on :4780, web app on :5173
+npm run dev        # API on :4780, web app on :5173 (tsx watch + Vite)
 npm run typecheck
 npm test
-npm run build
+npm run build      # web app, plus the bundled server and desktop main process in dist/
+npm run desktop    # build, then run the desktop app
 ```
 
 ## License

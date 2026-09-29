@@ -12,6 +12,14 @@ export class HttpError extends Error {
   }
 }
 
+/** Public origin of the request, honouring a reverse proxy's forwarded headers. */
+export function origin(c: Context): string {
+  const url = new URL(c.req.url);
+  const proto = c.req.header('x-forwarded-proto') ?? url.protocol.replace(':', '');
+  const host = c.req.header('x-forwarded-host') ?? c.req.header('host') ?? url.host;
+  return `${proto}://${host}`;
+}
+
 function zodMessage(error: z.ZodError): string {
   return error.issues.map((i) => (i.path.length ? `${i.path.join('.')}: ${i.message}` : i.message)).join('; ');
 }

@@ -18,3 +18,4 @@ data/
 shots/
 coverage/
 .DS_Store
+release/

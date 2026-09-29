@@ -15,7 +15,7 @@ import { UnavailableNote } from '../components/RepoTracking';
 import { useRepoLabel } from '../components/repoMapContext';
 import { Seg, WHO_OPTIONS } from '../components/Seg';
 import { useUI } from '../components/ui';
-import { ALL_TIME_FROM, scopeParams, statsParams } from '../lib/apiQuery';
+import { ALL_TIME_FROM, repoPageScope, scopeParams, statsParams } from '../lib/apiQuery';
 import { activityColumns, contributorBars, tileProps } from '../lib/statsCharts';
 import { fmtDate, fmtDateTime, isoDate, rel } from '../lib/time';
 import { carrySearch, encodeParams, repoFromPath, useUrlState } from '../lib/urlState';
@@ -45,7 +45,7 @@ export function RepoDetailView() {
   const repos = useRepos();
   const patch = usePatchRepo();
   const repo = repos.data?.find((r) => r.key === key);
-  const scoped = { ...s, repos: [key], vis: 'all' as const, own: 'all' as const };
+  const scoped = repoPageScope(s, key);
   const stats = useStats(statsParams(scoped), !!repo);
   const merged = usePrList({ ...scopeParams(scoped, { q: false }), state: 'merged', limit: 50 }, !!repo);
   const open = usePrList({ ...scopeParams({ ...scoped, who: 'everyone' }, { q: false }), from: ALL_TIME_FROM, state: 'open', limit: 50 }, !!repo);

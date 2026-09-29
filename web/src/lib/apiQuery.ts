@@ -59,6 +59,14 @@ export function statsParams(s: UrlState): StatsQuery {
   return scopeParams(s, { q: false });
 }
 
+/**
+ * A repo page's scope: that one repo, whatever the visibility and ownership filters say (they narrow lists of repos,
+ * not a page about one). The page and its API export both use it.
+ */
+export function repoPageScope(s: UrlState, key: string): UrlState {
+  return { ...s, repos: [key], vis: 'all', own: 'all' };
+}
+
 export interface ExportTarget {
   endpoint: Endpoint;
   params: Record<string, string | number | undefined>;
@@ -77,7 +85,7 @@ export function exportTarget(view: ViewName, s: UrlState, repoKey?: string): Exp
     case 'insights':
       return { endpoint: 'stats', params: { ...statsParams(s) }, md: false, label: 'insights' };
     case 'repo':
-      return { endpoint: 'stats', params: { ...statsParams({ ...s, repos: repoKey ? [repoKey] : s.repos }) }, md: false, label: 'repository stats' };
+      return { endpoint: 'stats', params: { ...statsParams(repoKey ? repoPageScope(s, repoKey) : s) }, md: false, label: 'repository stats' };
     case 'repos':
       return { endpoint: 'repos', params: { ...repoListParams(s) }, md: false, label: 'repositories' };
     case 'settings':

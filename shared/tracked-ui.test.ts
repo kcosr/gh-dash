@@ -35,6 +35,16 @@ describe('ownership in the URL (own=)', () => {
   });
 });
 
+describe('a repo page and its export', () => {
+  it('exports the repo whatever the ownership and visibility filters, like the page shows it', () => {
+    const s = parseUrlState('?own=mine&vis=private&who=me&range=7d', 'repo');
+    const t = exportTarget('repo', s, 'dlvhdr/gh-dash');
+    expect(t).toMatchObject({ endpoint: 'stats', params: { repos: 'dlvhdr/gh-dash', who: 'me' } });
+    expect(t.params.ownership).toBeUndefined();
+    expect(t.params.visibility).toBeUndefined();
+  });
+});
+
 describe('repo filters', () => {
   it('passesRepoFilters applies visibility and ownership together', () => {
     expect(passesRepoFilters(repo('public', 'manual'), { vis: 'all', own: 'all' })).toBe(true);

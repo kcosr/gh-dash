@@ -162,6 +162,21 @@ describe('comment threads API', () => {
     expect(await commit.text()).toBe('# app@ccccccc\n');
   });
 
+  it('counts threads on PRs and filters the PR list by them', async () => {
+    const { json, send } = makeApp();
+    const t = (await json('POST', '/prs/app/2/threads', lineThread)).body;
+    await json('POST', '/prs/app/3/threads', lineThread);
+    await json('PATCH', `/threads/${t.id}`, { status: 'resolved' });
+    const range = 'from=2026-09-01&to=2026-09-27&tz=UTC&repos=app';
+    const ids = async (query: string) => ((await json<{ items: { id: string }[] }>('GET', `/prs?${range}&${query}`)).body.items.map((p) => p.id));
+    expect(await ids('comments=any')).toEqual(['app#3', 'app#2']);
+    expect(await ids('comments=unresolved')).toEqual(['app#3']);
+    expect((await send('GET', `/prs?${range}&comments=all`)).status).toBe(400);
+    expect((await json('GET', '/prs/app/2')).body).toMatchObject({ comments: { threads: 1, unresolved: 0 } });
+    const csv = await (await send('GET', `/prs?${range}&comments=unresolved&format=csv`)).text();
+    expect(csv.trim().split('\n').slice(1).map((row) => row.split(',').slice(0, 2).join('#'))).toEqual(['app#3']);
+  });
+
   it('rejects cross-origin writes', async () => {
     const { send } = makeApp();
     const res = await send('POST', '/prs/app/2/threads', lineThread, { origin: 'https://evil.example', host: 'localhost' });
@@ -177,6 +192,6 @@ describe('comment threads API', () => {
     expect(Object.keys(doc.paths['/api/v1/threads/{id}']!)).toEqual(['get', 'patch', 'delete']);
     expect(Object.keys(doc.paths['/api/v1/threads/{id}/comments']!)).toEqual(['post']);
     expect(Object.keys(doc.paths['/api/v1/comments/{id}']!)).toEqual(['patch', 'delete']);
-    expect(Object.keys(doc.components.schemas)).toEqual(expect.arrayContaining(['CommentThread', 'ThreadComment', 'Principal', 'NewThread']));
+    expect(Object.keys(doc.components.schemas)).toEqual(expect.arrayContaining(['CommentThread', 'ThreadComment', 'Principal', 'NewThread', 'CommentCounts']));
   });
 });

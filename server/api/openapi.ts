@@ -46,7 +46,8 @@ const schemas: Record<string, Schema> = {
     activityAt: { ...dateTime, description: 'mergedAt if merged, closedAt if closed, else createdAt' },
     additions: int(), deletions: int(), changedFiles: int(), commitCount: int(), headRef: str(), baseRef: str(),
     labels: arr(ref('Label')), url: str(),
-  }),
+    comments: { ...ref('CommentCounts'), description: 'Local comment threads (GET /prs and the PR detail; not on activity events)' },
+  }, ['comments']),
   PullRequestDetail: {
     allOf: [
       ref('PullRequest'),
@@ -200,6 +201,7 @@ const schemas: Record<string, Schema> = {
     bytes: int('Bytes used by cached diffs and file contents (compressed)'),
     maxBytes: int('Current cap (settings.diffCacheMb in bytes)'),
   }),
+  CommentCounts: obj({ threads: int(), unresolved: int('Threads still open') }),
   Principal: obj({
     id: int('1 is the dashboard user'),
     kind: enumOf('self', 'agent'),
@@ -367,6 +369,7 @@ export const ENDPOINTS: EndpointDoc[] = [
       ...SCOPE,
       q('state', 'PR state.', { ...enumOf('open', 'merged', 'closed', 'all'), default: 'all' }, 'merged'),
       q('labels', 'Comma-separated; PR must have at least one (case-insensitive).'),
+      q('comments', 'Only PRs with local comment threads: any, or with at least one unresolved.', enumOf('any', 'unresolved')),
       q('group', 'Headings for format=md.', { ...enumOf('day', 'week', 'month', 'repo'), default: 'week' }),
       ...PAGE,
     ],

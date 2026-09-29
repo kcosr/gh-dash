@@ -57,7 +57,7 @@ export function listRoutes({ db, config }: AppDeps): Hono {
     const q = parseWith(prQuerySchema, c.req.query());
     const scope = parseScope(q, config.defaultTz);
     const ctx = loadQueryCtx(db, config.myEmails);
-    const filter = { state: q.state ?? 'all', labels: splitList(q.labels) };
+    const filter = { state: q.state ?? 'all', labels: splitList(q.labels), comments: q.comments };
     if (q.format === 'md' || q.format === 'csv') {
       const { items } = listPrs(db, ctx, scope, filter, null);
       return q.format === 'md'

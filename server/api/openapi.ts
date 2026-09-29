@@ -78,8 +78,8 @@ const schemas: Record<string, Schema> = {
     activityAt: { ...dateTime, description: 'mergedAt if merged, closedAt if closed, else createdAt' },
     additions: int(), deletions: int(), changedFiles: int(), commitCount: int(), headRef: str(), baseRef: str(),
     labels: arr(ref('Label')), url: str(),
-    comments: { ...ref('CommentCounts'), description: 'Local comment threads (GET /prs and the PR detail; not on activity events)' },
-  }, ['comments']),
+    comments: { ...ref('CommentCounts'), description: 'Local comment threads on this pull request (zero counts when none), on list items, the detail and activity events alike' },
+  }),
   PullRequestDetail: {
     allOf: [
       ref('PullRequest'),
@@ -92,6 +92,7 @@ const schemas: Record<string, Schema> = {
   Commit: obj({
     oid: str(), shortOid: str(), repo: str(), headline: str(), body: str(), author: ref('Actor'), committedAt: dateTime,
     url: str(), additions: int(), deletions: int(), prNumber: nullable(int('Set when the commit landed via a PR')),
+    comments: { ...ref('CommentCounts'), description: 'Local comment threads on this commit itself (not on a PR it landed through; zero counts when none), on list items and activity events alike' },
   }),
   Issue: obj({
     id: str('<repo>#<number>'), repo: str(), number: int(), title: str(), body: str(), state: enumOf('open', 'closed'),

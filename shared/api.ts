@@ -145,8 +145,8 @@ export interface PullRequest {
   baseRef: string;
   labels: Label[];
   url: string;
-  /** Local comment threads on this PR (GET /prs and the PR detail; absent on activity events). */
-  comments?: CommentCounts;
+  /** Local comment threads on this PR (on list items, the detail and activity events alike; zero counts when none). */
+  comments: CommentCounts;
 }
 
 export interface PullRequestDetail extends PullRequest {
@@ -168,6 +168,8 @@ export interface Commit {
   deletions: number;
   /** Set when the commit landed via a pull request (e.g. squash merge). */
   prNumber: number | null;
+  /** Local comment threads on this commit itself (not on a PR it landed through; zero counts when none). */
+  comments: CommentCounts;
 }
 
 export interface Issue {
@@ -936,10 +938,10 @@ export interface ThreadListResponse extends ListResponse<ThreadListItem> {
 // GET    /api/v1/views                         -> { items: SavedView[] }
 // POST   /api/v1/views         {name, path, query} -> SavedView  (repo references in path and query are stored as keys)
 // DELETE /api/v1/views/:id                     -> 204
-// GET    /api/v1/prs            PrQuery        -> PrListResponse | text/markdown | text/csv   (items carry `comments` counts)
+// GET    /api/v1/prs            PrQuery        -> PrListResponse | text/markdown | text/csv   (items carry `comments` counts, as do PRs in activity events)
 // GET    /api/v1/prs/:repo/:number             -> PullRequestDetail
-// GET    /api/v1/activity       ActivityQuery  -> ActivityResponse | text/markdown | text/csv
-// GET    /api/v1/commits        ScopeQuery&PageQuery -> ListResponse<Commit>
+// GET    /api/v1/activity       ActivityQuery  -> ActivityResponse | text/markdown | text/csv   (PR and commit events carry `comments` counts)
+// GET    /api/v1/commits        ScopeQuery&PageQuery -> ListResponse<Commit>   (items carry `comments` counts of the commit's own threads)
 // GET    /api/v1/issues         IssueQuery     -> ListResponse<Issue>
 // GET    /api/v1/releases       ScopeQuery&PageQuery -> ListResponse<Release>
 // GET    /api/v1/stars          ScopeQuery&PageQuery -> ListResponse<Star>

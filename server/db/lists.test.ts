@@ -1,9 +1,11 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { addManualRepo, seedDb } from '../test/seed';
+import { activityCsv, commitsCsv, prsCsv } from '../format/csv';
+import { eventsMarkdown, prsMarkdown } from '../format/markdown';
 import { createThread, getPrincipal, SELF_PRINCIPAL_ID, setThreadStatus } from './comments';
 import type { Db } from './db';
 import { ftsQuery, loadQueryCtx, type QueryCtx, type Scope } from './filters';
-import { type CursorKey, getPrDetail, listActivity, listCommits, listIssues, listPrs, listStars } from './lists';
+import { COMMIT_SELECT, type CursorKey, getPrDetail, listActivity, listCommits, listIssues, listPrs, listStars } from './lists';
 
 let db: Db;
 let ctx: QueryCtx;
@@ -160,9 +162,12 @@ describe('PR comment threads', () => {
       'alice/app#1': { threads: 0, unresolved: 0 },
     });
     expect(getPrDetail(own, ownCtx, 'alice/app', 2)!.comments).toEqual({ threads: 2, unresolved: 1 });
-    // Activity events carry no counts.
+    // Activity events carry the same counts.
     const events = listActivity(own, ownCtx, scope(), ['pr'], null).items;
-    expect(events.some((e) => e.type === 'pr' && 'comments' in e.pr)).toBe(false);
+    expect(events.length).toBeGreaterThan(0);
+    for (const e of events) {
+      if (e.type === 'pr') expect([e.pr.id, e.pr.comments]).toEqual([e.pr.id, counts[e.pr.id]]);
+    }
   });
 
   it('filters to PRs with threads, or unresolved ones, in items, totals and facets', () => {
@@ -172,6 +177,106 @@ describe('PR comment threads', () => {
     expect(any.facets.byRepo).toEqual({ 'alice/app': 2 });
     const unresolved = listPrs(own, ownCtx, scope(), { ...all, comments: 'unresolved' }, null);
     expect(unresolved.items.map((p) => p.id)).toEqual(['alice/app#2']);
+  });
+});
+
+describe('commit comment threads, and counts on activity events', () => {
+  const own = seedDb();
+  const you = getPrincipal(own, SELF_PRINCIPAL_ID)!;
+  const repoId = (name: string) => own.get<{ id: number }>('SELECT id FROM repos WHERE name = ?', [name])!.id;
+  const oid = (short: string) => short.padEnd(40, '0');
+  const general = { path: null, side: null, startLine: null, endLine: null, snippet: null };
+  const open = (repo: string, target: { kind: 'pr'; number: number } | { kind: 'commit'; oid: string }, commitOid: string) =>
+    createThread(own, { repoId: repoId(repo), ...target }, { commitOid, baseOid: null, anchor: general, body: 'x' }, you);
+  // c3: two commit threads, one resolved; c2: one open; c1 (landed via PR #1) and c4 (in secret): see below.
+  open('app', { kind: 'commit', oid: oid('c3') }, oid('c3'));
+  setThreadStatus(own, open('app', { kind: 'commit', oid: oid('c3') }, oid('c3')).id, 'resolved');
+  open('app', { kind: 'commit', oid: oid('c2') }, oid('c2'));
+  // Not commit c3's: a PR's thread made on the revision c3, a thread on the same oid in another repo, and one on an
+  // oid that is no commit here.
+  open('app', { kind: 'pr', number: 2 }, oid('c3'));
+  open('secret', { kind: 'commit', oid: oid('c3') }, oid('c3'));
+  open('app', { kind: 'commit', oid: oid('f0') }, oid('f0'));
+  // c4 exists in secret only: app's thread on that oid isn't counted there.
+  open('secret', { kind: 'commit', oid: oid('c4') }, oid('c4'));
+  open('app', { kind: 'commit', oid: oid('c4') }, oid('c4'));
+  setThreadStatus(own, open('app', { kind: 'pr', number: 3 }, oid('c3')).id, 'resolved');
+  const ownCtx = loadQueryCtx(own);
+  const wide = scope({ repos: ['app', 'secret'] });
+
+  it('counts commit threads on the commits list', () => {
+    const counts = Object.fromEntries(listCommits(own, ownCtx, wide, null).items.map((c) => [`${c.repo}@${c.oid.slice(0, 2)}`, c.comments]));
+    expect(counts).toEqual({
+      'alice/app@c3': { threads: 2, unresolved: 1 },
+      'alice/app@c2': { threads: 1, unresolved: 1 },
+      'alice/app@c1': { threads: 0, unresolved: 0 },
+      'alice/secret@c4': { threads: 1, unresolved: 1 },
+    });
+  });
+
+  it('puts the same counts on the PRs and commits of activity events, zero when none', () => {
+    const events = listActivity(own, ownCtx, wide, null, null).items;
+    const prs = Object.fromEntries(listPrs(own, ownCtx, wide, all, null).items.map((p) => [p.id, p.comments]));
+    const commits = Object.fromEntries(listCommits(own, ownCtx, wide, null).items.map((c) => [c.oid, c.comments]));
+    const seen = { pr: 0, commit: 0 };
+    for (const e of events) {
+      if (e.type === 'pr') {
+        seen.pr++;
+        expect([e.pr.id, e.pr.comments]).toEqual([e.pr.id, prs[e.pr.id]]);
+      } else if (e.type === 'commit') {
+        seen.commit++;
+        expect([e.commit.oid, e.commit.comments]).toEqual([e.commit.oid, commits[e.commit.oid]]);
+      } else {
+        expect(JSON.stringify(e)).not.toContain('"comments"');
+      }
+    }
+    // Direct pushes c2 and c3 (c1 and c4 landed via PRs), and the PR events, some with threads and some without.
+    expect(seen.commit).toBe(2);
+    expect(seen.pr).toBeGreaterThan(2);
+    expect(events.filter((e) => e.type === 'commit').map((e) => e.type === 'commit' && e.commit.comments)).toEqual([
+      { threads: 2, unresolved: 1 },
+      { threads: 1, unresolved: 1 },
+    ]);
+    expect(events.filter((e) => e.type === 'pr').map((e) => e.type === 'pr' && [e.pr.id, e.pr.comments.threads])).toContainEqual(['alice/app#2', 1]);
+    // A page of events counts its own rows only, whatever precedes it.
+    const page = listActivity(own, ownCtx, wide, ['commit'], { limit: 1, after: null });
+    expect(page.items.map((e) => e.type === 'commit' && e.commit.comments.threads)).toEqual([2]);
+    const next = listActivity(own, ownCtx, wide, ['commit'], { limit: 1, after: page.nextCursor });
+    expect(next.items.map((e) => e.type === 'commit' && e.commit.comments.threads)).toEqual([1]);
+  });
+
+  it('counts each PR event\'s PR once per event: opened and merged carry the same numbers', () => {
+    const events = listActivity(own, ownCtx, scope({ repos: ['app'] }), ['pr'], null).items.filter((e) => e.type === 'pr' && e.pr.number === 1);
+    expect(events.length).toBeGreaterThan(1);
+    expect(new Set(events.map((e) => e.type === 'pr' && JSON.stringify(e.pr.comments))).size).toBe(1);
+  });
+
+  it('does not change what the exports say', () => {
+    const events = listActivity(own, ownCtx, wide, null, null).items;
+    const stripped = JSON.parse(JSON.stringify(events, (k, v) => (k === 'comments' ? undefined : v))) as typeof events;
+    const md = { tz: 'UTC', now: Date.parse('2026-09-28T00:00:00Z'), from: wide.from, to: wide.to };
+    expect(eventsMarkdown('Activity', events, md)).toBe(eventsMarkdown('Activity', stripped, md));
+    expect(activityCsv(events, () => 'github')).toBe(activityCsv(stripped, () => 'github'));
+    expect(activityCsv(events, () => 'github')).toContain('alice/app');
+    const commits = listCommits(own, ownCtx, wide, null).items;
+    expect(commitsCsv(commits)).not.toContain('threads');
+    const prs = listPrs(own, ownCtx, wide, all, null).items;
+    expect(prsCsv(prs)).not.toContain('unresolved');
+    expect(prsMarkdown(prs, { state: 'all', who: 'everyone', group: 'repo' }, md)).not.toContain('unresolved');
+  });
+
+  it('finds commit threads through the target index, for the page\'s rows and for the commits list', () => {
+    const plan = (where: string) =>
+      own
+        .all<{ detail: string }>(`EXPLAIN QUERY PLAN SELECT ${COMMIT_SELECT} FROM commits c JOIN repos r ON r.id = c.repo_id WHERE ${where}`, ['[1,2,3]'])
+        .map((r) => r.detail);
+    for (const detail of [plan('c.id IN (SELECT value FROM json_each(?))'), plan("r.removed_at IS NULL AND c.id IN (SELECT value FROM json_each(?)) ORDER BY c.committed_at DESC")]) {
+      const searches = detail.filter((d) => d.includes('comment_threads_target'));
+      // Both counts (all, and open) search the index on the whole key; neither scans the threads table.
+      expect(searches).toHaveLength(2);
+      for (const d of searches) expect(d).toMatch(/^SEARCH t USING (COVERING )?INDEX comment_threads_target \(repo_id=\? AND pr_number=\? AND commit_oid=\?\)$/);
+      expect(detail.some((d) => d.startsWith('SCAN t'))).toBe(false);
+    }
   });
 });
 

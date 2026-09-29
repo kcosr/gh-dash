@@ -32,9 +32,9 @@ export interface PrRow {
   labels: string;
   closing_issues: string;
   url: string;
-  /** Local comment threads, where the query counts them (PR lists and details, not activity events). */
-  threads?: number;
-  unresolved_threads?: number;
+  /** Local comment threads on the PR, and the ones still open (PR_SELECT counts them). */
+  threads: number;
+  unresolved_threads: number;
 }
 
 export interface CommitRow {
@@ -54,6 +54,9 @@ export interface CommitRow {
   additions: number;
   deletions: number;
   pr_number: number | null;
+  /** Local comment threads on the commit, and the ones still open (COMMIT_SELECT counts them). */
+  threads: number;
+  unresolved_threads: number;
 }
 
 export interface IssueRow {
@@ -147,7 +150,7 @@ export function toPr(r: PrRow, isMe: IsMe): PullRequest {
     baseRef: r.base_ref,
     labels: JSON.parse(r.labels) as Label[],
     url: r.url,
-    ...(r.threads === undefined ? {} : { comments: { threads: r.threads, unresolved: r.unresolved_threads ?? 0 } }),
+    comments: { threads: r.threads, unresolved: r.unresolved_threads },
   };
 }
 
@@ -178,6 +181,7 @@ export function toCommit(r: CommitRow, isMe: IsMe): Commit {
     additions: r.additions,
     deletions: r.deletions,
     prNumber: r.pr_number,
+    comments: { threads: r.threads, unresolved: r.unresolved_threads },
   };
 }
 

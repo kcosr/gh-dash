@@ -1,7 +1,7 @@
 import { GITHUB_HOST, type Repo, type RepoQuery } from './api';
 
-/** What the helpers below need of a repo (the API's `Repo` has all of it). */
-export type RepoIdent = Pick<Repo, 'key' | 'name' | 'trackedBy' | 'source'>;
+/** What the helpers below need of a repo (the API's `Repo` has all of it; without `owner` the key's is used). */
+export type RepoIdent = Pick<Repo, 'key' | 'name' | 'trackedBy' | 'source'> & Partial<Pick<Repo, 'owner'>>;
 
 /** Repositories as a list, or as a map keyed by `Repo.key` (what the web's `useRepoMap` returns). */
 type RepoSource<R extends RepoIdent> = readonly R[] | ReadonlyMap<string, R>;
@@ -66,12 +66,18 @@ export function resolveRepoKey<R extends RepoIdent>(input: string, repos: RepoSo
 
 /**
  * How a repo is displayed, in two parts: `owner` is shown muted before the name, and is null for a repo you own
- * (its bare name is enough) and for a key without an owner. Anything else, including a key that is no longer in the
- * list, keeps its owner: the part before the last '/', so nested paths stay whole.
+ * (its bare name is enough) and for a key without an owner. Anything else keeps its owner: the repo's own (on GitLab
+ * the namespace path, `platform/team`), so a source's host is never shown as part of a name (the source badge says
+ * it). A key that is no longer in the list is split at its last '/', after dropping a leading host (a first segment
+ * with a '.', in a key with two '/' or more), so nested paths stay whole.
  */
 export function repoParts<R extends RepoIdent>(key: string, repos: RepoSource<R>): { owner: string | null; name: string } {
   const r = repos instanceof Map ? repos.get(key) : (repos as readonly R[]).find((x) => x.key === key);
-  return r && r.trackedBy === 'owned' ? { owner: null, name: r.name } : splitKey(key);
+  if (r?.trackedBy === 'owned') return { owner: null, name: r.name };
+  if (r?.owner) return { owner: r.owner, name: r.name };
+  const first = key.indexOf('/');
+  const hosted = first > 0 && key.indexOf('/', first + 1) > 0 && key.slice(0, first).includes('.');
+  return splitKey(hosted ? key.slice(first + 1) : key);
 }
 
 /**

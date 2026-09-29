@@ -131,6 +131,20 @@ describe('repoParts', () => {
     expect(repoParts('gone/repo', many)).toEqual({ owner: 'gone', name: 'repo' });
     expect(repoParts('gone', new Map())).toEqual({ owner: null, name: 'gone' });
   });
+  it('never shows a source\'s host: the namespace path is the owner, and a gone key drops its host', () => {
+    const GL = 'gitlab.example.com';
+    const gl = repo(`${GL}/platform/team/api`, { source: GL, provider: 'gitlab', nameWithOwner: 'platform/team/api', owner: 'platform/team', name: 'api' }, 'manual');
+    const mine = repo(`${GL}/alice/sedes`, { source: GL, provider: 'gitlab', nameWithOwner: 'alice/sedes', owner: 'alice', name: 'sedes' });
+    const list = [...many, gl, mine];
+    expect(repoParts(gl.key, list)).toEqual({ owner: 'platform/team', name: 'api' });
+    expect(repoLabel(gl.key, list)).toBe('platform/team/api');
+    expect(repoLabel(mine.key, list)).toBe('sedes');
+    expect(repoParts(`${GL}/platform/gone`, list)).toEqual({ owner: 'platform', name: 'gone' });
+    expect(repoParts(`${GL}/a/b/c`, new Map())).toEqual({ owner: 'a/b', name: 'c' });
+    expect(repoParts('my.org/repo', new Map())).toEqual({ owner: 'my.org', name: 'repo' }); // one '/': a GitHub key
+    expect(repoParts('org/team.x/proj', new Map())).toEqual({ owner: 'org/team.x', name: 'proj' }); // no '.' in the first segment
+  });
+
   it('agrees with repoLabel: the owner and the name joined by a slash', () => {
     for (const r of many) {
       const { owner, name } = repoParts(r.key, map);

@@ -3,8 +3,11 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { StreamMessage } from '../shared/api';
 import { DESKTOP_ENV, type ServerToMain } from '../shared/desktop';
+import { CommentBus } from './comments/bus';
 import { writeConfigFile } from './config-file';
+import { principalForToken } from './db/agents';
 import { openDb } from './db/db';
 import { listSources, tryClaimViewer } from './db/sources';
 import { mainMessageHandler, type ParentPort, runDesktopChild } from './desktop-child';
@@ -178,6 +181,57 @@ describe('main → server messages for GitLab sources', () => {
     await handle({ type: 'sync-source', id: 3, source: HOST });
     expect(posted[2]).toEqual({ type: 'sync-started', id: 3, result: 'started' });
     expect(sync.startOrQueue).toHaveBeenCalledWith({ source: HOST });
+  });
+});
+
+describe('main → server messages for agents', () => {
+  function setup() {
+    const db = openDb(':memory:');
+    const bus = new CommentBus();
+    const heard: StreamMessage[] = [];
+    bus.subscribe((m) => heard.push(m));
+    const posted: ServerToMain[] = [];
+    const handle = mainMessageHandler({ tokens: testTokens(), close: async () => {}, db, bus }, (m) => posted.push(m), vi.fn());
+    return { db, handle, posted, heard };
+  }
+
+  it('adds, regenerates and revokes agents, answering with the token when there is a new one, and tells the windows', async () => {
+    const { db, handle, posted, heard } = setup();
+    await handle({ type: 'add-agent', id: 1, name: 'Claude' });
+    const added = posted[0] as Extract<ServerToMain, { type: 'agent-result' }>;
+    expect(added).toEqual({ type: 'agent-result', id: 1, agent: expect.objectContaining({ id: 2, name: 'Claude', revokedAt: null }), token: expect.stringMatching(/^ghd_/) });
+    expect(principalForToken(db, added.token!)).toMatchObject({ id: 2, kind: 'agent' });
+
+    await handle({ type: 'regenerate-agent-token', id: 2, agent: 2 });
+    const regenerated = posted[1] as Extract<ServerToMain, { type: 'agent-result' }>;
+    expect(regenerated).toMatchObject({ type: 'agent-result', id: 2, agent: { id: 2 } });
+    expect(regenerated.token).not.toBe(added.token);
+    expect(principalForToken(db, added.token!)).toBeNull();
+
+    await handle({ type: 'revoke-agent', id: 3, agent: 2 });
+    expect(posted[2]).toEqual({ type: 'agent-result', id: 3, agent: expect.objectContaining({ id: 2, tokenPrefix: null, revokedAt: expect.any(String) }), token: null });
+    expect(principalForToken(db, regenerated.token!)).toBeNull();
+    expect(heard).toEqual([{ type: 'agents' }, { type: 'agents' }, { type: 'agents' }]);
+  });
+
+  it("answers request-failed with the reason, and changes nothing", async () => {
+    const { handle, posted, heard } = setup();
+    await handle({ type: 'add-agent', id: 1, name: 'Claude' });
+    await handle({ type: 'add-agent', id: 2, name: 'CLAUDE' });
+    await handle({ type: 'add-agent', id: 3, name: '  ' });
+    await handle({ type: 'regenerate-agent-token', id: 4, agent: 9 });
+    await handle({ type: 'revoke-agent', id: 5, agent: 1 });
+    expect(posted.slice(1)).toEqual([
+      { type: 'request-failed', id: 2, message: 'There is already an agent called Claude (id 2); regenerate its token instead' },
+      { type: 'request-failed', id: 3, message: 'An agent needs a name' },
+      { type: 'request-failed', id: 4, message: 'There is no agent with id 9.' },
+      { type: 'request-failed', id: 5, message: 'There is no agent with id 1.' },
+    ]);
+    expect(heard).toEqual([{ type: 'agents' }]);
+    // Without a database (a server that can't), it says so.
+    const bare: ServerToMain[] = [];
+    await mainMessageHandler({ tokens: testTokens(), close: async () => {} }, (m) => bare.push(m), vi.fn())({ type: 'add-agent', id: 6, name: 'X' });
+    expect(bare).toEqual([{ type: 'request-failed', id: 6, message: "This server can't manage agents" }]);
   });
 });
 

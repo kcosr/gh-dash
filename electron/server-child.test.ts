@@ -160,6 +160,36 @@ describe('ServerChild', () => {
     expect(await tested).toMatchObject({ ok: true, host: 'gitlab.example.com' });
   });
 
+  it("sends the agents' requests and hands back the agent, with its token when there is one", async () => {
+    await startRunning();
+    const proc = procs[0]!;
+    const agent = { id: 2, name: 'Claude', tokenPrefix: 'ghd_abcd', createdAt: 'x', lastUsedAt: null, revokedAt: null };
+    const added = child.addAgent('Claude');
+    const regenerated = child.regenerateAgentToken(2);
+    const revoked = child.revokeAgent(2);
+    const taken = child.addAgent('Claude');
+    const tokenless = child.regenerateAgentToken(3);
+    await flush();
+    const [a, g, r, t, n] = proc.sent.map((m) => (m as { id: number }).id);
+    expect(proc.sent).toEqual([
+      { type: 'add-agent', id: a, name: 'Claude' },
+      { type: 'regenerate-agent-token', id: g, agent: 2 },
+      { type: 'revoke-agent', id: r, agent: 2 },
+      { type: 'add-agent', id: t, name: 'Claude' },
+      { type: 'regenerate-agent-token', id: n, agent: 3 },
+    ]);
+    proc.reply({ type: 'agent-result', id: a!, agent, token: 'ghd_first' });
+    proc.reply({ type: 'agent-result', id: g!, agent, token: 'ghd_second' });
+    proc.reply({ type: 'agent-result', id: r!, agent: { ...agent, tokenPrefix: null, revokedAt: 'y' }, token: null });
+    proc.reply({ type: 'request-failed', id: t!, message: 'There is already an agent called Claude (id 2); regenerate its token instead' });
+    proc.reply({ type: 'agent-result', id: n!, agent, token: null });
+    expect(await added).toEqual({ agent, token: 'ghd_first' });
+    expect(await regenerated).toEqual({ agent, token: 'ghd_second' });
+    expect(await revoked).toMatchObject({ id: 2, revokedAt: 'y' });
+    await expect(taken).rejects.toThrow('There is already an agent called Claude');
+    await expect(tokenless).rejects.toThrow('The gh-dash server answered without a token.');
+  });
+
   it('rejects a request the child answers with the wrong type, or not at all', async () => {
     await startRunning();
     const proc = procs[0]!;

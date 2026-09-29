@@ -35,10 +35,12 @@ export function useConfirmRemoveRepo(): (repo: Repo) => void {
         await remove.mutateAsync(repo.key);
         toast(`Removed ${name}`);
         const { pathname, search } = window.location;
+        // The removed repo leaves an explicit selection first, wherever we go next (it carries across tabs).
         const view = viewFromPath(pathname);
         const sel = parseUrlState(search, view).repos;
-        if (repoFromPath(pathname) === repo.key) navigate(`/repos${carrySearch(search)}`);
-        else if (sel?.includes(repo.key)) navigate({ pathname, search: patchSearch(search, view, { repos: sel.filter((k) => k !== repo.key) }) }, { replace: true });
+        const rest = sel?.includes(repo.key) ? patchSearch(search, view, { repos: sel.filter((k) => k !== repo.key) }) : search;
+        if (repoFromPath(pathname) === repo.key) navigate(`/repos${carrySearch(rest)}`);
+        else if (rest !== search) navigate({ pathname, search: rest }, { replace: true });
       },
     });
   };

@@ -8,7 +8,7 @@ export type CacheKind = 'pr' | 'commit' | 'blob';
 export interface CacheEntry {
   key: string;
   kind: CacheKind;
-  /** Short repo name (repos.name): entries of repos that disappear are dropped. */
+  /** The repo's key (db/repo-key.ts): entries of repos that disappear are dropped. */
   repo: string;
   /** PR number for kind 'pr', so a new head can supersede the old one. */
   number?: number | null;

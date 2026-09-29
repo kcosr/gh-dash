@@ -1,6 +1,7 @@
 import type { Repo, RepoSet, SavedView } from '../../shared/api';
 import { bucketIndex, DAY_MS, isoSec, localDayNum, makeBuckets, weekdayMon0, zonedMidnight } from '../lib/time';
 import type { Db } from './db';
+import { repoKeySql, resolveRepo, resolveRepoIds } from './repo-key';
 
 interface RepoRow {
   id: number;
@@ -47,10 +48,13 @@ function countBy(db: Db, sql: string, params: (string | number)[]): Map<number, 
 }
 
 /** Repos with their stats; 30-day windows end at `now`, weekly buckets are Mon-start weeks in `tz`. */
-export function listRepos(db: Db, tz: string, now = Date.now(), onlyName?: string): Repo[] {
-  const rows = onlyName
-    ? db.all<RepoRow>(`${REPO_SELECT} AND r.name = ?`, [onlyName])
-    : db.all<RepoRow>(`${REPO_SELECT} ORDER BY last_activity_at DESC, r.name`);
+export function listRepos(db: Db, tz: string, now = Date.now(), onlyKey?: string): Repo[] {
+  const ref = onlyKey ? resolveRepo(db, onlyKey) : null;
+  const rows = !onlyKey
+    ? db.all<RepoRow>(`${REPO_SELECT} ORDER BY last_activity_at DESC, ${repoKeySql('r')}`)
+    : ref
+      ? db.all<RepoRow>(`${REPO_SELECT} AND r.id = ?`, [ref.id])
+      : [];
   if (rows.length === 0) return [];
 
   const since30 = isoSec(now - 30 * DAY_MS);
@@ -111,11 +115,11 @@ export function listRepos(db: Db, tz: string, now = Date.now(), onlyName?: strin
   }));
 }
 
-export function getRepo(db: Db, name: string, tz: string): Repo | null {
-  return listRepos(db, tz, Date.now(), name)[0] ?? null;
+export function getRepo(db: Db, key: string, tz: string): Repo | null {
+  return listRepos(db, tz, Date.now(), key)[0] ?? null;
 }
 
-export function setRepoPrefs(db: Db, name: string, prefs: { pinned?: boolean; hidden?: boolean }): boolean {
+export function setRepoPrefs(db: Db, key: string, prefs: { pinned?: boolean; hidden?: boolean }): boolean {
   const sets: string[] = [];
   const params: (string | number)[] = [];
   if (prefs.pinned !== undefined) {
@@ -126,8 +130,10 @@ export function setRepoPrefs(db: Db, name: string, prefs: { pinned?: boolean; hi
     sets.push('hidden = ?');
     params.push(Number(prefs.hidden));
   }
-  if (sets.length === 0) return !!db.get('SELECT 1 FROM repos WHERE name = ? AND removed_at IS NULL', [name]);
-  return db.run(`UPDATE repos SET ${sets.join(', ')} WHERE name = ? AND removed_at IS NULL`, [...params, name]).changes > 0;
+  const ref = resolveRepo(db, key);
+  if (!ref) return false;
+  if (sets.length === 0) return true;
+  return db.run(`UPDATE repos SET ${sets.join(', ')} WHERE id = ?`, [...params, ref.id]).changes > 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -136,11 +142,11 @@ export function setRepoPrefs(db: Db, name: string, prefs: { pinned?: boolean; hi
 
 export function listSets(db: Db): RepoSet[] {
   const sets = db.all<{ id: number; name: string }>('SELECT id, name FROM repo_sets ORDER BY name COLLATE NOCASE, id');
-  const members = db.all<{ set_id: number; name: string }>(
-    `SELECT m.set_id, r.name FROM repo_set_members m JOIN repos r ON r.id = m.repo_id
+  const members = db.all<{ set_id: number; repo: string }>(
+    `SELECT m.set_id, ${repoKeySql('r')} AS repo FROM repo_set_members m JOIN repos r ON r.id = m.repo_id
      WHERE r.removed_at IS NULL ORDER BY m.set_id, m.position`,
   );
-  return sets.map((s) => ({ id: s.id, name: s.name, repos: members.filter((m) => m.set_id === s.id).map((m) => m.name) }));
+  return sets.map((s) => ({ id: s.id, name: s.name, repos: members.filter((m) => m.set_id === s.id).map((m) => m.repo) }));
 }
 
 function getSet(db: Db, id: number): RepoSet | null {
@@ -149,14 +155,14 @@ function getSet(db: Db, id: number): RepoSet | null {
 
 function replaceMembers(db: Db, setId: number, repos: string[]): void {
   db.run('DELETE FROM repo_set_members WHERE set_id = ?', [setId]);
-  const ids = db.all<{ id: number; name: string }>(
-    'SELECT id, name FROM repos WHERE removed_at IS NULL AND name IN (SELECT value FROM json_each(?))',
-    [JSON.stringify(repos)],
-  );
-  const byName = new Map(ids.map((r) => [r.name, r.id]));
-  [...new Set(repos)].forEach((name, position) => {
-    const repoId = byName.get(name);
-    if (repoId !== undefined) db.run('INSERT INTO repo_set_members (set_id, repo_id, position) VALUES (?, ?, ?)', [setId, repoId, position]);
+  const ids = resolveRepoIds(db, repos);
+  // Several inputs can name one repo (a key and an alias): the first one places it.
+  const added = new Set<number>();
+  [...new Set(repos)].forEach((key, position) => {
+    const repoId = ids.get(key);
+    if (repoId === undefined || added.has(repoId)) return;
+    added.add(repoId);
+    db.run('INSERT INTO repo_set_members (set_id, repo_id, position) VALUES (?, ?, ?)', [setId, repoId, position]);
   });
 }
 

@@ -2,6 +2,7 @@ import type { Settings } from '../../shared/api';
 import type { Db } from '../db/db';
 import { getMeta, setMeta, type ViewerMeta } from '../db/meta';
 import type { RepoProbe, RepoRecord } from '../db/records';
+import { repoKey } from '../db/repo-key';
 import {
   applyProbe,
   deleteItem,
@@ -165,7 +166,8 @@ export async function runSync(deps: SyncDeps, req: SyncRequest = {}): Promise<Sy
 
   await pool(targets, deps.concurrency ?? 3, async (t) => {
     if (fatal) return;
-    progress.current = t.record.name;
+    const key = repoKey({ name: t.record.name, name_with_owner: t.record.nameWithOwner });
+    progress.current = key;
     deps.onProgress?.({ ...progress });
     try {
       // Await first: `newItems += await …` would read newItems before the await and lose concurrent updates.
@@ -174,7 +176,7 @@ export async function runSync(deps: SyncDeps, req: SyncRequest = {}): Promise<Sy
       updateSyncState(db, t.id, { synced_at: nowIso, last_error: null });
     } catch (err) {
       if (isFatal(err)) fatal = message(err);
-      else errors.push(`${t.record.name}: ${message(err)}`);
+      else errors.push(`${key}: ${message(err)}`);
       updateSyncState(db, t.id, { last_error: message(err) });
     }
     progress.done++;

@@ -1,0 +1,182 @@
+import { describe, expect, it } from 'vitest';
+import type { CommentThread } from '../../shared/api';
+import { loadConfig } from '../config';
+import type { Db } from '../db/db';
+import { DiffCache } from '../diff/cache';
+import { DiffService } from '../diff/service';
+import { SyncManager } from '../sync/manager';
+import { seedDb } from '../test/seed';
+import { testTokens } from '../test/tokens';
+import { createApp } from './app';
+
+const HEAD = 'a'.repeat(40);
+const BASE = 'b'.repeat(40);
+const COMMIT = 'C'.repeat(40);
+
+function makeApp(db: Db = seedDb()) {
+  const config = { ...loadConfig({}), webDir: '/nonexistent' };
+  const tokens = testTokens();
+  const sync = new SyncManager({ db, schedule: false, tokens, log: () => {} });
+  const diffs = new DiffService({ db, cache: new DiffCache(':memory:'), tokens, log: () => {} });
+  const app = createApp({ db, config, sync, diffs, tokens });
+  const send = (method: string, path: string, body?: unknown, headers: Record<string, string> = {}) =>
+    app.request(`http://localhost/api/v1${path}`, {
+      method,
+      headers: { 'content-type': 'application/json', ...headers },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  const json = async <T = CommentThread>(method: string, path: string, body?: unknown) => {
+    const res = await send(method, path, body);
+    return { status: res.status, body: (await res.json()) as T };
+  };
+  return { app, db, send, json };
+}
+
+const lineThread = { commitOid: HEAD, baseOid: BASE, path: 'src/a.ts', side: 'new', startLine: 3, endLine: 4, snippet: 'a\nb', body: 'Why?' };
+
+describe('comment threads API', () => {
+  it('creates, lists, replies to, edits, resolves and deletes threads', async () => {
+    const { send, json } = makeApp();
+    const created = await json('POST', '/prs/app/2/threads', lineThread);
+    expect(created.status).toBe(200);
+    const t = created.body;
+    expect(t).toMatchObject({
+      kind: 'pr', repo: 'app', number: 2, commitOid: HEAD, baseOid: BASE, path: 'src/a.ts', side: 'new', startLine: 3, endLine: 4,
+      snippet: 'a\nb', status: 'open', comments: [{ author: { id: 1, kind: 'self', name: 'You' }, body: 'Why?', editedAt: null }],
+    });
+    const general = (await json('POST', '/prs/app/2/threads', { commitOid: HEAD, body: 'Overall fine.' })).body;
+    expect(general).toMatchObject({ path: null, side: null, baseOid: null });
+
+    const replied = (await json('POST', `/threads/${t.id}/comments`, { body: 'Because.' })).body;
+    expect(replied.comments.map((c) => c.body)).toEqual(['Why?', 'Because.']);
+    const edited = (await json('PATCH', `/comments/${replied.comments[1]!.id}`, { body: 'Because!' })).body;
+    expect(edited.comments[1]).toMatchObject({ body: 'Because!', editedAt: expect.any(String) });
+    expect((await json('PATCH', `/threads/${t.id}`, { status: 'resolved' })).body).toMatchObject({ status: 'resolved', resolvedAt: expect.any(String) });
+    expect((await json('GET', `/threads/${t.id}`)).body).toMatchObject({ status: 'resolved', comments: [{}, { body: 'Because!' }] });
+
+    const listed = (await json<{ items: CommentThread[] }>('GET', '/prs/app/2/threads')).body;
+    expect(listed.items.map((x) => x.id)).toEqual([t.id, general.id]);
+    expect((await json<{ items: CommentThread[] }>('GET', '/prs/app/3/threads')).body.items).toEqual([]);
+
+    // Deleting a reply keeps the thread; deleting the first comment deletes it.
+    expect((await json<{ thread: CommentThread | null }>('DELETE', `/comments/${edited.comments[1]!.id}`)).body.thread!.comments).toHaveLength(1);
+    expect((await json('DELETE', `/comments/${t.comments[0]!.id}`)).body).toEqual({ thread: null });
+    expect((await send('GET', `/threads/${t.id}`)).status).toBe(404);
+    expect((await send('DELETE', `/threads/${general.id}`)).status).toBe(204);
+    expect((await json<{ items: CommentThread[] }>('GET', '/prs/app/2/threads')).body.items).toEqual([]);
+  });
+
+  it('keeps commit threads on their commit, synced or not', async () => {
+    const { json } = makeApp();
+    const t = await json('POST', `/commits/app/${COMMIT}/threads`, { baseOid: BASE, path: 'x.ts', body: 'File note' });
+    expect(t.body).toMatchObject({ kind: 'commit', number: null, commitOid: COMMIT.toLowerCase(), baseOid: BASE, path: 'x.ts', side: null });
+    // Sending the commit's own oid is fine; another isn't.
+    expect((await json('POST', `/commits/app/${COMMIT}/threads`, { commitOid: COMMIT.toLowerCase(), body: 'Same' })).status).toBe(200);
+    expect((await json('POST', `/commits/app/${COMMIT}/threads`, { commitOid: HEAD, body: 'Other' })).status).toBe(400);
+    const listed = await json<{ items: CommentThread[] }>('GET', `/commits/app/${COMMIT.toLowerCase()}/threads`);
+    expect(listed.body.items.map((x) => x.comments[0]!.body)).toEqual(['File note', 'Same']);
+    expect((await json<{ items: CommentThread[] }>('GET', `/prs/app/2/threads`)).body.items).toEqual([]);
+  });
+
+  it('validates targets, anchors and bodies', async () => {
+    const { send } = makeApp();
+    const post = async (path: string, body: unknown) => {
+      const res = await send('POST', path, body);
+      return { status: res.status, error: res.status === 200 ? null : ((await res.json()) as { error: string }).error };
+    };
+    expect((await post('/prs/nope/2/threads', lineThread)).status).toBe(404);
+    expect((await post('/prs/old/1/threads', lineThread)).status).toBe(200); // archived repos are still repos
+    expect(await post('/prs/app/99/threads', lineThread)).toEqual({ status: 404, error: 'Pull request not found' });
+    expect((await post('/prs/app/0/threads', lineThread)).status).toBe(400);
+    expect(await post('/commits/app/abc1234/threads', { body: 'x' })).toEqual({ status: 400, error: 'Invalid oid: expected a full 40-character commit SHA' });
+
+    const bad: [Record<string, unknown>, string][] = [
+      [{ commitOid: undefined }, 'commitOid'],
+      [{ commitOid: 'abc1234' }, 'commitOid: expected a full 40-character commit SHA'],
+      [{ body: '  \n ' }, 'body: must not be empty'],
+      [{ body: 'x'.repeat(65_537) }, 'body'],
+      [{ path: null }, 'a line thread needs a path'],
+      [{ path: '../etc/passwd' }, 'path: must be a file path in the repository'],
+      [{ path: 'a//b' }, 'path'],
+      [{ side: null }, 'startLine, endLine and snippet need a side'],
+      [{ side: 'both' }, 'side'],
+      [{ snippet: null }, 'a line thread needs startLine, endLine and snippet'],
+      [{ startLine: 0 }, 'startLine'],
+      [{ startLine: 1.5 }, 'startLine'],
+      [{ startLine: 5 }, 'endLine must not be before startLine'],
+      [{ snippet: 'a' }, 'snippet must hold the anchored lines'],
+      [{ startLine: 1, endLine: 1001, snippet: 'x\n'.repeat(1000) + 'x' }, 'a thread spans at most 1000 lines'],
+      [{ extra: 1 }, 'extra'],
+    ];
+    for (const [over, message] of bad) {
+      const res = await post('/prs/app/2/threads', { ...lineThread, ...over });
+      expect(res.status, JSON.stringify(over)).toBe(400);
+      expect(res.error, JSON.stringify(over)).toContain(message);
+    }
+    expect((await post('/prs/app/2/threads', { ...lineThread, startLine: 1, endLine: 1000, snippet: 'x\n'.repeat(999) + 'x' })).status).toBe(200);
+    // A file thread: a path and nothing else.
+    expect((await post('/prs/app/2/threads', { commitOid: HEAD, path: 'src/a.ts', body: 'x' })).status).toBe(200);
+    expect((await post('/prs/app/2/threads', { commitOid: HEAD, path: 'src/a.ts', startLine: 1, body: 'x' })).error).toBe('startLine, endLine and snippet need a side');
+
+    const { json } = makeApp();
+    const t = (await json('POST', '/prs/app/2/threads', lineThread)).body;
+    for (const [method, path, body] of [
+      ['PATCH', `/threads/${t.id}`, { status: 'closed' }],
+      ['POST', `/threads/${t.id}/comments`, { body: '' }],
+      ['PATCH', `/comments/${t.comments[0]!.id}`, {}],
+      ['GET', '/threads/x', undefined],
+      ['GET', '/prs/app/2/threads?format=csv', undefined],
+    ] as const) {
+      expect((await send(method, path, body)).status, `${method} ${path}`).toBe(400);
+    }
+    for (const [method, path, body] of [
+      ['GET', '/threads/999', undefined],
+      ['PATCH', '/threads/999', { status: 'open' }],
+      ['DELETE', '/threads/999', undefined],
+      ['POST', '/threads/999/comments', { body: 'x' }],
+      ['PATCH', '/comments/999', { body: 'x' }],
+      ['DELETE', '/comments/999', undefined],
+      ['GET', '/prs/nope/1/threads', undefined],
+    ] as const) {
+      expect((await send(method, path, body)).status, `${method} ${path}`).toBe(404);
+    }
+  });
+
+  it("lets the dashboard user delete an agent's comments but not edit them", async () => {
+    const { db, json } = makeApp();
+    const t = (await json('POST', '/prs/app/2/threads', lineThread)).body;
+    const agent = db.run("INSERT INTO principals (kind, name, created_at) VALUES ('agent', 'Reviewer', '2026-09-29T00:00:00Z')").lastInsertRowid;
+    const agentComment = db.run("INSERT INTO comments (thread_id, author_id, body, created_at) VALUES (?, ?, 'Nit', '2026-09-29T00:00:00Z')", [t.id, agent]).lastInsertRowid;
+    const edit = await json<{ error: string }>('PATCH', `/comments/${agentComment}`, { body: 'Not a nit' });
+    expect(edit).toEqual({ status: 403, body: { error: 'You can only edit your own comments' } });
+    expect((await json('DELETE', `/comments/${agentComment}`)).status).toBe(200);
+  });
+
+  it('exports threads as Markdown', async () => {
+    const { json, send } = makeApp();
+    await json('POST', '/prs/app/2/threads', lineThread);
+    const res = await send('GET', '/prs/app/2/threads?format=md');
+    expect(res.headers.get('content-type')).toBe('text/markdown; charset=utf-8');
+    expect(await res.text()).toBe('# app#2\n\n### `src/a.ts` lines 3–4 (new)\n\n```ts\na\nb\n```\n\n- **You**: Why?\n');
+    const commit = await send('GET', `/commits/app/${COMMIT}/threads?format=md`);
+    expect(await commit.text()).toBe('# app@ccccccc\n');
+  });
+
+  it('rejects cross-origin writes', async () => {
+    const { send } = makeApp();
+    const res = await send('POST', '/prs/app/2/threads', lineThread, { origin: 'https://evil.example', host: 'localhost' });
+    expect(res.status).toBe(403);
+    expect((await send('POST', '/prs/app/2/threads', lineThread, { origin: 'http://localhost', host: 'localhost' })).status).toBe(200);
+  });
+
+  it('is in the OpenAPI document', async () => {
+    const { app } = makeApp();
+    const doc = (await (await app.request('/api/v1/openapi.json')).json()) as { paths: Record<string, Record<string, unknown>>; components: { schemas: Record<string, unknown> } };
+    expect(Object.keys(doc.paths['/api/v1/prs/{repo}/{number}/threads']!)).toEqual(['get', 'post']);
+    expect(Object.keys(doc.paths['/api/v1/commits/{repo}/{oid}/threads']!)).toEqual(['get', 'post']);
+    expect(Object.keys(doc.paths['/api/v1/threads/{id}']!)).toEqual(['get', 'patch', 'delete']);
+    expect(Object.keys(doc.paths['/api/v1/threads/{id}/comments']!)).toEqual(['post']);
+    expect(Object.keys(doc.paths['/api/v1/comments/{id}']!)).toEqual(['patch', 'delete']);
+    expect(Object.keys(doc.components.schemas)).toEqual(expect.arrayContaining(['CommentThread', 'ThreadComment', 'Principal', 'NewThread']));
+  });
+});

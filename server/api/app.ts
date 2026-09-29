@@ -10,6 +10,7 @@ import { docsPage } from './docs';
 import { HttpError, origin } from './http';
 import { openApiDocument } from './openapi';
 import { accountRoutes } from './routes/account';
+import { commentRoutes } from './routes/comments';
 import { diffRoutes } from './routes/diffs';
 import { instanceRoutes } from './routes/instance';
 import { listRoutes } from './routes/lists';
@@ -52,7 +53,7 @@ export function createApp(deps: AppDeps): Hono {
 
   // Before anything else, /api/health included: who may talk to this instance at all.
   app.use('*', transport.kind === 'desktop' ? desktopOnly(transport.secret) : hostAllowlist(config.allowedHosts));
-  // Every body we accept (settings, sets, views, sync, login) is tiny; don't buffer arbitrary uploads.
+  // Every body we accept (settings, sets, views, sync, login, comments) is small; don't buffer arbitrary uploads.
   app.use('*', bodyLimit({ maxSize: 1024 * 1024, onError: (c) => c.json({ error: 'Request body too large (max 1 MB)' }, 413) }));
   // Inert on the desktop socket (app:// fetches send no Origin), kept there as defence in depth.
   app.use('*', sameOriginWrites);
@@ -65,6 +66,7 @@ export function createApp(deps: AppDeps): Hono {
   app.route('/api/v1', listRoutes(deps));
   app.route('/api/v1', statsRoutes(deps));
   app.route('/api/v1', diffRoutes(deps));
+  app.route('/api/v1', commentRoutes(deps));
   app.route('/api/v1', accountRoutes(deps));
   app.route('/api/v1', instanceRoutes(deps));
   app.get('/api/v1/openapi.json', (c) => c.json(openApiDocument(config.version)));

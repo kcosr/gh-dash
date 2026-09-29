@@ -29,11 +29,16 @@ export function showPatch(t: ShowTarget, cur: Pick<UrlState, 'diff' | 'only'>): 
   return { diff, thread: t.threadId ?? null, file: t.path ?? null, only: cur.diff === diff ? cur.only : null };
 }
 
-/** How the chip names what it shows: "host.ts:42–44 on app#17", "a thread on app#17", "app@3f2a91c", "app". */
-export function showWhat(t: ShowTarget, o: { label: string; prRef: string; thread?: Parameters<typeof threadPlace>[0] | null }): { place: string | null; on: string } {
+/**
+ * How the chip names what it shows: the place ("host.ts:42–44", the file's name and the thread's lines when known; "a
+ * thread") and what it is on ("app#17", "app@3f2a91c", "app"). `path`: the place in full, for its title.
+ */
+export function showWhat(t: ShowTarget, o: { label: string; prRef: string; thread?: Parameters<typeof threadPlace>[0] | null }): { place: string | null; on: string; path: string | null } {
   const on = t.pr !== undefined && t.pr !== null ? `${o.label}${o.prRef}${t.pr}` : t.commit ? `${o.label}@${t.commit.slice(0, 7)}` : o.label;
-  const place = o.thread ? threadPlace(o.thread) : t.path ? t.path : t.threadId ? 'a thread' : null;
-  return { place, on };
+  if (o.thread && o.thread.path === null) return { place: 'a comment', on, path: null };
+  const full = o.thread ? threadPlace(o.thread) : t.path ?? null;
+  const place = full ? full.slice(full.lastIndexOf('/', full.search(/:\d|$/)) + 1) : t.threadId ? 'a thread' : null;
+  return { place, on, path: full };
 }
 
 /** "Claude wants to show you host.ts:42–44 on app#17" (the words after the name). */

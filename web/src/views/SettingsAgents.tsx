@@ -9,7 +9,6 @@ import { Link } from 'react-router';
 import type { Agent } from '../../../shared/api';
 import { useAgentActions, useDesktop } from '../api/desktop';
 import { useAgents, useApiBase, useWorkSources } from '../api/hooks';
-import { AgentMark } from '../components/bits';
 import { Icon } from '../components/Icon';
 import { useToast } from '../components/Toasts';
 import { useUI } from '../components/ui';
@@ -36,9 +35,9 @@ function AgentRow({ a, now, onNewToken, onRevoke }: { a: Agent; now: number; onN
   const revoked = !!a.revokedAt;
   return (
     <li className={cx('trk-row agent-row', revoked && 'revoked')}>
-      <span className="trk-name">{a.name}<AgentMark /></span>
+      <span className="trk-name" title={a.name}>{a.name}</span>
       {a.tokenPrefix && <code className="agent-prefix" title="The token's first characters, to tell tokens apart">{a.tokenPrefix}…</code>}
-      <span className="trk-st" title={[`Added ${fmtDateTime(a.createdAt)}`, a.lastUsedAt && `last used ${fmtDateTime(a.lastUsedAt)}`, a.revokedAt && `revoked ${fmtDateTime(a.revokedAt)}`].filter(Boolean).join(', ')}>
+      <span className="trk-st agent-st" title={[`Added ${fmtDateTime(a.createdAt)}`, a.lastUsedAt && `last used ${fmtDateTime(a.lastUsedAt)}`, a.revokedAt && `revoked ${fmtDateTime(a.revokedAt)}`].filter(Boolean).join(', ')}>
         {revoked ? `Revoked ${relLong(a.revokedAt!, now)}` : a.lastUsedAt ? `Used ${relLong(a.lastUsedAt, now)}` : `Added ${relLong(a.createdAt, now)} · not used yet`}
       </span>
       <span className="spacer" />
@@ -166,7 +165,7 @@ export function AgentsSection() {
           </span>
         </div>
         <div className="set-row top">
-          <span className="set-l">Agents<small>Revoked ones stay listed: their comments are still theirs.</small></span>
+          <span className="set-l">Added agents<small>Revoked ones stay listed: what they wrote is still theirs.</small></span>
           <span className="set-c grow stack">
             {agents.isError ? <span className="muted">Couldn't load agents: {(agents.error as Error).message}</span>
               : !agents.data ? <span className="muted">Loading…</span>

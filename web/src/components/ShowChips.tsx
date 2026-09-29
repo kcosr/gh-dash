@@ -65,7 +65,7 @@ export function ShowChips() {
     <>
       {chips.length > 0 && (
         <section className="show-host" aria-label="Agents">
-          {chips.map((c) => <Chip key={c.id} chip={c} onSay={setSaid} />)}
+          {chips.map((c, i) => <Chip key={c.id} chip={c} last={i === chips.length - 1} onSay={setSaid} />)}
         </section>
       )}
       {/* Announced, not focused: the newest chip's sentence (a live region must be there before what it announces). */}
@@ -74,7 +74,8 @@ export function ShowChips() {
   );
 }
 
-function Chip({ chip, onSay }: { chip: ShowChip; onSay: (text: string) => void }) {
+/** `last`: the newest, which carries the Follow agents switch (once for the stack). */
+function Chip({ chip, last, onSay }: { chip: ShowChip; last: boolean; onSay: (text: string) => void }) {
   const t = chip.target;
   const label = useRepoLabel();
   const providerOf = useProviderOf();
@@ -86,7 +87,8 @@ function Chip({ chip, onSay }: { chip: ShowChip; onSay: (text: string) => void }
   const diff = showDiffId(t);
   const threads = useThreads(t.threadId ? diff : null);
   const thread = t.threadId ? threads.data?.find((x) => x.id === t.threadId) : null;
-  const what = showPhrase(showWhat(t, { label: label(t.repo), prRef: providerOf(t.repo).prRef, thread }));
+  const w = showWhat(t, { label: label(t.repo), prRef: providerOf(t.repo).prRef, thread });
+  const what = showPhrase(w);
   const dismiss = useCallback(() => dismissChip(chip.id), [chip.id]);
   const sentence = `${chip.agent.name} ${chip.opened ? 'showed you' : 'wants to show you'} ${what}${chip.message ? `: ${chip.message}` : ''}`;
   const said = useRef(false);
@@ -127,7 +129,9 @@ function Chip({ chip, onSay }: { chip: ShowChip; onSay: (text: string) => void }
         <Avatar actor={{ login: null, name, avatarUrl: null, isMe: false }} size={18} />
         <p className="show-t">
           <b>{name}</b><AgentMark />{' '}
-          {chip.opened ? 'showed you' : 'wants to show you'} <span className="show-what" title={t.path ?? undefined}>{what}</span>
+          {chip.opened ? 'showed you' : 'wants to show you'}{' '}
+          {w.place && <><span className="show-where" title={w.path ?? undefined}>{w.place}</span> on </>}
+          <span className="show-on">{w.on}</span>
         </p>
       </div>
       {chip.message && <p className="show-msg">{chip.message}</p>}
@@ -135,10 +139,12 @@ function Chip({ chip, onSay }: { chip: ShowChip; onSay: (text: string) => void }
         {!chip.opened && <button type="button" className="btn sm" onClick={onOpen}><Icon name="diff" />Open</button>}
         <button type="button" className="btn sm ghost" onClick={dismiss}>Dismiss</button>
         <span className="spacer" />
-        <label className="show-follow" title="Open what agents show at once, in this browser">
-          <input type="checkbox" className="switch sm" checked={follow} onChange={(e) => setFollow(e.target.checked)} />
-          Follow agents
-        </label>
+        {last && (
+          <label className="show-follow" title="Open what agents show at once, in this browser">
+            <input type="checkbox" className="switch sm" checked={follow} onChange={(e) => setFollow(e.target.checked)} />
+            Follow agents
+          </label>
+        )}
       </div>
     </div>
   );

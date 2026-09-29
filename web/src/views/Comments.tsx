@@ -378,7 +378,7 @@ function AuthorMenu({ value, agents, onChange }: { value: ThreadAuthor | null; a
         <>
           {opt(null, 'Anyone', null, close)}
           {opt('self', 'You', null, close)}
-          {opt('agents', 'Agents', 'any', close)}
+          {opt('agents', 'Agents', null, close)}
           {named && (
             <div className="pop-foot" role="presentation">
               {agents.map((a) => opt(a.id, a.name, a.revokedAt ? 'revoked' : null, close))}

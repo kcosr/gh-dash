@@ -166,9 +166,12 @@ describe('show: where a chip leads', () => {
   it('names the place: the thread\'s lines when known, the file, a thread, or the PR or commit', () => {
     const o = { label: 'app', prRef: '#' };
     const w = (t: Parameters<typeof showWhat>[0], thread: Parameters<typeof showWhat>[1]['thread'] = null) => showPhrase(showWhat(t, { ...o, thread }));
-    expect(w({ repo: 'alice/app', pr: 7, threadId: 5 }, { path: 'src/host.ts', startLine: 42, endLine: 44 })).toBe('src/host.ts:42–44 on app#7');
+    expect(w({ repo: 'alice/app', pr: 7, threadId: 5 }, { path: 'src/host.ts', startLine: 42, endLine: 44 })).toBe('host.ts:42–44 on app#7');
+    expect(showWhat({ repo: 'alice/app', pr: 7, threadId: 5 }, { ...o, thread: { path: 'src/host.ts', startLine: 42, endLine: 44 } }).path).toBe('src/host.ts:42–44');
+    expect(w({ repo: 'alice/app', pr: 7, threadId: 5 }, { path: null, startLine: null, endLine: null })).toBe('a comment on app#7');
     expect(w({ repo: 'alice/app', pr: 7, threadId: 5 })).toBe('a thread on app#7');
-    expect(w({ repo: 'alice/app', pr: 7, path: 'src/a.ts' })).toBe('src/a.ts on app#7');
+    expect(w({ repo: 'alice/app', pr: 7, path: 'src/a.ts' })).toBe('a.ts on app#7');
+    expect(w({ repo: 'alice/app', pr: 7, path: 'README.md' })).toBe('README.md on app#7');
     expect(w({ repo: 'alice/app', commit: OID })).toBe('app@ccccccc');
     expect(showPhrase(showWhat({ repo: 'g/alice/app', pr: 3 }, { label: 'alice/app', prRef: '!' }))).toBe('alice/app!3');
     expect(w({ repo: 'alice/app' })).toBe('app');

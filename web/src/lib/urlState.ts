@@ -5,7 +5,7 @@
 import { useCallback, useMemo, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router';
 import { EVENT_TYPES } from '../../../shared/api';
-import type { EventType, GroupBy, PrStateFilter, VisibilityFilter, Who } from '../../../shared/api';
+import type { CommentFilter, EventType, GroupBy, PrStateFilter, VisibilityFilter, Who } from '../../../shared/api';
 import { RANGE_IDS, resolveRange } from './range';
 import type { RangeId, ResolvedRange } from './range';
 import { isValidDateOnly } from './time';
@@ -14,6 +14,8 @@ export type ViewName = 'prs' | 'issues' | 'activity' | 'repos' | 'repo' | 'insig
 export type Density = 'titles' | 'summary' | 'full';
 export type RepoSort = 'activity' | 'stars' | 'open' | 'name';
 export type RepoLayout = 'grid' | 'list';
+/** The diff's file list narrowed to files with comment threads, or with unresolved ones. */
+export type FileFilter = 'commented' | 'unresolved';
 
 export interface UrlState {
   /** null = default scope (param absent); [] = explicitly nothing. */
@@ -24,6 +26,8 @@ export interface UrlState {
   from: string | null;
   to: string | null;
   state: PrStateFilter;
+  /** PR list: only PRs with local comment threads (any, or unresolved); null = all. */
+  comments: CommentFilter | null;
   group: GroupBy;
   density: Density;
   rel: boolean;
@@ -35,6 +39,10 @@ export interface UrlState {
   diff: string | null;
   /** Path of the file in view in the open diff (only with `diff`). */
   file: string | null;
+  /** Comment thread in focus in the open diff (only with `diff`). */
+  thread: number | null;
+  /** The open diff's file list narrowed (only with `diff`); j/k follow it. */
+  only: FileFilter | null;
   // /repos only
   sort: RepoSort;
   layout: RepoLayout;
@@ -69,6 +77,7 @@ export function defaultsFor(view: ViewName): UrlState {
     from: null,
     to: null,
     state: view === 'issues' ? 'open' : 'merged',
+    comments: null,
     group: 'week',
     density: 'summary',
     rel: true,
@@ -77,6 +86,8 @@ export function defaultsFor(view: ViewName): UrlState {
     pr: null,
     diff: null,
     file: null,
+    thread: null,
+    only: null,
     sort: 'activity',
     layout: 'grid',
   };
@@ -102,6 +113,9 @@ export function parseUrlState(search: string, view: ViewName): UrlState {
   const pr = p.get('pr');
   const diff = p.get('diff');
   const diffOk = parseDiffId(diff) !== null;
+  const thread = Number(p.get('thread'));
+  const comments = p.get('comments');
+  const only = p.get('only');
   return {
     repos: reposRaw === null ? null : list(reposRaw),
     vis: oneOf(p.get('vis'), ['all', 'public', 'private'] as const, d.vis),
@@ -110,6 +124,7 @@ export function parseUrlState(search: string, view: ViewName): UrlState {
     from: range === 'custom' ? from : null,
     to: range === 'custom' ? to : null,
     state: oneOf(p.get('state'), view === 'issues' ? ['open', 'closed', 'all'] as const : ['open', 'merged', 'closed', 'all'] as const, d.state),
+    comments: view === 'prs' && (comments === 'any' || comments === 'unresolved') ? comments : null,
     group: oneOf(p.get('group'), ['day', 'week', 'month', 'repo'] as const, d.group),
     density: oneOf(p.get('density'), ['titles', 'summary', 'full'] as const, d.density),
     rel: p.get('rel') !== '0',
@@ -119,13 +134,15 @@ export function parseUrlState(search: string, view: ViewName): UrlState {
     pr: pr && /^[^#\s]+#\d+$/.test(pr) ? pr : null,
     diff: diffOk ? diff : null,
     file: diffOk ? p.get('file') || null : null,
+    thread: diffOk && Number.isInteger(thread) && thread > 0 ? thread : null,
+    only: diffOk && (only === 'commented' || only === 'unresolved') ? only : null,
     sort: oneOf(p.get('sort'), ['activity', 'stars', 'open', 'name'] as const, d.sort),
     layout: oneOf(p.get('layout'), ['grid', 'list'] as const, d.layout),
   };
 }
 
 /** Param order in written URLs (unknown params are kept at the end). */
-const ORDER = ['repos', 'vis', 'who', 'range', 'from', 'to', 'state', 'group', 'density', 'rel', 'types', 'q', 'sort', 'layout', 'pr', 'diff', 'file'];
+const ORDER = ['repos', 'vis', 'who', 'range', 'from', 'to', 'state', 'comments', 'group', 'density', 'rel', 'types', 'q', 'sort', 'layout', 'pr', 'diff', 'file', 'thread', 'only'];
 
 /** Serialize a full state to params, omitting defaults for the view. */
 function toParams(s: UrlState, view: ViewName): [string, string][] {
@@ -137,6 +154,7 @@ function toParams(s: UrlState, view: ViewName): [string, string][] {
   if (s.range === 'custom' && s.from && s.to) out.push(['range', 'custom'], ['from', s.from], ['to', s.to]);
   else if (s.range !== d.range && s.range !== 'custom') out.push(['range', s.range]);
   if (s.state !== d.state) out.push(['state', s.state]);
+  if (s.comments) out.push(['comments', s.comments]);
   if (s.group !== d.group) out.push(['group', s.group]);
   if (s.density !== d.density) out.push(['density', s.density]);
   if (!s.rel) out.push(['rel', '0']);
@@ -148,6 +166,8 @@ function toParams(s: UrlState, view: ViewName): [string, string][] {
   if (s.diff) {
     out.push(['diff', s.diff]);
     if (s.file) out.push(['file', s.file]);
+    if (s.thread) out.push(['thread', String(s.thread)]);
+    if (s.only) out.push(['only', s.only]);
   }
   return out;
 }
@@ -185,9 +205,9 @@ export function carrySearch(search: string, keys = SCOPE_KEYS): string {
 }
 
 /** Params for what's open on top of a view (details, diff): never part of a saved view. */
-export const OVERLAY_KEYS = ['pr', 'diff', 'file'];
+export const OVERLAY_KEYS = ['pr', 'diff', 'file', 'thread', 'only'];
 
-/** Canonical query string (sorted, without `pr`/`diff`/`file`) for comparing saved views. */
+/** Canonical query string (sorted, without the overlay params) for comparing saved views. */
 export function canonicalQuery(query: string): string {
   const p = new URLSearchParams(query.replace(/^\?/, ''));
   for (const k of OVERLAY_KEYS) p.delete(k);

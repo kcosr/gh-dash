@@ -40,13 +40,19 @@ const HUNK = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
 /** Line text without a CRLF file's carriage return, so patches and full file contents compare alike. */
 const text = (line: string) => (line.endsWith('\r') ? line.slice(0, -1) : line);
 
+/** One row of a patch as a unified diff shows it: a context line has both numbers, a change one. */
+export interface PatchRow {
+  old: number | null;
+  new: number | null;
+  text: string;
+}
+
 /**
- * The old and new side lines of a unified-diff patch (DiffFile.patch: hunks from the first "@@"). Hunk headers'
- * counts decide what belongs to a hunk; a context line whose leading space was stripped (an empty line) still counts.
+ * The rows of a unified-diff patch (DiffFile.patch: hunks from the first "@@"), in order. Hunk headers' counts decide
+ * what belongs to a hunk; a context line whose leading space was stripped (an empty line) still counts.
  */
-export function patchLines(patch: string): { old: SideLines; new: SideLines } {
-  const oldLines = new Map<number, string>();
-  const newLines = new Map<number, string>();
+export function patchRows(patch: string): PatchRow[] {
+  const rows: PatchRow[] = [];
   let o = 0, n = 0, oldLeft = 0, newLeft = 0;
   for (const line of patch.split('\n')) {
     const hunk = HUNK.exec(line);
@@ -60,19 +66,29 @@ export function patchLines(patch: string): { old: SideLines; new: SideLines } {
     // "\ No newline at end of file", or anything past a hunk's counts.
     if (line.startsWith('\\') || (oldLeft <= 0 && newLeft <= 0)) continue;
     const mark = line[0];
+    const t = text(line.slice(1));
     if (mark === '+') {
-      newLines.set(n++, text(line.slice(1)));
+      rows.push({ old: null, new: n++, text: t });
       newLeft--;
     } else if (mark === '-') {
-      oldLines.set(o++, text(line.slice(1)));
+      rows.push({ old: o++, new: null, text: t });
       oldLeft--;
     } else {
-      const t = text(line.slice(1));
-      oldLines.set(o++, t);
-      newLines.set(n++, t);
+      rows.push({ old: o++, new: n++, text: t });
       oldLeft--;
       newLeft--;
     }
+  }
+  return rows;
+}
+
+/** The old and new side lines of a patch (see patchRows). */
+export function patchLines(patch: string): { old: SideLines; new: SideLines } {
+  const oldLines = new Map<number, string>();
+  const newLines = new Map<number, string>();
+  for (const r of patchRows(patch)) {
+    if (r.old !== null) oldLines.set(r.old, r.text);
+    if (r.new !== null) newLines.set(r.new, r.text);
   }
   return { old: oldLines, new: newLines };
 }

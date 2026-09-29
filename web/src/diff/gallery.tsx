@@ -14,7 +14,7 @@ import type { Diff } from '../../../shared/api';
 import { Diffstat } from '../components/bits';
 import { Icon } from '../components/Icon';
 import { plural } from '../lib/time';
-import DiffViewer from './DiffViewer';
+import DiffViewer, { type DiffComments } from './DiffViewer';
 
 // Small fixtures are committed; the large ones (fixtures/.gitignore) only show up when copied in.
 const FIXTURES = import.meta.glob<Diff>('./fixtures/*.json', { import: 'default' });
@@ -22,6 +22,13 @@ const fixtureName = (key: string) => key.replace(/^.*\//, '').replace(/\.json$/,
 const NAMES = Object.keys(FIXTURES).map(fixtureName).sort();
 
 type Params = { f: string; theme: 'light' | 'dark'; compact: boolean; file: string | null; load: 'raw' | 'none' };
+
+// No server here: no threads, and writing one says so.
+const noServer = () => Promise.reject(new Error('the gallery has no server'));
+const COMMENTS: DiffComments = {
+  key: 'gallery', threads: [], error: false, me: undefined, initialThread: null, onThreadFocus: () => {}, only: null, onOnlyChange: () => {},
+  actions: { create: noServer, reply: noServer, setStatus: noServer, edit: noServer, deleteComment: noServer, deleteThread: noServer },
+};
 
 function readParams(): Params {
   const q = new URLSearchParams(location.search);
@@ -112,6 +119,7 @@ function Gallery() {
               isActive={() => true}
               file={p.file}
               onFileChange={setInView}
+              comments={COMMENTS}
             />
           </div>
         </section>

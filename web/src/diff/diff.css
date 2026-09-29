@@ -45,6 +45,10 @@
   --diffs-bg-separator-override: var(--surface-2);
   --diffs-bg-buffer-override: var(--surface-2);
   --diffs-bg-context-override: var(--surface-2);
+  /* Selected lines (a new comment's): the accent, diluted like the change colors (Pierre mixes in ~20%). */
+  --diffs-bg-selection-override: color-mix(in srgb, var(--accent) 45%, var(--surface));
+  --diffs-bg-selection-number-override: color-mix(in srgb, var(--accent) 60%, var(--surface));
+  --diffs-selection-number-fg: var(--accent-text);
 
   display: flex;
   flex-direction: column;
@@ -121,3 +125,104 @@
 a.dvh-note:hover, .dvh-note.link:hover { color: var(--accent-text); }
 .dvh.st-removed .dvh-path { color: var(--text-2); }
 .dvh.flat { border-bottom-color: transparent; }
+
+/* ---------- comment threads (Threads.tsx): inline under their lines, in a file's Outdated block, in the column.
+   UI type at the viewer's size, the app's tokens, text buttons; the thread's state is a 2px left rule. */
+.dth { --dth-rule: var(--accent); margin: 6px 12px 8px; padding: 8px 12px 8px 12px; max-width: 760px; background: var(--surface); border: 1px solid var(--border); border-left: 2px solid var(--dth-rule); border-radius: 6px; font: 12.5px/1.5 var(--font); color: var(--text); white-space: normal; }
+.dth.resolved { --dth-rule: var(--border-strong); }
+.dth.focus { box-shadow: 0 0 0 2px var(--accent-weak); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); border-left-color: var(--dth-rule); }
+.dth + .dth { margin-top: -2px; }
+.dth-top { display: flex; align-items: center; gap: 8px; margin: -2px 0 6px; font-size: 11.5px; color: var(--muted); }
+.dth-state { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); }
+.dth-state:hover { color: var(--text); }
+.dth-state svg, .dth-sum svg { width: 12px; height: 12px; }
+.dth-c + .dth-c { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
+.dth-c-head { display: flex; align-items: center; gap: 6px; min-height: 18px; font-size: 12px; color: var(--muted); }
+.dth-who { color: var(--text); font-weight: 600; }
+.dth-agent { font-size: 10.5px; border: 1px solid var(--border-strong); border-radius: 999px; padding: 0 5px; color: var(--muted); }
+.dth-edited { font-size: 11px; }
+.dth-c-acts { display: flex; gap: 2px; opacity: 0; transition: opacity .1s; }
+.dth-c:hover .dth-c-acts, .dth-c:focus-within .dth-c-acts { opacity: 1; }
+.dth-md.md { margin-top: 3px; font-size: 12.5px; line-height: 1.55; }
+.dth-md.md p { margin: 0 0 6px; }
+.dth-md.md pre, .dth-md.md code { font-size: 11.5px; }
+.dth-foot { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.dth-reply { flex: 1; height: 26px; padding: 0 8px; border: 1px solid var(--border); border-radius: 5px; background: var(--page); color: var(--muted); text-align: left; font-size: 12px; }
+.dth-reply:hover { border-color: var(--border-strong); color: var(--text-2); }
+.dth-btn { height: 24px; padding: 0 7px; border-radius: 5px; font-size: 12px; font-weight: 500; color: var(--text-2); white-space: nowrap; }
+.dth-btn:hover { background: var(--surface-2); color: var(--text); }
+.dth-btn[disabled] { opacity: .5; cursor: default; background: none; }
+.dth-btn.primary { background: var(--accent-weak); color: var(--accent-text); }
+.dth-btn.primary:hover { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+.dth-btn.danger { color: var(--del); }
+.dth-confirm { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 6px 0; padding: 6px 8px; border-radius: 5px; background: color-mix(in srgb, var(--del) 7%, var(--surface)); font-size: 12px; }
+.dth-confirm span { flex: 1; min-width: 12em; }
+.dth-composer { margin-top: 8px; }
+.dth-c > .dth-composer { margin-top: 4px; }
+.dth-composer textarea { display: block; width: 100%; min-height: 52px; max-height: 320px; resize: vertical; padding: 6px 8px; border: 1px solid var(--border-strong); border-radius: 5px; background: var(--surface); color: var(--text); font: 12.5px/1.5 var(--font); outline: none; }
+.dth-composer textarea:focus { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); box-shadow: 0 0 0 2px var(--accent-weak); }
+.dth-composer-bar { display: flex; align-items: center; gap: 4px; margin-top: 6px; }
+.dth-hint { font-size: 11px; color: var(--muted); }
+.dth-hint kbd { font-size: 10px; padding: 2px 4px; }
+.dth-snippet { margin: 0 0 8px; padding: 5px 8px; max-height: 9em; overflow: auto; border-radius: 4px; background: var(--surface-2); font: 11.5px/1.5 var(--mono); color: var(--text-2); white-space: pre; }
+.dth-sum { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 20px; font-size: 12px; color: var(--muted); text-align: left; }
+.dth-sum:hover { color: var(--text-2); }
+.dth-sum-t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dth-sum-t b { font-weight: 600; color: var(--text-2); }
+.dth.resolved:has(> .dth-sum) { padding-top: 5px; padding-bottom: 5px; background: var(--page); }
+.dth-n { flex: none; font-size: 11.5px; color: var(--muted); }
+
+/* File list: thread counts per file, and the filter that narrows the list (and j/k) to files with threads. */
+.dvf-cm { flex: none; display: inline-flex; align-items: center; gap: 2px; font-size: 10.5px; font-variant-numeric: tabular-nums; color: var(--muted); }
+.dvf-cm svg { width: 11px; height: 11px; }
+.dvf-cm.open { color: var(--accent-text); }
+.dvf-filter { flex: none; display: flex; gap: 2px; padding: 8px 8px 0; }
+.dvf-filter button { height: 22px; padding: 0 7px; border-radius: 5px; font-size: 11.5px; color: var(--muted); }
+.dvf-filter button:hover { color: var(--text); background: var(--surface-2); }
+.dvf-filter button.on { color: var(--accent-text); background: var(--accent-weak); }
+.dvf-none { margin: 8px; font-size: 12px; color: var(--muted); }
+
+/* ---------- comments column (CommentsColumn.tsx): beside the diff on desktop, an overlay on compact. */
+.dcc { flex: none; width: clamp(280px, 30%, 380px); display: flex; flex-direction: column; min-height: 0; background: var(--page); border-left: 1px solid var(--border); font-size: 12.5px; }
+.dcc-head { flex: none; display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 6px 0 14px; border-bottom: 1px solid var(--border); background: var(--surface); }
+.dcc-head b { font-weight: 600; font-size: 12.5px; }
+.dcc-count { font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.dcc-head .btn.icon { width: 28px; height: 28px; }
+.dcc-body { flex: 1; overflow: auto; padding: 4px 0 16px; }
+.dcc-sec { padding: 8px 10px 4px; }
+.dcc-sec h4 { display: flex; align-items: center; gap: 6px; margin: 4px 4px 6px; font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
+.dcc-sec h4 .n { font-size: 11px; letter-spacing: 0; color: var(--text-2); }
+.dcc .dth { margin: 0 0 8px; max-width: none; }
+.dcc-start { display: block; width: 100%; }
+.dcc-new { padding-top: 2px; }
+.dcc-new .dth-composer { margin-top: 0; }
+.dcc-link { display: flex; align-items: baseline; gap: 7px; width: 100%; padding: 4px 6px; border-radius: 5px; text-align: left; color: var(--text); }
+.dcc-link:hover { background: var(--surface-2); }
+.dcc-link.on { background: var(--accent-weak); }
+.dcc-link svg { flex: none; width: 12px; height: 12px; align-self: center; color: var(--accent-text); }
+.dcc-link.resolved svg { color: var(--muted); }
+.dcc-link.resolved .dcc-text { color: var(--muted); }
+.dcc-where { flex: none; max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 11px var(--mono); color: var(--text-2); }
+.dcc-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.dth-where { font: 11px var(--mono); color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; }
+.dcc-foot { flex: none; display: flex; align-items: center; gap: 4px; padding: 6px 10px 7px 14px; border-top: 1px solid var(--border); font-size: 11.5px; color: var(--muted); }
+.dcc-foot svg { width: 14px; height: 14px; margin-right: 2px; }
+.diff-viewer.compact .dcc { position: absolute; inset: 0 0 0 auto; z-index: 5; width: min(360px, 92%); box-shadow: var(--shadow); }
+.dth-stack { padding: 1px 0; }
+.dth-moved { font-size: 11.5px; color: var(--muted); }
+.dth-new { --dth-rule: var(--accent); }
+.dth-new .dth-composer { margin-top: 0; }
+.dth-outdated { margin: 6px 12px 8px; max-width: 760px; }
+.dth-outdated .dth { margin-left: 0; margin-right: 0; }
+.dth-outdated-head { display: flex; align-items: center; gap: 5px; width: 100%; height: 26px; padding: 0 8px 0 4px; border: 1px dashed var(--border-strong); border-radius: 6px; font: 500 12px var(--font); color: var(--text-2); text-align: left; }
+.dth-outdated-head:hover { color: var(--text); background: var(--surface); }
+.dth-outdated-head svg { width: 13px; height: 13px; color: var(--muted); }
+.dth-outdated-head .dth-hint { margin-left: auto; font-weight: 400; }
+.dth-outdated.open .dth-outdated-head { margin-bottom: 6px; }
+.dvr-bar .dvr-cm-btn { height: 28px; padding: 0 8px; gap: 5px; font-size: 12px; color: var(--text-2); }
+.dvr-bar .dvr-cm-btn svg { width: 15px; height: 15px; color: var(--muted); }
+.dvr-cm-btn .n { font-variant-numeric: tabular-nums; color: var(--muted); }
+.dvr-cm-btn .n.open { color: var(--accent-text); }
+.dvr-cm-btn .n.err { color: var(--del); }
+.dvr-bar .dvr-cm-btn.on { background: var(--surface-2); color: var(--text); }
+.diff-viewer.compact .dvr-bar .dvr-cm-btn { height: 40px; }

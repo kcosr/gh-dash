@@ -190,6 +190,11 @@ kbd { font: 500 11px/1 var(--font); color: var(--muted); border: 1px solid var(-
 .pr-title .labels { display: inline-flex; gap: 4px; margin-left: 8px; vertical-align: 1px; flex-wrap: wrap; }
 .draft-tag { font-size: 11px; font-weight: 500; color: var(--muted); border: 1px solid var(--border-strong); border-radius: 999px; padding: 0 6px; margin-left: 8px; vertical-align: 1px; }
 .pr-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin-top: 3px; font-size: 12.5px; color: var(--text-2); }
+/* Local comment threads: muted when all are resolved, the accent while any is open. */
+.pr-comments { display: inline-flex; align-items: center; gap: 3px; margin-left: 4px; font-size: 12px; font-weight: 500; font-variant-numeric: tabular-nums; color: var(--muted); }
+.pr-comments svg { width: 13px; height: 13px; }
+.pr-comments.open { color: var(--accent-text); }
+.pr.t .t-title .pr-comments { margin-left: 8px; vertical-align: -2px; }
 .repo-chip { display: inline-flex; align-items: center; gap: 4px; font-weight: 550; color: var(--text); }
 .author { display: inline-flex; align-items: center; gap: 5px; }
 .author b { font-weight: 600; color: var(--text); }
@@ -261,6 +266,15 @@ kbd { font: 500 11px/1 var(--font); color: var(--muted); border: 1px solid var(-
 .iss-li { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 4px 0; }
 .iss-li svg { width: 15px; height: 15px; color: var(--merged); }
 .iss-li .st { margin-left: auto; font-size: 12px; color: var(--muted); }
+/* A comment thread in the drawer: where, the first comment's opening words; opens the diff at it. */
+.th-li { display: flex; align-items: baseline; gap: 8px; width: 100%; padding: 4px 6px; margin: 0 -6px; border-radius: 6px; font-size: 13px; text-align: left; color: var(--text); }
+.th-li:hover { background: var(--surface-2); }
+.th-li svg { width: 13px; height: 13px; align-self: center; color: var(--accent-text); }
+.th-li.resolved svg { color: var(--muted); }
+.th-li.resolved .th-text { color: var(--text-2); }
+.th-where { flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; font: 11.5px var(--mono); color: var(--text-2); }
+.th-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.th-n { flex: none; font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
 dl.kv { display: grid; grid-template-columns: 120px 1fr; gap: 8px 12px; margin: 0; font-size: 13px; }
 dl.kv dt { color: var(--muted); }
 dl.kv dd { margin: 0; display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }

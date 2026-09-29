@@ -9,11 +9,11 @@ import { Component, Suspense, lazy, useCallback, useEffect, useLayoutEffect, use
 import type { ReactNode } from 'react';
 import { Link } from 'react-router';
 import { isUnreachable, rateLimitResetAt } from '../api/client';
-import { findCachedCommit, findCachedPr, useDiff, useLoadFile, usePrDetail, useRefreshDiff, useRepoMap } from '../api/hooks';
+import { findCachedCommit, findCachedPr, useDiff, useLoadFile, useMe, usePrDetail, useRefreshDiff, useRepoMap, useThreadActions, useThreads } from '../api/hooks';
 import { useLayer } from '../lib/layers';
 import { fmtDateTime, fmtTime, plural, rel, relFuture, relLong } from '../lib/time';
-import { parseDiffId, useUrlState } from '../lib/urlState';
-import type { DiffTarget } from '../lib/urlState';
+import { commitDiffId, parseDiffId, useUrlState } from '../lib/urlState';
+import type { DiffTarget, FileFilter } from '../lib/urlState';
 import { isChunkLoadError } from '../lib/util';
 import { Diffstat } from './bits';
 import { EmptyState, ErrorNote, ProgressBar } from './EmptyState';
@@ -52,8 +52,14 @@ export function DiffView({ id, compact }: { id: string; compact: boolean }) {
   const panel = useRef<HTMLElement>(null);
   const body = useRef<HTMLDivElement>(null);
   const [opener] = useState(() => document.activeElement as HTMLElement | null);
-  // The deep-linked file as of opening; after that the URL only follows the viewer.
+  // The deep-linked file and thread as of opening; after that the URL only follows the viewer.
   const [initialFile] = useState(s.file);
+  const [initialThread] = useState(s.thread);
+  // A commit's threads are keyed by its full oid, which an abbreviated `diff` param only gets from the diff.
+  const threadsId = t.kind === 'pr' ? id : diff.data ? commitDiffId(t.repo, diff.data.headOid) : null;
+  const threads = useThreads(threadsId);
+  const threadActions = useThreadActions(threadsId ?? id);
+  const me = useMe();
 
   const close = () => set({ diff: null });
   const isActive = useLayer(true, close);
@@ -71,6 +77,9 @@ export function DiffView({ id, compact }: { id: string; compact: boolean }) {
     fileTimer.current = window.setTimeout(() => setRef.current({ file: path }, { replace: true }), 300);
   }, []);
   useEffect(() => () => clearTimeout(fileTimer.current), []);
+  // The focused thread and the file-list filter replace the entry too: Back always closes the diff.
+  const onThreadFocus = useCallback((thread: number | null) => setRef.current({ thread }, { replace: true }), []);
+  const onOnlyChange = useCallback((only: FileFilter | null) => setRef.current({ only }, { replace: true }), []);
 
   useEffect(() => {
     // The list and drawer are hidden underneath: start keyboard focus (and scrolling) in the diff.
@@ -156,7 +165,13 @@ export function DiffView({ id, compact }: { id: string; compact: boolean }) {
           ) : (
             <ViewerBoundary ghUrl={d.url}>
               <Suspense fallback={<DiffSkeleton />}>
-                <DiffViewer diff={d} loadFile={loadFile} compact={compact} isActive={isActive} file={initialFile} onFileChange={onFileChange} />
+                <DiffViewer
+                  diff={d} loadFile={loadFile} compact={compact} isActive={isActive} file={initialFile} onFileChange={onFileChange}
+                  comments={{
+                    key: threadsId ?? id, threads: threads.data, error: threads.isError, actions: threadActions, me: me.data,
+                    initialThread, onThreadFocus, only: s.only, onOnlyChange,
+                  }}
+                />
               </Suspense>
             </ViewerBoundary>
           )

@@ -20,6 +20,14 @@ interface PrRowProps {
   onOpen: (pr: PullRequest) => void;
 }
 
+/** Local comment threads on the PR: the count, in the accent while any is unresolved. */
+function Comments({ pr }: { pr: PullRequest }) {
+  const c = pr.comments;
+  if (!c?.threads) return null;
+  const title = `${c.threads} comment ${c.threads === 1 ? 'thread' : 'threads'}${c.unresolved ? `, ${c.unresolved} unresolved` : ', all resolved'}`;
+  return <span className={cx('pr-comments', c.unresolved > 0 && 'open')} title={title} aria-label={title}><Icon name="comment" />{c.unresolved || c.threads}</span>;
+}
+
 const GhLink = ({ url }: { url: string }) => (
   <a className="gh" href={url} target="_blank" rel="noopener noreferrer" title="Open on GitHub (o)" onClick={(e) => e.stopPropagation()}>
     <Icon name="ext" />
@@ -42,7 +50,7 @@ export const PrRow = memo(function PrRow({ pr, density, cursor, active, onOpen }
       <article className={cls} onClick={open} tabIndex={-1} aria-label={pr.title} data-id={pr.id}>
         <span className={`pr-ic ${prIconClass(pr)}`}><Icon name={prIconName(pr)} /></span>
         <span className="t-repo"><RepoChip name={pr.repo} /><span className="num">#{pr.number}</span></span>
-        <span className="t-title">{pr.title}{pr.isDraft && <span className="draft-tag">Draft</span>}<Labels labels={pr.labels} /></span>
+        <span className="t-title">{pr.title}{pr.isDraft && <span className="draft-tag">Draft</span>}<Labels labels={pr.labels} /><Comments pr={pr} /></span>
         <Avatar actor={pr.author} size={18} />
         {time}
         <GhLink url={pr.url} />
@@ -72,6 +80,7 @@ export const PrRow = memo(function PrRow({ pr, density, cursor, active, onOpen }
           </span>
           <span className="sep">·</span>
           <Diffstat add={pr.additions} del={pr.deletions} />
+          <Comments pr={pr} />
         </div>
         {density === 'full'
           ? <Markdown source={pr.body} />

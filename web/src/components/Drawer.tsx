@@ -1,8 +1,9 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { PullRequest, PullRequestDetail } from '../../../shared/api';
-import { findCachedPr, usePrDetail } from '../api/hooks';
+import { findCachedPr, usePrDetail, useThreads } from '../api/hooks';
 import { hasBlockingLayer, isTypingTarget, useLayer } from '../lib/layers';
+import { plainPreview } from '../lib/markdown';
 import { dur, fmtDate, fmtDateTime, plural, rel } from '../lib/time';
 import { commitDiffId, useUrlState } from '../lib/urlState';
 import { actorName, actorSubject, copyText, isPlainClick } from '../lib/util';
@@ -20,6 +21,7 @@ export function PrDrawer({ id, compact }: { id: string; compact: boolean }) {
   const qc = useQueryClient();
   const toast = useToast();
   const detail = usePrDetail(id);
+  const threads = useThreads(id);
   const cached = useMemo(() => findCachedPr(qc, id), [qc, id, detail.dataUpdatedAt]);
   const pr: PullRequest | undefined = detail.data ?? cached;
   const full: PullRequestDetail | undefined = detail.data;
@@ -29,7 +31,7 @@ export function PrDrawer({ id, compact }: { id: string; compact: boolean }) {
   const close = () => set({ pr: null });
   useLayer(true, close, false);
   // Diffs come from GitHub on demand: nothing is fetched until one is opened. A PR's diff id is its id.
-  const openDiff = useCallback((diffId: string) => set({ diff: diffId }), [set]);
+  const openDiff = useCallback((diffId: string, thread?: number) => set({ diff: diffId, thread: thread ?? null }), [set]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -123,10 +125,30 @@ export function PrDrawer({ id, compact }: { id: string; compact: boolean }) {
         </div>
       </div>
 
+      {!!threads.data?.length && (
+        <section className="dr-sec">
+          <h3>Comments <span className="n">{threads.data.length}</span></h3>
+          {threads.data.map((t) => {
+            const first = t.comments[0]!;
+            const where = t.path === null ? 'General' : t.startLine === null ? t.path : `${t.path}:${t.startLine === t.endLine ? t.startLine : `${t.startLine}–${t.endLine}`}`;
+            return (
+              <button key={t.id} type="button" className={`th-li${t.status === 'resolved' ? ' resolved' : ''}`} onClick={() => openDiff(id, t.id)}
+                title={`${t.status === 'resolved' ? 'Resolved · ' : ''}Open the diff at this thread`}>
+                <Icon name={t.status === 'resolved' ? 'check' : 'comment'} />
+                <span className="th-where" title={where}><bdi>{where}</bdi></span>
+                <span className="th-text">{plainPreview(first.body, 140)}</span>
+                {t.comments.length > 1 && <span className="th-n" title={`${t.comments.length - 1} ${plural(t.comments.length - 1, 'reply', 'replies')}`}>+{t.comments.length - 1}</span>}
+              </button>
+            );
+          })}
+        </section>
+      )}
+
       <section className="dr-sec">
         <h3>Description</h3>
         <Markdown source={pr.body} />
       </section>
+
 
       {full ? (
         full.closingIssues.length > 0 && (

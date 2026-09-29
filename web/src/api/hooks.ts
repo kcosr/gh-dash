@@ -6,8 +6,10 @@ import type {
   ActivityQuery,
   ActivityResponse,
   Commit,
+  CommentThread,
   Diff,
   IssueQuery,
+  NewPrThread,
   PrListResponse,
   PrQuery,
   PullRequest,
@@ -43,6 +45,8 @@ export const qk = {
   releases: (q: ScopeQuery) => ['releases', q] as const,
   stats: (q: StatsQuery) => ['stats', q] as const,
   diff: (id: string) => ['diff', id] as const,
+  /** A PR's ("<repo>#<n>") or a commit's ("<repo>@<full oid>") comment threads. */
+  threads: (id: string) => ['threads', id] as const,
   blob: (repo: string, ref: string, path: string) => ['blob', repo, ref, path] as const,
   diffCache: ['diff-cache'] as const,
 };
@@ -52,7 +56,7 @@ export const qk = {
  * from GitHub on demand, so a sync doesn't swap an open diff under the reader (the diff view has a
  * refresh); a PR diff is revalidated when it's next opened (useDiff).
  */
-export const refetchAfterSync = (q: Query) => !['sync-status', 'diff', 'blob', 'instance', 'desktop-state'].includes(q.queryKey[0] as string);
+export const refetchAfterSync = (q: Query) => !['sync-status', 'diff', 'blob', 'threads', 'instance', 'desktop-state'].includes(q.queryKey[0] as string);
 
 // ---------------------------------------------------------------- reference data
 
@@ -314,6 +318,50 @@ export function useClearDiffCache() {
       qc.removeQueries({ queryKey: ['blob'], type: 'inactive' });
     },
   });
+}
+
+// ---------------------------------------------------------------- comment threads
+
+/** Threads of a PR ("<repo>#<n>") or a commit (commitDiffId with the full oid, as a diff's headOid gives it). */
+export function useThreads(id: string | null) {
+  const t = parseDiffId(id);
+  return useQuery({
+    queryKey: qk.threads(id ?? ''),
+    queryFn: () => (t!.kind === 'pr' ? api.prThreads(t!.repo, t!.number) : api.commitThreads(t!.repo, t!.oid)).then((r) => r.items),
+    // Commit threads need the full oid; an abbreviated one waits for the diff.
+    enabled: !!t && (t.kind === 'pr' || t.oid.length === 40),
+    staleTime: 30_000,
+  });
+}
+
+/** Everything that changes a target's threads. Each answer updates the list in place; PR counts are refetched. */
+export function useThreadActions(id: string) {
+  const qc = useQueryClient();
+  return useMemo(() => {
+    const t = parseDiffId(id);
+    const key = qk.threads(id);
+    const put = (thread: CommentThread) => {
+      qc.setQueryData<CommentThread[]>(key, (list = []) =>
+        list.some((x) => x.id === thread.id) ? list.map((x) => (x.id === thread.id ? thread : x)) : [...list, thread]);
+    };
+    const drop = (threadId: number) => qc.setQueryData<CommentThread[]>(key, (list = []) => list.filter((x) => x.id !== threadId));
+    const counts = () => {
+      if (t?.kind !== 'pr') return;
+      void qc.invalidateQueries({ queryKey: ['prs'] });
+      void qc.invalidateQueries({ queryKey: qk.pr(t.repo, t.number) });
+    };
+    const done = <T,>(p: Promise<T>, apply: (v: T) => void) => p.then((v) => { apply(v); counts(); return v; });
+    return {
+      create: (body: NewPrThread) =>
+        done(t?.kind === 'pr' ? api.createPrThread(t.repo, t.number, body) : api.createCommitThread(t!.repo, (t as { oid: string }).oid, body), put),
+      reply: (threadId: number, body: string) => done(api.reply(threadId, body), put),
+      setStatus: (threadId: number, status: 'open' | 'resolved') => done(api.setThreadStatus(threadId, status), put),
+      edit: (commentId: number, body: string) => done(api.editComment(commentId, body), put),
+      deleteComment: (threadId: number, commentId: number) =>
+        done(api.deleteComment(commentId), (r) => (r.thread ? put(r.thread) : drop(threadId))),
+      deleteThread: (threadId: number) => done(api.deleteThread(threadId), () => drop(threadId)),
+    };
+  }, [qc, id]);
 }
 
 // ---------------------------------------------------------------- mutations

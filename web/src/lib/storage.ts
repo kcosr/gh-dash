@@ -52,14 +52,16 @@ export interface DiffPrefs {
   wrap: boolean;
   /** File list column shown. */
   files: boolean;
+  /** Comments column shown. */
+  comments: boolean;
 }
-const DIFF_DEFAULTS: DiffPrefs = { split: false, wrap: false, files: true };
+const DIFF_DEFAULTS: DiffPrefs = { split: false, wrap: false, files: true, comments: false };
 
 export function getDiffPrefs(): DiffPrefs {
   try {
     const v = JSON.parse(read(DIFF_KEY) ?? '{}') as Partial<Record<keyof DiffPrefs, unknown>>;
     const pick = (k: keyof DiffPrefs) => { const x = v[k]; return typeof x === 'boolean' ? x : DIFF_DEFAULTS[k]; };
-    return { split: pick('split'), wrap: pick('wrap'), files: pick('files') };
+    return { split: pick('split'), wrap: pick('wrap'), files: pick('files'), comments: pick('comments') };
   } catch {
     return DIFF_DEFAULTS;
   }

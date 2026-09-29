@@ -26,3 +26,7 @@
 /* Split: a hairline between the sides (Pierre draws it in the background color). App tokens like
    --border inherit into the shadow root. */
 [data-diff-type="split"] [data-deletions] { border-right-color: var(--border); }
+
+/* The gutter's "comment on this line" button: a quiet outlined square, the accent only on hover. */
+[data-utility-button] { background-color: var(--surface); color: var(--accent-text); box-shadow: 0 0 0 1px var(--border-strong); border-radius: 4px; transform: scale(.86); }
+[data-utility-button]:hover { background-color: var(--accent); color: #fff; box-shadow: none; }

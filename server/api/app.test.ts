@@ -578,6 +578,17 @@ describe('adding and removing repositories', () => {
     expect((await t.call('GET', '/repo-candidates')).body!.suggested).toEqual([]);
   });
 
+  it('checks the account on every candidates answer, cached ones included', async () => {
+    const t = trackApp();
+    t.db.run(`DELETE FROM meta WHERE key = 'viewer'`);
+    expect((await t.call('GET', '/repo-candidates')).status).toBe(200);
+    // Meanwhile the database was claimed by another account (Bob added a repo with his token); Alice's lists are cached.
+    setMeta(t.db, 'viewer', { id: 'U_bob', login: 'bob', name: null, avatarUrl: null });
+    const requests = t.gh.requests.length;
+    expect(await t.call('GET', '/repo-candidates')).toMatchObject({ status: 409, body: { error: expect.stringContaining('but the GitHub token is for @alice') } });
+    expect(t.gh.requests.length).toBe(requests);
+  });
+
   it('refuses GitHub-spending lookups from other sites', async () => {
     const t = trackApp();
     for (const path of ['/api/v1/repo-candidates', '/api/v1/repo-lookup?repo=bob/tool']) {

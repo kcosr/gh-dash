@@ -88,8 +88,8 @@ const fromGql = (r: GqlRepoSummary): Found => ({
 
 export class Tracking {
   private readonly opts: TrackingOptions;
-  /** The last candidate lists, for the token they were fetched with. */
-  private cached: { token: string; at: number; items: Found[]; suggested: Found[]; truncated: boolean; fetchedAt: string } | null = null;
+  /** The last candidate lists, for the token they were fetched with and the account GitHub said it belongs to. */
+  private cached: { token: string; viewer: GqlViewer; at: number; items: Found[]; suggested: Found[]; truncated: boolean; fetchedAt: string } | null = null;
 
   constructor(opts: TrackingOptions) {
     this.opts = opts;
@@ -152,14 +152,15 @@ export class Tracking {
         }),
         c.graphql.query<RepoSuggestionsData>(REPO_SUGGESTIONS),
       ]).catch(httpError);
-      this.checkViewer(suggestions.viewer);
       const items = repos.items.map(fromRest);
       list = {
-        token: c.token, at: this.now(), items, truncated: items.length >= MAX_CANDIDATES, fetchedAt: new Date(this.now()).toISOString(),
+        token: c.token, viewer: suggestions.viewer, at: this.now(), items, truncated: items.length >= MAX_CANDIDATES, fetchedAt: new Date(this.now()).toISOString(),
         suggested: suggestions.viewer.repositoriesContributedTo.nodes.flatMap((n) => (n ? [fromGql(n)] : [])),
       };
       this.cached = list;
     }
+    // On every answer, cached ones too: the database may have been claimed by another account since they were fetched.
+    this.checkViewer(list.viewer);
     const tracked = this.trackedBy([...list.items, ...list.suggested].map((r) => r.nodeId));
     const out = ({ nodeId, ...r }: Found): RepoCandidate => ({ ...r, tracked: tracked.get(nodeId)?.trackedBy ?? null });
     return {

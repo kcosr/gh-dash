@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import { Link, useLocation } from 'react-router';
 import { isUnreachable } from '../api/client';
 import { useAccount, useStartSync, useSyncStatus } from '../api/hooks';
+import type { PrWords } from '../../../shared/provider';
 import { getTheme, setTheme } from '../lib/storage';
 import type { Theme } from '../lib/storage';
 import { fmtNum, fmtTime, relFuture, relLong } from '../lib/time';
@@ -11,16 +12,16 @@ import { useNow } from '../lib/util';
 import { MOD_K } from './bits';
 import { Icon } from './Icon';
 import type { IconName } from './Icon';
-import { useRepoLabel } from './repoMapContext';
+import { useRepoLabel, useWords } from './repoMapContext';
 import { useToast } from './Toasts';
 import { useUI } from './ui';
 
-const NAV: { path: string; label: string; icon: IconName; views: string[] }[] = [
-  { path: '/prs', label: 'Pull requests', icon: 'merge', views: ['prs'] },
-  { path: '/issues', label: 'Issues', icon: 'issue', views: ['issues'] },
-  { path: '/activity', label: 'Activity', icon: 'pulse', views: ['activity'] },
-  { path: '/repos', label: 'Repositories', icon: 'book', views: ['repos', 'repo'] },
-  { path: '/insights', label: 'Insights', icon: 'chart', views: ['insights'] },
+const NAV: { path: string; label: (w: PrWords) => string; icon: IconName; views: string[] }[] = [
+  { path: '/prs', label: (w) => w.nav, icon: 'merge', views: ['prs'] },
+  { path: '/issues', label: () => 'Issues', icon: 'issue', views: ['issues'] },
+  { path: '/activity', label: () => 'Activity', icon: 'pulse', views: ['activity'] },
+  { path: '/repos', label: () => 'Repositories', icon: 'book', views: ['repos', 'repo'] },
+  { path: '/insights', label: () => 'Insights', icon: 'chart', views: ['insights'] },
 ];
 
 export function useTheme(): [Theme, () => void] {
@@ -63,6 +64,7 @@ export function TopBar({ theme, onToggleTheme, onOpenSidebar, sidebarOpen = fals
   const location = useLocation();
   const view = viewFromPath(location.pathname);
   const { openPalette } = useUI();
+  const w = useWords().pr;
   const carry = carrySearch(location.search);
   const navRef = useRef<HTMLElement>(null);
   useEffect(() => {
@@ -98,15 +100,15 @@ export function TopBar({ theme, onToggleTheme, onOpenSidebar, sidebarOpen = fals
           return (
             <Link key={n.path} to={`${n.path}${carry}`} className={on ? 'on' : undefined} aria-current={on ? 'page' : undefined}>
               <Icon name={n.icon} />
-              {n.label}
+              {n.label(w)}
             </Link>
           );
         })}
       </nav>
       <span className="spacer" />
-      <button type="button" className="top-search" onClick={openPalette} aria-label="Search repos, PRs, views">
+      <button type="button" className="top-search" onClick={openPalette} aria-label={`Search repos, ${w.shortMany}, views`}>
         <Icon name="search" />
-        <span>Search repos, PRs, views…</span>
+        <span>Search repos, {w.shortMany}, views…</span>
         <kbd>{MOD_K}</kbd>
       </button>
       <SyncIndicator />

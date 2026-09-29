@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import type { Ownership, Repo, VisibilityFilter } from '../../../shared/api';
+import { repoProvider } from '../../../shared/provider';
 import {
   defaultScope,
   useCreateSet,
@@ -17,7 +18,7 @@ import { cx } from '../lib/util';
 import { Icon } from './Icon';
 import { MenuButton } from './Menu';
 import { RepoName } from './RepoName';
-import { useRepoLabel } from './repoMapContext';
+import { useRepoLabel, useWords } from './repoMapContext';
 import { Seg } from './Seg';
 import { useToast } from './Toasts';
 import { useUI } from './ui';
@@ -69,6 +70,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const { openPrompt, openAddRepo } = useUI();
   const toast = useToast();
   const label = useRepoLabel();
+  const w = useWords().pr;
   const createSet = useCreateSet();
   const deleteSet = useDeleteSet();
   const createView = useCreateView();
@@ -148,11 +150,12 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
     const on = selected.has(r.key);
     const name = label(r.key);
     const syncing = r.syncedAt === null && !r.unavailable;
+    const openPrs = `${r.stats.openPrs} open ${repoProvider(r).pr.many}`;
     const description = [
       r.visibility === 'private' ? 'Private' : r.visibility === 'internal' ? 'Internal' : '',
       r.unavailable ? `Unavailable: ${r.unavailable.reason}` : '', syncing ? 'Syncing' : '',
       r.isArchived ? 'Archived' : '', r.hidden ? 'Hidden' : '', r.isFork ? 'Fork' : '',
-      r.stats.openPrs > 0 ? `${r.stats.openPrs} open pull requests` : '',
+      r.stats.openPrs > 0 ? openPrs : '',
       r.stats.openIssues > 0 ? `${r.stats.openIssues} open issues` : '',
     ].filter(Boolean).join('. ');
     const describedBy = description ? `repo-info-${r.key}` : undefined;
@@ -187,7 +190,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
           {!r.unavailable && !syncing && !r.isArchived && r.hidden && <span className="arch">hidden</span>}
           {!r.unavailable && !syncing && !r.isArchived && !r.hidden && r.isFork && <span className="arch">fork</span>}
           {(r.stats.openPrs > 0 || r.stats.openIssues > 0) && <span className="repo-counts" aria-hidden="true">
-            {r.stats.openPrs > 0 && <span title={`${r.stats.openPrs} open pull requests`}>
+            {r.stats.openPrs > 0 && <span title={openPrs}>
               <Icon name="prOpen" />{r.stats.openPrs.toLocaleString()}
             </span>}
             {r.stats.openIssues > 0 && <span title={`${r.stats.openIssues} open issues`}>
@@ -224,7 +227,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
 
       {pinned.length > 0 && (
         <>
-          <div className="side-h"><span>Pinned</span><span className="note">Open PRs / issues</span></div>
+          <div className="side-h"><span>Pinned</span><span className="note">Open {w.shortMany} / issues</span></div>
           {pinned.map(item)}
         </>
       )}
@@ -232,7 +235,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
         <>
           <div className="side-h">
             <span>Repositories</span>
-            {!pinned.length && <span className="note">Open PRs / issues</span>}
+            {!pinned.length && <span className="note">Open {w.shortMany} / issues</span>}
             <button type="button" className="mini" title="Add a repository" aria-label="Add repository" onClick={openAddRepo}>+</button>
           </div>
           {main.map(item)}

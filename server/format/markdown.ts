@@ -1,4 +1,5 @@
-import type { ActivityEvent, Actor, GroupBy, PrStateFilter, PullRequest, Who } from '../../shared/api';
+import type { ActivityEvent, Actor, GroupBy, PrStateFilter, ProviderKind, PullRequest, Who } from '../../shared/api';
+import { PROVIDERS, mixedPrWords, refText } from '../../shared/provider';
 import { DAY_MS, localDayNum, weekdayMon0 } from '../lib/time';
 
 const utcFmt = (opts: Intl.DateTimeFormatOptions) => new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', ...opts });
@@ -12,12 +13,19 @@ const dayDate = (dayNum: number) => new Date(dayNum * DAY_MS);
 const yearOf = (dayNum: number) => dayDate(dayNum).getUTCFullYear();
 const monthOf = (dayNum: number) => dayDate(dayNum).getUTCMonth();
 
+/** A repo's code host, by repo key: the exports' `#`/`!` and PR/MR words follow it. */
+export type KindOf = (repo: string) => ProviderKind;
+/** Every repo on github.com (the default, and all there is until repos carry a source). */
+export const GITHUB_ONLY: KindOf = () => 'github';
+
 export interface MdContext {
   tz: string;
   now: number;
   from: number;
   /** Exclusive. */
   to: number;
+  /** The host of each repo in the export; GitHub when absent. */
+  kindOf?: KindOf;
 }
 
 /** "Aug 29 – Sep 27, 2026" for the inclusive local days of [from, to). */
@@ -101,8 +109,10 @@ const STATE_WORD: Record<PrStateFilter, string> = { open: 'Open', merged: 'Merge
 const WHO_WORD: Record<Who, string> = { me: ' by me', others: ' by others', everyone: '' };
 
 export function prsMarkdown(prs: PullRequest[], opts: { state: PrStateFilter; who: Who; group: GroupBy }, ctx: MdContext): string {
-  const lines = [`## ${STATE_WORD[opts.state]} PRs${WHO_WORD[opts.who]} · ${rangeLabel(ctx)}`];
-  if (prs.length === 0) return `${lines[0]}\n\n_No pull requests._\n`;
+  const kindOf = ctx.kindOf ?? GITHUB_ONLY;
+  const w = mixedPrWords(prs.map((pr) => kindOf(pr.repo)));
+  const lines = [`## ${STATE_WORD[opts.state]} ${w.shortMany}${WHO_WORD[opts.who]} · ${rangeLabel(ctx)}`];
+  if (prs.length === 0) return `${lines[0]}\n\n_No ${w.many}._\n`;
 
   const groups = new Map<string, PullRequest[]>();
   for (const pr of prs) {
@@ -115,7 +125,7 @@ export function prsMarkdown(prs: PullRequest[], opts: { state: PrStateFilter; wh
     lines.push('', `### ${heading}`, '');
     for (const pr of items) {
       const summary = firstParagraph(pr.body);
-      lines.push(`- **${escapeInline(pr.title)}** ([${pr.repo}#${pr.number}](${pr.url}))${summary ? ` — ${summary}` : ''}`);
+      lines.push(`- **${escapeInline(pr.title)}** ([${refText(kindOf(pr.repo), pr.repo, pr.number, 'pr')}](${pr.url}))${summary ? ` — ${summary}` : ''}`);
     }
   }
   return `${lines.join('\n')}\n`;
@@ -130,14 +140,14 @@ function timeOf(iso: string, tz: string): string {
 
 const who = (a: Actor | null) => `**${escapeInline(a?.login ?? a?.name ?? 'someone')}**`;
 
-function eventLine(e: ActivityEvent): string {
+function eventLine(e: ActivityEvent, kindOf: KindOf): string {
   switch (e.type) {
     case 'commit':
       return `${who(e.actor)} pushed [\`${e.commit.shortOid}\`](${e.commit.url}) to ${e.repo}: ${escapeInline(e.commit.headline)}`;
     case 'pr':
-      return `${who(e.actor)} ${e.kind} PR [${e.repo}#${e.pr.number}](${e.pr.url}): ${escapeInline(e.pr.title)}`;
+      return `${who(e.actor)} ${e.kind} ${PROVIDERS[kindOf(e.repo)].pr.short} [${refText(kindOf(e.repo), e.repo, e.pr.number, 'pr')}](${e.pr.url}): ${escapeInline(e.pr.title)}`;
     case 'issue':
-      return `${who(e.actor)} ${e.kind} issue [${e.repo}#${e.issue.number}](${e.issue.url}): ${escapeInline(e.issue.title)}`;
+      return `${who(e.actor)} ${e.kind} issue [${refText(kindOf(e.repo), e.repo, e.issue.number, 'issue')}](${e.issue.url}): ${escapeInline(e.issue.title)}`;
     case 'release': {
       const name = e.release.name && e.release.name !== e.release.tag ? ` — ${escapeInline(e.release.name)}` : '';
       return `${who(e.actor)} released [${e.repo} ${e.release.tag}](${e.release.url})${name}`;
@@ -167,7 +177,7 @@ export function eventsMarkdown(title: string, events: ActivityEvent[], ctx: MdCo
       lines.push('', `### ${dayHeading(day, ctx)}`, '');
       lastDay = day;
     }
-    lines.push(`- ${timeOf(e.at, ctx.tz)} · ${eventLine(e)}`);
+    lines.push(`- ${timeOf(e.at, ctx.tz)} · ${eventLine(e, ctx.kindOf ?? GITHUB_ONLY)}`);
   }
   return `${lines.join('\n')}\n`;
 }

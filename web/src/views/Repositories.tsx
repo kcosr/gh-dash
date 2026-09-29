@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import type { CSSProperties } from 'react';
 import { Link } from 'react-router';
 import type { Repo, RepoSet } from '../../../shared/api';
+import { repoProvider } from '../../../shared/provider';
 import { repoPath, selectRepos } from '../../../shared/repos';
 import { repoListParams } from '../lib/apiQuery';
 import { usePatchRepo, useRepos, useSets, useSettings } from '../api/hooks';
@@ -14,7 +15,7 @@ import { Icon } from '../components/Icon';
 import { MenuButton } from '../components/Menu';
 import { UnavailableNote, useConfirmRemoveRepo } from '../components/RepoTracking';
 import { RepoName } from '../components/RepoName';
-import { useRepoLabel } from '../components/repoMapContext';
+import { useRepoLabel, useWords } from '../components/repoMapContext';
 import { Seg } from '../components/Seg';
 import { useToast } from '../components/Toasts';
 import { useSyncNow } from '../components/TopBar';
@@ -40,6 +41,7 @@ export function RepositoriesView() {
   const sets = useSets();
   const { openExport, openAddRepo } = useUI();
   const titles = useMemo(weekTitles, []);
+  const w = useWords().pr;
   const setById = useMemo(() => new Map((sets.data ?? []).map((x) => [x.id, x])), [sets.data]);
 
   const list = selectRepos(repos.data ?? [], repoListParams(s), settings.data?.includeForks);
@@ -52,7 +54,7 @@ export function RepositoriesView() {
           <FilterInput value={s.q} onChange={(v) => set({ q: v }, { replace: true })} placeholder="Search repositories" />
           <Ctl label="Sort">
             <Seg<RepoSort> className="sm" value={s.sort} onChange={(sort) => set({ sort })} ariaLabel="Sort" options={[
-              { value: 'activity', label: 'Recent activity' }, { value: 'stars', label: 'Stars' }, { value: 'open', label: 'Open PRs' }, { value: 'name', label: 'Name' },
+              { value: 'activity', label: 'Recent activity' }, { value: 'stars', label: 'Stars' }, { value: 'open', label: `Open ${w.shortMany}` }, { value: 'name', label: 'Name' },
             ]} />
           </Ctl>
           <span className="summary">{list.length} {list.length === 1 ? 'repository' : 'repositories'} · {nPinned} pinned</span>
@@ -145,7 +147,7 @@ function RepoMenu({ repo }: { repo: Repo }) {
               <span className="ck"><Icon name="pulse" /></span>Activity in this repo
             </Link>
             <a role="menuitem" className="opt" href={repo.url} target="_blank" rel="noopener noreferrer" onClick={close}>
-              <span className="ck"><Icon name="ext" /></span>Open on GitHub
+              <span className="ck"><Icon name="ext" /></span>Open on {repoProvider(repo).name}
             </a>
             {repo.trackedBy === 'manual' && (
               <>
@@ -193,7 +195,7 @@ function RepoCard({ repo: r, sets, titles, search }: { repo: Repo; sets: RepoSet
         {r.visibility === 'public' && (
           <span title="Stars (new in the last 30 days)"><Icon name="star" />{r.stars.toLocaleString()}{st.newStars30d > 0 && r.trackedBy === 'owned' && <em>+{st.newStars30d}</em>}</span>
         )}
-        <span title="Open pull requests"><Icon name="prOpen" />{st.openPrs} open</span>
+        <span title={`Open ${repoProvider(r).pr.many}`}><Icon name="prOpen" />{st.openPrs} open</span>
         <span title="Merged in the last 30 days"><Icon name="merge" />{st.mergedPrs30d} merged</span>
       </div>
       <div className="rc-spark">
@@ -211,12 +213,13 @@ function RepoCard({ repo: r, sets, titles, search }: { repo: Repo; sets: RepoSet
 
 function RepoTable({ list, titles, search }: { list: Repo[]; titles: string[]; search: string }) {
   const label = useRepoLabel();
+  const w = useWords().pr;
   return (
     <div className="rtable-wrap">
       <table className="rtable">
         <thead>
           <tr>
-            <th>Repository</th><th>Visibility</th><th>Language</th><th className="r">Stars</th><th className="r">Open PRs</th>
+            <th>Repository</th><th>Visibility</th><th>Language</th><th className="r">Stars</th><th className="r">Open {w.shortMany}</th>
             <th className="r">Merged · 30d</th><th className="r">Commits · 30d</th><th>Updated</th><th>Commits · 12 wk</th><th aria-label="Actions" />
           </tr>
         </thead>

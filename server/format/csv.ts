@@ -1,4 +1,6 @@
 import type { ActivityEvent, Actor, Commit, Issue, PullRequest, Release, Star } from '../../shared/api';
+import { refText } from '../../shared/provider';
+import { GITHUB_ONLY, type KindOf } from './markdown';
 
 type Cell = string | number | boolean | null;
 
@@ -61,14 +63,14 @@ export function starsCsv(stars: Star[]): string {
   );
 }
 
-function eventCells(e: ActivityEvent): [string | null, string | null, string, string] {
+function eventCells(e: ActivityEvent, kindOf: KindOf): [string | null, string | null, string, string] {
   switch (e.type) {
     case 'commit':
       return [null, e.commit.headline, e.commit.shortOid, e.commit.url];
     case 'pr':
-      return [e.kind, e.pr.title, `#${e.pr.number}`, e.pr.url];
+      return [e.kind, e.pr.title, refText(kindOf(e.repo), '', e.pr.number, 'pr'), e.pr.url];
     case 'issue':
-      return [e.kind, e.issue.title, `#${e.issue.number}`, e.issue.url];
+      return [e.kind, e.issue.title, refText(kindOf(e.repo), '', e.issue.number, 'issue'), e.issue.url];
     case 'release':
       return [null, e.release.name ?? e.release.tag, e.release.tag, e.release.url];
     case 'star':
@@ -76,11 +78,12 @@ function eventCells(e: ActivityEvent): [string | null, string | null, string, st
   }
 }
 
-export function activityCsv(events: ActivityEvent[]): string {
+/** `kindOf`: each repo's host, for the `ref` column (`#12`, or `!12` for a GitLab MR). */
+export function activityCsv(events: ActivityEvent[], kindOf: KindOf = GITHUB_ONLY): string {
   return toCsv(
     ['at', 'type', 'kind', 'repo', 'actor', 'title', 'ref', 'url'],
     events.map((e) => {
-      const [kind, title, ref, url] = eventCells(e);
+      const [kind, title, ref, url] = eventCells(e, kindOf);
       return [e.at, e.type, kind, e.repo, person(e.actor), title, ref, url];
     }),
   );

@@ -1,5 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import type { Issue, IssueState } from '../../../shared/api';
+import { refText } from '../../../shared/provider';
 import { useIssueList } from '../api/hooks';
 import { Avatar } from '../components/Avatar';
 import { DateRangeButton } from '../components/DateRange';
@@ -10,7 +11,7 @@ import { Icon } from '../components/Icon';
 import { Labels } from '../components/Label';
 import { Markdown } from '../components/Markdown';
 import { RepoChip } from '../components/RepoChip';
-import { useRepoLabel } from '../components/repoMapContext';
+import { useProviderOf, useRepoLabel } from '../components/repoMapContext';
 import { Seg, WHO_OPTIONS } from '../components/Seg';
 import { useUI } from '../components/ui';
 import { issueListParams } from '../lib/apiQuery';
@@ -106,12 +107,14 @@ const IssueRow = memo(function IssueRow({ issue }: { issue: Issue }) {
   const [expanded, setExpanded] = useState(false);
   const at = issue.state === 'closed' ? issue.closedAt ?? issue.createdAt : issue.createdAt;
   const label = useRepoLabel()(issue.repo);
+  const p = useProviderOf()(issue.repo);
+  const ref = refText(p.kind, label, issue.number, 'issue');
   return (
-    <article className="pr issue-row" aria-label={`${label}#${issue.number}: ${issue.title}`}>
+    <article className="pr issue-row" aria-label={`${ref}: ${issue.title}`}>
       <span className={`pr-ic ${issue.state === 'open' ? 'open' : 'merged'}`}><Icon name={issue.state === 'open' ? 'issue' : 'issueClosed'} /></span>
       <div className="pr-main">
         <div className="pr-title">
-          <a href={issue.url} target="_blank" rel="noopener noreferrer" title="Open issue on GitHub">{issue.title}<Icon name="ext" /></a>
+          <a href={issue.url} target="_blank" rel="noopener noreferrer" title={`Open issue on ${p.name}`}>{issue.title}<Icon name="ext" /></a>
           <Labels labels={issue.labels} />
         </div>
         <div className="pr-meta">
@@ -121,8 +124,8 @@ const IssueRow = memo(function IssueRow({ issue }: { issue: Issue }) {
           <span className="author"><Avatar actor={issue.author} /><b>{issue.author.isMe ? 'you' : actorName(issue.author)}</b></span>
         </div>
         {issue.body.trim() && <details className="issue-description" onToggle={(e) => setExpanded(e.currentTarget.open)}>
-          <summary aria-label={`Description of ${label}#${issue.number}`}><span className="pr-desc">{plainPreview(issue.body)}</span><span className="issue-description-toggle">Description <Icon name="chevron" /></span></summary>
-          {expanded && <Markdown source={issue.body} />}
+          <summary aria-label={`Description of ${ref}`}><span className="pr-desc">{plainPreview(issue.body)}</span><span className="issue-description-toggle">Description <Icon name="chevron" /></span></summary>
+          {expanded && <Markdown source={issue.body} repo={issue.repo} />}
         </details>}
       </div>
     </article>

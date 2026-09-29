@@ -121,6 +121,7 @@ describe('runSync', () => {
       { headline: 'Tweak config', pr_number: null },
     ]);
     expect(db.get('SELECT open_prs, open_issues FROM repos WHERE name = ?', ['app'])).toEqual({ open_prs: 1, open_issues: 1 });
+    expect(db.all('SELECT name, visibility FROM repos ORDER BY name')).toEqual([{ name: 'app', visibility: 'public' }, { name: 'corp', visibility: 'internal' }]);
     expect(db.get('SELECT prs_hwm, issues_hwm, commits_pushed_at FROM sync_state JOIN repos r ON r.id = repo_id WHERE r.name = ?', ['app'])).toEqual({
       prs_hwm: '2026-09-22T09:00:00Z', issues_hwm: '2026-09-26T00:00:00Z', commits_pushed_at: '2026-09-25T12:00:00Z',
     });

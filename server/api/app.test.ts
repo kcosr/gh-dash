@@ -5,7 +5,7 @@ import { gunzipSync } from 'node:zlib';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import { type Config, loadConfig } from '../config';
 import { getMeta, setMeta } from '../db/meta';
-import { upsertCommit } from '../db/write';
+import { upsertCommit, upsertRepo } from '../db/write';
 import { DiffCache } from '../diff/cache';
 import { DiffService } from '../diff/service';
 import { GitHubDiffSources } from '../github/diff-source';
@@ -84,6 +84,22 @@ describe('HTTP API', () => {
     await forkApp.request('/api/v1/settings', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: '{"includeForks":true}' });
     const selected = await (await forkApp.request('/api/v1/repos?scope=default')).json() as { items: { name: string }[] };
     expect(selected.items.map((r) => r.name).sort()).toEqual(['app', 'fork', 'secret']);
+  });
+
+  it('takes GitHub Enterprise internal repositories as their own visibility', async () => {
+    const db = seedDb();
+    const corp = upsertRepo(db, {
+      nodeId: 'R_corp', name: 'corp', nameWithOwner: 'alice/corp', owner: 'alice', description: null, url: 'https://github.com/alice/corp',
+      visibility: 'internal', isArchived: false, isFork: false, languageName: null, languageColor: null, topics: [], defaultBranch: 'main',
+      stars: 0, forks: 0, createdAt: '2025-01-01T00:00:00Z', pushedAt: '2026-09-25T00:00:00Z',
+    }, '2026-09-27T00:00:00Z');
+    upsertCommit(db, corp, { oid: 'e'.repeat(40), headline: 'Internal change', body: '', author: { login: 'alice', name: null, email: null, avatarUrl: null }, committedAt: '2026-09-21T00:00:00Z', url: 'u', additions: 1, deletions: 0, prNumber: null });
+    const internalApp = makeApp({}, db);
+    const repos = (await (await internalApp.request('/api/v1/repos?visibility=internal')).json()) as { items: { name: string; visibility: string }[] };
+    expect(repos.items).toMatchObject([{ name: 'corp', visibility: 'internal' }]);
+    const commits = (await (await internalApp.request(`/api/v1/commits?${range}&visibility=internal`)).json()) as { items: { headline: string }[] };
+    expect(commits.items.map((c) => c.headline)).toEqual(['Internal change']);
+    expect((await internalApp.request(`/api/v1/commits?${range}&visibility=secret`)).status).toBe(400);
   });
 
   it('reports sync status and refuses to sync without a token', async () => {

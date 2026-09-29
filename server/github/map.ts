@@ -47,7 +47,7 @@ export function mapRepo(r: GqlRepo): RepoRecord {
     owner: r.owner.login,
     description: r.description || null,
     url: r.url,
-    visibility: r.visibility === 'PUBLIC' ? 'public' : 'private',
+    visibility: r.visibility === 'PUBLIC' ? 'public' : r.visibility === 'INTERNAL' ? 'internal' : 'private',
     isArchived: r.isArchived,
     isFork: r.isFork,
     languageName: r.primaryLanguage?.name ?? null,

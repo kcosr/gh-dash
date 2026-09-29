@@ -34,7 +34,7 @@ const schemas: Record<string, Schema> = {
   }),
   Repo: obj({
     name: str(), nameWithOwner: str(), owner: str(), description: nullable(str()), url: str(),
-    visibility: enumOf('public', 'private'), isArchived: bool, isFork: bool,
+    visibility: enumOf('public', 'private', 'internal'), isArchived: bool, isFork: bool,
     language: nullable(obj({ name: str(), color: nullable(str()) })), topics: arr(str()), defaultBranch: nullable(str()),
     stars: int(), forks: int(), createdAt: dateTime, pushedAt: nullable(dateTime), lastActivityAt: nullable(dateTime),
     pinned: bool, hidden: bool, setIds: arr(int()), stats: ref('RepoStats'), syncedAt: nullable(dateTime),
@@ -221,7 +221,7 @@ const p = (name: string, description: string, schema: Schema = str()): ParamDoc 
 
 const SCOPE: ParamDoc[] = [
   q('repos', 'Comma-separated repo names. Omitted: default scope (non-archived, non-hidden, non-fork unless includeForks). Empty (`repos=`): no repos.', str(), 'app,tools'),
-  q('visibility', 'Repo visibility filter.', { ...enumOf('all', 'public', 'private'), default: 'all' }),
+  q('visibility', 'Repo visibility filter (internal: GitHub Enterprise).', { ...enumOf('all', 'public', 'private', 'internal'), default: 'all' }),
   q('who', "'me' = the authenticated user (login, settings.myEmails or GH_DASH_MY_EMAILS); stars are always by others.", { ...enumOf('me', 'others', 'everyone'), default: 'everyone' }, 'me'),
   q('from', 'Start: YYYY-MM-DD (in tz), ISO datetime, or relative offset like -7d / -12w / -3m. Default: 29 days before today.', str(), '-30d'),
   q('to', 'End, inclusive: YYYY-MM-DD covers that whole day. Same formats as from. Default: end of today. Bounds must lie in 1970–2999 and span at most 7320 days (~20 years).', str()),
@@ -304,7 +304,7 @@ export const ENDPOINTS: EndpointDoc[] = [
   { method: 'get', path: '/api/v1/repos', tag: 'Repos', summary: 'Repository inventory or a filtered selection', params: [
     q('repos', 'Comma-separated names; explicit empty selects nothing. Overrides scope.'),
     q('scope', 'all (default) returns the inventory; default excludes archived/hidden and forks unless enabled in settings.', enumOf('all', 'default')),
-    q('visibility', 'Repository visibility', enumOf('all', 'public', 'private')),
+    q('visibility', 'Repository visibility (internal: GitHub Enterprise)', enumOf('all', 'public', 'private', 'internal')),
     q('q', 'Case-insensitive substring in name, description, topics or language'),
     q('sort', 'Sort within pinned/hidden groups; default activity', enumOf('activity', 'stars', 'open', 'name')),
   ], response: { status: 200, schema: obj({ items: arr(ref('Repo')) }) } },

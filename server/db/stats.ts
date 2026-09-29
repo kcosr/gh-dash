@@ -1,4 +1,4 @@
-import type { Actor, Bucket, StatsBucket, StatsResponse, Tile } from '../../shared/api';
+import type { Actor, Bucket, StatsBucket, StatsResponse, Tile, Visibility } from '../../shared/api';
 import { bucketIndex, DAY_MS, isoSec, localDateSql, makeBuckets, median, type OffsetSegment, offsetSegments } from '../lib/time';
 import type { Db, Param } from './db';
 import { addRepoScope, meSql, type QueryCtx, type Scope, Where } from './filters';
@@ -35,7 +35,7 @@ const MERGE_PEOPLE: PersonCols = { login: 'p.author_login', email: null, name: '
  */
 interface Group {
   repo: string;
-  visibility: 'public' | 'private';
+  visibility: Visibility;
   /** Local date in the request tz. */
   day: string | null;
   /** Spark slice 0..11. */

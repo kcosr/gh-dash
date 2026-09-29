@@ -4,7 +4,7 @@ import { seedDb } from '../test/seed';
 import type { Db } from './db';
 import { loadQueryCtx, type QueryCtx, type Scope } from './filters';
 import { computeStats, defaultBucket } from './stats';
-import { upsertCommit, upsertRepo } from './write';
+import { upsertCommit, upsertRepo, upsertStar } from './write';
 
 let db: Db;
 let ctx: QueryCtx;
@@ -89,6 +89,22 @@ describe('computeStats', () => {
     expect(s.stars.map((d) => d.added)).toEqual([1, 0, 0, 0, 0, 1, 0]);
     const privateOnly = computeStats(db, ctx, scope('2026-09-20', '2026-09-26', { visibility: 'private' }));
     expect(privateOnly.stars.every((d) => d.total === 0)).toBe(true);
+  });
+
+  it('keeps cumulative stars to public repos: internal ones are left out, and filterable on their own', () => {
+    const d = seedDb();
+    const corp = upsertRepo(d, {
+      nodeId: 'R_corp', name: 'corp', nameWithOwner: 'alice/corp', owner: 'alice', description: null, url: 'https://github.com/alice/corp',
+      visibility: 'internal', isArchived: false, isFork: false, languageName: null, languageColor: null, topics: [], defaultBranch: 'main',
+      stars: 7, forks: 0, createdAt: '2025-01-01T00:00:00Z', pushedAt: '2026-09-25T00:00:00Z',
+    }, '2026-09-27T00:00:00Z');
+    upsertStar(d, corp, { login: 'zoe', name: null, avatarUrl: null, starredAt: '2026-09-22T00:00:00Z' });
+    const s = computeStats(d, loadQueryCtx(d), scope('2026-09-20', '2026-09-26'));
+    expect(s.stars.map((b) => b.total)).toEqual([3, 3, 3, 3, 3, 4, 4]);
+    expect(s.tiles.newStars.value).toBe(3);
+    const internal = computeStats(d, loadQueryCtx(d), scope('2026-09-20', '2026-09-26', { visibility: 'internal' }));
+    expect(internal.byRepo.map((r) => [r.repo, r.stars])).toEqual([['corp', 1]]);
+    expect(internal.stars.every((b) => b.total === 0)).toBe(true);
   });
 
   it('stars are never "me"', () => {

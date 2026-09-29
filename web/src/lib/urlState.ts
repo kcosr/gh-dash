@@ -105,7 +105,7 @@ export function parseUrlState(search: string, view: ViewName): UrlState {
   const diffOk = parseDiffId(diff) !== null;
   return {
     repos: reposRaw === null ? null : list(reposRaw),
-    vis: oneOf(p.get('vis'), ['all', 'public', 'private'] as const, d.vis),
+    vis: oneOf(p.get('vis'), ['all', 'public', 'private', 'internal'] as const, d.vis),
     who: oneOf(p.get('who'), ['me', 'others', 'everyone'] as const, d.who),
     range,
     from: range === 'custom' ? from : null,

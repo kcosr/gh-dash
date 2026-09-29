@@ -13,7 +13,7 @@ const repoPatch = z.object({ pinned: z.boolean().optional(), hidden: z.boolean()
 const repoQuery = z.object({
   repos: z.string().max(100_000).optional(),
   scope: z.enum(['all', 'default']).optional(),
-  visibility: z.enum(['all', 'public', 'private']).optional(),
+  visibility: z.enum(['all', 'public', 'private', 'internal']).optional(),
   q: z.string().max(4000).optional(),
   sort: z.enum(['activity', 'stars', 'open', 'name']).optional(),
 });

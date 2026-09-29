@@ -7,7 +7,7 @@ import { HttpError } from './http';
 
 export const scopeSchema = z.object({
   repos: z.string().optional(),
-  visibility: z.enum(['all', 'public', 'private']).optional(),
+  visibility: z.enum(['all', 'public', 'private', 'internal']).optional(),
   who: z.enum(['me', 'others', 'everyone']).optional(),
   from: z.string().optional(),
   to: z.string().optional(),

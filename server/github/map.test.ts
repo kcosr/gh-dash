@@ -10,14 +10,14 @@ const probes = probesFixture as unknown as RepoProbesData;
 const detail = (detailFixture as unknown as RepoDetailData).repository!;
 
 describe('GraphQL → rows', () => {
-  it('maps repos, treating INTERNAL as private and empty descriptions as null', () => {
+  it('maps repos, keeping INTERNAL and treating empty descriptions as null', () => {
     const [app, corp] = repos.viewer.repositories.nodes.map(mapRepo);
     expect(app).toEqual({
       nodeId: 'R_app', name: 'app', nameWithOwner: 'alice/app', owner: 'alice', description: null, url: 'https://github.com/alice/app',
       visibility: 'public', isArchived: false, isFork: false, languageName: 'TypeScript', languageColor: '#3178c6', topics: ['dashboard'],
       defaultBranch: 'main', stars: 2, forks: 1, createdAt: '2025-01-01T00:00:00Z', pushedAt: '2026-09-25T12:00:00Z',
     });
-    expect(corp).toMatchObject({ visibility: 'private', isArchived: true, defaultBranch: null, languageName: null, pushedAt: null });
+    expect(corp).toMatchObject({ visibility: 'internal', isArchived: true, defaultBranch: null, languageName: null, pushedAt: null });
   });
 
   it('maps probes, ignoring draft releases', () => {

@@ -9,7 +9,8 @@
  * optional fields are fine; renames/removals are not.
  */
 
-export type Visibility = 'public' | 'private';
+/** 'internal': a GitHub Enterprise repository visible to every member of the enterprise. */
+export type Visibility = 'public' | 'private' | 'internal';
 export type VisibilityFilter = 'all' | Visibility;
 export type Who = 'me' | 'others' | 'everyone';
 export type PrState = 'open' | 'merged' | 'closed';

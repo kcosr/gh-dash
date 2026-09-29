@@ -144,6 +144,16 @@ describe('GitLab transport', () => {
     expect(await fail(bare.rest.json('/x'))).toMatchObject({ kind: 'rate-limit', resetAt: '2099-01-01T00:00:00.000Z' });
   });
 
+  it("lets the caller's maxRetryWaitMs and maxAttempts replace the client's defaults", async () => {
+    // The client's default would wait 3 s; a caller a person waits on allows 1 s, so it fails at once.
+    const impatient = setup({ '/api/v4/x': { status: 429, text: 'Retry later\n', headers: { 'retry-after': '3' } } }, { maxRetryWaitMs: 1000 }, 10_000);
+    expect(await fail(impatient.rest.json('/x'))).toMatchObject({ kind: 'rate-limit', status: 429 });
+    expect([impatient.sleeps, impatient.calls.length]).toEqual([[], 1]);
+    const once = setup({ '/api/v4/x': { status: 503, text: '' } }, { maxAttempts: 1 });
+    expect(await fail(once.rest.json('/x'))).toMatchObject({ kind: 'transient' });
+    expect(once.calls).toHaveLength(1);
+  });
+
   it('ends a 429 that outlasts the retries as a rate limit, so the sync stops instead of pressing on', async () => {
     const throttled = setup({ '/api/v4/x': { status: 429, text: 'Retry later\n', headers: { 'retry-after': '3' } } });
     const before = Date.now();

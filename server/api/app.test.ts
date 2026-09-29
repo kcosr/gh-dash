@@ -5,7 +5,7 @@ import { gunzipSync } from 'node:zlib';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import { type Config, loadConfig } from '../config';
 import { setMeta } from '../db/meta';
-import { GITHUB_SOURCE_ID, getSource } from '../db/sources';
+import { ensureSource, GITHUB_SOURCE_ID, getSource, tryClaimViewer } from '../db/sources';
 import { upsertCommit, upsertOwned } from '../db/write';
 import { DiffCache } from '../diff/cache';
 import { DiffService } from '../diff/service';
@@ -13,8 +13,13 @@ import { GitHubDiffSources } from '../github/diff-source';
 import { SyncManager } from '../sync/manager';
 import { fakeGitHub, page, type Reply, restFile, sha } from '../test/github';
 import { fakeGraphQL, prNode, repoNode } from '../test/graphql';
-import { Tracking } from '../github/tracking';
-import { addManualRepo, GITHUB, seedDb, seedGitLab, setViewer } from '../test/seed';
+import { Tracking } from '../sync/tracking';
+import { addManualRepo, GITHUB, repoRecord, seedDb, seedGitLab, setViewer } from '../test/seed';
+import { SourceRegistry } from '../sources/registry';
+import lookupFixture from '../test/fixtures/gitlab/lookup.json';
+import { BASE as GITLAB_BASE, type Handler as GitLabHandler } from '../test/gitlab';
+import { fakeInstance } from '../test/gitlab-instance';
+import type { RepoCandidate } from '../../shared/api';
 import { DESKTOP_SECRET_HEADER } from '../../shared/desktop';
 import { testTokens } from '../test/tokens';
 import { type AppDeps, type AppTransport, createApp } from './app';
@@ -375,9 +380,19 @@ describe('repo keys', () => {
   });
 });
 
+/** The fake GitLab instance as a source configured on this server: its token (null: none), and changes to its answers. */
+interface GitLabSetup {
+  token?: string | null;
+  over?: Record<string, GitLabHandler>;
+  ops?: Record<string, (vars: Record<string, unknown>) => unknown>;
+}
+
 describe('adding and removing repositories', () => {
-  /** seedDb (viewer Alice; alice/app, secret, old, fork, hidden) against a fake GitHub that also knows bob/tool. */
-  function trackApp(token: string | null = 'ghp_classic', wrap: (f: typeof fetch) => typeof fetch = (f) => f) {
+  /**
+   * seedDb (viewer Alice; alice/app, secret, old, fork, hidden) against a fake GitHub that also knows bob/tool; with
+   * `gitlab`, also the fake GitLab instance (test/gitlab-instance.ts: Alice, a relative root) as gitlab.example.com.
+   */
+  function trackApp(token: string | null = 'ghp_classic', wrap: (f: typeof fetch) => typeof fetch = (f) => f, gitlab?: GitLabSetup) {
     const db = seedDb();
     const gql = fakeGraphQL();
     gql.state.owned.push(...['app', 'secret', 'old', 'fork', 'hidden'].map((n) => repoNode(`alice/${n}`, { id: `R_${n}` })));
@@ -395,15 +410,33 @@ describe('adding and removing repositories', () => {
     const tokens = testTokens(token);
     const config = { ...loadConfig({}), webDir: '/nonexistent' };
     const sync = new SyncManager({ db, schedule: false, tokens, log: () => {}, fetchImpl: gh.fetchImpl });
-    const diffs = new DiffService({ db, cache: new DiffCache(':memory:'), sources: new GitHubDiffSources({ tokens }), log: () => {} });
-    const tracking = new Tracking({ db, tokens, sync, tz: 'UTC', fetchImpl: wrap(gh.fetchImpl), sleep: async () => {} });
-    const app = createApp({ db, config, sync, diffs, tokens, tracking });
+    const githubDiffs = new GitHubDiffSources({ tokens });
+    const diffs = new DiffService({ db, cache: new DiffCache(':memory:'), sources: githubDiffs, log: () => {} });
+    const gl = gitlab ? fakeInstance(gitlab.over, GITLAB_BASE, gitlab.ops) : null;
+    const sources = gl
+      ? new SourceRegistry({
+          db,
+          env: gitlab!.token === null ? {} : { GITLAB_TOKEN: gitlab!.token ?? 'gl-test-alice' },
+          github: { tokens: tokens.credentials, diffs: githubDiffs },
+          log: () => {},
+          seams: { fetchImpl: gl.fetchImpl, sleep: async () => {}, exec: async () => { throw new Error('glab must not run in tests'); } },
+        })
+      : undefined;
+    const [glRuntime] = sources?.apply({
+      glabPath: null,
+      sources: [{ kind: 'gitlab', host: 'gitlab.example.com', baseUrl: GITLAB_BASE, tokenChoice: 'auto', tokenFile: null, tokenEnv: 'GITLAB_TOKEN', from: 'env' }],
+    }) ?? [];
+    const tracking = new Tracking({ db, tokens, sources, sync, tz: 'UTC', fetchImpl: wrap(gh.fetchImpl), sleep: async () => {} });
+    const deps: AppDeps = { db, config, sync, diffs, tokens, sources, tracking };
+    const app = createApp(deps);
     const call = async (method: string, path: string, body?: unknown) => {
       const res = await app.request(`/api/v1${path}`, body === undefined ? { method } : { method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
       return { status: res.status, body: res.status === 204 ? null : ((await res.json()) as Record<string, any>) };
     };
     const idle = () => vi.waitFor(() => expect(sync.status().running).toBe(false));
-    return { app, db, gql, gh, sync, call, idle };
+    /** What was asked of GitLab, leaving out the background check of a new token. */
+    const glAsked = () => gl!.requests.filter((r) => !/CredentialCheck|personal_access_tokens/.test(r));
+    return { app, db, gql, gh, sync, call, idle, deps, sources, gl, glId: glRuntime?.id ?? 0, glAsked };
   }
 
   it('looks a repository up: a preview with the size of its first sync', async () => {
@@ -605,6 +638,238 @@ describe('adding and removing repositories', () => {
     expect(await t.call('POST', '/sync', { repo: 'APP' })).toMatchObject({ status: 202, body: { running: true, repo: 'alice/app' } });
     await t.idle();
     expect(t.gql.state.ops.at(-2)).toBe('RepoNode:R_app');
+  });
+
+  describe('on a GitLab source', () => {
+    const GL = 'gitlab.example.com';
+    const q = (repo: string, source?: string) => `/repo-lookup?repo=${encodeURIComponent(repo)}${source ? `&source=${source}` : ''}`;
+    const onGitLab = (over: Omit<GitLabSetup, 'token'> = {}) => trackApp('ghp_classic', undefined, over);
+
+    it('lists candidates: the personal namespace left out, keys with the host, cached per source', async () => {
+      const t = onGitLab();
+      const res = await t.call('GET', '/repo-candidates?source=gitlab.example.com');
+      expect(res.status).toBe(200);
+      const keys = ['platform/team/svc', 'team/platform/api', 'bob/tool', 'team/docs', 'platform/api'].map((p) => `${GL}/${p}`);
+      expect(res.body!.items.map((c: RepoCandidate) => [c.key, c.owner, c.name, c.visibility, c.tracked])).toEqual([
+        [keys[0], 'platform/team', 'svc', 'internal', null],
+        [keys[1], 'team/platform', 'api', 'private', null],
+        [keys[2], 'bob', 'tool', 'internal', null],
+        [keys[3], 'team', 'docs', 'public', null],
+        [keys[4], 'platform', 'api', 'private', null],
+      ]);
+      expect(res.body!.suggested.map((c: RepoCandidate) => c.key)).toEqual(keys);
+      expect(res.body).toMatchObject({ truncated: false, fetchedAt: expect.any(String) });
+      expect(t.glAsked().sort()).toEqual(['/api/v4/projects?membership=true&archived=false&order_by=last_activity_at&sort=desc&per_page=100&page=1', 'graphql Viewer']);
+      expect(t.gh.requests).toEqual([]);
+
+      // GitHub's lists are cached apart: asking for them doesn't reuse GitLab's, and neither is asked again.
+      await t.call('GET', '/repo-candidates?source=GITLAB.example.com');
+      await t.call('GET', '/repo-candidates');
+      await t.call('GET', '/repo-candidates?source=github.com');
+      await t.call('GET', '/repo-candidates?source=gitlab.example.com');
+      expect([t.gh.requests.length, t.glAsked().length]).toEqual([3, 2]);
+      await t.call('GET', '/repo-candidates?source=gitlab.example.com&refresh=1');
+      expect([t.gh.requests.length, t.glAsked().length]).toEqual([3, 4]);
+    });
+
+    it('looks a project up by its path, key, web URL or ssh address: a preview with the size of its first sync', async () => {
+      const t = onGitLab();
+      const preview = {
+        key: `${GL}/team/platform/api`, owner: 'team/platform', name: 'api', description: 'Platform API', visibility: 'private', isArchived: false,
+        isFork: false, stars: 5, tracked: null, url: 'https://gitlab.example.com/gitlab/team/platform/api', openPrs: 3, openIssues: 7, owned: false,
+        hidden: null,
+        // GitLab doesn't count commits cheaply, so neither they nor the requests are known.
+        backfill: { commits: null, prs: 12, issues: 30, releases: 4, requests: null },
+      };
+      const inputs: [string, string?][] = [
+        ['team/platform/api', GL],
+        ['team/platform/api.git', 'GitLab.example.com'],
+        ['gitlab.example.com/team/platform/api'],
+        ['https://gitlab.example.com/gitlab/team/platform/api/-/merge_requests/3'],
+        // An address on another source's host wins over the source asked for.
+        ['git@gitlab.example.com:team/platform/api.git', 'github.com'],
+        ['ssh://git@gitlab.example.com:2222/team/platform/api.git'],
+      ];
+      for (const [repo, source] of inputs) {
+        const res = await t.call('GET', q(repo, source));
+        expect(res, repo).toMatchObject({ status: 200, body: { ok: true, repo: preview } });
+        expect(res.body!.repo.backfill.since, repo).toMatch(/^\d{4}-\d\d-\d\dT/);
+        expect(res.body!.repo, repo).not.toHaveProperty('unavailable');
+      }
+      expect(t.glAsked()).toEqual(inputs.map(() => 'graphql ProjectLookup'));
+      expect(t.gh.requests).toEqual([]);
+      // Its own projects are tracked automatically.
+      expect((await t.call('GET', q('alice/app', GL))).body).toMatchObject({ ok: true, repo: { key: `${GL}/alice/app`, owned: true, tracked: null } });
+    });
+
+    it('explains why a project can’t be added: GitLab doesn’t show it, or not its code', async () => {
+      const t = onGitLab();
+      expect((await t.call('GET', q('bob/gone', GL))).body).toEqual({
+        ok: false, key: `${GL}/bob/gone`, problem: 'not-found',
+        message: "GitLab doesn't show bob/gone to this token: it doesn't exist, or you aren't a member.",
+        hint: 'Private projects need membership (Reporter or higher). Check the path, or ask a maintainer.',
+      });
+      expect((await t.call('GET', q('https://gitlab.example.com/gitlab/platform/team/svc'))).body).toEqual({
+        ok: false, key: `${GL}/platform/team/svc`, problem: 'permission',
+        message: 'The token can see platform/team/svc but not its code.', hint: "Guests can't read a private project's code; ask for Reporter access.",
+      });
+      expect(await t.call('POST', '/repos', { repo: 'bob/gone', source: GL })).toMatchObject({ status: 404, body: { details: { problem: 'not-found', hint: expect.any(String) } } });
+      expect(await t.call('POST', '/repos', { repo: 'platform/team/svc', source: GL })).toMatchObject({
+        status: 403, body: { error: 'The token can see platform/team/svc but not its code.', details: { problem: 'permission' } },
+      });
+      expect(t.db.get('SELECT 1 FROM repos WHERE source_id <> 1')).toBeUndefined();
+    });
+
+    it('reports merge requests or issues turned off, and adds the project all the same', async () => {
+      // Alice's own corp.tools has its issues turned off.
+      const t = onGitLab();
+      expect((await t.call('GET', q('alice/corp.tools', GL))).body).toMatchObject({
+        ok: true, repo: { key: `${GL}/alice/corp.tools`, owned: true, unavailable: ['issues'], backfill: { prs: 12, issues: 0 } },
+      });
+      // A group project whose merge requests are hidden at the token's role, and whose issues are off.
+      const off = onGitLab({
+        ops: {
+          ProjectLookup: (v) => ({
+            currentUser: lookupFixture.currentUser,
+            project: v.path === 'team/platform/api'
+              ? { ...lookupFixture.project, userPermissions: { downloadCode: true, readMergeRequest: false }, issuesEnabled: false, recentMergeRequests: null, recentIssues: null }
+              : null,
+          }),
+        },
+      });
+      expect((await off.call('GET', q('team/platform/api', GL))).body).toMatchObject({
+        ok: true, repo: { owned: false, unavailable: ['prs', 'issues'], backfill: { commits: null, prs: 0, issues: 0, releases: 4, requests: null } },
+      });
+      expect(await off.call('POST', '/repos', { repo: 'team/platform/api', source: GL })).toMatchObject({ status: 201, body: { repo: { key: `${GL}/team/platform/api` } } });
+    });
+
+    it("adds a project, claims the source's account, and leaves its first sync to the multi-source manager", async () => {
+      const t = onGitLab();
+      const github = getSource(t.db, GITHUB_SOURCE_ID)!.viewer;
+      const res = await t.call('POST', '/repos', { repo: 'https://gitlab.example.com/gitlab/team/platform/api/-/issues', includeInDefault: false });
+      expect(res).toMatchObject({ status: 201, body: { sync: 'queued', repo: {
+        key: `${GL}/team/platform/api`, source: GL, provider: 'gitlab', owner: 'team/platform', name: 'api', trackedBy: 'manual', hidden: true,
+        url: 'https://gitlab.example.com/gitlab/team/platform/api', stats: { openPrs: 3, openIssues: 7 }, unavailable: null,
+      } } });
+      expect(res.body!.repo.addedAt).toMatch(/^\d{4}-/);
+      // No GitHub run for it (a GitHub run would refuse it): step 5's manager syncs it.
+      expect(t.sync.status().running).toBe(false);
+      expect(t.gh.requests).toEqual([]);
+      expect(getSource(t.db, t.glId)!.viewer).toMatchObject({ id: 'gid://gitlab/User/2', login: 'alice' });
+      expect(getSource(t.db, GITHUB_SOURCE_ID)!.viewer).toEqual(github);
+
+      // Now it's tracked: adding it again is refused, and the lookup and candidates say how it is tracked.
+      expect(await t.call('POST', '/repos', { repo: 'team/platform/api', source: GL })).toMatchObject({
+        status: 409, body: { error: `${GL}/team/platform/api is already tracked.`, details: { key: `${GL}/team/platform/api`, trackedBy: 'manual', hidden: true } },
+      });
+      expect((await t.call('GET', q('team/platform/api', GL))).body).toMatchObject({ repo: { tracked: 'manual', hidden: true } });
+      const listed = (await t.call('GET', '/repo-candidates?source=gitlab.example.com')).body!;
+      expect(listed.items.find((c: RepoCandidate) => c.key === `${GL}/team/platform/api`).tracked).toBe('manual');
+      expect(listed.suggested.map((c: RepoCandidate) => c.key)).not.toContain(`${GL}/team/platform/api`);
+      expect(await t.call('POST', '/repos', { repo: 'alice/app', source: GL })).toMatchObject({
+        status: 409, body: { error: `You own ${GL}/alice/app, so it's tracked automatically.`, details: { key: `${GL}/alice/app`, trackedBy: 'owned', hidden: false } },
+      });
+    });
+
+    it('removes a project added by hand, by its key or by its path with the source; owned ones are hidden instead', async () => {
+      const t = onGitLab();
+      await t.call('POST', '/repos', { repo: 'team/platform/api', source: GL });
+      await t.call('POST', '/repos', { repo: 'team/docs', source: GL });
+      upsertOwned(t.db, { id: t.glId, host: GL }, { ...repoRecord('app'), nodeId: 'gid://gitlab/Project/11', nameWithOwner: 'alice/app', owner: 'alice' }, '2026-09-29T00:00:00Z');
+      const live = () => t.db.all<{ key: string }>('SELECT key FROM repos WHERE source_id = ? ORDER BY key', [t.glId]).map((r) => r.key);
+      expect(live()).toEqual([`${GL}/alice/app`, `${GL}/team/docs`, `${GL}/team/platform/api`]);
+
+      const owned = { status: 409, body: { error: 'Repositories you own are tracked automatically; hide it instead.' } };
+      expect(await t.call('DELETE', '/repos/gitlab.example.com%2Falice%2Fapp')).toMatchObject(owned);
+      expect(await t.call('DELETE', '/repos/alice%2Fapp?source=gitlab.example.com')).toMatchObject(owned);
+      // A path names a repo on the source given, and a key must be on it.
+      expect(await t.call('DELETE', '/repos/team%2Fdocs')).toMatchObject({ status: 404 });
+      expect(await t.call('DELETE', '/repos/team%2Fdocs?source=github.com')).toMatchObject({ status: 404 });
+      expect(await t.call('DELETE', '/repos/gitlab.example.com%2Fteam%2Fdocs?source=github.com')).toMatchObject({ status: 404 });
+      expect(await t.call('DELETE', '/repos/team%2Fdocs?source=nowhere.example.com')).toEqual({ status: 400, body: { error: "nowhere.example.com isn't a source here." } });
+      expect((await t.call('DELETE', '/repos/team%2Fdocs?source=not%20a%20host')).status).toBe(400);
+      expect(await t.call('DELETE', '/repos/team%2Fdocs?source=GitLab.example.com')).toEqual({ status: 204, body: null });
+      expect(await t.call('DELETE', '/repos/gitlab.example.com%2Fteam%2Fplatform%2Fapi')).toEqual({ status: 204, body: null });
+      expect(live()).toEqual([`${GL}/alice/app`]);
+      expect(await t.call('DELETE', '/repos/team%2Fplatform%2Fapi?source=gitlab.example.com')).toMatchObject({ status: 404 });
+      // Adding it again tracks it from scratch.
+      expect(await t.call('POST', '/repos', { repo: 'team/platform/api', source: GL })).toMatchObject({ status: 201 });
+    });
+
+    it("refuses a host that isn't a source here, or isn't configured on this server", async () => {
+      const t = onGitLab();
+      const other = { status: 400, body: { error: "gitlab.other.example isn't a source here." } };
+      for (const path of [
+        q('https://gitlab.other.example/alice/app'),
+        q('git@gitlab.other.example:alice/app.git'),
+        q('gitlab.other.example/alice/app'),
+        q('https://gitlab.other.example/alice/app', GL),
+        q('alice/app', 'gitlab.other.example'),
+        '/repo-candidates?source=gitlab.other.example',
+      ]) {
+        expect(await t.call('GET', path), path).toEqual(other);
+      }
+      expect(await t.call('POST', '/repos', { repo: 'https://gitlab.other.example/alice/app' })).toEqual(other);
+      expect(await t.call('POST', '/repos', { repo: 'alice/app', source: 'gitlab.other.example' })).toEqual(other);
+      // In the database (another instance syncs it), but not configured on this one.
+      ensureSource(t.db, { kind: 'gitlab', host: 'gitlab2.example.com', baseUrl: 'https://gitlab2.example.com' });
+      t.sources!.apply();
+      const unconfigured = { status: 400, body: { error: "GitLab (gitlab2.example.com) isn't configured on this server." } };
+      expect(await t.call('GET', q('https://gitlab2.example.com/alice/app'))).toEqual(unconfigured);
+      expect(await t.call('GET', q('gitlab2.example.com/alice/app'))).toEqual(unconfigured);
+      expect(await t.call('GET', '/repo-candidates?source=gitlab2.example.com')).toEqual(unconfigured);
+      // Input that names no project, or a URL outside the instance's relative root.
+      expect(await t.call('GET', q('app', GL))).toEqual({ status: 400, body: { error: 'Not a GitLab project: "app". Enter group/project or a gitlab.example.com URL.' } });
+      expect((await t.call('GET', q('https://gitlab.example.com/team/platform/api'))).status).toBe(400);
+      expect([t.gh.requests.length, t.glAsked().length]).toEqual([0, 0]);
+
+      // Without GitLab sources, GitHub is the only one.
+      const github = trackApp();
+      expect(await github.call('GET', q('https://gitlab.example.com/gitlab/team/platform/api'))).toEqual({ status: 400, body: { error: "gitlab.example.com isn't a source here." } });
+      expect(await github.call('GET', q('bob/tool', GL))).toEqual({ status: 400, body: { error: "gitlab.example.com isn't a source here." } });
+      expect((await github.call('GET', q('bob/tool', 'github.com'))).status).toBe(200);
+    });
+
+    it("needs the source's token, for the source's account; retries little, and waits for nothing long", async () => {
+      const none = trackApp('ghp_classic', undefined, { token: null });
+      expect(await none.call('GET', '/repo-candidates?source=gitlab.example.com')).toMatchObject({ status: 503, body: { error: expect.stringMatching(/^No GitLab token for gitlab\.example\.com: /) } });
+      expect((await none.call('POST', '/repos', { repo: 'team/platform/api', source: GL })).status).toBe(503);
+      expect(none.glAsked()).toEqual([]);
+
+      // The source was claimed by another account: every answer is refused, cached candidates included.
+      const t = onGitLab();
+      expect((await t.call('GET', '/repo-candidates?source=gitlab.example.com')).status).toBe(200);
+      tryClaimViewer(t.db, t.glId, { id: 'gid://gitlab/User/9', login: 'bob' });
+      const asked = t.glAsked().length;
+      const mismatch = { status: 409, body: { error: expect.stringContaining('GitLab (gitlab.example.com) account is @bob, but the token is for @alice') } };
+      expect(await t.call('GET', '/repo-candidates?source=gitlab.example.com')).toMatchObject(mismatch);
+      expect(t.glAsked().length).toBe(asked);
+      expect(await t.call('GET', q('team/platform/api', GL))).toMatchObject(mismatch);
+      expect(await t.call('POST', '/repos', { repo: 'team/platform/api', source: GL })).toMatchObject(mismatch);
+      expect(t.db.get('SELECT 1 FROM repos WHERE source_id = ?', [t.glId])).toBeUndefined();
+      // GitHub's account is its own: its lookups still answer.
+      expect((await t.call('GET', q('bob/tool'))).status).toBe(200);
+
+      const rejected = onGitLab({ over: { '/api/graphql': { status: 401, body: { error: 'invalid_token', error_description: 'Token is expired' } } } });
+      expect(await rejected.call('GET', q('team/platform/api', GL))).toMatchObject({
+        status: 503, body: { error: expect.stringContaining('check the GitLab token in Settings → Sources, or run `glab auth login --hostname gitlab.example.com`') },
+      });
+      // A long throttle is a 429 at once, and a failing instance is tried twice.
+      const throttled = onGitLab({ over: { '/api/graphql': { status: 429, text: 'Retry later\n', headers: { 'retry-after': '60' } } } });
+      expect(await throttled.call('GET', q('team/platform/api', GL))).toMatchObject({ status: 429, body: { details: { resetAt: expect.any(String) } } });
+      expect(throttled.glAsked()).toEqual(['graphql ProjectLookup']);
+      const down = onGitLab({ over: { '/api/graphql': { status: 502, text: 'Bad gateway' } } });
+      expect(await down.call('GET', q('team/platform/api', GL))).toMatchObject({ status: 502, body: { error: expect.stringMatching(/^GitLab \(gitlab\.example\.com\) request failed: /) } });
+      expect(down.glAsked()).toEqual(['graphql ProjectLookup', 'graphql ProjectLookup']);
+    });
+
+    it('is what createApp builds over the sources', async () => {
+      const t = onGitLab();
+      const app = createApp({ ...t.deps, tracking: undefined });
+      const res = await app.request(`/api/v1${q('team/platform/api', GL)}`);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ ok: true, repo: { key: `${GL}/team/platform/api` } });
+    });
   });
 });
 

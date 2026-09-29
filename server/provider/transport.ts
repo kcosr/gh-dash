@@ -18,6 +18,16 @@ export function backoffMs(attempt: number): number {
 
 export const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
+/**
+ * How long a client keeps trying, when its caller wants other than the client's defaults: a person waiting on the
+ * answer (the Add dialog) wants few attempts and no long waits, where a background sync can wait out a throttle.
+ */
+export interface RetryLimits {
+  maxAttempts?: number;
+  /** A throttle asking for a longer wait fails as 'rate-limit' instead of sleeping. */
+  maxRetryWaitMs?: number;
+}
+
 /** Error messages end up in logs, /sync/status and API errors: never let the token through. */
 export function redact(token: string, message: string): string {
   return token.length >= 8 ? message.split(token).join('[token]') : message;

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { SyncStatus, TokenSource } from '../../shared/api';
+import { GITHUB_HOST, type SyncStatus, type TokenSource } from '../../shared/api';
 import type { Db } from '../db/db';
 import { deleteMeta, getMeta, type SyncLockMeta, setMeta } from '../db/meta';
 import { repoKeySql, resolveRepo } from '../db/repo-key';
@@ -174,10 +174,22 @@ export class SyncManager {
   }
 
   /**
-   * The first sync of a repo just added (POST /repos): now if nothing runs, else after the sync this process is
-   * running. When another instance holds the lock, the scheduler's rule for repos waiting for a sync picks it up.
+   * STEP 5 HOOK (multi-source manager, design §4.6): whether this manager syncs the source at `host`. Until step 5 it
+   * syncs github.com only, with its own GitHub client: a repo added by hand on another source is 'queued' by
+   * startOrQueue and left alone by the scheduler (manualRepoAwaitingSync), since a GitHub run would refuse it. Step 5
+   * runs every configured source and makes this true for each of them.
    */
-  async startOrQueue(req: SyncRequest): Promise<'started' | 'queued'> {
+  syncsSource(host: string): boolean {
+    return host.toLowerCase() === GITHUB_HOST;
+  }
+
+  /**
+   * The first sync of a repo just added (POST /repos) on `source` (a host; github.com when absent): now if nothing
+   * runs, else after the sync this process is running. When another instance holds the lock, the scheduler's rule for
+   * repos waiting for a sync picks it up. A source this manager doesn't sync yet (syncsSource) waits for step 5.
+   */
+  async startOrQueue(req: SyncRequest & { source?: string }): Promise<'started' | 'queued'> {
+    if (req.source !== undefined && !this.syncsSource(req.source)) return 'queued';
     if (!this.current && !this.liveLock()) {
       const res = await this.start('manual', req);
       if (res.ok) return 'started';
@@ -295,12 +307,14 @@ export class SyncManager {
 
   /**
    * A live, readable repo added by hand with no synced_at (never synced since it was added or revived), that isn't
-   * waiting out a failed attempt.
+   * waiting out a failed attempt. Only github.com's until step 5 (see syncsSource): step 5 takes every configured source.
    */
   private manualRepoAwaitingSync(): string | null {
     const keys = this.db.all<{ key: string }>(
       `SELECT ${repoKeySql('r')} AS key FROM repos r LEFT JOIN sync_state s ON s.repo_id = r.id
-       WHERE r.tracked_by = 'manual' AND r.removed_at IS NULL AND r.unavailable_at IS NULL AND s.synced_at IS NULL ORDER BY r.id`,
+       WHERE r.tracked_by = 'manual' AND r.removed_at IS NULL AND r.unavailable_at IS NULL AND s.synced_at IS NULL
+         AND r.source_id = ? ORDER BY r.id`,
+      [GITHUB_SOURCE_ID],
     );
     const now = Date.now();
     return keys.find((k) => (this.firstSyncRetry.get(k.key) ?? 0) <= now)?.key ?? null;

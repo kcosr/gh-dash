@@ -187,6 +187,18 @@ describe('SourceRegistry', () => {
     expect((await gl!.tokens.account()).dbLogin).toBe('bob');
   });
 
+  it('builds a sync client with other retry limits for a person waiting on it', async () => {
+    const routes: Record<string, Handler> = { '/api/graphql': { status: 429, text: 'Retry later\n', headers: { 'retry-after': '30' } } };
+    const { registry, api } = setup({ env: { GITLAB_TOKEN: PAT }, routes });
+    const [gl] = registry.apply({ glabPath: null, sources: [gitlab(HOST, { tokenEnv: 'GITLAB_TOKEN' })] });
+    // The sync waits out a 30 s throttle, 5 attempts in all.
+    await expect(gl!.syncSource!(PAT).viewer()).rejects.toMatchObject({ kind: 'rate-limit' });
+    expect(api.requests).toHaveLength(5);
+    // The Add dialog's gives up at once on a wait longer than it allows.
+    await expect(gl!.syncSource!(PAT, { maxAttempts: 2, maxRetryWaitMs: 10_000 }).viewer()).rejects.toMatchObject({ kind: 'rate-limit' });
+    expect(api.requests).toHaveLength(6);
+  });
+
   it('refuses a host stored for another kind, and changes nothing', () => {
     const { db, registry } = setup();
     registry.apply({ glabPath: null, sources: [gitlab('gitlab2.example.com')] });

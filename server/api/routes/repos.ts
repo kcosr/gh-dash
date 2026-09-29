@@ -1,8 +1,10 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { selectRepos } from '../../../shared/repos';
-import { resolveRepo } from '../../db/repo-key';
+import { resolveRepo, resolveRepoOn } from '../../db/repo-key';
 import { getSettings } from '../../db/settings';
+import { sourceByHost } from '../../db/sources';
+import { notASource } from '../../sync/tracking';
 import { createSet, createView, deleteSet, deleteView, getRepo, listRepos, listSets, listViews, removeRepo, setRepoPrefs, updateSet } from '../../db/repos';
 import type { AppDeps } from '../app';
 import { noCrossSiteReads } from '../auth';
@@ -21,9 +23,12 @@ const repoQuery = z.object({
   sort: z.enum(['activity', 'stars', 'open', 'name']).optional(),
 });
 const setCreate = z.object({ name, repos: repoList }).strict();
-const lookupQuery = z.object({ repo: z.string().trim().min(1).max(500) });
-const candidatesQuery = z.object({ refresh: z.literal('1').optional() });
-const addBody = z.object({ repo: z.string().trim().min(1).max(500), includeInDefault: z.boolean().optional() }).strict();
+/** A source, by its host (github.com, gitlab.example.com). */
+const source = z.string().trim().min(1).max(253).regex(/^[A-Za-z0-9.-]+$/, 'must be a host name like gitlab.example.com');
+const lookupQuery = z.object({ repo: z.string().trim().min(1).max(500), source: source.optional() });
+const candidatesQuery = z.object({ refresh: z.literal('1').optional(), source: source.optional() });
+const addBody = z.object({ repo: z.string().trim().min(1).max(500), source: source.optional(), includeInDefault: z.boolean().optional() }).strict();
+const removeQuery = z.object({ source: source.optional() });
 const setPatch = z.object({ name: name.optional(), repos: repoList.optional() }).strict();
 const viewCreate = z
   .object({
@@ -60,24 +65,31 @@ export function repoRoutes({ db, config, tracking, diffs }: AppDeps): Hono {
     return c.json(getRepo(db, c.req.param('repo'), config.defaultTz));
   });
 
-  // Adding and removing repositories of other owners. The GETs spend the owner's GitHub quota: not for other sites.
+  // Adding and removing repositories of other owners, on any source (`source`: its host; github.com by default). The
+  // GETs spend the owner's quota on the code host: not for other sites.
   r.get('/repo-candidates', noCrossSiteReads, async (c) => {
-    const { refresh } = parseWith(candidatesQuery, c.req.query());
-    return c.json(await tracking.candidates(!!refresh));
+    const q = parseWith(candidatesQuery, c.req.query());
+    return c.json(await tracking.candidates({ refresh: !!q.refresh, source: q.source }));
   });
 
   r.get('/repo-lookup', noCrossSiteReads, async (c) => {
-    const { repo } = parseWith(lookupQuery, c.req.query());
-    return c.json(await tracking.lookup(repo));
+    const q = parseWith(lookupQuery, c.req.query());
+    return c.json(await tracking.lookup(q.repo, q.source));
   });
 
   r.post('/repos', async (c) => {
     const body = parseWith(addBody, await jsonBody(c));
-    return c.json(await tracking.add(body.repo, body.includeInDefault ?? true), 201);
+    return c.json(await tracking.add(body.repo, body.includeInDefault ?? true, body.source), 201);
   });
 
+  // With `source`, the repo may also be named by its path there (group%2Fproject), and must be on that source. A
+  // source that isn't configured on this server still has its repos removed: that needs no token.
   r.delete('/repos/:repo', (c) => {
-    const ref = resolveRepo(db, c.req.param('repo'));
+    const q = parseWith(removeQuery, c.req.query());
+    const input = c.req.param('repo');
+    const src = q.source === undefined ? null : sourceByHost(db, q.source);
+    if (q.source !== undefined && !src) throw new HttpError(400, notASource(q.source.toLowerCase()));
+    const ref = src ? resolveRepoOn(db, input, src) : resolveRepo(db, input);
     if (!ref) throw new HttpError(404, 'Repository not found');
     if (ref.trackedBy === 'owned') {
       throw new HttpError(409, 'Repositories you own are tracked automatically; hide it instead.', { key: ref.key, trackedBy: 'owned' });

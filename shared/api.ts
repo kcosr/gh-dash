@@ -435,8 +435,17 @@ export interface RepoPreview extends RepoCandidate {
   owned: boolean;
   /** When tracked: whether it is left out of the default selection. */
   hidden: boolean | null;
-  /** What the first sync would fetch: items since `since` (null: unknown), and about how many GitHub requests. */
+  /**
+   * What the first sync would fetch: items since `since` (null: unknown; GitLab doesn't count commits), and about how
+   * many requests to the code host (null: unknown).
+   */
   backfill: { since: string; commits: number | null; prs: number | null; issues: number | null; releases: number; requests: number | null };
+  /**
+   * Parts the code host doesn't show this token, though the repository can be added: on GitLab, merge requests or
+   * issues turned off on the project, or hidden at the token's role. Nothing of them is synced (their backfill counts
+   * are 0). Absent when all are there.
+   */
+  unavailable?: ('prs' | 'issues')[];
 }
 
 /** GET /repo-lookup: whether the token can read a repository, with a preview when it can. */
@@ -668,12 +677,15 @@ export interface DiffCacheStats {
 // GET    /api/v1/repos          RepoQuery      -> { items: Repo[] }          (unfiltered: all repos incl. archived/hidden/forks)
 // GET    /api/v1/repos/:repo                   -> Repo      (:repo = key, URL-encoded: kcosr%2Fgh-dash; or an owned repo's short name)
 // PATCH  /api/v1/repos/:repo   {pinned?, hidden?} -> Repo
-// GET    /api/v1/repo-candidates {refresh?: '1'} -> RepoCandidatesResponse   (cached 5 min per token)
-// GET    /api/v1/repo-lookup   {repo}          -> RepoLookup   (400 when `repo` names no GitHub repository)
-// POST   /api/v1/repos         {repo, includeInDefault?} -> 201 AddRepoResponse
-//          400 bad input; 404/403 { details: { problem, hint } }; 409 { details: { key, trackedBy, hidden } } (you own it,
-//          or it's tracked already) or a token for another account; 429 rate limited; 503 no token.
-// DELETE /api/v1/repos/:repo                  -> 204   (409 for a repo you own; deletes its data from this dashboard)
+// GET    /api/v1/repo-candidates {refresh?: '1', source?} -> RepoCandidatesResponse   (cached 5 min per source and token)
+// GET    /api/v1/repo-lookup   {repo, source?} -> RepoLookup   (400 when `repo` names no repository on the source)
+// POST   /api/v1/repos         {repo, source?, includeInDefault?} -> 201 AddRepoResponse
+//          400 bad input, or a host that isn't a source here (or isn't configured on this server); 404/403 { details:
+//          { problem, hint } }; 409 { details: { key, trackedBy, hidden } } (you own it, or it's tracked already) or a
+//          token for another account; 429 rate limited; 503 no token.
+//          `source` is a host (default github.com); an address or key on another source's host in `repo` wins.
+// DELETE /api/v1/repos/:repo   {source?}      -> 204   (409 for a repo you own; deletes its data from this dashboard;
+//          with `source`, :repo may also be the repo's path there, e.g. group%2Fproject)
 // GET    /api/v1/sets                          -> { items: RepoSet[] }
 // POST   /api/v1/sets          {name, repos}   -> RepoSet
 // PATCH  /api/v1/sets/:id      {name?, repos?} -> RepoSet

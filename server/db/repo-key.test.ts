@@ -5,9 +5,9 @@ import type { Db } from './db';
 import { addRepoScope, loadQueryCtx, type Scope, Where } from './filters';
 import { getPrDetail, listPrs } from './lists';
 import type { RepoRecord } from './records';
-import { REPO_IDS_FOR_KEYS, repoKey, repoKeySql, resolveRepo, resolveRepoIds } from './repo-key';
+import { REPO_IDS_FOR_KEYS, repoKey, repoKeySql, resolveRepo, resolveRepoIds, resolveRepoOn } from './repo-key';
 import { createSet, getRepo, listRepos, listSets, setRepoPrefs, updateSet } from './repos';
-import { ensureSource } from './sources';
+import { ensureSource, sourceByHost, type SourceRef } from './sources';
 import { markReposRemoved, upsertOwned } from './write';
 
 const idOf = (db: Db, key: string) => db.get<{ id: number }>('SELECT id FROM repos WHERE key = ?', [key])!.id;
@@ -179,6 +179,23 @@ describe('resolveRepoIds', () => {
 
   it('is empty for no input', () => {
     expect(resolveRepoIds(seedDb(), []).size).toBe(0);
+  });
+});
+
+describe('resolveRepoOn', () => {
+  it("resolves a key, or a path on the source given, and only that source's repos", () => {
+    const db = fixture();
+    const gitlab = sourceByHost(db, 'gitlab.example.com')!;
+    const on = (input: string, src: SourceRef = gitlab) => resolveRepoOn(db, input, src)?.key ?? null;
+    expect(on('alice/app')).toBe('gitlab.example.com/alice/app'); // a path there, though github.com has the same key
+    expect(on('Platform/Team/SVC')).toBe('gitlab.example.com/platform/team/svc');
+    expect(on('gitlab.example.com/platform/team/svc')).toBe('gitlab.example.com/platform/team/svc'); // its key
+    expect(on('app')).toBeNull(); // the short-name alias is github.com's only
+    expect(on('bob/app')).toBeNull(); // a github.com key
+    expect(on('alice/app', GITHUB)).toBe('alice/app');
+    expect(on('app', GITHUB)).toBe('alice/app');
+    expect(on('platform/team/svc', GITHUB)).toBeNull();
+    expect(on('gitlab.example.com/platform/team/svc', GITHUB)).toBeNull();
   });
 });
 

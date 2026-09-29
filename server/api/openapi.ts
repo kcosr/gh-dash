@@ -125,7 +125,7 @@ const schemas: Record<string, Schema> = {
     repo: { ...nullable(str()), description: 'Key of the one repository a single-repo sync is syncing (e.g. one just added); null for a full sync' },
   }, ['repo']),
   RepoCandidate: obj({
-    key: str('owner/name'), owner: str(), name: str(), description: nullable(str()), visibility: enumOf('public', 'private', 'internal'),
+    key: str('Repo key: owner/name on github.com, <host>/<path> on other sources'), owner: str('Owner, or GitLab namespace path'), name: str(), description: nullable(str()), visibility: enumOf('public', 'private', 'internal'),
     isArchived: bool, isFork: bool, stars: int(), pushedAt: nullable(dateTime),
     tracked: { ...nullable(enumOf('owned', 'manual')), description: 'How it is tracked already; null when it is not' },
   }),
@@ -142,9 +142,13 @@ const schemas: Record<string, Schema> = {
       hidden: { ...nullable(bool), description: 'When tracked: left out of the default selection' },
       backfill: {
         ...obj({ since: dateTime, commits: nullable(int()), prs: nullable(int()), issues: nullable(int()), releases: int(), requests: nullable(int()) }),
-        description: 'What the first sync would fetch since `since` (null: unknown), and about how many GitHub requests',
+        description: "What the first sync would fetch since `since` (null: unknown; GitLab doesn't count commits), and about how many requests to the code host",
       },
-    })],
+      unavailable: {
+        ...arr(enumOf('prs', 'issues')),
+        description: "Parts the code host doesn't show this token, though it can be added (GitLab: merge requests or issues turned off, or hidden at the token's role); nothing of them is synced. Absent when all are there.",
+      },
+    }, ['unavailable'])],
   },
   RepoLookup: {
     oneOf: [
@@ -262,6 +266,8 @@ const q = (name: string, description: string, schema: Schema = str(), example?: 
 const p = (name: string, description: string, schema: Schema = str()): ParamDoc => ({ name, in: 'path', description, schema, required: true });
 const REPO = { ...p('repo', 'Repo key `owner/name`, URL-encoded as one segment (`owner%2Fname`); a bare name selects the repository of that name you own.'), example: 'kcosr%2Fgh-dash' };
 
+const SOURCE = q('source', "The source to look on, by its host; default github.com. A GitLab source must be configured on this server.", str(), 'gitlab.example.com');
+
 const SCOPE: ParamDoc[] = [
   q('repos', 'Comma-separated repo keys (owner/name; the short name of a repo you own also works). Omitted: the default selection (non-archived, non-hidden, non-fork unless includeForks). Empty (`repos=`): no repos.', str(), 'kcosr/gh-dash,kcosr/tools'),
   q('visibility', 'Repo visibility filter (internal: GitHub Enterprise).', { ...enumOf('all', 'public', 'private', 'internal'), default: 'all' }),
@@ -356,14 +362,18 @@ export const ENDPOINTS: EndpointDoc[] = [
   { method: 'get', path: '/api/v1/repos/{repo}', tag: 'Repos', summary: 'One repo', params: [REPO], response: { status: 200, schema: ref('Repo') } },
   {
     method: 'get', path: '/api/v1/repo-candidates', tag: 'Repos', summary: 'Repositories of others the token can read, to add',
-    description: 'Cached for 5 minutes per token. Costs up to 10 REST requests and 1 GraphQL point. 503 without a token, 409 when the token is for another account than this database.',
-    params: [q('refresh', "'1' asks GitHub again instead of using the cache.", enumOf('1'))],
+    description:
+      'Cached for 5 minutes per source and token. Costs up to 10 REST requests, plus 1 GraphQL point on GitHub or 1 GraphQL request on GitLab (where projects in your personal namespace are left out: they are tracked automatically). ' +
+      "400 for a source that isn't one here (or isn't configured on this server), 503 without a token, 409 when the token is for another account than this database's for that source.",
+    params: [q('refresh', "'1' asks the code host again instead of using the cache.", enumOf('1')), SOURCE],
     response: { status: 200, schema: ref('RepoCandidatesResponse') },
   },
   {
     method: 'get', path: '/api/v1/repo-lookup', tag: 'Repos', summary: 'Whether the token can read a repository, with a preview',
-    description: 'One GraphQL request. `ok: false` explains why the token can\'t read it (200). 400 for input that names no GitHub repository, 503 without a token, 409 when the token is for another account, 429 rate limited.',
-    params: [{ ...q('repo', 'owner/name, a github.com URL (https or git@)', str(), 'dlvhdr/gh-dash'), required: true }],
+    description:
+      'One GraphQL request. `ok: false` explains why the token can\'t read it (200). 400 for input that names no repository on the source, or a host that isn\'t a source here (or isn\'t configured on this server); ' +
+      '503 without a token, 409 when the token is for another account, 429 rate limited.',
+    params: [{ ...q('repo', 'GitHub: owner/name or a github.com URL (https or git@). GitLab: group/…/project, its key, or a web (https) or ssh address; an address or key on another source\'s host is looked up there.', str(), 'dlvhdr/gh-dash'), required: true }, SOURCE],
     response: { status: 200, schema: ref('RepoLookup') },
   },
   {
@@ -372,15 +382,20 @@ export const ENDPOINTS: EndpointDoc[] = [
       'Checks access again first. 400 bad input; 404 `{ details: { problem: "not-found", hint } }`; 403 `{ details: { problem: "sso" | "org-policy" | "permission", hint } }`; ' +
       '409 `{ details: { key, trackedBy, hidden } }` when you own it (tracked automatically) or it is tracked already, or when the token is for another account; 503 without a token; 429 rate limited.',
     body: {
-      schema: obj({ repo: str('owner/name or a github.com URL'), includeInDefault: { ...bool, default: true, description: 'Include in the default selection (hidden: false)' } }, ['includeInDefault']),
+      schema: obj({
+        repo: str('As for /repo-lookup: owner/name or a github.com URL; on GitLab group/…/project, its key, or a web or ssh address'),
+        source: { ...str(), default: 'github.com', description: "The source's host. An address or key on another source's host in `repo` wins." },
+        includeInDefault: { ...bool, default: true, description: 'Include in the default selection (hidden: false)' },
+      }, ['source', 'includeInDefault']),
       example: { repo: 'dlvhdr/gh-dash' },
     },
     response: { status: 201, schema: ref('AddRepoResponse') },
   },
   {
     method: 'delete', path: '/api/v1/repos/{repo}', tag: 'Repos', summary: 'Stop tracking a repository you added',
-    description: 'Deletes its pull requests, issues, commits, releases and cached diffs from this dashboard, and its set memberships. Nothing changes on GitHub. 409 for a repository you own (hide it instead), 404 when unknown.',
-    params: [REPO], response: { status: 204, description: 'Removed' },
+    description: 'Deletes its pull requests, issues, commits, releases and cached diffs from this dashboard, and its set memberships. Nothing changes on the code host. 409 for a repository you own (hide it instead), 404 when unknown, 400 for a source that isn\'t one here.',
+    params: [REPO, q('source', "The repo's source (its host). With it, `repo` may also be the repo's path on that source (group%2Fproject), and must be on it.", str(), 'gitlab.example.com')],
+    response: { status: 204, description: 'Removed' },
   },
   {
     method: 'patch', path: '/api/v1/repos/{repo}', tag: 'Repos', summary: 'Pin/unpin or hide/unhide a repo (local preference)',

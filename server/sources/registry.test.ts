@@ -4,7 +4,7 @@ import { fakeGitHub } from '../test/github';
 import { BASE, fakeGitLab, graphql, type Handler } from '../test/gitlab';
 import { fakeGraphQL } from '../test/graphql';
 import { testTokens } from '../test/tokens';
-import { openDb } from '../db/db';
+import { type Db, openDb } from '../db/db';
 import { ensureSource, GITHUB_SOURCE_ID, getSource, listSources, removeSource, tryClaimViewer } from '../db/sources';
 import { GitHubDiffSources } from '../github/diff-source';
 import type { SourceConfig } from './config';
@@ -31,8 +31,9 @@ const gitlab = (host = HOST, over: Partial<SourceConfig> = {}): SourceConfig => 
   kind: 'gitlab', host, baseUrl: host === HOST ? BASE : `https://${host}`, tokenChoice: 'glab', tokenFile: null, tokenEnv: null, from: 'file', ...over,
 });
 
-function setup(o: { env?: NodeJS.ProcessEnv; routes?: Record<string, Handler>; githubToken?: string; githubFetch?: typeof fetch } = {}) {
-  const db = openDb(':memory:');
+/** One instance's registry; `db` shares another's database, as a second instance would. */
+function setup(o: { env?: NodeJS.ProcessEnv; routes?: Record<string, Handler>; githubToken?: string; githubFetch?: typeof fetch; db?: Db } = {}) {
+  const db = o.db ?? openDb(':memory:');
   const api = fakeGitLab(o.routes ?? CHECK_ROUTES);
   const glab = fakeExec(() => `${PAT}\n`);
   const logs: string[] = [];
@@ -114,6 +115,43 @@ describe('SourceRegistry', () => {
     expect(registry.apply()).toEqual([]);
     expect(registry.byHost(HOST)).toBeNull();
     expect(registry.list().map((r) => r.host)).toEqual(['github.com']);
+  });
+
+  it('catches up with the sources another instance adds or removes, before any lookup, without writing', async () => {
+    const mine = setup();
+    const other = setup({ db: mine.db });
+    const [gl] = mine.registry.apply({ glabPath: null, sources: [gitlab(HOST, { tokenChoice: 'app' })] });
+    other.registry.apply({ glabPath: null, sources: [] });
+
+    // Another instance adds a source: listed here as not configured, by host and by id, with no reload.
+    const added = ensureSource(mine.db, { kind: 'gitlab', host: 'gitlab2.example.com', baseUrl: 'https://gitlab2.example.com' });
+    const rows = listSources(mine.db);
+    const found = mine.registry.byHost('gitlab2.example.com');
+    expect(found).toMatchObject({ id: added.id, configured: false, config: null });
+    expect(mine.registry.byId(added.id)).toBe(found);
+    expect(mine.registry.list().map((r) => r.host)).toEqual(['github.com', HOST, 'gitlab2.example.com']);
+    expect(mine.registry.configured().map((r) => r.host)).toEqual(['github.com', HOST]);
+    expect(await found!.tokens.get()).toMatchObject({ token: null, source: 'none' });
+    expect(mine.logs.at(-1)).toBe('[sources] GitLab (gitlab2.example.com) is in the database but not configured on this server');
+    // The other instance sees this one's configured source the same way.
+    expect(other.registry.byId(gl!.id)).toMatchObject({ host: HOST, configured: false });
+
+    // Another instance removes one: gone here too, configured or not, and not synced; nothing is written back.
+    removeSource(mine.db, gl!.id);
+    removeSource(mine.db, added.id);
+    expect(mine.registry.byId(gl!.id)).toBeNull();
+    expect(mine.registry.byHost(HOST)).toBeNull();
+    expect(mine.registry.list().map((r) => r.host)).toEqual(['github.com']);
+    expect(mine.registry.configured().map((r) => r.host)).toEqual(['github.com']);
+    expect(other.registry.list().map((r) => r.host)).toEqual(['github.com']);
+    expect(listSources(mine.db)).toEqual(rows.filter((r) => r.id === GITHUB_SOURCE_ID));
+    expect(mine.logs.slice(-2)).toEqual([`[sources] GitLab (${HOST}) is no longer in the database`, '[sources] GitLab (gitlab2.example.com) is no longer in the database']);
+
+    // An unchanged table costs one small query per lookup.
+    const all = vi.spyOn(mine.db, 'all');
+    const get = vi.spyOn(mine.db, 'get');
+    mine.registry.list();
+    expect([all.mock.calls.length, get.mock.calls.length]).toEqual([1, 0]);
   });
 
   it('rebuilds a source only when its settings change, keeping the app token and change listeners', async () => {

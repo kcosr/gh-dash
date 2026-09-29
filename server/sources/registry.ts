@@ -11,6 +11,7 @@
 // - diffs (SourceDiffSupply): the diff service, through DiffRouter (sources/diffs.ts), which asks the repo's source's.
 //   github.com's is the GitHubDiffSources startServer builds.
 // - byHost / byId / list / configured: the manager (5), tracking (6), diffs (7), the API (8), the desktop child (11).
+//   Each first catches up with sources another instance sharing the database added or removed.
 // - setAppToken(host): the desktop app's set-token for a source (11). apply(): startup, reload-sources, and after
 //   removeSource (8).
 
@@ -127,7 +128,8 @@ export function gitlabCredentials(
 /**
  * Every source this database knows, as this instance runs them. apply() reconciles the config with the sources table
  * (ensureSource: an insert, or a refresh of base_url; rows are never deleted here, since another instance sharing the
- * database may still configure one) and builds or rebuilds one runtime per source.
+ * database may still configure one) and builds or rebuilds one runtime per source. Lookups (list, configured, byId,
+ * byHost) first catch up with the rows another instance added or removed since, without writing.
  */
 export class SourceRegistry {
   private readonly db: Db;
@@ -186,31 +188,21 @@ export class SourceRegistry {
     if (stale.length) this.db.tx(() => stale.forEach((c) => ensureSource(this.db, { kind: c.kind, host: c.host, baseUrl: c.baseUrl })));
     const rows = listSources(this.db).filter((r) => r.id !== GITHUB_SOURCE_ID);
     this.current = next;
-    const byHost = new Map(next.sources.map((c) => [c.host, c]));
     const built: SourceRuntime[] = [];
-    const seen = new Set<number>();
+    const live = new Set(rows.map((r) => r.id));
+    for (const id of [...this.runtimes.keys()]) if (!live.has(id)) this.drop(id);
     for (const row of rows) {
-      seen.add(row.id);
-      const config = byHost.get(row.host) ?? null;
-      const want = recipe(row, config, next.glabPath);
+      const config = this.configFor(row.host);
       const had = this.runtimes.get(row.id);
-      if (had?.recipe === want) continue;
-      had?.unsubscribe();
-      const b = this.build(row, config, next.glabPath, want);
-      this.runtimes.set(row.id, b);
-      built.push(b.runtime);
-      this.log(`[sources] ${b.runtime.label} ${config ? `at ${row.baseUrl} · ${describe(config, this.env)}` : 'is in the database but not configured on this server'}`);
-    }
-    for (const [id, b] of this.runtimes) {
-      if (seen.has(id)) continue;
-      b.unsubscribe();
-      this.runtimes.delete(id);
+      if (had?.recipe === recipe(row, config, next.glabPath)) continue;
+      built.push(this.install(row, config));
     }
     return built;
   }
 
   /** github.com first, then the others by id. */
   list(): SourceRuntime[] {
+    this.reconcile();
     return [this.githubRuntime, ...[...this.runtimes.values()].map((b) => b.runtime).sort((a, b) => a.id - b.id)];
   }
 
@@ -224,7 +216,9 @@ export class SourceRegistry {
   }
 
   byId(id: number): SourceRuntime | null {
-    return id === GITHUB_SOURCE_ID ? this.githubRuntime : (this.runtimes.get(id)?.runtime ?? null);
+    if (id === GITHUB_SOURCE_ID) return this.githubRuntime;
+    this.reconcile();
+    return this.runtimes.get(id)?.runtime ?? null;
   }
 
   byHost(host: string): SourceRuntime | null {
@@ -259,6 +253,46 @@ export class SourceRegistry {
   onChange(listener: (runtime: SourceRuntime, token: ResolvedToken) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  /**
+   * Brings the runtimes in line with the sources table before a lookup, as another instance sharing the database may
+   * have added or removed a source since apply(): a new row gets a runtime (configured when this instance's config
+   * names its host), and a runtime whose row is gone is dropped, so it is neither listed nor synced. One small SELECT
+   * (ids are never reused: AUTOINCREMENT); a new row is read in full once. Never writes: a source this config names
+   * whose row was removed waits for the next apply() to be added again.
+   */
+  private reconcile(): void {
+    const ids = this.db.all<{ id: number }>('SELECT id FROM sources WHERE id <> ?', [GITHUB_SOURCE_ID]).map((r) => r.id);
+    const live = new Set(ids);
+    for (const id of [...this.runtimes.keys()]) {
+      if (live.has(id)) continue;
+      this.log(`[sources] ${this.runtimes.get(id)!.runtime.label} is no longer in the database`);
+      this.drop(id);
+    }
+    for (const id of ids) {
+      if (this.runtimes.has(id)) continue;
+      const row = getSource(this.db, id);
+      if (row) this.install(row, this.configFor(row.host));
+    }
+  }
+
+  private configFor(host: string): SourceConfig | null {
+    return this.current.sources.find((c) => c.host === host) ?? null;
+  }
+
+  /** Builds the runtime for `row` (replacing any it had) and says how it is reached. */
+  private install(row: SourceRow, config: SourceConfig | null): SourceRuntime {
+    this.runtimes.get(row.id)?.unsubscribe();
+    const b = this.build(row, config, this.current.glabPath, recipe(row, config, this.current.glabPath));
+    this.runtimes.set(row.id, b);
+    this.log(`[sources] ${b.runtime.label} ${config ? `at ${row.baseUrl} · ${describe(config, this.env)}` : 'is in the database but not configured on this server'}`);
+    return b.runtime;
+  }
+
+  private drop(id: number): void {
+    this.runtimes.get(id)?.unsubscribe();
+    this.runtimes.delete(id);
   }
 
   private emit(runtime: SourceRuntime, token: ResolvedToken): void {

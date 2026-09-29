@@ -101,8 +101,12 @@ export function homePlace(p: Places): string {
 
 let cache: Places | null = null;
 
-export function readPlaces(): Places {
-  if (!cache) {
+/**
+ * The memory. `fresh` reads storage again: before writing, and when switching, so another tab's places (it shares the
+ * storage) aren't overwritten with this tab's older copy. Renders use the copy.
+ */
+export function readPlaces(opts: { fresh?: boolean } = {}): Places {
+  if (!cache || opts.fresh) {
     let raw: string | null = null;
     try { raw = localStorage.getItem(PLACES_KEY); } catch { /* private mode */ }
     cache = parsePlaces(raw);
@@ -132,7 +136,7 @@ export function useContextMemory(settled: boolean, keep: readonly Ctx[] | null):
   const { pathname, search } = useLocation();
   useEffect(() => {
     if (!settled) return;
-    const cur = readPlaces();
+    const cur = readPlaces({ fresh: true });
     const next = recordPlace(cur, pathname, search, keep ?? undefined);
     if (next !== cur) writePlaces(next);
   }, [settled, pathname, search, keep]);
@@ -142,5 +146,5 @@ export function useContextMemory(settled: boolean, keep: readonly Ctx[] | null):
 export function useSwitchContext(): (ctx: Ctx) => void {
   const navigate = useNavigate();
   const { pathname } = useLocation();
-  return useCallback((ctx: Ctx) => navigate(placeFor(readPlaces(), ctx, pathname)), [navigate, pathname]);
+  return useCallback((ctx: Ctx) => navigate(placeFor(readPlaces({ fresh: true }), ctx, pathname)), [navigate, pathname]);
 }

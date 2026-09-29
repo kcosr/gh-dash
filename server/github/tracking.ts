@@ -21,6 +21,7 @@ import { GitHubClient } from './client';
 import { mapProbe, mapRepo } from './map';
 import { REPO_LOOKUP, REPO_SUGGESTIONS } from './queries';
 import { GitHubRestClient } from './rest';
+import { backfillRequests } from './sync-source';
 import { GitHubError } from './transport';
 import type { GqlRepoSummary, GqlViewer, RepoLookupData, RepoSuggestionsData } from './types';
 
@@ -28,11 +29,6 @@ import type { GqlRepoSummary, GqlViewer, RepoLookupData, RepoSuggestionsData } f
 const CANDIDATES_TTL_MS = 5 * 60_000;
 /** At most this many of the token's repositories are listed (10 REST pages). */
 const MAX_CANDIDATES = 1000;
-
-/** A first sync pages commits by 100 and PRs / issues by 50, all in the same rounds; open items take their own. */
-export function backfillRequests(commits: number, prs: number, issues: number, openPrs: number, openIssues: number): number {
-  return Math.max(1, Math.ceil(commits / 100), Math.ceil(prs / 50), Math.ceil(issues / 50)) + Math.ceil(openPrs / 50) + Math.ceil(openIssues / 50);
-}
 
 /** The Sync manager's part: start a just-added repo's first sync, or queue it. */
 export interface FirstSync {

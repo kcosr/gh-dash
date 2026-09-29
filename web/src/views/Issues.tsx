@@ -113,7 +113,7 @@ const IssueRow = memo(function IssueRow({ issue }: { issue: Issue }) {
           <Labels labels={issue.labels} />
         </div>
         <div className="pr-meta">
-          <RepoChip name={issue.repo} /><span className="num">#{issue.number}</span><span className="sep">·</span>
+          <RepoChip repo={issue.repo} /><span className="num">#{issue.number}</span><span className="sep">·</span>
           <span>{issue.state === 'open' ? 'Opened' : 'Closed'} <time dateTime={at} title={fmtDateTime(at)}>{rel(at)}</time></span>
           <span className="sep">·</span><span>created by</span>
           <span className="author"><Avatar actor={issue.author} /><b>{issue.author.isMe ? 'you' : actorName(issue.author)}</b></span>

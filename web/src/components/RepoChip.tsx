@@ -12,7 +12,7 @@ import { OVERLAY_KEYS, patchSearch, viewFromPath } from '../lib/urlState';
  */
 const RepoMapCtx = createContext<{
   repos: Map<string, Repo>;
-  hrefFor: (name: string) => string;
+  hrefFor: (key: string) => string;
   navigate: ReturnType<typeof useNavigate>;
 } | null>(null);
 
@@ -30,14 +30,14 @@ export function RepoMapProvider({ children }: { children: ReactNode }) {
   const hrefFor = useMemo(() => {
     const base = new URLSearchParams(search);
     const cache = new Map<string, string>();
-    return (name: string) => {
-      let href = cache.get(name);
+    return (key: string) => {
+      let href = cache.get(key);
       if (href) return href;
       const vis = base.get('vis');
-      const repo = repos.get(name);
+      const repo = repos.get(key);
       const conflict = repo && (vis === 'public' || vis === 'private') && vis !== repo.visibility;
-      href = pathname + patchSearch(search, viewFromPath(pathname), { repos: [name], pr: null, diff: null, ...(conflict ? { vis: 'all' } : {}) });
-      cache.set(name, href);
+      href = pathname + patchSearch(search, viewFromPath(pathname), { repos: [key], pr: null, diff: null, ...(conflict ? { vis: 'all' } : {}) });
+      cache.set(key, href);
       return href;
     };
   }, [pathname, search, repos]);
@@ -45,16 +45,16 @@ export function RepoMapProvider({ children }: { children: ReactNode }) {
   return <RepoMapCtx.Provider value={value}>{children}</RepoMapCtx.Provider>;
 }
 
-/** Filter the current list to this repo; detail pages lead to its activity. */
-export function RepoChip({ name, className = 'repo-chip' }: { name: string; className?: string }) {
+/** Filter the current list to this repo (its key); detail pages lead to its activity. */
+export function RepoChip({ repo, className = 'repo-chip' }: { repo: string; className?: string }) {
   const context = useContext(RepoMapCtx);
   if (!context) throw new Error('RepoChip outside RepoMapProvider');
   const { repos, hrefFor, navigate } = context;
-  const priv = repos.get(name)?.visibility === 'private';
-  const href = hrefFor(name);
+  const priv = repos.get(repo)?.visibility === 'private';
+  const href = hrefFor(repo);
   return (
     <a className={`${className} repo-filter`} href={href}
-      title={`Filter to ${name}`} aria-label={`Filter to ${name}${priv ? ' (private)' : ''}`}
+      title={`Filter to ${repo}`} aria-label={`Filter to ${repo}${priv ? ' (private)' : ''}`}
       onClick={(e) => {
         e.stopPropagation();
         if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
@@ -64,7 +64,7 @@ export function RepoChip({ name, className = 'repo-chip' }: { name: string; clas
         if (href !== here.pathname + patchSearch(here.search, viewFromPath(here.pathname), {})) navigate(href);
       }}>
       {priv && <Icon name="lock" title="Private" />}
-      {name}
+      {repo}
     </a>
   );
 }

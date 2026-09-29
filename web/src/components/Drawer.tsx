@@ -102,7 +102,7 @@ export function PrDrawer({ id, compact }: { id: string; compact: boolean }) {
     <aside className="drawer" ref={scroller} aria-label="Pull request details">
       <div className="dr-head">
         <div className="dr-top">
-          <RepoChip name={pr.repo} />
+          <RepoChip repo={pr.repo} />
           <span className="num">#{pr.number}</span>
           <span className="spacer" />
           <button type="button" className="btn icon ghost" onClick={close} title="Close (Esc)" aria-label="Close"><Icon name="x" /></button>

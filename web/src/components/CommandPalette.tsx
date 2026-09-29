@@ -3,13 +3,14 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent, ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import type { PullRequest } from '../../../shared/api';
+import { matchRepoRef, repoRefKeys } from '../../../shared/repos';
 import { api } from '../api/client';
 import { useApiBase, useRepos, useViews } from '../api/hooks';
 import { API_OFF_HINT, apiLink } from '../lib/account';
 import { ALL_TIME_FROM, exportTarget, exportUrl } from '../lib/apiQuery';
 import { useFocusTrap, useLayer } from '../lib/layers';
 import { browserTz, fmtDate } from '../lib/time';
-import { carrySearch, patchSearch, repoFromPath, useUrlState } from '../lib/urlState';
+import { carrySearch, encodeParams, patchSearch, repoFromPath, useUrlState } from '../lib/urlState';
 import { copyText, useDebounced } from '../lib/util';
 import { prIconClass, prIconName } from './bits';
 import { Icon } from './Icon';
@@ -49,12 +50,18 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggle
   useFocusTrap(box);
   useEffect(() => { input.current?.focus(); }, []);
 
-  const refMatch = /^([\w.-]+)#(\d+)$/.exec(dq);
+  // "<repo>#<n>": the repo part is a key, an alias, or (failing both) a short name shared by any tracked repos.
+  const refMatch = matchRepoRef(dq);
+  const refRepos = useMemo(() => {
+    if (!refMatch) return undefined;
+    const keys = repoRefKeys(refMatch.repo, repos.data ?? []);
+    return keys.length ? keys.join(',') : refMatch.repo; // unknown here: let the server decide
+  }, [refMatch?.repo, repos.data]);
   const prSearch = useQuery({
-    queryKey: ['palette-prs', dq],
+    queryKey: ['palette-prs', dq, refRepos],
     queryFn: () =>
       dq
-        ? api.prs({ q: refMatch ? undefined : dq, repos: refMatch ? refMatch[1] : undefined, state: 'all', who: 'everyone', from: ALL_TIME_FROM, tz: browserTz(), limit: refMatch ? 200 : 8 })
+        ? api.prs({ q: refMatch ? undefined : dq, repos: refRepos, state: 'all', who: 'everyone', from: ALL_TIME_FROM, tz: browserTz(), limit: refMatch ? 200 : 8 })
         : api.prs({ state: 'all', who: 'me', from: '-90d', tz: browserTz(), limit: 5 }),
     placeholderData: keepPreviousData,
     staleTime: 30_000,
@@ -82,13 +89,13 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggle
         title: 'Repositories',
         items: rs.flatMap((r) => [
           {
-            key: `repo:${r.name}`,
+            key: `repo:${r.key}`,
             icon: ic('book'),
             label: r.name,
             right: <>{r.visibility === 'private' && <Icon name="lock" />}<span>Select only this repo</span></>,
             run: () => {
-              if (view === 'prs' || view === 'issues' || view === 'repos' || view === 'activity' || view === 'insights') set({ repos: [r.name] });
-              else navigate(`/prs?repos=${encodeURIComponent(r.name)}`);
+              if (view === 'prs' || view === 'issues' || view === 'repos' || view === 'activity' || view === 'insights') set({ repos: [r.key] });
+              else navigate(`/prs?${encodeParams([['repos', r.key]])}`);
             },
           },
         ]),
@@ -106,7 +113,7 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggle
         run: () => navigate({ pathname: '/prs', search: patchSearch(carrySearch(location.search), 'prs', { q: q.trim(), state: 'all' }) }),
       });
     }
-    const matched = refMatch ? prs.filter((p) => String(p.number).startsWith(refMatch[2])).slice(0, 6) : prs.slice(0, 6);
+    const matched = refMatch ? prs.filter((p) => String(p.number).startsWith(refMatch.number)).slice(0, 6) : prs.slice(0, 6);
     for (const p of matched) {
       prItems.push({
         key: `pr:${p.id}`,

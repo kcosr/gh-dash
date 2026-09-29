@@ -301,11 +301,11 @@ const FeedItem = memo(function FeedItem({ row, expanded, onExpand, onOpenPr, onO
   defaultBranch: (repo: string) => string;
 }) {
   let cls = '', icon: IconName = 'commit', text: ReactNode = null, sub: ReactNode = null;
-  const repo = (name: string) => <RepoChip name={name} className="ev-repo" />;
+  const repo = (key: string) => <RepoChip repo={key} className="ev-repo" />;
   // Commit links open the diff in-app; modifier and middle clicks still go to GitHub.
-  const diffLink = (name: string, c: { oid: string; url: string }, className: string, children: ReactNode) => (
-    <a className={className} href={c.url} target="_blank" rel="noopener noreferrer" data-diff={commitDiffId(name, c.oid)} title="View the commit's diff"
-      onClick={(ev) => { if (isPlainClick(ev)) { ev.preventDefault(); onOpenDiff(commitDiffId(name, c.oid)); } }}>{children}</a>
+  const diffLink = (key: string, c: { oid: string; url: string }, className: string, children: ReactNode) => (
+    <a className={className} href={c.url} target="_blank" rel="noopener noreferrer" data-diff={commitDiffId(key, c.oid)} title="View the commit's diff"
+      onClick={(ev) => { if (isPlainClick(ev)) { ev.preventDefault(); onOpenDiff(commitDiffId(key, c.oid)); } }}>{children}</a>
   );
 
   if (row.kind === 'commits') {
@@ -347,7 +347,7 @@ const FeedItem = memo(function FeedItem({ row, expanded, onExpand, onOpenPr, onO
         <>
           <Who actor={e.actor} /> {e.kind}{' '}
           <a className={`t${active ? ' on' : ''}`} href={p.url} onClick={(ev) => { ev.preventDefault(); onOpenPr(p.id); }}>{p.title}</a>
-          <span className="num"><RepoChip name={p.repo} className="repo-ref" />#{p.number}</span>
+          <span className="num"><RepoChip repo={p.repo} className="repo-ref" />#{p.number}</span>
         </>
       );
       if (e.kind === 'merged' && p.body.trim()) sub = <p className="ev-desc">{plainPreview(p.body)}</p>;
@@ -359,7 +359,7 @@ const FeedItem = memo(function FeedItem({ row, expanded, onExpand, onOpenPr, onO
         <>
           <Who actor={e.actor} /> {e.kind} issue{' '}
           <a className="t" href={i.url} target="_blank" rel="noopener noreferrer">{i.title}</a>
-          <span className="num"><RepoChip name={i.repo} className="repo-ref" />#{i.number}</span>
+          <span className="num"><RepoChip repo={i.repo} className="repo-ref" />#{i.number}</span>
         </>
       );
     } else if (e.type === 'release') {

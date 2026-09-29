@@ -67,7 +67,7 @@ export interface ExportTarget {
 }
 
 /** What the current view corresponds to in the API. */
-export function exportTarget(view: ViewName, s: UrlState, repoName?: string): ExportTarget {
+export function exportTarget(view: ViewName, s: UrlState, repoKey?: string): ExportTarget {
   switch (view) {
     case 'issues':
       return { endpoint: 'issues', params: { ...issueListParams(s) }, md: true, label: 'issues' };
@@ -76,7 +76,7 @@ export function exportTarget(view: ViewName, s: UrlState, repoName?: string): Ex
     case 'insights':
       return { endpoint: 'stats', params: { ...statsParams(s) }, md: false, label: 'insights' };
     case 'repo':
-      return { endpoint: 'stats', params: { ...statsParams({ ...s, repos: repoName ? [repoName] : s.repos }) }, md: false, label: 'repository stats' };
+      return { endpoint: 'stats', params: { ...statsParams({ ...s, repos: repoKey ? [repoKey] : s.repos }) }, md: false, label: 'repository stats' };
     case 'repos':
       return { endpoint: 'repos', params: { ...repoListParams(s) }, md: false, label: 'repositories' };
     case 'settings':

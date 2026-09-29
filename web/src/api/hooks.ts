@@ -62,7 +62,7 @@ export function useRepos() {
 
 export function useRepoMap(): Map<string, Repo> {
   const { data } = useRepos();
-  return useMemo(() => new Map((data ?? []).map((r) => [r.name, r])), [data]);
+  return useMemo(() => new Map((data ?? []).map((r) => [r.key, r])), [data]);
 }
 
 export function useSettings() {
@@ -321,11 +321,11 @@ export function useClearDiffCache() {
 export function usePatchRepo() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ name, patch }: { name: string; patch: { pinned?: boolean; hidden?: boolean } }) => api.patchRepo(name, patch),
-    onMutate: async ({ name, patch }) => {
+    mutationFn: ({ key, patch }: { key: string; patch: { pinned?: boolean; hidden?: boolean } }) => api.patchRepo(key, patch),
+    onMutate: async ({ key, patch }) => {
       await qc.cancelQueries({ queryKey: qk.repos });
       const prev = qc.getQueryData<{ items: Repo[] }>(qk.repos);
-      if (prev) qc.setQueryData(qk.repos, { items: prev.items.map((r) => (r.name === name ? { ...r, ...patch } : r)) });
+      if (prev) qc.setQueryData(qk.repos, { items: prev.items.map((r) => (r.key === key ? { ...r, ...patch } : r)) });
       return { prev };
     },
     onError: (_e, _v, ctx) => { if (ctx?.prev) qc.setQueryData(qk.repos, ctx.prev); },

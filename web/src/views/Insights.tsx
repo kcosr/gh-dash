@@ -19,6 +19,7 @@ import {
   tileProps,
   ttmLine,
 } from '../lib/statsCharts';
+import { repoPath } from '../../../shared/repos';
 import { patchSearch, useUrlState } from '../lib/urlState';
 
 export function InsightsView() {
@@ -33,8 +34,8 @@ export function InsightsView() {
 
   const nRepos = useMemo(() => {
     const all = repos.data ?? [];
-    const names = new Set(s.repos ?? defaultScope(all, settings.data));
-    return all.filter((r) => names.has(r.name) && (s.vis === 'all' || r.visibility === s.vis)).length;
+    const keys = new Set(s.repos ?? defaultScope(all, settings.data));
+    return all.filter((r) => keys.has(r.key) && (s.vis === 'all' || r.visibility === s.vis)).length;
   }, [repos.data, settings.data, s.repos, s.vis]);
 
   const byWho = s.who === 'me' ? ' by you' : s.who === 'others' ? ' by others' : '';
@@ -45,7 +46,7 @@ export function InsightsView() {
     (date: string) => navigate({ pathname: '/activity', search: patchSearch(search, 'activity', { range: 'custom', from: date, to: date }) }),
     [navigate, search],
   );
-  const openRepo = useCallback((repo: string) => navigate(`/repos/${encodeURIComponent(repo)}`), [navigate]);
+  const openRepo = useCallback((key: string) => navigate(repoPath(key)), [navigate]);
 
   // Chart inputs are memoized on the response: the charts cache geometry by identity.
   const tiles = useMemo(() => st && [

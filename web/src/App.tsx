@@ -15,6 +15,7 @@ import { ToastProvider, useToast } from './components/Toasts';
 import { TopBar, useSyncNow, useTheme } from './components/TopBar';
 import { UIProvider, useUI } from './components/ui';
 import { hasBlockingLayer, isTypingTarget, topLayer } from './lib/layers';
+import { useCanonicalRepoUrl } from './lib/canonicalUrl';
 import { getSidebarHidden, setSidebarHidden } from './lib/storage';
 import { plural } from './lib/time';
 import { repoFromPath, useUrlState } from './lib/urlState';
@@ -151,6 +152,7 @@ function Shell() {
   const repos = useRepos();
   useSyncWatcher();
   usePreloadWhenIdle();
+  useCanonicalRepoUrl();
   const name = repoFromPath(useLocation().pathname);
   useEffect(() => {
     const t = { prs: 'Pull requests', issues: 'Issues', activity: 'Activity', repos: 'Repositories', repo: name ?? 'Repository', insights: 'Insights', settings: 'Settings' }[view];
@@ -298,7 +300,7 @@ const router = createBrowserRouter([
       { path: 'issues', element: <IssuesView /> },
       { path: 'activity', element: <ActivityView /> },
       { path: 'repos', element: <RepositoriesView /> },
-      { path: 'repos/:name', element: <RepoDetailView /> },
+      { path: 'repos/*', element: <RepoDetailView /> },
       { path: 'insights', element: <InsightsView /> },
       { path: 'settings', element: <SettingsView /> },
       { path: '*', element: <Navigate to="/prs" replace /> },

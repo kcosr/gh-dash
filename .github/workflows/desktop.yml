@@ -44,6 +44,15 @@ jobs:
           # macOS: don't look for a signing identity in the keychain (unsigned build).
           CSC_IDENTITY_AUTO_DISCOVERY: false
 
+      # Apple silicon kills an app whose signature doesn't match its code (e.g. after flipping fuses), and
+      # nothing else here launches it: check the bundles' ad-hoc signatures, nested frameworks included.
+      - name: Verify macOS signatures
+        if: runner.os == 'macOS'
+        run: |
+          for app in release/mac*/gh-dash.app; do
+            codesign --verify --deep --strict --verbose=2 "$app"
+          done
+
       - uses: actions/upload-artifact@v4
         with:
           name: gh-dash-${{ runner.os }}

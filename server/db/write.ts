@@ -174,6 +174,8 @@ export interface SyncStateRow {
   releases_synced_at: string | null;
   stars_synced_at: string | null;
   stars_full_at: string | null;
+  /** The repo's star count when its last stars pass completed: what a source that can't probe stars compares with. */
+  stars_count: number | null;
   synced_at: string | null;
   last_error: string | null;
 }
@@ -204,7 +206,7 @@ const UPSERT_PR = upsertSql(
   [
     'repo_id', 'number', 'title', 'body', 'state', 'is_draft', ...actorCols('author'), 'merged_by', 'created_at', 'updated_at',
     'merged_at', 'closed_at', 'activity_at', 'additions', 'deletions', 'changed_files', 'commit_count', 'head_ref', 'base_ref',
-    'labels', 'closing_issues', 'url', 'head_oid',
+    'labels', 'closing_issues', 'url', 'head_oid', 'merge_commit_oid', 'squash_commit_oid',
   ],
   ['repo_id', 'number'],
 );
@@ -214,7 +216,7 @@ export function upsertPr(db: Db, repoId: number, p: PrRecord): boolean {
   const { id } = db.get<{ id: number }>(UPSERT_PR, [
     repoId, p.number, p.title, p.body, p.state, Number(p.isDraft), ...actorVals(p.author), p.mergedBy, p.createdAt, p.updatedAt,
     p.mergedAt, p.closedAt, p.activityAt, p.additions, p.deletions, p.changedFiles, p.commitCount, p.headRef, p.baseRef,
-    JSON.stringify(p.labels), JSON.stringify(p.closingIssues), p.url, p.headOid,
+    JSON.stringify(p.labels), JSON.stringify(p.closingIssues), p.url, p.headOid, p.mergeCommitOid, p.squashCommitOid,
   ])!;
   db.run('DELETE FROM pr_commits WHERE pr_id = ?', [id]);
   p.commits.forEach((c, i) => {
@@ -247,6 +249,31 @@ export function upsertCommit(db: Db, repoId: number, c: CommitRecord): boolean {
     c.prNumber,
   ]);
   return isNew;
+}
+
+// A merged PR's landed commits: its merge and squash commits first, then the commits it listed. Driven from the repo's
+// merged PRs rather than from its commits (a lookup per unlinked commit scans the repo's PRs: seconds on a big repo).
+const LINK_COMMITS = `WITH landed(oid, number, rank, merged_at) AS (
+    SELECT merge_commit_oid, number, 0, merged_at FROM pull_requests WHERE repo_id = ?1 AND state = 'merged' AND merge_commit_oid IS NOT NULL
+    UNION ALL
+    SELECT squash_commit_oid, number, 0, merged_at FROM pull_requests WHERE repo_id = ?1 AND state = 'merged' AND squash_commit_oid IS NOT NULL
+    UNION ALL
+    SELECT pc.oid, p.number, 1, p.merged_at FROM pull_requests p JOIN pr_commits pc ON pc.pr_id = p.id WHERE p.repo_id = ?1 AND p.state = 'merged'
+  ), first(oid, number) AS (
+    SELECT oid, number FROM (SELECT oid, number, row_number() OVER (PARTITION BY oid ORDER BY rank, merged_at, number) AS n FROM landed) WHERE n = 1
+  )
+  UPDATE commits SET pr_number = first.number FROM first
+  WHERE commits.repo_id = ?1 AND commits.pr_number IS NULL AND commits.oid = first.oid`;
+
+/**
+ * For a source whose commits don't say which PR brought them (SyncSource.linksCommits false): gives each of the repo's
+ * default-branch commits without a PR the merged PR that landed it, if any. That's the PR whose merge or squash commit
+ * it is, else the PR that listed it among its commits (the earliest merged, when several did). Commits pushed directly
+ * stay without one; so does a squash commit when the provider doesn't name it (the PR listed only the commits it
+ * squashed). Returns the commits linked.
+ */
+export function linkCommitsToPrs(db: Db, repoId: number): number {
+  return db.run(LINK_COMMITS, [repoId]).changes;
 }
 
 /**

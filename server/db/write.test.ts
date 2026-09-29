@@ -1,9 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import { type Db, openDb } from './db';
-import type { RepoRecord } from './records';
+import type { CommitRecord, PrRecord, RepoRecord } from './records';
 import { GITHUB } from '../test/seed';
 import { ensureSource } from './sources';
-import { addManual, markReposRemoved, markUnavailable, refreshManual, releaseKey, storedRepoRecord, upsertOwned } from './write';
+import {
+  addManual,
+  linkCommitsToPrs,
+  markReposRemoved,
+  markUnavailable,
+  refreshManual,
+  releaseKey,
+  storedRepoRecord,
+  upsertCommit,
+  upsertOwned,
+  upsertPr,
+} from './write';
 
 const NOW = '2026-09-29T12:00:00Z';
 
@@ -299,5 +310,62 @@ describe('by source', () => {
     expect(releaseKey(db, 'gitlab.example.com/alice/app', gid(7), '2026-09-30T00:00:00Z')).toBe(1);
     expect(repoRow(db, fresh).removed_at).toBe('2026-09-30T00:00:00Z');
     expect(keys(db)).toEqual(['alice/app']);
+  });
+});
+
+describe('linkCommitsToPrs', () => {
+  const sha = (c: string) => c.repeat(40).slice(0, 40);
+  const commit = (c: string): CommitRecord => ({
+    oid: sha(c), headline: `Commit ${c}`, body: '', author: { login: null, name: 'Al', email: 'al@example.com', avatarUrl: null },
+    committedAt: '2026-09-20T00:00:00Z', url: 'u', additions: 1, deletions: 0, prNumber: null,
+  });
+  function pr(number: number, over: Partial<PrRecord> = {}): PrRecord {
+    const at = over.mergedAt ?? '2026-09-21T00:00:00Z';
+    return {
+      number, title: `MR ${number}`, body: '', state: 'merged', isDraft: false, author: null, mergedBy: null, createdAt: at, updatedAt: at, mergedAt: at,
+      closedAt: at, activityAt: at, additions: 0, deletions: 0, changedFiles: 0, commitCount: 0, headRef: 'topic', headOid: sha('f'), baseRef: 'main',
+      labels: [], closingIssues: [], url: 'u', commits: [], mergeCommitOid: null, squashCommitOid: null, ...over,
+    };
+  }
+  const listed = (...cs: string[]) => cs.map((c) => ({ oid: sha(c), headline: c, committedAt: '2026-09-19T00:00:00Z', url: 'u', author: { login: null, name: null, email: null, avatarUrl: null } }));
+  const links = (db: Db, repoId: number) =>
+    Object.fromEntries(db.all<{ oid: string; pr_number: number | null }>('SELECT oid, pr_number FROM commits WHERE repo_id = ? ORDER BY oid', [repoId]).map((r) => [r.oid[0], r.pr_number]));
+
+  it('gives commits the merged PR that landed them: its merge or squash commit, else one it listed', () => {
+    const db = openDb(':memory:');
+    const gl = ensureSource(db, { kind: 'gitlab', host: 'gitlab.example.com', baseUrl: 'https://gitlab.example.com' });
+    const repo = upsertOwned(db, gl, rec('alice/app', 'gid://gitlab/Project/1'), NOW);
+    for (const c of ['1', '2', '3', '4', '5', '6', '7', '8']) upsertCommit(db, repo, commit(c));
+    upsertPr(db, repo, pr(10, { mergeCommitOid: sha('1'), commits: listed('2', '3') }));
+    upsertPr(db, repo, pr(11, { squashCommitOid: sha('4'), commits: listed('9') }));
+    // 5 is listed by two merged MRs, and 3 by !10 and !14: the one merged first landed it. !14 lists 1 too, but 1 is
+    // !10's merge commit, which says more.
+    upsertPr(db, repo, pr(12, { mergedAt: '2026-09-23T00:00:00Z', commits: listed('5') }));
+    upsertPr(db, repo, pr(13, { mergedAt: '2026-09-22T00:00:00Z', commits: listed('5') }));
+    upsertPr(db, repo, pr(14, { mergedAt: '2026-09-20T00:00:00Z', commits: listed('3', '1') }));
+    // Not merged: an open MR's commits and a closed one's merge commit land nothing.
+    upsertPr(db, repo, pr(15, { state: 'open', mergedAt: null, closedAt: null, commits: listed('6') }));
+    upsertPr(db, repo, pr(16, { state: 'closed', mergedAt: null, mergeCommitOid: sha('7') }));
+    // Another repo's merged MR names 8.
+    const other = upsertOwned(db, gl, rec('alice/lib', 'gid://gitlab/Project/2'), NOW);
+    upsertPr(db, other, pr(17, { mergeCommitOid: sha('8') }));
+
+    expect(linkCommitsToPrs(db, repo)).toBe(5);
+    expect(links(db, repo)).toEqual({ 1: 10, 2: 10, 3: 14, 4: 11, 5: 13, 6: null, 7: null, 8: null });
+    // Linked commits keep their PR; nothing left to do.
+    expect(linkCommitsToPrs(db, repo)).toBe(0);
+    db.run('UPDATE commits SET pr_number = 99 WHERE oid = ?', [sha('6')]);
+    upsertPr(db, repo, pr(15, { commits: listed('6') }));
+    expect(linkCommitsToPrs(db, repo)).toBe(0);
+    expect(links(db, repo)[6]).toBe(99);
+  });
+
+  it('stores what a merge landed with the PR', () => {
+    const db = openDb(':memory:');
+    const repo = upsertOwned(db, GITHUB, rec('alice/app', 'R_app'), NOW);
+    upsertPr(db, repo, pr(1, { mergeCommitOid: sha('a'), squashCommitOid: sha('b') }));
+    expect(db.get('SELECT merge_commit_oid, squash_commit_oid FROM pull_requests WHERE number = 1')).toEqual({ merge_commit_oid: sha('a'), squash_commit_oid: sha('b') });
+    upsertPr(db, repo, pr(1));
+    expect(db.get('SELECT merge_commit_oid, squash_commit_oid FROM pull_requests WHERE number = 1')).toEqual({ merge_commit_oid: null, squash_commit_oid: null });
   });
 });

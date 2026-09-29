@@ -4,6 +4,7 @@
       {
         "id": "gid://gitlab/Project/11",
         "openMergeRequests": { "count": 1 },
+        "lockedMergeRequests": { "count": 1 },
         "openIssues": { "count": 1 },
         "latestMergeRequest": { "nodes": [{ "updatedAt": "2026-09-22T09:00:00Z" }] },
         "latestIssue": { "nodes": [{ "updatedAt": "2026-09-26T00:00:00Z" }] },
@@ -18,6 +19,7 @@
       {
         "id": "gid://gitlab/Project/12",
         "openMergeRequests": { "count": 0 },
+        "lockedMergeRequests": { "count": 0 },
         "openIssues": { "count": 0 },
         "latestMergeRequest": { "nodes": [] },
         "latestIssue": { "nodes": [] },

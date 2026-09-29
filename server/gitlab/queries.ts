@@ -19,11 +19,16 @@ fragment ProjectFields on Project {
   repository { rootRef tree { lastCommit { sha committedDate } } }
 }`;
 
-/** Open counts plus cheap "latest item" probes that tell the sync which sections changed. Filters match round()'s. */
+/**
+ * Open counts plus cheap "latest item" probes that tell the sync which sections changed. Filters match round()'s. A
+ * locked merge request (being merged) maps to open, so it is counted with the opened ones: without it, a project with
+ * one would never match the sync's open count, which then re-lists the open ones and rechecks it every sync.
+ */
 export const PROBE_FIELDS = `
 fragment ProbeFields on Project {
   id
   openMergeRequests: mergeRequests(state: opened) { count }
+  lockedMergeRequests: mergeRequests(state: locked) { count }
   openIssues: issues(state: opened, types: [ISSUE]) { count }
   latestMergeRequest: mergeRequests(state: all, first: 1, sort: UPDATED_DESC) { nodes { updatedAt } }
   latestIssue: issues(state: all, types: [ISSUE], first: 1, sort: UPDATED_DESC) { nodes { updatedAt } }

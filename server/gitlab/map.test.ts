@@ -116,12 +116,20 @@ describe('GitLab → rows: viewer and projects', () => {
   });
 
   it('maps probes, leaving out upcoming releases', () => {
+    // One opened merge request and one locked (being merged): both open.
     expect(mapProbe(probes[0]!)).toEqual({
-      openPrs: 1, openIssues: 1, latestPrUpdatedAt: '2026-09-22T09:00:00Z', latestIssueUpdatedAt: '2026-09-26T00:00:00Z',
+      openPrs: 2, openIssues: 1, latestPrUpdatedAt: '2026-09-22T09:00:00Z', latestIssueUpdatedAt: '2026-09-26T00:00:00Z',
       releaseTags: ['v1.1.0', 'v1.0.0'], latestStarredAt: null,
     });
     expect(mapProbe(probes[1]!)).toEqual({ openPrs: 0, openIssues: 0, latestPrUpdatedAt: null, latestIssueUpdatedAt: null, releaseTags: [], latestStarredAt: null });
     expect(mapProbe(project).releaseTags).toEqual(['v2.1.0', 'v2.0.0']);
+  });
+
+  it('counts locked merge requests (being merged) as open, as mapMergeRequest does', () => {
+    const locked = { ...probes[1]!, lockedMergeRequests: { count: 2 } };
+    expect(mapProbe(locked).openPrs).toBe(2);
+    expect(mapProbe({ ...locked, openMergeRequests: { count: 3 } }).openPrs).toBe(5);
+    expect(mapProbe({ ...locked, lockedMergeRequests: null }).openPrs).toBe(0);
   });
 });
 

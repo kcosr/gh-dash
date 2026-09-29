@@ -72,6 +72,8 @@ export interface GqlProject {
 export interface GqlProbe {
   id: string;
   openMergeRequests: { count: number } | null;
+  /** Merge requests being merged: open, as far as the sync is concerned (mapMergeRequest). */
+  lockedMergeRequests: { count: number } | null;
   openIssues: { count: number } | null;
   latestMergeRequest: { nodes: { updatedAt: string }[] } | null;
   latestIssue: { nodes: { updatedAt: string }[] } | null;

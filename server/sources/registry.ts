@@ -5,9 +5,9 @@
 // Who uses what (the steps are the design's §11):
 // - tokens (CredentialProvider: TokenSupply + account() + check()): startup's check() here; the manager's per-source
 //   runs (5); tracking (6); diffs' 503 text (7); /sources and Settings → Sources (8, 11).
-// - syncSource(token, limits?): the neutral runSync (3c) and the multi-source manager (5); tracking's candidates() and
-//   lookup() (6), with few retries and short waits. github.com's is null until the manager builds GitHubSyncSource
-//   (3c/5); until then the manager syncs GitHub with its own GitHubClient, and tracking builds its own.
+// - syncSource(token, limits?): runSync's `source` per source run of the multi-source manager (5); tracking's
+//   candidates() and lookup() (6), with few retries and short waits. github.com's is null for now: the manager builds
+//   its GitHubSyncSource itself, and tracking its own, until step 5 moves that here.
 // - diffs (SourceDiffSupply): the diff service, through DiffRouter (sources/diffs.ts), which asks the repo's source's.
 //   github.com's is the GitHubDiffSources startServer builds.
 // - byHost / byId / list / configured: the manager (5), tracking (6), diffs (7), the API (8), the desktop child (11).
@@ -49,7 +49,7 @@ export interface SourceRuntime {
   /**
    * A sync client for one token. A 401 invalidates that token, so the next get() resolves again. `limits` replaces the
    * client's retry defaults (the sync's: several attempts, long waits), for a person waiting on the answer. null for
-   * github.com until the manager builds GitHubSyncSource here (steps 3c/5).
+   * github.com, whose GitHubSyncSource the manager builds itself until step 5.
    */
   readonly syncSource: ((token: string, limits?: RetryLimits) => SyncSource) | null;
   /** Its diff and file-content client for the current token. */

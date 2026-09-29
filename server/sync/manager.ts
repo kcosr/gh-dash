@@ -5,9 +5,7 @@ import { deleteMeta, getMeta, type SyncLockMeta, setMeta } from '../db/meta';
 import { repoKeySql, resolveRepo } from '../db/repo-key';
 import { getSettings } from '../db/settings';
 import { GITHUB_SOURCE_ID, getSource, setSourceRateLimit, tryClaimViewer } from '../db/sources';
-import { GitHubClient } from '../github/client';
-import { VIEWER } from '../github/queries';
-import type { ViewerData } from '../github/types';
+import { GitHubSyncSource } from '../github/sync-source';
 import { tokenKind, type TokenSupply } from '../token';
 import { runSync, type SyncProgress, type SyncRequest } from './sync';
 
@@ -113,14 +111,15 @@ export class SyncManager {
     if (getSource(this.db, GITHUB_SOURCE_ID)?.viewer?.id) return;
     const { token } = await this.tokens.get();
     if (!token) return;
-    const client = this.client(token);
-    const { viewer } = await client.query<ViewerData>(VIEWER);
+    // Without emails, as before: GitHub shows none (commits carry their author's account), so the claim keeps what's stored.
+    const { emails: _, ...viewer } = await this.source(token).viewer();
     const mismatch = tryClaimViewer(this.db, GITHUB_SOURCE_ID, viewer);
     if (mismatch) this.log(`[sync] warning: ${mismatch}`);
   }
 
-  private client(token: string): GitHubClient {
-    return new GitHubClient({
+  /** github.com's sync client for `token`. Its request and point counters are the run's. */
+  private source(token: string): GitHubSyncSource {
+    return new GitHubSyncSource({
       token,
       // A 401 means the token was revoked or replaced: resolve it again before the next use.
       fetchImpl: async (input, init) => {
@@ -129,6 +128,7 @@ export class SyncManager {
         return res;
       },
       onRateLimit: (rl) => setSourceRateLimit(this.db, GITHUB_SOURCE_ID, rl),
+      tokenKind: tokenKind(token),
     });
   }
 
@@ -212,7 +212,7 @@ export class SyncManager {
 
   private async execute(trigger: Trigger, req: SyncRequest, token: string): Promise<void> {
     const started = Date.now();
-    const client = this.client(token);
+    const source = this.source(token);
     let progress: SyncProgress = { done: 0, total: 0, current: null };
     const heartbeat = setInterval(() => this.writeLock(progress), HEARTBEAT_MS);
     let newItems = 0;
@@ -223,9 +223,9 @@ export class SyncManager {
       const result = await runSync(
         {
           db: this.db,
-          client,
+          source,
+          src: getSource(this.db, GITHUB_SOURCE_ID)!,
           settings: getSettings(this.db),
-          tokenKind: tokenKind(token),
           onProgress: (p) => {
             progress = p;
             this.writeLock(p);
@@ -247,17 +247,17 @@ export class SyncManager {
         trigger,
         newItems,
         errors,
-        pointsUsed: client.pointsUsed,
+        pointsUsed: source.points,
         ...(req.repo ? { repo: getMeta(this.db, 'syncLock')?.repo ?? req.repo } : {}),
       });
       if (!req.repo) setMeta(this.db, 'lastFullSyncAt', new Date().toISOString());
       if (getMeta(this.db, 'syncLock')?.instance === this.instance) deleteMeta(this.db, 'syncLock');
     });
     const scope = [req.repo ? `repo=${req.repo}` : null, req.full ? 'full' : null].filter(Boolean).join(' ');
-    const rl = client.rateLimit;
+    const rl = source.rateLimit;
     this.log(
       `[sync] ${trigger}${scope ? ` (${scope})` : ''} done in ${(durationMs / 1000).toFixed(1)}s · ${repos} repos · ` +
-        `${newItems} new items · ${errors.length} errors · ${client.pointsUsed} points in ${client.requests} requests` +
+        `${newItems} new items · ${errors.length} errors · ${source.points} points in ${source.requests} requests` +
         (rl ? ` (${rl.remaining}/${rl.limit} left)` : '') +
         (forksSkipped ? ` · commit history skipped for ${forksSkipped} forks (includeForks off)` : ''),
     );

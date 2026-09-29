@@ -2,6 +2,11 @@
  * A read-only smoke test of the GitLab provider against a real instance (tools/gitlab-smoke.ts runs it). It drives the
  * real sources, mappers and token helper step by step, checks what they produce and carries on past failures.
  *
+ * Besides the mapping of what the sync reads, it checks the GitLab calls the integration wave adds (DESIGN §10.3), which
+ * the fake instance can't prove: the viewer's emails, the token validation query, projects(ids:), the candidates
+ * listing, the lookup query with its permission fields and counts, merge and squash commit SHAs, what glab does for a
+ * host it isn't logged in to, and how the instance takes the sync's per-source pool of concurrent rounds.
+ *
  * Output is anonymised unless --verbose: counts, field checks, error kinds and timings are safe to share, and titles,
  * bodies, paths, code, names and emails never appear (project paths become "project#1"; the one given with --project is
  * shown as given). The token is never printed, in any mode.
@@ -13,19 +18,23 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ActorRecord, CommitRecord, IssueRecord, PrRecord, ReleaseRecord, RepoProbe, RepoRecord, StarRecord } from '../db/records';
 import type { DiffFile } from '../../shared/api';
-import type { DiffRepo, PrRevision, RoundResult } from '../provider/types';
+import type { DiffRepo, PrRevision, RoundRequest, RoundResult } from '../provider/types';
 import { GitLabClient } from './client';
 import { GitLabDiffSource } from './diff-source';
-import { encodeSegment } from './rest';
+import { mapProbe, mapProject } from './map';
+import { PROBE_FIELDS, PROJECT_FIELDS } from './queries';
+import { encodeSegment, GitLabRestClient } from './rest';
 import { GitLabSyncSource } from './sync-source';
 import { personalAccessToken } from './token';
 import { GitLabTransport, normalizeBaseUrl, type GitLabOptions } from './transport';
+import type { GqlProbe, GqlProject } from './types';
 
 export const USAGE = `usage: GITLAB_URL=https://gitlab.example.com GITLAB_TOKEN=<token> node gitlab-smoke.mjs [options]
   --project <group/sub/project>  the project to check (default: your most recently pushed one)
   --mr <number>                  the merge request to diff (default: the most recently updated one)
   --glab [path]                  also check the token glab has for GITLAB_URL's host (used if GITLAB_TOKEN is unset);
                                  glab from <path>, else GLAB_PATH, else PATH (GLAB_PATH alone also turns this on)
+  --pool <n>                     rounds run at once in the concurrency check (default 3, the sync's pool; 1-10)
   --record <dir>                 save every raw response to <dir> (contains work data: review before sharing)
   --verbose                      show real values (titles, paths, names): for your eyes only, don't share
 The token is read from GITLAB_TOKEN (or glab) only, never from the command line.`;
@@ -39,11 +48,17 @@ export interface SmokeConfig {
   verbose: boolean;
   /** The glab executable to check (a path, or "glab" to look it up on PATH); null: no glab check. */
   glab: string | null;
+  /** Repositories synced at once in the concurrency check. */
+  pool: number;
 }
+
+/** The sync's repositories in flight per source (`concurrency ?? 3` in server/sync/sync.ts): keep in step with it. */
+export const DEFAULT_POOL = 3;
+const MAX_POOL = 10;
 
 /** The run's settings from argv and the environment, or what's wrong with them. */
 export function parseArgs(argv: string[], env: Record<string, string | undefined>): SmokeConfig | string {
-  const cfg: SmokeConfig = { baseUrl: env.GITLAB_URL ?? '', token: env.GITLAB_TOKEN || null, project: null, mr: null, record: null, verbose: false, glab: env.GLAB_PATH || null };
+  const cfg: SmokeConfig = { baseUrl: env.GITLAB_URL ?? '', token: env.GITLAB_TOKEN || null, project: null, mr: null, record: null, verbose: false, glab: env.GLAB_PATH || null, pool: DEFAULT_POOL };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
     const value = () => {
@@ -54,6 +69,7 @@ export function parseArgs(argv: string[], env: Record<string, string | undefined
     try {
       if (arg === '--project') cfg.project = value();
       else if (arg === '--mr') cfg.mr = Number(value());
+      else if (arg === '--pool') cfg.pool = Number(value());
       else if (arg === '--record') cfg.record = value();
       else if (arg === '--verbose') cfg.verbose = true;
       else if (arg === '--glab') cfg.glab = argv[i + 1] !== undefined && !argv[i + 1]!.startsWith('--') ? argv[++i]! : env.GLAB_PATH || 'glab';
@@ -66,6 +82,7 @@ export function parseArgs(argv: string[], env: Record<string, string | undefined
   if (!cfg.baseUrl) return 'GITLAB_URL is not set.';
   if (!cfg.token && !cfg.glab) return 'GITLAB_TOKEN is not set (or pass --glab to use the token glab has).';
   if (cfg.mr !== null && !(Number.isInteger(cfg.mr) && cfg.mr > 0)) return '--mr needs a merge request number.';
+  if (!(Number.isInteger(cfg.pool) && cfg.pool >= 1 && cfg.pool <= MAX_POOL)) return `--pool needs a number from 1 to ${MAX_POOL}.`;
   return cfg;
 }
 
@@ -141,7 +158,7 @@ export function restTemplate(path: string): string {
 // ---------------------------------------------------------------------------
 
 /** Problems (fail the step) and notes (don't) found by a step, counted by message. */
-class Check {
+export class Check {
   readonly problems = new Map<string, number>();
   readonly notes = new Map<string, number>();
   fail(msg: string): void {
@@ -303,6 +320,255 @@ function checkFiles(c: Check, files: DiffFile[], totals: { additions: number; de
 }
 
 // ---------------------------------------------------------------------------
+// The integration wave's calls (DESIGN §3.4, §4.5, §4.7, §4.8, §10.3)
+// ---------------------------------------------------------------------------
+
+/**
+ * These documents are what the wave's code will send, written out here because that code isn't built yet: a
+ * field GitLab 19.3 doesn't have fails the request with GitLab's own message, which the step then shows.
+ * §3.4: the token validation query. The account, its emails ("me" on commits, §4.7), the instance, the personal count.
+ */
+const VALIDATE = `query SmokeValidate {
+  currentUser { id username name avatarUrl publicEmail commitEmail emails { nodes { email } } }
+  metadata { version enterprise }
+  projects(personal: true) { count }
+}`;
+
+/** §4.8: refreshing hand-added projects, in chunks of PROJECTS_CHUNK ids. */
+const PROJECTS_BY_IDS = `query SmokeProjectsByIds($ids: [ID!], $first: Int!) {
+  projects(ids: $ids, first: $first) { nodes { ...ProjectFields ...ProbeFields } }
+}
+${PROJECT_FIELDS}
+${PROBE_FIELDS}`;
+const PROJECTS_CHUNK = 25;
+/** A project id that doesn't exist (gid syntax is valid): GitLab should leave it out, not fail. */
+const MISSING_PROJECT_ID = 'gid://gitlab/Project/2147483000';
+
+/** §4.8: the Add dialog's lookup of one project: its fields, what the token may read, and the sizes of the backfill. */
+const LOOKUP = `query SmokeLookup($path: ID!, $since: Time!) {
+  currentUser { id username }
+  project(fullPath: $path) {
+    ...ProjectFields
+    ...ProbeFields
+    userPermissions { downloadCode readMergeRequest }
+    issuesEnabled
+    mergeRequestsSince: mergeRequests(updatedAfter: $since) { count }
+    issuesSince: issues(updatedAfter: $since, types: [ISSUE]) { count }
+    releaseTotal: releases { count }
+  }
+}
+${PROJECT_FIELDS}
+${PROBE_FIELDS}`;
+/** Not a project anyone has: the lookup must answer `project: null`, which the tracking API reports as not-found. */
+const MISSING_PROJECT_PATH = 'smoke-check-no-such-group/no-such-project';
+
+/** §4.8: the permission fields over the projects the token is a member of, to see the false values the lookup classifies. */
+const PERMISSIONS = `query SmokePermissions($first: Int!) {
+  projects(membership: true, first: $first, sort: "latest_activity_desc") {
+    count
+    nodes { id userPermissions { downloadCode readMergeRequest } issuesEnabled }
+  }
+}`;
+const PERMISSION_PROJECTS = 50;
+
+/** §4.5: merged MRs with the SHAs the commit-to-MR link-up uses, and the commits the sync lists for an MR. */
+const MERGED_MRS = `query SmokeMergedMrs($path: ID!, $first: Int!) {
+  project(fullPath: $path) {
+    mergeRequests(state: merged, first: $first, sort: UPDATED_DESC) {
+      nodes { iid state mergedAt targetBranch mergeCommitSha squashCommitSha diffHeadSha commits(first: 20) { nodes { sha } } }
+    }
+  }
+}`;
+const MERGED_MRS_SAMPLE = 25;
+
+/** §4.8: the Add dialog's candidates, as the wave's REST listing asks for them. */
+const CANDIDATES = { membership: true, archived: false, simple: true, order_by: 'last_activity_at', sort: 'desc', per_page: 100 } as const;
+const CANDIDATES_LIMIT = 1000;
+
+/** §3.3: a host glab has never seen; it must have no token for it. `.invalid` never resolves (RFC 2606). */
+const UNKNOWN_HOST = 'unknown.invalid';
+/** §3.4: the scopes that let a token change things on GitLab (Settings warns about them). */
+const WRITE_SCOPES = ['api', 'write_repository'];
+/** §3.4: the page that creates a token with the name and scope filled in, below the instance URL. */
+const TOKEN_PAGE = '/-/user_settings/personal_access_tokens?name=gh-dash&scopes=read_api';
+
+/** The fields of ProjectFields and ProbeFields (queries.ts): every one must be in the response, null or not. */
+const PROJECT_KEYS = ['id', 'path', 'fullPath', 'namespace', 'description', 'webUrl', 'visibility', 'archived', 'isForked', 'starCount', 'forksCount', 'createdAt', 'lastActivityAt', 'topics', 'languages', 'repository'];
+const PROBE_KEYS = ['openMergeRequests', 'openIssues', 'latestMergeRequest', 'latestIssue', 'latestReleases'];
+
+const ADDRESS = /^[^@\s]+@[^@\s]+$/;
+const GLOBAL_ID = /^gid:\/\/gitlab\/(\w+)\/\d+$/;
+
+interface ValidateData {
+  currentUser: {
+    id: string;
+    username: string;
+    publicEmail: string | null;
+    commitEmail: string | null;
+    emails: { nodes: { email: string }[] } | null;
+  } | null;
+  metadata: { version: string; enterprise: boolean } | null;
+  projects: { count: number } | null;
+}
+
+type Count = { count: number } | null;
+
+interface LookupProject extends GqlProject, GqlProbe {
+  userPermissions: { downloadCode: boolean; readMergeRequest: boolean } | null;
+  issuesEnabled: boolean | null;
+  mergeRequestsSince: Count;
+  issuesSince: Count;
+  releaseTotal: Count;
+}
+
+interface LookupData {
+  currentUser: { id: string; username: string } | null;
+  project: LookupProject | null;
+}
+
+interface PermissionsData {
+  projects: { count: number; nodes: { id: string; userPermissions: LookupProject['userPermissions']; issuesEnabled: boolean | null }[] } | null;
+}
+
+export interface MergedMr {
+  iid: string;
+  state: string;
+  mergedAt: string | null;
+  targetBranch: string;
+  mergeCommitSha: string | null;
+  squashCommitSha: string | null;
+  diffHeadSha: string | null;
+  commits: { nodes: { sha: string }[] } | null;
+}
+
+/** One project of the REST listing (`simple=true`): the fields the Add dialog reads. */
+interface Candidate {
+  id: number;
+  path_with_namespace: string;
+  web_url: string;
+  last_activity_at: string;
+  namespace: { kind: string; full_path: string } | null;
+}
+
+/** GitLab sends every field a query asks for, null or not: one that is `undefined` was left out of the response. */
+function has(c: Check, obj: object | null | undefined, keys: string[], what: string): void {
+  if (!obj) return;
+  for (const k of keys) c.expect((obj as Record<string, unknown>)[k] !== undefined, `${what}.${k} is missing from the response`);
+}
+
+/** A project read with the project and probe fields: mapped by the real mappers, and no field left out of the response. */
+function checkProjectNode(c: Check, p: GqlProject & GqlProbe, base: string): { record: RepoRecord; probe: RepoProbe } {
+  has(c, p, [...PROJECT_KEYS, ...PROBE_KEYS], 'project');
+  const record = mapProject(p, base);
+  const probe = mapProbe(p);
+  checkRepo(c, record);
+  checkProbe(c, probe);
+  return { record, probe };
+}
+
+/** `userPermissions` of a project: both fields present and true/false (returned, so a caller can count the false ones). */
+function permissionFlags(c: Check, perm: LookupProject['userPermissions'] | undefined): { downloadCode: boolean | null; readMergeRequest: boolean | null } {
+  if (perm === undefined) c.fail('userPermissions is missing from the response');
+  else if (perm === null) c.fail('userPermissions is null');
+  else return { downloadCode: flag(c, perm.downloadCode, 'userPermissions.downloadCode'), readMergeRequest: flag(c, perm.readMergeRequest, 'userPermissions.readMergeRequest') };
+  return { downloadCode: null, readMergeRequest: null };
+}
+
+function flag(c: Check, v: unknown, what: string): boolean | null {
+  if (v === undefined) c.fail(`${what} is missing from the response`);
+  else if (typeof v !== 'boolean') c.fail(`${what} is not true/false (it is ${v === null ? 'null' : typeof v})`);
+  else return v;
+  return null;
+}
+
+/** The `count` of a connection asked for `{ count }`, or null (already reported) when it is absent or unusable. */
+function total(c: Check, v: Count | undefined, what: string): number | null {
+  if (v === undefined) c.fail(`${what} is missing from the response`);
+  else if (v === null) c.fail(`${what} is null (the token can't read it)`);
+  else if (!Number.isInteger(v.count) || v.count < 0) c.fail(`${what}.count is not a non-negative integer`);
+  else return v.count;
+  return null;
+}
+
+/** The token's scopes and expiry as gh-dash will show them (§3.4): the date, and whether Settings will warn about writing. */
+export function checkTokenInfo(c: Check, info: { scopes: string[]; expiresAt: string | null }): string {
+  c.expect(info.expiresAt === null || /^\d{4}-\d{2}-\d{2}$/.test(info.expiresAt), 'expires_at is not a plain date (YYYY-MM-DD)');
+  const write = info.scopes.filter((s) => WRITE_SCOPES.includes(s));
+  return write.length ? `Settings would warn: can change things (${write.join(', ')})` : 'no write scope (no warning)';
+}
+
+/**
+ * §3.4 and §4.7: what the validation query gave. Returns the addresses that count as the viewer's ("me" on commits).
+ */
+export function checkValidate(c: Check, d: ValidateData, expect: { login: string | null; owned: number | null }): { addresses: Set<string>; detail: string } {
+  const addresses = new Set<string>();
+  const u = d.currentUser;
+  if (!u) {
+    c.fail('currentUser is null');
+    return { addresses, detail: 'no user' };
+  }
+  c.expect(GLOBAL_ID.exec(u.id)?.[1] === 'User', 'currentUser.id is not a User global id');
+  c.expect(!!u.username && (expect.login === null || u.username === expect.login), 'currentUser.username is empty, or another user than the viewer step found');
+  has(c, u, ['publicEmail', 'commitEmail', 'emails'], 'currentUser');
+  const listed = u.emails?.nodes;
+  if (u.emails === null) c.note('currentUser.emails is null: the token may not list the account\'s addresses (publicEmail and commitEmail only)');
+  else if (u.emails !== undefined) c.expect(Array.isArray(listed), 'currentUser.emails.nodes is not a list');
+  const all = [u.publicEmail, u.commitEmail, ...(listed ?? []).map((e) => e?.email)];
+  for (const a of all) {
+    if (typeof a === 'string' && a) {
+      c.expect(ADDRESS.test(a), 'an email is not an address');
+      addresses.add(a.toLowerCase());
+    } else c.expect(a === null || a === undefined || a === '', 'an email is not text');
+  }
+  c.expect(addresses.size > 0, 'no address from publicEmail, commitEmail or emails: "me" on GitLab commits would need myEmails');
+
+  const meta = d.metadata;
+  if (meta === undefined) c.fail('metadata is missing from the response');
+  else c.expect(!!meta && /^\d+\.\d+\.\d+/.test(meta.version) && typeof meta.enterprise === 'boolean', 'metadata has no version like 19.3.3, or enterprise is not true/false');
+  const personal = total(c, d.projects, 'projects(personal: true)');
+  if (personal !== null && expect.owned !== null) {
+    c.expect(personal === expect.owned, `projects(personal: true).count is ${personal}, but ${expect.owned} projects were listed`);
+  }
+  const detail =
+    `${meta ? `GitLab ${meta.version}` : 'no version'} · publicEmail ${u.publicEmail ? 'set' : 'unset'} · commitEmail ${u.commitEmail ? 'set' : 'unset'}` +
+    ` · emails ${listed ? `${listed.length} listed` : 'not listed'} · ${addresses.size} distinct address(es) · personal projects ${personal ?? '?'}`;
+  return { addresses, detail };
+}
+
+/** How the commits page links to merged MRs by the SQL of §4.5: by merge SHA, squash SHA, a commit the MR lists, or not at all. */
+export function linkCommits(oids: string[], mrs: MergedMr[]): { merge: number; squash: number; listed: number; none: number } {
+  const merge = new Set(mrs.flatMap((m) => (m.mergeCommitSha ? [m.mergeCommitSha] : [])));
+  const squash = new Set(mrs.flatMap((m) => (m.squashCommitSha ? [m.squashCommitSha] : [])));
+  const listed = new Set(mrs.flatMap((m) => (m.commits?.nodes ?? []).map((n) => n.sha)));
+  const out = { merge: 0, squash: 0, listed: 0, none: 0 };
+  for (const oid of oids) {
+    if (merge.has(oid)) out.merge++;
+    else if (squash.has(oid)) out.squash++;
+    else if (listed.has(oid)) out.listed++;
+    else out.none++;
+  }
+  return out;
+}
+
+/** The lookup query's answer for a project the token can see: mapped by the real mappers, and every new field present. */
+export function checkLookup(c: Check, p: LookupProject, base: string) {
+  const { record, probe } = checkProjectNode(c, p, base);
+  const perm = permissionFlags(c, p.userPermissions);
+  const issuesEnabled = flag(c, p.issuesEnabled, 'issuesEnabled');
+  const counts = {
+    mrs: total(c, p.mergeRequestsSince, 'mergeRequests(updatedAfter:)'),
+    issues: total(c, p.issuesSince, 'issues(updatedAfter:, types: [ISSUE])'),
+    releases: total(c, p.releaseTotal, 'releases'),
+  };
+  return { record, probe, perm, issuesEnabled, counts };
+}
+
+const lower = (s: string) => s.toLowerCase();
+const seconds = (ms: number) => (ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)} s`);
+/** The `p`th quantile of ascending `sorted`. */
+const quantile = (sorted: number[], p: number) => sorted[Math.min(sorted.length - 1, Math.floor(p * sorted.length))] ?? 0;
+
+// ---------------------------------------------------------------------------
 // Requests: timing, rate limits, recording
 // ---------------------------------------------------------------------------
 
@@ -314,6 +580,9 @@ interface Call {
 
 interface Traffic {
   calls: Call[];
+  /** Requests started and not yet answered, and the most at once since `peak` was last reset. */
+  inflight: number;
+  peak: number;
   /** Names of response headers seen that tell something about the instance (rate limits, GitLab's own). */
   headers: Set<string>;
   rateLimited: number;
@@ -327,6 +596,7 @@ function instrument(inner: typeof fetch, traffic: Traffic, record: Recorder | nu
     const url = new URL(String(input));
     const op = graphqlOp(init?.body) ?? `${init?.method ?? 'GET'} ${restTemplate(url.pathname.replace(/^.*?\/api\/v4/, ''))}`;
     const started = performance.now();
+    traffic.peak = Math.max(traffic.peak, ++traffic.inflight);
     try {
       const res = await inner(input, init);
       traffic.calls.push({ op, status: res.status, ms: Math.round(performance.now() - started) });
@@ -337,6 +607,8 @@ function instrument(inner: typeof fetch, traffic: Traffic, record: Recorder | nu
     } catch (err) {
       traffic.calls.push({ op, status: 'network error', ms: Math.round(performance.now() - started) });
       throw err;
+    } finally {
+      traffic.inflight--;
     }
   };
 }
@@ -519,9 +791,14 @@ export interface SmokeIo {
   out: (line: string) => void;
   fetchImpl?: typeof fetch;
   exec?: Exec;
+  /** Waits between retries of the GitLab clients (tests skip the waits). */
+  sleep?: (ms: number) => Promise<void>;
   /** Which build of the tool ran (a git SHA when bundled). */
   build?: string;
 }
+
+/** Thrown by a step that finds out only while running that there is nothing for it to check. */
+class Skip extends Error {}
 
 interface StepResult {
   name: string;
@@ -531,7 +808,13 @@ interface StepResult {
 /** What earlier steps found, for the later ones. */
 interface State {
   viewer: boolean;
+  /** The viewer's username, for checks that compare namespaces and emails to it. */
+  login: string | null;
   owned: RepoRecord[];
+  /** Whether `owned` is the listing itself (the step didn't fail), so counts can be compared with it. */
+  ownedListed: boolean;
+  /** A group project from the candidates listing, for the lookup of a project that isn't yours. */
+  groupPath: string | null;
   repo: RepoRecord | null;
   probe: RepoProbe | null;
   rounds: RoundResult;
@@ -581,6 +864,11 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv, io: SmokeIo):
     try {
       detail = await fn(c);
     } catch (err) {
+      if (err instanceof Skip) {
+        print(`${label} SKIP  ${err.message}`);
+        results.push({ name, status: 'SKIP' });
+        return;
+      }
       const e = err as Error & { kind?: string; status?: number | null };
       c.fail(`${e.name ?? 'Error'} (kind ${e.kind ?? '-'}, status ${e.status ?? '-'}): ${e.message}`);
       detail = 'threw';
@@ -608,13 +896,14 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv, io: SmokeIo):
   if (cfg.record) print(`RECORDING raw responses to ${cfg.record}: they contain work data (titles, code, names). Review before sharing.`);
 
   const record = cfg.record ? new Recorder(cfg.record, (t) => privacy.maskTokens(t)) : null;
-  const traffic: Traffic = { calls: [], headers: new Set(), rateLimited: 0 };
+  const traffic: Traffic = { calls: [], inflight: 0, peak: 0, headers: new Set(), rateLimited: 0 };
   const fetchImpl = instrument(io.fetchImpl ?? fetch, traffic, record);
 
   // The token: GITLAB_TOKEN, else what glab has.
   let token = cfg.token;
   if (cfg.glab) {
     const glab = cfg.glab;
+    let glabRuns = false;
     await step('glab', async (c) => {
       const found = await glabToken(glab, new URL(base).host, env, io.exec ?? execCommand, (t) => privacy.secret(t));
       for (const a of found.attempts) c.note(a);
@@ -630,6 +919,7 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv, io: SmokeIo):
         c.fail('glab did not run');
         return 'no glab';
       }
+      glabRuns = true;
       if (!found.token) {
         c.fail("glab gave no token for GITLAB_URL's host");
         return `glab ${found.version} · no way worked`;
@@ -641,6 +931,7 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv, io: SmokeIo):
         : 'not a PAT (GitLab answers 400 for OAuth tokens): scopes and expiry unknown';
       if (info && !info.canRead) c.fail("glab's token has neither read_api nor api");
       if (info && !info.scopes.includes('api')) c.note("glab's token lacks the api scope a glab login usually has");
+      if (info) c.note(`glab's token: ${checkTokenInfo(c, info)}`);
       let use: string;
       if (!cfg.token) {
         token = found.token;
@@ -648,17 +939,28 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv, io: SmokeIo):
       } else use = sha256(found.token) === sha256(cfg.token) ? 'same token as GITLAB_TOKEN' : 'a different token from GITLAB_TOKEN (the run uses GITLAB_TOKEN)';
       return `glab ${found.version} · via ${found.method} · ${kind} · ${use}`;
     });
+    // §3.3: the resolver asks glab for the token of a host the user names, so glab must not answer for one it doesn't know.
+    await step(
+      'glab other host',
+      async (c) => {
+        const found = await glabToken(glab, UNKNOWN_HOST, env, io.exec ?? execCommand, (t) => privacy.secret(t));
+        for (const a of found.attempts) c.note(a);
+        c.expect(!found.token, `glab gave a token for ${UNKNOWN_HOST}, a host it isn't logged in to (a global token?): the resolver must check the host against glab's configured hosts first`);
+        return found.token ? `${UNKNOWN_HOST}: glab handed out a token (${found.method})` : `${UNKNOWN_HOST}: glab has no token for it, as wanted`;
+      },
+      !glabRuns && 'glab did not run',
+    );
   }
   if (!token) {
     print('No token to run with: GITLAB_TOKEN is unset and glab gave none.');
     return 1;
   }
 
-  const opts: GitLabOptions = { baseUrl: base, token, fetchImpl, maxAttempts: 2 };
+  const opts: GitLabOptions = { baseUrl: base, token, fetchImpl, maxAttempts: 2, sleep: io.sleep };
   const sync = new GitLabSyncSource(opts);
   const diff = new GitLabDiffSource(opts);
   const graphql = new GitLabClient(new GitLabTransport(opts, { maxAttempts: 2, maxRetryWaitMs: 10_000 }));
-  const st: State = { viewer: false, owned: [], repo: null, probe: null, rounds: {}, rev: null, files: [] };
+  const st: State = { viewer: false, login: null, owned: [], ownedListed: false, groupPath: null, repo: null, probe: null, rounds: {}, rev: null, files: [] };
 
   await step('instance', async (c) => {
     const root = new URL(base).pathname;
@@ -679,7 +981,8 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv, io: SmokeIo):
     c.expect(info.canRead, 'the token has neither read_api nor api');
     c.expect(info.active, 'the token is not active (revoked or expired)');
     if (info.expiresAt && Date.parse(info.expiresAt) - Date.now() < 14 * DAY_MS) c.note(`expires soon: ${info.expiresAt}`);
-    return `scopes: ${info.scopes.join(', ') || 'none'} · expires: ${info.expiresAt ?? 'never'} · active: ${info.active}`;
+    if (!token!.startsWith('glpat-')) c.note('the token does not start with glpat-: gh-dash would call it "unknown" rather than "personal" (a custom token prefix?)');
+    return `scopes: ${info.scopes.join(', ') || 'none'} · expires: ${info.expiresAt ?? 'never'} · active: ${info.active} · ${checkTokenInfo(c, info)}`;
   });
 
   await step('viewer', async (c) => {
@@ -689,12 +992,14 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv, io: SmokeIo):
     c.expect(!!v.login, 'login is empty');
     c.expect(v.avatarUrl === null || HTTP.test(v.avatarUrl), 'avatarUrl is not absolute');
     st.viewer = true;
+    st.login = v.login;
     show('viewer', v);
     return `id ok · name ${v.name ? 'set' : 'unset'} · avatar ${v.avatarUrl ? 'absolute URL' : 'none'}`;
   });
 
   await step('owned projects', async (c) => {
     st.owned = await sync.ownedRepos();
+    st.ownedListed = true;
     for (const r of st.owned) {
       privacy.alias('project', r.nameWithOwner);
       checkRepo(c, r);
@@ -865,11 +1170,293 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv, io: SmokeIo):
     return `newest default-branch commit · ${d.files.length} file(s) · ${counted}`;
   }, (!diffRepo && 'no project') || (!newest && 'no commits'));
 
+  // -------------------------------------------------------------------------
+  // The integration wave's calls (DESIGN §10.3)
+  // -------------------------------------------------------------------------
+
+  const rest = new GitLabRestClient(new GitLabTransport(opts, { maxAttempts: 2, maxRetryWaitMs: 10_000 }));
+  const login = st.login ?? '';
+  let addresses = new Set<string>();
+
+  await step('validation query', async (c) => {
+    const d = await graphql.query<ValidateData>(VALIDATE);
+    const checked = checkValidate(c, d, { login: st.login, owned: st.ownedListed ? st.owned.length : null });
+    addresses = checked.addresses;
+    show('viewer emails', d.currentUser && { publicEmail: d.currentUser.publicEmail, commitEmail: d.currentUser.commitEmail, emails: d.currentUser.emails });
+    // What "me" on commits will do: the project's commits (mapped, lower-case addresses) against these.
+    const commits = st.rounds.commits?.items ?? [];
+    const yours = commits.filter((x) => x.author.email !== null && addresses.has(x.author.email)).length;
+    if (commits.length && addresses.size && !yours) c.note(`none of the project's ${commits.length} commits carries one of these addresses: "me" on commits would need myEmails`);
+    return `${checked.detail}${commits.length ? ` · your address on ${yours} of the project's ${commits.length} commits` : ''}`;
+  });
+
+  await step(
+    'projects by ids',
+    async (c) => {
+      const ids = [...new Set([repo!.nodeId, ...st.owned.map((r) => r.nodeId)])].slice(0, PROJECTS_CHUNK);
+      const d = await graphql.query<{ projects: { nodes: (GqlProject & GqlProbe)[] } | null }>(PROJECTS_BY_IDS, { ids, first: ids.length });
+      const nodes = d.projects?.nodes;
+      if (!nodes) {
+        c.fail('projects(ids:) is null');
+        return 'null';
+      }
+      const got = new Set(nodes.map((n) => n.id));
+      c.expect(got.size === nodes.length, 'a project came back twice');
+      c.expect(nodes.every((n) => ids.includes(n.id)), 'a project that was not asked for came back');
+      const left = ids.filter((id) => !got.has(id)).length;
+      c.expect(left === 0, `${left} of ${ids.length} requested project(s) not returned`);
+      const visibility: Record<string, number> = { public: 0, internal: 0, private: 0 };
+      for (const n of nodes) {
+        checkProjectNode(c, n, base);
+        if (n.visibility && n.visibility in visibility) visibility[n.visibility]!++;
+        else c.fail(`visibility is ${n.visibility === null ? 'null' : 'not exactly public, internal or private'}`);
+      }
+      const again = nodes.find((n) => n.id === repo!.nodeId);
+      if (again && JSON.stringify([mapProject(again, base), mapProbe(again)]) !== JSON.stringify([repo, st.probe])) c.note("differs from the project read by path (something changed in between?)");
+      // A project that doesn't exist must be left out, not fail the request: the refresh sends chunks of ids.
+      const mixed = await graphql.query<{ projects: { nodes: { id: string }[] } | null }>(PROJECTS_BY_IDS, { ids: [repo!.nodeId, MISSING_PROJECT_ID], first: 2 }).catch((err: Error) => {
+        c.fail(`a project id that does not exist made projects(ids:) fail, which would lose its whole chunk: ${err.message}`);
+        return null;
+      });
+      if (mixed) c.expect(mixed.projects?.nodes.length === 1 && mixed.projects.nodes[0]!.id === repo!.nodeId, 'projects(ids:) with one missing id did not return exactly the project that exists');
+      return `${nodes.length} of ${ids.length} ids in one request (${PROJECTS_CHUNK} per request in the design) · raw visibility: public ${visibility.public}, internal ${visibility.internal}, private ${visibility.private} · a missing id is left out`;
+    },
+    (!repo && 'no project') || (!st.ownedListed && 'no owned projects'),
+  );
+
+  let candidates = 0;
+  await step('candidates', async (c) => {
+    const { items, total: count } = await rest.all<Candidate>('/projects', CANDIDATES_LIMIT, { query: CANDIDATES });
+    candidates = items.length;
+    const truncated = items.length >= CANDIDATES_LIMIT && (count === null || count > CANDIDATES_LIMIT);
+    if (truncated) c.note(`the listing stops at ${CANDIDATES_LIMIT} projects (the Add dialog would say "truncated")`);
+    if (count === null) c.note('GitLab sent no X-Total (it stops counting at 10,000 projects)');
+    else c.expect(items.length === Math.min(count, CANDIDATES_LIMIT), `${items.length} projects listed, but X-Total says ${count}`);
+    for (const x of items) {
+      c.expect(Number.isInteger(x.id) && x.id > 0, 'a project id is not a number');
+      c.expect(typeof x.path_with_namespace === 'string' && x.path_with_namespace.includes('/'), 'path_with_namespace is missing, or has no namespace');
+      c.expect(!!x.namespace && ['user', 'group'].includes(x.namespace.kind) && !!x.namespace.full_path, 'namespace.kind (user or group) or namespace.full_path is missing');
+      c.expect(!x.namespace || (x.path_with_namespace ?? '').startsWith(`${x.namespace.full_path}/`), 'path_with_namespace does not start with the namespace path');
+      c.expect(HTTP.test(x.web_url ?? ''), 'web_url is not absolute');
+      c.expect(!Number.isNaN(Date.parse(x.last_activity_at)), 'last_activity_at is not a time');
+    }
+    descending(c, 'candidates by last_activity_at', items.map((x) => x.last_activity_at));
+    // The Add dialog leaves out what sync tracks by itself: the personal namespace, which must be the same set as projects(personal: true).
+    const personal = items.filter((x) => x.namespace?.kind === 'user' && !!login && lower(x.namespace.full_path) === lower(login));
+    if (st.ownedListed && login) {
+      const live = st.owned.filter((r) => !r.isArchived);
+      const listed = new Set(personal.map((x) => `gid://gitlab/Project/${x.id}`));
+      const missing = live.filter((r) => !listed.has(r.nodeId)).length;
+      const extra = personal.filter((x) => !live.some((r) => r.nodeId === `gid://gitlab/Project/${x.id}`)).length;
+      c.expect(extra === 0 && (truncated || missing === 0), `your ${live.length} non-archived personal projects and the ${personal.length} in your namespace in this listing differ: ${missing} missing here, ${extra} not personal (a project pending deletion can do this)`);
+    }
+    const group = items.find((x) => x.namespace?.kind === 'group');
+    if (group) {
+      st.groupPath = group.path_with_namespace;
+      privacy.alias('project', st.groupPath);
+    }
+    show('candidates', items.slice(0, 3));
+    const groups = items.filter((x) => x.namespace?.kind === 'group').length;
+    return `${items.length} listed in ${Math.max(1, Math.ceil(items.length / 100))} request(s)${count !== null ? ` (X-Total ${count})` : ''} · in your namespace ${personal.length} · in groups ${groups} · in other users' namespaces ${items.length - personal.length - groups}`;
+  });
+
+  /** One lookup of `path`, with the shape checks; the caller compares it with what it knows. */
+  const lookup = async (c: Check, path: string) => {
+    const d = await graphql.query<LookupData>(LOOKUP, { path, since });
+    if (!d.currentUser) c.fail('currentUser is null');
+    else {
+      c.expect(GLOBAL_ID.exec(d.currentUser.id)?.[1] === 'User' && d.currentUser.username === st.login, 'currentUser is not the user the viewer step found');
+    }
+    if (!d.project) {
+      c.fail('project is null for a project that exists and that the token can see');
+      return null;
+    }
+    return checkLookup(c, d.project, base);
+  };
+  /** "n > 0" style bound between a count from the lookup and the listing the sync reads (equal when the listing is complete). */
+  const against = (c: Check, what: string, count: number | null, listed: number, complete: boolean) => {
+    if (count === null) return;
+    if (complete) c.expect(count === listed, `${what} counts ${count}, but the complete listing has ${listed}`);
+    else c.expect(count >= listed, `${what} counts ${count}, fewer than the ${listed} already listed`);
+  };
+
+  await step(
+    'lookup',
+    async (c) => {
+      const got = await lookup(c, repo!.nameWithOwner);
+      if (got) {
+        c.expect(got.record.nodeId === repo!.nodeId, 'another project came back');
+        // A project in your own namespace: the token can read it.
+        c.expect(got.perm.downloadCode !== false && got.perm.readMergeRequest !== false, 'userPermissions says the token cannot read the code or merge requests of a project it just listed');
+        const { prs, issues, releases } = st.rounds;
+        if (prs) against(c, 'mergeRequests(updatedAfter:)', got.counts.mrs, prs.items.filter((x) => x.updatedAt >= since).length, !prs.hasMore);
+        if (issues) against(c, 'issues(updatedAfter:)', got.counts.issues, issues.items.filter((x) => x.updatedAt >= since).length, !issues.hasMore);
+        if (releases) against(c, 'releases', got.counts.releases, releases.items.length, false);
+        show('lookup', got);
+      }
+      // "Owned" is "the namespace is the viewer's own" (§4.8): it must hold for every project of projects(personal: true).
+      if (st.ownedListed && login) {
+        const off = st.owned.filter((r) => lower(r.owner) !== lower(login)).length;
+        c.expect(off === 0, `${off} of your ${st.owned.length} personal projects are not in a namespace named like your username, so "owned = your namespace" would misjudge them`);
+      }
+      // A path that names nothing: null (the tracking API's not-found), not an error.
+      const none = await graphql.query<LookupData>(LOOKUP, { path: MISSING_PROJECT_PATH, since }).catch((err: Error) => {
+        c.fail(`a project that does not exist made the lookup fail instead of answering null: ${err.message}`);
+        return null;
+      });
+      if (none) c.expect(none.project === null, 'a project that does not exist came back');
+      if (!got) return 'null';
+      const n = (v: number | null) => v ?? '?';
+      return `${privacy.alias('project', repo!.nameWithOwner)} · downloadCode ${got.perm.downloadCode} · readMergeRequest ${got.perm.readMergeRequest} · issuesEnabled ${got.issuesEnabled} · since ${since.slice(0, 10)}: MRs ${n(got.counts.mrs)}, issues ${n(got.counts.issues)} · releases ${n(got.counts.releases)} · a missing project answers null`;
+    },
+    !repo && 'no project',
+  );
+
+  await step(
+    'lookup group',
+    async (c) => {
+      const got = await lookup(c, st.groupPath!);
+      if (!got) return 'null';
+      c.expect(lower(got.record.owner) !== lower(login), 'a group project is in the namespace named like your username');
+      c.expect(got.record.nameWithOwner === st.groupPath, 'nameWithOwner differs from the path asked for');
+      return `${privacy.alias('project', st.groupPath!)} (first group project in the candidates) · owned: no (namespace is not yours) · downloadCode ${got.perm.downloadCode} · readMergeRequest ${got.perm.readMergeRequest} · issuesEnabled ${got.issuesEnabled}`;
+    },
+    !st.groupPath && (candidates ? 'no group project among the candidates' : 'no candidates'),
+  );
+
+  await step('permissions', async (c) => {
+    const d = await graphql.query<PermissionsData>(PERMISSIONS, { first: PERMISSION_PROJECTS });
+    const conn = d.projects;
+    if (!conn) {
+      c.fail('projects(membership: true) is null');
+      return 'null';
+    }
+    let noCode = 0;
+    let noMr = 0;
+    let noIssues = 0;
+    for (const p of conn.nodes) {
+      const perm = permissionFlags(c, p.userPermissions);
+      if (perm.downloadCode === false) noCode++;
+      if (perm.readMergeRequest === false) noMr++;
+      if (flag(c, p.issuesEnabled, 'issuesEnabled') === false) noIssues++;
+    }
+    c.expect(Number.isInteger(conn.count) && conn.count >= conn.nodes.length, 'count is not a number, or is below the projects listed');
+    if (conn.nodes.length && !noCode && !noMr && !noIssues) c.note('every project grants everything: a false permission, which the lookup classifies as "permission", was not seen');
+    return `${conn.nodes.length} of ${conn.count} member projects · downloadCode false ${noCode} · readMergeRequest false ${noMr} · issues disabled ${noIssues}`;
+  });
+
+  await step(
+    'merge shas',
+    async (c) => {
+      const d = await graphql.query<{ project: { mergeRequests: { nodes: MergedMr[] } | null } | null }>(MERGED_MRS, { path: repo!.nameWithOwner, first: MERGED_MRS_SAMPLE });
+      const mrs = d.project?.mergeRequests?.nodes;
+      if (!mrs) {
+        c.fail('project.mergeRequests is null');
+        return 'null';
+      }
+      if (!mrs.length) throw new Skip('no merged merge requests in this project (pass --project with one that has some)');
+      for (const m of mrs) {
+        has(c, m, ['mergeCommitSha', 'squashCommitSha'], 'merge request');
+        c.expect(m.state === 'merged', 'a merge request that is not merged came back for state: merged');
+        for (const sha of [m.mergeCommitSha, m.squashCommitSha]) c.expect(!sha || OID.test(sha), 'a merge or squash commit SHA is not a SHA');
+      }
+      const withMerge = mrs.filter((m) => m.mergeCommitSha).length;
+      const withSquash = mrs.filter((m) => m.squashCommitSha).length;
+      const neither = mrs.filter((m) => !m.mergeCommitSha && !m.squashCommitSha).length;
+      if (neither === mrs.length) c.note('no merged MR has a mergeCommitSha or squashCommitSha (fast-forward merges only?): links would come from the MR commits alone');
+      show('merged MRs', mrs.slice(0, 3).map((m) => ({ ...m, commits: m.commits?.nodes.length })));
+      // What the link-up of §4.5 does with the commits page the sync reads.
+      const commits = st.rounds.commits;
+      if (!commits) return `${mrs.length} merged MRs · merge SHA on ${withMerge} · squash SHA on ${withSquash} · neither ${neither} · (no commits round to link)`;
+      const oids = commits.items.map((x) => x.oid);
+      const linked = linkCommits(oids, mrs);
+      const known = new Set(oids);
+      const windowStart = commits.hasMore ? (commits.items.at(-1)?.committedAt ?? since) : since;
+      const recent = mrs.filter((m) => m.targetBranch === repo!.defaultBranch && m.mergedAt !== null && Date.parse(m.mergedAt) > Date.parse(windowStart) + DAY_MS);
+      const linkable = recent.filter((m) => [m.mergeCommitSha, m.squashCommitSha, ...(m.commits?.nodes ?? []).map((n) => n.sha)].some((sha) => !!sha && known.has(sha))).length;
+      if (recent.length && !linkable) c.fail(`none of the ${recent.length} MRs merged into the default branch within the commits page can be linked to a commit on it: Activity would show their commits as direct pushes`);
+      else if (linkable < recent.length) c.note(`${recent.length - linkable} of ${recent.length} recent default-branch MRs have no commit on the page to link to (rebased, or merged after the page?)`);
+      return (
+        `${mrs.length} merged MRs · merge SHA on ${withMerge} · squash SHA on ${withSquash} · neither ${neither} · commits page ${oids.length}: ` +
+        `linked by merge SHA ${linked.merge}, by squash SHA ${linked.squash}, by listed MR commits ${linked.listed}, not linked ${linked.none} · recent default-branch MRs linkable ${linkable} of ${recent.length}`
+      );
+    },
+    (!repo && 'no project') || (repo && !repo.defaultBranch && 'empty repository'),
+  );
+
+  await step(
+    'concurrency',
+    async (c) => {
+      // The sync runs `pool` repositories at once per source; each round asks for every section at once (7 requests).
+      const usable = st.owned.filter((r) => !r.isArchived && r.defaultBranch).sort((a, b) => ((a.pushedAt ?? '') < (b.pushedAt ?? '') ? 1 : -1));
+      if (!usable.length) throw new Skip('no non-archived project with commits among your own');
+      const targets = Array.from({ length: cfg.pool }, (_, i) => usable[i % usable.length]!);
+      const distinct = new Set(targets.map((t) => t.nodeId)).size;
+      if (distinct < cfg.pool) c.note(`only ${distinct} project(s) of your own to use, so some rounds ran on the same project`);
+      const req: RoundRequest = {
+        commits: { after: null, since },
+        prs: { after: null },
+        openPrs: { after: null },
+        issues: { after: null },
+        openIssues: { after: null },
+        releases: { after: null },
+        stars: { after: null },
+      };
+      const failed = (what: string, r: PromiseSettledResult<RoundResult>) => {
+        if (r.status === 'fulfilled') return;
+        const e = r.reason as Error & { kind?: string; status?: number | null };
+        const load = e.kind === 'rate-limit' || e.kind === 'transient' || (e.status ?? 0) === 429 || (e.status ?? 0) >= 500;
+        // Throttling and server errors are the pool's doing; a project that refuses one section (issues turned off) is not.
+        const msg = `${what} failed (kind ${e.kind ?? '-'}, status ${e.status ?? '-'}): ${e.message}`;
+        if (load) c.fail(msg);
+        else c.note(msg);
+      };
+      const alone0 = performance.now();
+      failed('the round on its own', (await Promise.allSettled([sync.round(targets[0]!, req)]))[0]!);
+      const aloneMs = Math.max(1, performance.now() - alone0);
+
+      const before = traffic.calls.length;
+      traffic.peak = traffic.inflight;
+      const pool0 = performance.now();
+      const settled = await Promise.allSettled(targets.map((t) => sync.round(t, req)));
+      const wallMs = Math.max(1, performance.now() - pool0);
+      settled.forEach((r, i) => failed(`round ${i + 1} of ${cfg.pool}`, r));
+
+      const calls = traffic.calls.slice(before);
+      const times = calls.map((x) => x.ms).sort((a, b) => a - b);
+      const byStatus = (list: Call[]) => [...new Set(list.map((x) => x.status))].map((s) => `${s} x${list.filter((x) => x.status === s).length}`).join(', ');
+      const trouble = calls.filter((x) => x.status === 429 || x.status === 'network error' || (typeof x.status === 'number' && x.status >= 500));
+      if (trouble.length) c.fail(`${trouble.length} of ${calls.length} request(s) were throttled or failed with ${cfg.pool} rounds at once (${byStatus(trouble)}): the pool for GitLab should be smaller`);
+      const others = calls.filter((x) => x.status !== 200 && !trouble.includes(x));
+      if (others.length) c.note(`${others.length} request(s) answered ${byStatus(others)}`);
+      if ((times.at(-1) ?? 0) > 20_000) c.note(`the slowest request took ${seconds(times.at(-1)!)} (GitLab gives up on a GraphQL query after 30 s)`);
+      return (
+        `${cfg.pool} rounds at once (${distinct} project(s), ${Object.keys(req).length} sections each) · ${calls.length} requests · peak in flight ${traffic.peak} · ` +
+        `wall ${seconds(wallMs)} vs ${seconds(aloneMs)} for one round alone (x${(wallMs / aloneMs).toFixed(1)}) · ` +
+        `request ms: median ${quantile(times, 0.5)}, p95 ${quantile(times, 0.95)}, max ${times.at(-1) ?? 0} · throttled or failed ${trouble.length}`
+      );
+    },
+    !st.ownedListed && 'no owned projects',
+  );
+
   print('');
   const rl = sync.rateLimit ?? diff.rateLimit;
-  print(`Requests: ${traffic.calls.length} · rate limit: ${rl ? `${rl.remaining}/${rl.limit} left, resets ${rl.resetAt ?? '?'}` : 'none reported (throttling off)'} · responses with RateLimit headers: ${traffic.rateLimited}`);
+  print(`Requests: ${traffic.calls.length} · most at once: ${traffic.peak} · rate limit: ${rl ? `${rl.remaining}/${rl.limit} left, resets ${rl.resetAt ?? '?'}` : 'none reported (throttling off)'} · responses with RateLimit headers: ${traffic.rateLimited}`);
   print(`Notable response headers: ${[...traffic.headers].sort().join(', ') || 'none'}`);
-  for (const call of traffic.calls) print(`  ${String(call.ms).padStart(6)} ms  ${String(call.status).padEnd(3)}  ${call.op}`);
+  // One line per request kind; a kind seen more than once shows its median and slowest time.
+  const kinds = new Map<string, Call[]>();
+  for (const call of traffic.calls) kinds.set(`${call.status} ${call.op}`, [...(kinds.get(`${call.status} ${call.op}`) ?? []), call]);
+  for (const list of kinds.values()) {
+    const ms = list.map((x) => x.ms).sort((a, b) => a - b);
+    const first = list[0]!;
+    const many = list.length > 1 ? `  (x${list.length}, slowest ${ms.at(-1)} ms)` : '';
+    print(`  ${String(list.length > 1 ? quantile(ms, 0.5) : first.ms).padStart(6)} ms  ${String(first.status).padEnd(3)}  ${first.op}${many}`);
+  }
+
+  print('');
+  print('By hand (the tool cannot check this): open the page below in a browser signed in to GitLab. It should show the new personal access');
+  print('token form with the name "gh-dash" filled in and only the read_api scope ticked. Say if it is blank, has other scopes, or is a 404.');
+  print(`  ${base}${TOKEN_PAGE}`);
 
   const tally = (s: StepResult['status']) => results.filter((r) => r.status === s);
   const failed = tally('FAIL');

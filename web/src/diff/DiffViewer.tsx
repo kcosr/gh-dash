@@ -903,7 +903,7 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
             <div className="dvr-scroll dvr-empty">No changed files.</div>
           )}
           {showColumn && (
-            <LayerParent.Provider value={columnLayer.id}>
+            <LayerParent.Provider value={columnLayer.scope}>
               <CommentsColumn threads={ordered} order={indexOf} title={title} kind={diff.kind} error={comments.error} onRetry={comments.retry}
                 onJump={(id) => focusThread(id, { scroll: true })} onClose={() => setColumn(false)} onCreateGeneral={createGeneral}
                 unsent={unsent} headOid={diff.headOid} onResume={resumeDraft} onDiscardDraft={removeNewDraft} />

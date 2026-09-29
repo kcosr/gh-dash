@@ -3,36 +3,39 @@
  * global Escape handler closes the top-most one. Blocking layers also disable
  * list shortcuts (j/k/Enter/o) while they're open.
  */
-import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { RefObject } from 'react';
 
-interface Layer { id: number; close: () => void; blocking: boolean; parent: number | null }
+interface Layer { id: number; close: () => void; blocking: boolean; ancestors: readonly number[] }
 const stack: Layer[] = [];
 let seq = 0;
 
 /**
- * The layer a subtree belongs to (e.g. the compact comments column). Layers opened inside it (its composers) stay
- * above it whatever order they register in: a panel and a composer mounting in the same render register child
- * first (effects run child to parent), which would otherwise leave the panel on top.
+ * The layers a subtree opens inside, outermost first (e.g. the diff view, then its compact comments column). Layers
+ * opened inside them (a composer) stay above them whatever order they register in: an outer layer and an inner one
+ * mounting in the same render register inner first (effects run child to parent), which would otherwise leave the
+ * outer one on top. The whole chain is kept, so a layer that isn't open (the desktop column, not an overlay) doesn't
+ * cut the inner ones off from those around it.
  */
-export const LayerParent = createContext<number | null>(null);
+export const LayerParent = createContext<readonly number[]>([]);
 
 /**
- * A layer while `active`: its `id` (for a LayerParent around what opens inside it) and a stable `isTop()` check, for
+ * A layer while `active`: `scope`, the LayerParent value for what opens inside it, and a stable `isTop()` check, for
  * layers with their own shortcuts (true only while nothing is open above).
  */
-export function useLayerHandle(active: boolean, close: () => void, blocking = true): { id: number; isTop: () => boolean } {
+export function useLayerHandle(active: boolean, close: () => void, blocking = true): { scope: readonly number[]; isTop: () => boolean } {
   const ref = useRef(close);
   ref.current = close;
   const [id] = useState(() => ++seq);
-  const parent = useContext(LayerParent);
+  const ancestors = useContext(LayerParent);
+  const scope = useMemo(() => [...ancestors, id], [ancestors, id]);
   const on = useRef(false);
   useEffect(() => {
     if (!active) return;
-    const layer: Layer = { id, close: () => ref.current(), blocking, parent };
+    const layer: Layer = { id, close: () => ref.current(), blocking, ancestors };
     // Below the layers already open inside it, else on top.
-    const firstChild = stack.findIndex((l) => l.parent === id);
-    if (firstChild >= 0) stack.splice(firstChild, 0, layer);
+    const firstInner = stack.findIndex((l) => l.ancestors.includes(id));
+    if (firstInner >= 0) stack.splice(firstInner, 0, layer);
     else stack.push(layer);
     on.current = true;
     return () => {
@@ -40,9 +43,9 @@ export function useLayerHandle(active: boolean, close: () => void, blocking = tr
       if (i >= 0) stack.splice(i, 1);
       on.current = false;
     };
-  }, [active, blocking, id, parent]);
+  }, [active, blocking, id, ancestors]);
   const isTop = useCallback(() => on.current && topLayer()?.id === id, [id]);
-  return { id, isTop };
+  return { scope, isTop };
 }
 
 /** Returns a stable `isTop()` check, for layers with their own shortcuts (true only while nothing is open above). */

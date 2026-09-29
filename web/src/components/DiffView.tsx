@@ -10,7 +10,7 @@ import type { ReactNode } from 'react';
 import { Link } from 'react-router';
 import { isUnreachable, rateLimitResetAt } from '../api/client';
 import { findCachedCommit, findCachedPr, useDiff, useLoadFile, useMe, usePrDetail, useRefreshDiff, useRepoMap, useThreadActions, useThreads } from '../api/hooks';
-import { useLayer } from '../lib/layers';
+import { LayerParent, useLayerHandle } from '../lib/layers';
 import { fmtDateTime, fmtTime, plural, rel, relFuture, relLong } from '../lib/time';
 import { commitDiffId, parseDiffId, useUrlState } from '../lib/urlState';
 import type { DiffTarget, FileFilter } from '../lib/urlState';
@@ -62,7 +62,9 @@ export function DiffView({ id, compact }: { id: string; compact: boolean }) {
   const me = useMe();
 
   const close = () => set({ diff: null });
-  const isActive = useLayer(true, close);
+  // Layers opened inside the diff (its composers, its overlays) are kept above it (LayerParent below).
+  const layer = useLayerHandle(true, close);
+  const isActive = layer.isTop;
 
   // Fetch the renderer's chunk alongside the diff instead of after it.
   useEffect(() => { loadViewer().catch(() => { /* shown by the boundary on render */ }); }, []);
@@ -130,56 +132,58 @@ export function DiffView({ id, compact }: { id: string; compact: boolean }) {
   });
 
   return (
-    <section ref={panel} className="diff-view" aria-label={`Changes in ${t.repo} ${label}`}>
-      <header className="dv-head">
-        <RepoChip name={t.repo} />
-        <span className="num">{label}</span>
-        <h2 className="dv-title" title={title}>{title ?? (diff.isError ? null : <span className="skel" style={{ width: 220 }} />)}</h2>
-        {add !== undefined && del !== undefined && <Diffstat add={add} del={del} />}
-        {files !== undefined && <span className="dv-files">{files.toLocaleString()} {plural(files, 'file')}</span>}
-        <span className="dv-actions">
-          {ghUrl && <a className="btn" href={ghUrl} target="_blank" rel="noopener noreferrer" title="Open on GitHub"><Icon name="ext" /><span className="dv-lbl">Open on GitHub</span></a>}
-          <button type="button" className="btn icon ghost" onClick={doRefresh} disabled={refresh.isPending || diff.isLoading}
-            title={d ? `Check GitHub for changes (fetched ${rel(d.fetchedAt)})` : 'Check GitHub for changes'} aria-label="Refresh diff">
-            <Icon name="sync" />
-          </button>
-          <button type="button" className="btn icon ghost" onClick={close} title="Close (Esc)" aria-label="Close diff"><Icon name="x" /></button>
-        </span>
-      </header>
-      {d?.stale && (
-        <div className="list-note dv-note dv-stale" title={`Fetched ${fmtDateTime(d.fetchedAt)}`}>
-          Couldn't check GitHub for changes; showing the copy fetched {relLong(d.fetchedAt)}.
+    <LayerParent.Provider value={layer.scope}>
+      <section ref={panel} className="diff-view" aria-label={`Changes in ${t.repo} ${label}`}>
+        <header className="dv-head">
+          <RepoChip name={t.repo} />
+          <span className="num">{label}</span>
+          <h2 className="dv-title" title={title}>{title ?? (diff.isError ? null : <span className="skel" style={{ width: 220 }} />)}</h2>
+          {add !== undefined && del !== undefined && <Diffstat add={add} del={del} />}
+          {files !== undefined && <span className="dv-files">{files.toLocaleString()} {plural(files, 'file')}</span>}
+          <span className="dv-actions">
+            {ghUrl && <a className="btn" href={ghUrl} target="_blank" rel="noopener noreferrer" title="Open on GitHub"><Icon name="ext" /><span className="dv-lbl">Open on GitHub</span></a>}
+            <button type="button" className="btn icon ghost" onClick={doRefresh} disabled={refresh.isPending || diff.isLoading}
+              title={d ? `Check GitHub for changes (fetched ${rel(d.fetchedAt)})` : 'Check GitHub for changes'} aria-label="Refresh diff">
+              <Icon name="sync" />
+            </button>
+            <button type="button" className="btn icon ghost" onClick={close} title="Close (Esc)" aria-label="Close diff"><Icon name="x" /></button>
+          </span>
+        </header>
+        {d?.stale && (
+          <div className="list-note dv-note dv-stale" title={`Fetched ${fmtDateTime(d.fetchedAt)}`}>
+            Couldn't check GitHub for changes; showing the copy fetched {relLong(d.fetchedAt)}.
+          </div>
+        )}
+        {d && d.totalFiles > d.files.length && (
+          <div className="list-note dv-note">
+            Showing {d.files.length.toLocaleString()} of {d.totalFiles.toLocaleString()} files: GitHub lists at most 3,000.{' '}
+            <a href={d.url} target="_blank" rel="noopener noreferrer">See all on GitHub</a>
+          </div>
+        )}
+        <div className="dv-body" ref={body} tabIndex={-1}>
+          <ProgressBar active={refresh.isPending} />
+          {d ? (
+            d.files.length === 0 ? (
+              <EmptyState icon="diff" title="No changed files">GitHub lists no file changes for this {t.kind === 'pr' ? 'pull request' : 'commit'}.</EmptyState>
+            ) : (
+              <ViewerBoundary ghUrl={d.url}>
+                <Suspense fallback={<DiffSkeleton />}>
+                  <DiffViewer
+                    diff={d} loadFile={loadFile} compact={compact} isActive={isActive} file={initialFile} onFileChange={onFileChange}
+                    comments={{
+                      key: threadsId ?? id, threads: threads.data, error: threads.isError, retry: () => void threads.refetch(), actions: threadActions, me: me.data,
+                      initialThread, onThreadFocus, only: s.only, onOnlyChange,
+                    }}
+                  />
+                </Suspense>
+              </ViewerBoundary>
+            )
+          ) : diff.isError ? (
+            <DiffError error={diff.error} t={t} ghUrl={ghUrl} onRetry={() => diff.refetch()} />
+          ) : <DiffSkeleton />}
         </div>
-      )}
-      {d && d.totalFiles > d.files.length && (
-        <div className="list-note dv-note">
-          Showing {d.files.length.toLocaleString()} of {d.totalFiles.toLocaleString()} files: GitHub lists at most 3,000.{' '}
-          <a href={d.url} target="_blank" rel="noopener noreferrer">See all on GitHub</a>
-        </div>
-      )}
-      <div className="dv-body" ref={body} tabIndex={-1}>
-        <ProgressBar active={refresh.isPending} />
-        {d ? (
-          d.files.length === 0 ? (
-            <EmptyState icon="diff" title="No changed files">GitHub lists no file changes for this {t.kind === 'pr' ? 'pull request' : 'commit'}.</EmptyState>
-          ) : (
-            <ViewerBoundary ghUrl={d.url}>
-              <Suspense fallback={<DiffSkeleton />}>
-                <DiffViewer
-                  diff={d} loadFile={loadFile} compact={compact} isActive={isActive} file={initialFile} onFileChange={onFileChange}
-                  comments={{
-                    key: threadsId ?? id, threads: threads.data, error: threads.isError, retry: () => void threads.refetch(), actions: threadActions, me: me.data,
-                    initialThread, onThreadFocus, only: s.only, onOnlyChange,
-                  }}
-                />
-              </Suspense>
-            </ViewerBoundary>
-          )
-        ) : diff.isError ? (
-          <DiffError error={diff.error} t={t} ghUrl={ghUrl} onRetry={() => diff.refetch()} />
-        ) : <DiffSkeleton />}
-      </div>
-    </section>
+      </section>
+    </LayerParent.Provider>
   );
 }
 

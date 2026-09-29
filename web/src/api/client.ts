@@ -145,8 +145,8 @@ export const api = {
   instance: () => get<InstanceInfo>('/api/v1/instance'),
 
   repos: () => get<{ items: Repo[] }>('/api/v1/repos'),
-  repo: (name: string) => get<Repo>(`/api/v1/repos/${enc(name)}`),
-  patchRepo: (name: string, body: { pinned?: boolean; hidden?: boolean }) => request<Repo>('PATCH', `/api/v1/repos/${enc(name)}`, body),
+  repo: (key: string) => get<Repo>(`/api/v1/repos/${enc(key)}`),
+  patchRepo: (key: string, body: { pinned?: boolean; hidden?: boolean }) => request<Repo>('PATCH', `/api/v1/repos/${enc(key)}`, body),
 
   sets: () => get<{ items: RepoSet[] }>('/api/v1/sets'),
   createSet: (body: { name: string; repos: string[] }) => request<RepoSet>('POST', '/api/v1/sets', body),

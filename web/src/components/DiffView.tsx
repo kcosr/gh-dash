@@ -123,7 +123,7 @@ export function DiffView({ id, compact }: { id: string; compact: boolean }) {
   return (
     <section ref={panel} className="diff-view" aria-label={`Changes in ${t.repo} ${label}`}>
       <header className="dv-head">
-        <RepoChip name={t.repo} />
+        <RepoChip repo={t.repo} />
         <span className="num">{label}</span>
         <h2 className="dv-title" title={title}>{title ?? (diff.isError ? null : <span className="skel" style={{ width: 220 }} />)}</h2>
         {add !== undefined && del !== undefined && <Diffstat add={add} del={del} />}

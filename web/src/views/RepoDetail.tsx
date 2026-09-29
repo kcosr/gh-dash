@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import type { CSSProperties } from 'react';
-import { Link, useParams } from 'react-router';
+import { Link } from 'react-router';
 import type { PullRequest } from '../../../shared/api';
 import { usePatchRepo, usePrList, useReleases, useRepos, useStats, useSyncStatus } from '../api/hooks';
 import { ChartCard, HBars, StackedColumns, StatTile } from '../charts';
@@ -15,7 +15,7 @@ import { useUI } from '../components/ui';
 import { ALL_TIME_FROM, scopeParams, statsParams } from '../lib/apiQuery';
 import { activityColumns, contributorBars, tileProps } from '../lib/statsCharts';
 import { fmtDate, fmtDateTime, isoDate, rel } from '../lib/time';
-import { carrySearch, encodeParams, useUrlState } from '../lib/urlState';
+import { carrySearch, encodeParams, repoFromPath, useUrlState } from '../lib/urlState';
 import { actorName, cx } from '../lib/util';
 import { InsightsSkeleton } from './Insights';
 
@@ -34,13 +34,14 @@ function CompactPr({ pr, onOpen, active }: { pr: PullRequest; onOpen: () => void
 }
 
 export function RepoDetailView() {
-  const { name = '' } = useParams();
   const { s, set, range, location } = useUrlState();
+  // The route is `repos/*`: the key is the path after it, whichever way its '/' arrives (see repoFromPath).
+  const key = repoFromPath(location.pathname) ?? '';
   const { openExport } = useUI();
   const repos = useRepos();
   const patch = usePatchRepo();
-  const repo = repos.data?.find((r) => r.name === name);
-  const scoped = { ...s, repos: [name], vis: 'all' as const };
+  const repo = repos.data?.find((r) => r.key === key);
+  const scoped = { ...s, repos: [key], vis: 'all' as const };
   const stats = useStats(statsParams(scoped), !!repo);
   const merged = usePrList({ ...scopeParams(scoped, { q: false }), state: 'merged', limit: 50 }, !!repo);
   const open = usePrList({ ...scopeParams({ ...scoped, who: 'everyone' }, { q: false }), from: ALL_TIME_FROM, state: 'open', limit: 50 }, !!repo);
@@ -61,7 +62,7 @@ export function RepoDetailView() {
     return (
       <main className="main tint">
         <div className="scroll">
-          <EmptyState icon="book" title={`No repository named “${name}”`} action={<Link className="btn" to={`/repos${carrySearch(location.search)}`}>All repositories</Link>}>
+          <EmptyState icon="book" title={`No repository named “${key}”`} action={<Link className="btn" to={`/repos${carrySearch(location.search)}`}>All repositories</Link>}>
             It may have been renamed, deleted, or not synced yet.
           </EmptyState>
         </div>
@@ -70,7 +71,7 @@ export function RepoDetailView() {
   }
 
   const seeAll = (extra: [string, string][], allTime = false) => {
-    const pairs: [string, string][] = [['repos', name], ...extra];
+    const pairs: [string, string][] = [['repos', key], ...extra];
     if (allTime) pairs.push(['range', 'custom'], ['from', ALL_TIME_FROM], ['to', isoDate(new Date())]);
     else if (s.range === 'custom' && s.from && s.to) pairs.push(['range', 'custom'], ['from', s.from], ['to', s.to]);
     else if (s.range !== '30d') pairs.push(['range', s.range]);
@@ -88,7 +89,7 @@ export function RepoDetailView() {
           <Seg value={s.who} onChange={(who) => set({ who })} options={WHO_OPTIONS} ariaLabel="Author" />
           <span className="summary">{range.text}</span>
           <span className="spacer" />
-          <Link className="btn" to={`/activity?repos=${encodeURIComponent(name)}`}><Icon name="pulse" />Activity</Link>
+          <Link className="btn" to={`/activity?${encodeParams([['repos', key]])}`}><Icon name="pulse" />Activity</Link>
           <button type="button" className="btn" onClick={() => openExport('api')}><Icon name="braces" />API</button>
         </div>
       </div>
@@ -106,7 +107,7 @@ export function RepoDetailView() {
               <button
                 type="button"
                 className={cx('btn', repo.pinned && 'on-accent')}
-                onClick={() => patch.mutate({ name: repo.name, patch: { pinned: !repo.pinned } })}
+                onClick={() => patch.mutate({ key: repo.key, patch: { pinned: !repo.pinned } })}
                 aria-pressed={repo.pinned}
               >
                 <Icon name="pin" />{repo.pinned ? 'Pinned' : 'Pin'}
@@ -139,7 +140,7 @@ export function RepoDetailView() {
             </div>
             <div className="charts">
               <ChartCard id="repo-activity" title="Activity over time" subtitle={`per ${st.range.bucket}, ${range.phrase}${whoSuffix}`} legend={activity.series} table={activity.table} wide loading={stats.isFetching && stats.isPlaceholderData}>
-                <StackedColumns data={activity.data} series={activity.series} ariaLabel={`Activity in ${name}`} height={220} />
+                <StackedColumns data={activity.data} series={activity.series} ariaLabel={`Activity in ${key}`} height={220} />
               </ChartCard>
 
               <section className="card list-card">
@@ -191,7 +192,7 @@ export function RepoDetailView() {
               </section>
 
               <ChartCard id="repo-people" title="Top contributors" subtitle={`commits + PRs merged, ${range.phrase}`} table={people.table}>
-                <HBars rows={people.rows} unit="contributions" ariaLabel={`Top contributors to ${name}`} emptyText="No contributors in this range" />
+                <HBars rows={people.rows} unit="contributions" ariaLabel={`Top contributors to ${key}`} emptyText="No contributors in this range" />
               </ChartCard>
             </div>
           </>

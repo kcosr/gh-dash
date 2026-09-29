@@ -1,7 +1,7 @@
 import type { Repo, RepoSet, SavedView } from '../../shared/api';
 import { bucketIndex, DAY_MS, isoSec, localDayNum, makeBuckets, weekdayMon0, zonedMidnight } from '../lib/time';
 import type { Db } from './db';
-import { repoKeySql, resolveRepo, resolveRepoIds } from './repo-key';
+import { repoKey, repoKeySql, resolveRepo, resolveRepoIds } from './repo-key';
 
 interface RepoRow {
   id: number;
@@ -84,6 +84,7 @@ export function listRepos(db: Db, tz: string, now = Date.now(), onlyKey?: string
   }
 
   return rows.map((r) => ({
+    key: repoKey(r),
     name: r.name,
     nameWithOwner: r.name_with_owner,
     owner: r.owner,
@@ -112,6 +113,7 @@ export function listRepos(db: Db, tz: string, now = Date.now(), onlyKey?: string
       weeklyCommits: (weekly.get(r.id) ?? new Array<number>(weeks.starts.length).fill(0)).slice(-WEEKS),
     },
     syncedAt: r.synced_at,
+    trackedBy: 'owned' as const,
   }));
 }
 

@@ -29,9 +29,9 @@ function trimSample(v: unknown, depth = 0): unknown {
 
 export function ExportModal({ initialTab, onClose }: { initialTab: ExportTab; onClose: () => void }) {
   const { s, view, location } = useUrlState();
-  const name = repoFromPath(location.pathname);
+  const repoKey = repoFromPath(location.pathname);
   const toast = useToast();
-  const target = exportTarget(view, s, name);
+  const target = exportTarget(view, s, repoKey);
   const [tab, setTab] = useState<ExportTab>(target.md ? initialTab : 'api');
   const url = exportUrl(target);
   const mdUrl = exportUrl(target, { format: 'md' });

@@ -3,7 +3,7 @@ import type { CSSProperties, KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { Link } from 'react-router';
 import type { Repo, RepoSet } from '../../../shared/api';
-import { selectRepos } from '../../../shared/repos';
+import { repoPath, selectRepos } from '../../../shared/repos';
 import { repoListParams } from '../lib/apiQuery';
 import { usePatchRepo, useRepos, useSets, useSettings } from '../api/hooks';
 import { Sparkline } from '../charts';
@@ -17,7 +17,7 @@ import { useToast } from '../components/Toasts';
 import { useUI } from '../components/ui';
 import { useLayer } from '../lib/layers';
 import { addDays, fmtDate, rel, startOfWeek } from '../lib/time';
-import { carrySearch, useUrlState } from '../lib/urlState';
+import { carrySearch, encodeParams, useUrlState } from '../lib/urlState';
 import type { RepoLayout, RepoSort } from '../lib/urlState';
 import { cx } from '../lib/util';
 
@@ -77,7 +77,7 @@ export function RepositoriesView() {
           }>Choose repositories in the sidebar, or change the visibility filter.</EmptyState>
         ) : s.layout === 'grid' ? (
           <div className="repo-grid">
-            {list.map((r) => <RepoCard key={r.name} repo={r} search={search} sets={r.setIds.map((id) => setById.get(id)).filter((x): x is RepoSet => !!x)} titles={titles} />)}
+            {list.map((r) => <RepoCard key={r.key} repo={r} search={search} sets={r.setIds.map((id) => setById.get(id)).filter((x): x is RepoSet => !!x)} titles={titles} />)}
           </div>
         ) : (
           <RepoTable list={list} titles={titles} search={search} />
@@ -96,7 +96,7 @@ function PinButton({ repo }: { repo: Repo }) {
       title={repo.pinned ? 'Unpin' : 'Pin to the top of the sidebar'}
       aria-pressed={repo.pinned}
       aria-label={repo.pinned ? `Unpin ${repo.name}` : `Pin ${repo.name}`}
-      onClick={() => patch.mutate({ name: repo.name, patch: { pinned: !repo.pinned } })}
+      onClick={() => patch.mutate({ key: repo.key, patch: { pinned: !repo.pinned } })}
     >
       <Icon name="pin" />
     </button>
@@ -129,7 +129,7 @@ function RepoMenu({ repo }: { repo: Repo }) {
   const act = (fn: () => void) => () => { close(); fn(); };
   const toggleHidden = () => {
     // Hiding a default-scope card unmounts this component before the mutation completes.
-    void patch.mutateAsync({ name: repo.name, patch: { hidden: !repo.hidden } }).then(() => {
+    void patch.mutateAsync({ key: repo.key, patch: { hidden: !repo.hidden } }).then(() => {
       toast(repo.hidden ? `${repo.name} is back in the default scope`
         : `${repo.name} hidden. To unhide, find it with the sidebar search, select it, then open its menu.`, { ms: 6000 });
     }).catch((error: Error) => toast(`Couldn't update ${repo.name}: ${error.message}`, { error: true }));
@@ -143,13 +143,13 @@ function RepoMenu({ repo }: { repo: Repo }) {
         <>
           <div className="pop-scrim" onClick={close} />
           <div ref={menu} className="pop menu" role="menu" aria-label={`Actions for ${repo.name}`} style={{ top: r.bottom + 4, left: Math.max(8, r.right - 220) }} onKeyDown={onMenuKey}>
-            <button type="button" role="menuitem" className="opt" onClick={act(() => patch.mutate({ name: repo.name, patch: { pinned: !repo.pinned } }))}>
+            <button type="button" role="menuitem" className="opt" onClick={act(() => patch.mutate({ key: repo.key, patch: { pinned: !repo.pinned } }))}>
               <span className="ck"><Icon name="pin" /></span>{repo.pinned ? 'Unpin' : 'Pin'}
             </button>
             <button type="button" role="menuitem" className="opt" onClick={act(toggleHidden)}>
               <span className="ck"><Icon name={repo.hidden ? 'eye' : 'eyeOff'} /></span>{repo.hidden ? 'Unhide' : 'Hide from default scope'}
             </button>
-            <Link role="menuitem" className="opt" to={`/activity?repos=${encodeURIComponent(repo.name)}`} onClick={() => setOpen(false)}>
+            <Link role="menuitem" className="opt" to={`/activity?${encodeParams([['repos', repo.key]])}`} onClick={() => setOpen(false)}>
               <span className="ck"><Icon name="pulse" /></span>Activity in this repo
             </Link>
             <a role="menuitem" className="opt" href={repo.url} target="_blank" rel="noopener noreferrer" onClick={close}>
@@ -179,7 +179,7 @@ function RepoCard({ repo: r, sets, titles, search }: { repo: Repo; sets: RepoSet
   return (
     <div className={cx('rcard', (r.isArchived || r.hidden) && 'archived')}>
       <div className="rc-h">
-        <Link className="rc-name" to={`/repos/${encodeURIComponent(r.name)}${search}`}>{r.name}</Link>
+        <Link className="rc-name" to={`${repoPath(r.key)}${search}`}>{r.name}</Link>
         <VisBadge repo={r} />
         <span className="spacer" />
         <PinButton repo={r} />
@@ -219,8 +219,8 @@ function RepoTable({ list, titles, search }: { list: Repo[]; titles: string[]; s
         </thead>
         <tbody>
           {list.map((r) => (
-            <tr key={r.name} className={cx((r.isArchived || r.hidden) && 'dim')}>
-              <td><Link to={`/repos/${encodeURIComponent(r.name)}${search}`}>{r.name}</Link>{r.pinned && <span className="pin-mark" title="Pinned"><Icon name="pin" /></span>}</td>
+            <tr key={r.key} className={cx((r.isArchived || r.hidden) && 'dim')}>
+              <td><Link to={`${repoPath(r.key)}${search}`}>{r.name}</Link>{r.pinned && <span className="pin-mark" title="Pinned"><Icon name="pin" /></span>}</td>
               <td>{r.visibility === 'private' ? 'Private' : 'Public'}{r.isArchived ? ' · archived' : ''}{r.isFork ? ' · fork' : ''}{r.hidden ? ' · hidden' : ''}</td>
               <td>{r.language ? <><i className="lang" style={{ '--lc': r.language.color ?? 'var(--muted)' } as CSSProperties} /> {r.language.name}</> : '—'}</td>
               <td className="r">{r.visibility === 'public' ? <>{r.stars.toLocaleString()}{r.stats.newStars30d > 0 && <em className="plus"> +{r.stats.newStars30d}</em>}</> : '—'}</td>

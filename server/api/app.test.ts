@@ -146,8 +146,8 @@ describe('web app', () => {
   const app = makeApp({ webDir });
   afterAll(() => rmSync(webDir, { recursive: true, force: true }));
 
-  it('serves index.html for client-side routes, dotted repository names included', async () => {
-    for (const path of ['/', '/prs', '/repos/user.github.io', '/repos/foo.nvim', '/repos/x.js', '/repos/app?tab=files']) {
+  it('serves index.html for client-side routes, dotted repository names and owner/name paths included', async () => {
+    for (const path of ['/', '/prs', '/repos/user.github.io', '/repos/foo.nvim', '/repos/x.js', '/repos/app?tab=files', '/repos/kcosr/gh-dash', '/repos/dlvhdr/user.github.io', '/repos/org/team/proj.js', '/repos/kcosr%2Fgh-dash']) {
       const res = await app.request(path);
       expect(res.status, path).toBe(200);
       expect(await res.text(), path).toContain('<title>gh-dash</title>');

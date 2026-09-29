@@ -22,7 +22,7 @@ import { useUI } from './ui';
 const ACTIVE_DAYS = 180;
 
 const byActivity = (a: Repo, b: Repo) =>
-  (b.lastActivityAt ?? b.pushedAt ?? '').localeCompare(a.lastActivityAt ?? a.pushedAt ?? '') || a.name.localeCompare(b.name);
+  (b.lastActivityAt ?? b.pushedAt ?? '').localeCompare(a.lastActivityAt ?? a.pushedAt ?? '') || a.name.localeCompare(b.name) || a.key.localeCompare(b.key);
 
 export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const { s, set, location, navigate } = useUrlState();
@@ -47,7 +47,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
 
   const fq = filter.trim().toLowerCase();
   const visOk = (r: Repo) => s.vis === 'all' || r.visibility === s.vis;
-  const shown = all.filter((r) => visOk(r) && (!fq || r.name.toLowerCase().includes(fq)));
+  const shown = all.filter((r) => visOk(r) && (!fq || r.key.toLowerCase().includes(fq)));
   const pinned = shown.filter((r) => r.pinned).sort(byActivity);
   const rest = shown.filter((r) => !r.pinned).sort(byActivity);
   const cutoff = Date.now() - ACTIVE_DAYS * DAY;
@@ -57,23 +57,23 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
     ((!!r.lastActivityAt && Date.parse(r.lastActivityAt) >= cutoff) || r.stats.openPrs > 0 || r.stats.openIssues > 0);
   const main = fq ? rest : rest.filter(isMain);
   const inactive = fq ? [] : rest.filter((r) => !isMain(r));
-  const nSel = shown.filter((r) => selected.has(r.name)).length;
+  const nSel = shown.filter((r) => selected.has(r.key)).length;
 
-  /** Write an explicit selection; collapse back to "default scope" when it matches it. */
-  const select = (names: Iterable<string>) => {
-    const list = [...new Set(names)].filter((n) => all.some((r) => r.name === n)).sort();
-    const isDefault = list.length === scope.length && scope.every((n) => list.includes(n));
+  /** Write an explicit selection of repo keys; collapse back to "default scope" when it matches it. */
+  const select = (keys: Iterable<string>) => {
+    const list = [...new Set(keys)].filter((k) => all.some((r) => r.key === k)).sort();
+    const isDefault = list.length === scope.length && scope.every((k) => list.includes(k));
     set({ repos: isDefault ? null : list });
   };
-  const toggle = (name: string) => {
+  const toggle = (key: string) => {
     const next = new Set(selected);
-    if (next.has(name)) next.delete(name); else next.add(name);
+    if (next.has(key)) next.delete(key); else next.add(key);
     select(next);
   };
 
-  const sameSel = (names: string[]) => {
-    const valid = names.filter((n) => all.some((r) => r.name === n));
-    return valid.length === selected.size && valid.every((n) => selected.has(n));
+  const sameSel = (keys: string[]) => {
+    const valid = keys.filter((k) => all.some((r) => r.key === k));
+    return valid.length === selected.size && valid.every((k) => selected.has(k));
   };
   const curQuery = canonicalQuery(location.search);
 
@@ -101,16 +101,16 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   };
 
   const item = (r: Repo) => {
-    const on = selected.has(r.name);
+    const on = selected.has(r.key);
     const description = [
       r.visibility === 'private' ? 'Private' : '', r.isArchived ? 'Archived' : '',
       r.hidden ? 'Hidden' : '', r.isFork ? 'Fork' : '',
       r.stats.openPrs > 0 ? `${r.stats.openPrs} open pull requests` : '',
       r.stats.openIssues > 0 ? `${r.stats.openIssues} open issues` : '',
     ].filter(Boolean).join('. ');
-    const describedBy = description ? `repo-info-${r.name}` : undefined;
+    const describedBy = description ? `repo-info-${r.key}` : undefined;
     return (
-      <div key={r.name} className={cx('repo-item', on && 'on')}>
+      <div key={r.key} className={cx('repo-item', on && 'on')}>
         <label className="repo-check-hit" title={`Include ${r.name} in selection`}>
           <input
             type="checkbox"
@@ -118,7 +118,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
             checked={on}
             aria-label={`Include ${r.name}`}
             aria-describedby={describedBy}
-            onChange={() => toggle(r.name)}
+            onChange={() => toggle(r.key)}
           />
         </label>
         <button
@@ -127,7 +127,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
           aria-label={`Filter to ${r.name}`}
           aria-describedby={describedBy}
           title={`Filter to ${r.name}${r.description ? ` · ${r.description}` : ''}`}
-          onClick={() => { set({ repos: [r.name], ...(onNavigate ? { pr: null, diff: null } : {}) }); onNavigate?.(); }}
+          onClick={() => { set({ repos: [r.key], ...(onNavigate ? { pr: null, diff: null } : {}) }); onNavigate?.(); }}
         >
           <span className="repo-name">
             <span className="rname">{r.name}</span>
@@ -171,7 +171,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
         <div className="side-quick">
           <button type="button" onClick={() => set({ repos: null })} title="Default scope: everything except archived, hidden and forks">All</button>
           <button type="button" onClick={() => set({ repos: [] })}>None</button>
-          <button type="button" onClick={() => select(all.filter((r) => r.pinned).map((r) => r.name))}>Pinned</button>
+          <button type="button" onClick={() => select(all.filter((r) => r.pinned).map((r) => r.key))}>Pinned</button>
           <span className="spacer" />
           <span className="muted">{nSel} of {shown.length} selected</span>
         </div>

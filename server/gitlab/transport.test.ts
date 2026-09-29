@@ -49,6 +49,7 @@ describe('GitLab transport', () => {
     for (const c of calls) {
       expect(c.headers).toMatchObject({ Authorization: `Bearer ${TOKEN}`, 'User-Agent': 'gh-dash' });
       expect(c.headers).not.toHaveProperty('PRIVATE-TOKEN');
+      expect(c.init?.redirect).toBe('manual');
     }
   });
 
@@ -84,6 +85,8 @@ describe('GitLab transport', () => {
     const err = await fail(rest.json('/x'));
     expect(err).toMatchObject({ kind: 'http', status: 301, message: expect.stringContaining('check the GitLab URL') });
     expect(calls).toHaveLength(1);
+    // fetch itself must not have followed it (with the token) before the transport saw the 301.
+    expect(calls[0]!.init?.redirect).toBe('manual');
   });
 
   it('classifies auth failures: 401 always, 403 only for a missing scope', async () => {

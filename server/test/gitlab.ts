@@ -6,6 +6,8 @@ export interface FakeRequest {
   method: string;
   headers: Record<string, string>;
   body: unknown;
+  /** Everything the client passed to fetch, e.g. to check `redirect`. */
+  init: RequestInit | undefined;
 }
 export type Handler = Reply | ((req: FakeRequest) => Reply);
 
@@ -24,7 +26,7 @@ export function fakeGitLab(routes: Record<string, Handler> = {}, base = BASE) {
   const fetchImpl: typeof fetch = async (input, init) => {
     const url = new URL(String(input));
     const body = init?.body ? (JSON.parse(String(init.body)) as unknown) : null;
-    const req: FakeRequest = { url, method: init?.method ?? 'GET', headers: (init?.headers ?? {}) as Record<string, string>, body };
+    const req: FakeRequest = { url, method: init?.method ?? 'GET', headers: (init?.headers ?? {}) as Record<string, string>, body, init };
     calls.push(req);
     const inside = url.origin === new URL(base).origin && url.pathname.startsWith(`${root}/`);
     const path = inside ? url.pathname.slice(root.length) : url.href;

@@ -54,6 +54,12 @@ export interface DiffViewerProps {
   comments: DiffComments;
 }
 
+/**
+ * A thread or file asked for while the diff is open (the URL's `thread` or `file` changed from outside the viewer: an
+ * agent's `show` for this diff). `n` counts them, so asking for the same place again goes there again.
+ */
+export interface DiffRequest { thread: number | null; file: string | null; n: number }
+
 /** The diff's comment threads, from the shell (which owns the URL and the queries). */
 export interface DiffComments {
   /** The threads' key (a PR id, or a commit's with its full oid): drafts are stored under it. */
@@ -67,6 +73,8 @@ export interface DiffComments {
   me: Me | undefined;
   /** Thread to show on open (deep link, URL `thread`). */
   initialThread: number | null;
+  /** A place asked for while open (see DiffRequest). */
+  request?: DiffRequest | null;
   /** Reports the focused thread, for the URL. */
   onThreadFocus: (id: number | null) => void;
   /** The file list's filter (URL `only`); j/k follow it. */
@@ -801,6 +809,17 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
       if (initial.file) l.goTo(initial.file);
     }
   }, [initial, threadsSettled]);
+
+  // A place asked for while open: its thread (the shell refetched the threads first), else its file.
+  const request = comments.request ?? null;
+  const hasFile = useRef((path: string) => byId.has(path));
+  hasFile.current = (path) => byId.has(path);
+  useEffect(() => {
+    if (!request) return;
+    const l = restore.current;
+    if (request.thread !== null && l.threadById.has(request.thread)) l.focusThread(request.thread, { scroll: true });
+    else if (request.file !== null && hasFile.current(request.file)) l.goTo(request.file);
+  }, [request]);
 
   // Keyboard scrolling (arrows, Page Down, Space) needs focus in the scroller, not the shell's body.
   const root = useRef<HTMLDivElement>(null);

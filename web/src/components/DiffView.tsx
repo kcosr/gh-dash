@@ -14,6 +14,7 @@ import { LayerParent, useLayerHandle } from '../lib/layers';
 import { fmtDateTime, fmtTime, plural, rel, relFuture, relLong } from '../lib/time';
 import { commitDiffId, parseDiffId, useUrlState } from '../lib/urlState';
 import type { DiffTarget, FileFilter } from '../lib/urlState';
+import type { DiffRequest } from '../diff/DiffViewer';
 import { isChunkLoadError } from '../lib/util';
 import { Diffstat } from './bits';
 import { EmptyState, ErrorNote, ProgressBar } from './EmptyState';
@@ -78,15 +79,32 @@ export function DiffView({ id, compact }: { id: string; compact: boolean }) {
   // the entry, so Back still closes the diff).
   const setRef = useRef(set);
   setRef.current = set;
+  // What the viewer last put in the URL: a thread or file that differs was asked for from outside (an agent's `show`
+  // for this diff), and the viewer goes there, as it would on opening.
+  const reported = useRef({ thread: s.thread, file: s.file });
   const fileTimer = useRef(0);
   const onFileChange = useCallback((path: string) => {
     clearTimeout(fileTimer.current);
-    fileTimer.current = window.setTimeout(() => setRef.current({ file: path }, { replace: true }), 300);
+    fileTimer.current = window.setTimeout(() => {
+      reported.current.file = path;
+      setRef.current({ file: path }, { replace: true });
+    }, 300);
   }, []);
   useEffect(() => () => clearTimeout(fileTimer.current), []);
   // The focused thread and the file-list filter replace the entry too: Back always closes the diff.
-  const onThreadFocus = useCallback((thread: number | null) => setRef.current({ thread }, { replace: true }), []);
+  const onThreadFocus = useCallback((thread: number | null) => {
+    reported.current.thread = thread;
+    setRef.current({ thread }, { replace: true });
+  }, []);
   const onOnlyChange = useCallback((only: FileFilter | null) => setRef.current({ only }, { replace: true }), []);
+  const [request, setRequest] = useState<DiffRequest | null>(null);
+  useEffect(() => {
+    const r = reported.current;
+    const thread = s.thread !== r.thread ? s.thread : null;
+    const file = s.file !== r.file ? s.file : null;
+    reported.current = { thread: s.thread, file: s.file };
+    if (thread !== null || file !== null) setRequest((q) => ({ thread, file, n: (q?.n ?? 0) + 1 }));
+  }, [s.thread, s.file]);
 
   useEffect(() => {
     // The list and drawer are hidden underneath: start keyboard focus (and scrolling) in the diff.
@@ -176,7 +194,7 @@ export function DiffView({ id, compact }: { id: string; compact: boolean }) {
                   diff={d} provider={p} loadFile={loadFile} compact={compact} isActive={isActive} file={initialFile} onFileChange={onFileChange}
                   comments={{
                     key: threadsId ?? id, threads: threads.data, error: threads.isError, retry: () => void threads.refetch(), actions: threadActions, me: me.data,
-                    initialThread, onThreadFocus, only: s.only, onOnlyChange,
+                    initialThread, request, onThreadFocus, only: s.only, onOnlyChange,
                   }}
                 />
               </Suspense>

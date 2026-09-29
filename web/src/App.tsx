@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider, useIsFetching, useQueryClient } from 
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import { Navigate, Outlet, RouterProvider, createBrowserRouter, useLocation, useRouteError } from 'react-router';
 import { qk, refetchAfterSync, usePresentSources, useRepos, useSyncStatus } from './api/hooks';
+import { useStream } from './api/stream';
 import { CommandPalette } from './components/CommandPalette';
 import { DiffView } from './components/DiffView';
 import { PrDrawer } from './components/Drawer';
@@ -13,6 +14,7 @@ import { FirstSyncCard, NoTokenCard } from './components/Setup';
 import { Sidebar } from './components/Sidebar';
 import { usePanes } from './components/PaneResize';
 import { MobileSidebar, useCompactSidebar } from './components/MobileSidebar';
+import { ShowChips, useShowHandler } from './components/ShowChips';
 import { ToastProvider, useToast } from './components/Toasts';
 import { TopBar, useContextSync, useSyncNow, useTheme } from './components/TopBar';
 import { UIProvider, useUI } from './components/ui';
@@ -163,6 +165,8 @@ function Shell() {
   const status = useSyncStatus();
   const repos = useRepos();
   useSyncWatcher();
+  // Changes made elsewhere (agents, other windows) as they happen, and what agents ask this window to show.
+  useStream(useShowHandler());
   usePreloadWhenIdle();
   const { settled } = useCanonicalRepoUrl();
   // The contexts to keep places for, once every source present is known (the same list `settled` was judged on).
@@ -261,6 +265,7 @@ function Shell() {
       {ui.prompt && <PromptDialog req={ui.prompt} onClose={ui.closePrompt} />}
       {ui.addRepo && <AddRepoDialog onClose={ui.closeAddRepo} />}
       {ui.confirm && <ConfirmDialog req={ui.confirm} onClose={ui.closeConfirm} />}
+      <ShowChips />
     </>
   );
 }

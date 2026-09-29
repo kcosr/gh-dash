@@ -26,6 +26,8 @@ export type EventType = 'commit' | 'pr' | 'issue' | 'release' | 'star';
 export type Bucket = 'day' | 'week' | 'month';
 export type GroupBy = 'day' | 'week' | 'month' | 'repo';
 export type ListFormat = 'json' | 'md' | 'csv';
+/** A code host kind. Its words and URL shapes are in shared/provider.ts. */
+export type ProviderKind = 'github' | 'gitlab';
 
 export const EVENT_TYPES: EventType[] = ['commit', 'pr', 'issue', 'release', 'star'];
 

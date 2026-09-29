@@ -1,5 +1,7 @@
-// GitLabSyncSource against the shared SyncSource contract, on the fake instance (alice/app has the items). Repos added
-// by hand and the Add dialog aren't answered by GitLab yet: those parts of the suite show as todo.
+// GitLabSyncSource against the shared SyncSource contract, on the fake instance: alice/app has the items, and
+// team/platform/api is the group project she can read but doesn't own (added by hand, looked up in the Add dialog).
+// GitLab denies no single field of a project the way GitHub does, and never moves a merge request to another project,
+// so the denyField and transferPr cases don't apply.
 //
 // The instance's GraphQL fixtures are single pages that say more follow; here any later page is empty and the last, so
 // a walk through the cursors ends.
@@ -30,4 +32,9 @@ describeSyncSourceContract('GitLabSyncSource', {
   },
   account: { viewer: 'alice', owned: ['alice/app', 'alice/corp.tools'], repo: { found: 'alice/app', missing: 'alice/gone' } },
   busy: { path: 'alice/app', since: '2025-09-29T00:00:00Z', pr: 7, issue: 9, missingPr: 99, missingIssue: 98 },
+  manual: {
+    readable: { nodeId: 'gid://gitlab/Project/40', path: 'team/platform/api' },
+    missing: { nodeId: 'gid://gitlab/Project/99', path: 'bob/gone' },
+  },
+  tracking: { readable: 'team/platform/api', missing: 'bob/gone', since: '2025-09-29T00:00:00Z' },
 });

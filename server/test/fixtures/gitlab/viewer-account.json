@@ -1,0 +1,13 @@
+{
+  "currentUser": {
+    "id": "gid://gitlab/User/2",
+    "username": "alice",
+    "name": "Alice A",
+    "avatarUrl": "/gitlab/uploads/-/system/user/avatar/2/avatar.png",
+    "publicEmail": "Alice@Example.com",
+    "commitEmail": "2-alice@users.noreply.gitlab.example.com",
+    "emails": {
+      "nodes": [{ "email": "alice@example.com" }, { "email": "Alice@Corp.Example.com" }]
+    }
+  }
+}

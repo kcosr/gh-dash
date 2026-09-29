@@ -173,7 +173,20 @@ export interface BackfillCounts {
  * Both carry the viewer, which the tracking API checks before answering.
  */
 export type LookupRecord =
-  | { ok: true; viewer: ViewerInfo; record: RepoRecord; probe: RepoProbe; owned: boolean; counts: BackfillCounts }
+  | {
+      ok: true;
+      viewer: ViewerInfo;
+      record: RepoRecord;
+      probe: RepoProbe;
+      owned: boolean;
+      counts: BackfillCounts;
+      /**
+       * Parts of the repository the provider doesn't show this token, without refusing it (GitLab: pull requests or issues
+       * turned off, or hidden at the token's role). They have nothing to sync, and their counts are 0. Absent or empty when
+       * all are there.
+       */
+      unavailable?: ('prs' | 'issues')[];
+    }
   | { ok: false; viewer: ViewerInfo; path: string; access: AccessFailure };
 
 export interface SyncSource {

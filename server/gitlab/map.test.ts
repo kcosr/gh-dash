@@ -1,16 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import commitsFixture from '../test/fixtures/gitlab/commits.json';
 import issuesFixture from '../test/fixtures/gitlab/issues.json';
+import memberProjectsFixture from '../test/fixtures/gitlab/member-projects.json';
 import mergeRequestsFixture from '../test/fixtures/gitlab/merge-requests.json';
 import ownedFixture from '../test/fixtures/gitlab/owned-projects.json';
 import probesFixture from '../test/fixtures/gitlab/probes.json';
 import projectFixture from '../test/fixtures/gitlab/project.json';
 import releasesFixture from '../test/fixtures/gitlab/releases.json';
 import starrersFixture from '../test/fixtures/gitlab/starrers.json';
+import viewerAccountFixture from '../test/fixtures/gitlab/viewer-account.json';
 import viewerFixture from '../test/fixtures/gitlab/viewer.json';
 import { BASE } from '../test/gitlab';
 import {
   labelColor,
+  mapCandidate,
   mapCommit,
   mapIssue,
   mapMergeRequest,
@@ -19,6 +22,7 @@ import {
   mapRelease,
   mapStar,
   mapViewer,
+  mapViewerEmails,
   mapVisibility,
   messageParts,
   releaseCreatedAt,
@@ -32,7 +36,9 @@ import type {
   ReleasesData,
   RestCommit,
   RestIssue,
+  RestProject,
   RestStarrer,
+  ViewerAccountData,
   ViewerData,
 } from './types';
 
@@ -52,10 +58,10 @@ describe('GitLab → rows: helpers', () => {
     expect(utc('2026-09-26T00:00:00Z')).toBe('2026-09-26T00:00:00Z');
   });
 
-  it('maps internal visibility to private until the app has its own value for it', () => {
+  it('keeps internal visibility, and treats a visibility GitLab did not give as private', () => {
     expect([mapVisibility('public'), mapVisibility('internal'), mapVisibility('private'), mapVisibility(null)]).toEqual([
       'public',
-      'private',
+      'internal',
       'private',
       'private',
     ]);
@@ -81,6 +87,15 @@ describe('GitLab → rows: viewer and projects', () => {
     });
   });
 
+  it("maps the viewer's addresses: public, commit and other, lower-cased, once each, only real addresses", () => {
+    expect(mapViewerEmails((viewerAccountFixture as ViewerAccountData).currentUser!)).toEqual([
+      'alice@example.com',
+      '2-alice@users.noreply.gitlab.example.com',
+      'alice@corp.example.com',
+    ]);
+    expect(mapViewerEmails({ ...(viewerAccountFixture as ViewerAccountData).currentUser!, publicEmail: null, commitEmail: ' ', emails: null })).toEqual([]);
+  });
+
   it('maps projects: path as name, namespace as owner, head commit date as pushedAt', () => {
     const [app, tools] = owned.map((p) => mapProject(p, BASE));
     expect(app).toEqual({
@@ -91,7 +106,7 @@ describe('GitLab → rows: viewer and projects', () => {
     });
     // Internal, archived fork with an empty repository: no default branch, and pushedAt falls back to the last activity.
     expect(tools).toMatchObject({
-      name: 'corp.tools', visibility: 'private', isArchived: true, isFork: true, languageName: null, languageColor: null,
+      name: 'corp.tools', visibility: 'internal', isArchived: true, isFork: true, languageName: null, languageColor: null,
       defaultBranch: null, pushedAt: '2025-06-01T09:30:00Z',
     });
   });
@@ -139,6 +154,17 @@ describe('GitLab → rows: merge requests', () => {
     });
   });
 
+  it('reads the commits a merged MR landed as, and none for one that has not merged', () => {
+    expect([merged!.mergeCommitOid, merged!.squashCommitOid]).toEqual(['3333333333333333333333333333333333333333', null]);
+    // Squash merged: a squash commit as well (and a fast-forward merge would have no merge commit). Case is normalized.
+    const squashed = mapMergeRequest({ ...mrs[1]!, mergeCommitSha: null, squashCommitSha: 'ABCDEF0000000000000000000000000000000000' }, BASE);
+    expect([squashed.mergeCommitOid, squashed.squashCommitOid]).toEqual([null, 'abcdef0000000000000000000000000000000000']);
+    // Only a merged MR has landed commits, whatever GitLab holds for the others.
+    const open = mapMergeRequest({ ...mrs[0]!, mergeCommitSha: 'a'.repeat(40), squashCommitSha: 'b'.repeat(40) }, BASE);
+    expect([open.mergeCommitOid, open.squashCommitOid]).toEqual([null, null]);
+    expect([draft, closed, locked].map((p) => [p!.mergeCommitOid, p!.squashCommitOid])).toEqual([[null, null], [null, null], [null, null]]);
+  });
+
   it('maps a closed MR with missing optional data', () => {
     expect(closed).toMatchObject({
       number: 4, state: 'closed', body: '', closedAt: '2026-09-20T11:00:00Z', activityAt: '2026-09-20T11:00:00Z', mergedBy: null,
@@ -174,6 +200,17 @@ describe('GitLab → rows: issues, commits, releases, stars', () => {
       url: 'https://gitlab.example.com/gitlab/alice/app/-/commit/3333333333333333333333333333333333333333', additions: 12, deletions: 3, prNumber: null,
     });
     expect(direct).toMatchObject({ headline: 'Tweak config', body: '', committedAt: '2026-09-21T03:30:00Z', author: { email: 'alice@work.example' } });
+  });
+
+  it('maps a project of the membership list as a candidate: visibility, fork and last activity', () => {
+    const listed = new Map((memberProjectsFixture as unknown as RestProject[]).map(mapCandidate).map((c) => [c.nameWithOwner, c]));
+    expect(listed.get('team/platform/api')).toEqual({
+      nodeId: 'gid://gitlab/Project/40', name: 'api', nameWithOwner: 'team/platform/api', owner: 'team/platform', description: 'Platform API',
+      visibility: 'private', isArchived: false, isFork: false, stars: 5, pushedAt: '2026-09-27T10:00:00Z',
+    });
+    expect(listed.get('bob/tool')).toMatchObject({ nodeId: 'gid://gitlab/Project/23', visibility: 'internal', isFork: true, description: "Bob's helper scripts" });
+    expect(listed.get('team/docs')).toMatchObject({ name: 'docs', description: null, visibility: 'public' });
+    expect(listed.get('alice/corp.tools')).toMatchObject({ isArchived: true });
   });
 
   it('drops upcoming releases like drafts, and publishes historical ones at their release date', () => {

@@ -1,20 +1,27 @@
-// A whole fake GitLab instance built from the fixtures: every request gh-dash's GitLab code makes for one project,
-// alice/app (id 11), for tests that drive it end to end, like the smoke tool's. It also knows alice/corp.tools (id 12,
-// archived) and platform/team/svc (id 21, a group project alice is a member of), and answers the smoke tool's queries
-// for the integration wave's calls (smokeOps).
+// A whole fake GitLab instance built from the fixtures: every request gh-dash's GitLab code makes for one project with
+// items, alice/app (id 11), for tests that drive it end to end, like the smoke tool's. The token's account is alice.
+// The instance knows six more projects (knownProjects): alice/corp.tools (12, archived, issues turned off),
+// platform/team/svc (21, a group project alice is only a guest of), platform/api (22), team/platform/api (40, a group
+// project she can read), bob/tool (23, another user's fork she is a member of) and team/docs (33). One REST list of
+// their memberships (member-projects.json) serves the Add dialog's source and the smoke tool alike, and the smoke tool's
+// own GraphQL operations are answered too (smokeOps). Any other path is a project the instance doesn't show her.
 
 import commitDiffFixture from './fixtures/gitlab/commit-diff.json';
 import commitFixture from './fixtures/gitlab/commit.json';
 import commitsFixture from './fixtures/gitlab/commits.json';
 import issuesFixture from './fixtures/gitlab/issues.json';
+import lookupFixture from './fixtures/gitlab/lookup.json';
+import memberProjectsFixture from './fixtures/gitlab/member-projects.json';
 import mergeRequestsFixture from './fixtures/gitlab/merge-requests.json';
 import revisionFixture from './fixtures/gitlab/mr-revision.json';
 import versionFixture from './fixtures/gitlab/mr-version.json';
 import versionsFixture from './fixtures/gitlab/mr-versions.json';
 import ownedFixture from './fixtures/gitlab/owned-projects.json';
 import probesFixture from './fixtures/gitlab/probes.json';
+import projectFixture from './fixtures/gitlab/project.json';
 import releasesFixture from './fixtures/gitlab/releases.json';
 import starrersFixture from './fixtures/gitlab/starrers.json';
+import viewerAccountFixture from './fixtures/gitlab/viewer-account.json';
 import viewerFixture from './fixtures/gitlab/viewer.json';
 import { BASE, fakeGitLab, graphql, page, type Handler } from './gitlab';
 
@@ -28,51 +35,74 @@ const ago = (days: number) => new Date(Date.now() - days * DAY_MS).toISOString()
 
 type Ops = Record<string, (vars: Record<string, unknown>) => unknown>;
 
-/** The projects the fake knows: alice/app and alice/corp.tools (alice's own), and platform/team/svc (a group's). */
-function knownProjects() {
-  const [app, corp] = ownedFixture.projects.nodes.map((n, i) => ({ ...clone(n), ...clone(probesFixture.projects.nodes[i]!) }));
-  const svc = {
-    ...clone(app!),
-    id: 'gid://gitlab/Project/21',
-    path: 'svc',
-    fullPath: 'platform/team/svc',
-    namespace: { fullPath: 'platform/team' },
-    webUrl: 'https://gitlab.example.com/gitlab/platform/team/svc',
-    visibility: 'internal',
+/** A project as GraphQL shows it: the project fields and the probe fields. */
+type Known = Record<string, unknown> & { id: string; fullPath: string };
+type Permissions = { userPermissions: { downloadCode: boolean; readMergeRequest: boolean }; issuesEnabled: boolean };
+
+const gid = (id: number) => `gid://gitlab/Project/${id}`;
+const inSeconds = (time: string) => time.replace(/\.\d+Z$/, 'Z');
+
+/** What the token may read of the projects it can't read all of; any other project is fully readable. */
+const RESTRICTED: Record<string, Permissions> = {
+  // Turned off on the project.
+  [gid(12)]: { userPermissions: { downloadCode: true, readMergeRequest: true }, issuesEnabled: false },
+  // Alice is a guest of the group's private project: no code, no merge requests.
+  [gid(21)]: { userPermissions: { downloadCode: false, readMergeRequest: false }, issuesEnabled: true },
+};
+const permissionsOf = (id: string): Permissions => RESTRICTED[id] ?? { userPermissions: { downloadCode: true, readMergeRequest: true }, issuesEnabled: true };
+
+/** A project of the membership list as GraphQL shows it, with nothing going on in it. */
+function fromMembership(p: (typeof memberProjectsFixture)[number]): Known {
+  const active = inSeconds(p.last_activity_at);
+  return {
+    id: gid(p.id),
+    path: p.path,
+    fullPath: p.path_with_namespace,
+    namespace: { fullPath: p.namespace.full_path },
+    description: p.description ?? '',
+    webUrl: p.web_url,
+    visibility: p.visibility,
+    archived: p.archived,
+    isForked: 'forked_from_project' in p,
+    starCount: p.star_count,
+    forksCount: p.forks_count,
+    createdAt: inSeconds(p.created_at),
+    lastActivityAt: active,
+    topics: p.topics,
+    languages: [],
+    repository: { rootRef: p.default_branch, tree: p.default_branch ? { lastCommit: { sha: '8'.repeat(40), committedDate: active } } : null },
     openMergeRequests: { count: 0 },
     openIssues: { count: 0 },
     latestMergeRequest: { nodes: [] },
     latestIssue: { nodes: [] },
     latestReleases: { nodes: [] },
   };
-  return [app!, corp!, svc];
 }
 
-/** What the REST `projects?membership=true&simple=true` lists: alice's two projects (one archived) and two group ones. */
-const simpleProject = (id: number, path: string, ns: { id: number; full: string; kind: 'user' | 'group' }, activity: string, archived = false) => ({
-  archived,
-  id,
-  description: null,
-  name: path.split('/').at(-1),
-  name_with_namespace: path.split('/').join(' / '),
-  path: path.split('/').at(-1),
-  path_with_namespace: path,
-  created_at: '2025-01-01T00:00:00.000Z',
-  default_branch: 'main',
-  topics: [],
-  web_url: `https://gitlab.example.com/gitlab/${path}`,
-  avatar_url: null,
-  star_count: 0,
-  forks_count: 0,
-  last_activity_at: activity,
-  namespace: { id: ns.id, name: ns.full.split('/').at(-1), path: ns.full.split('/').at(-1), kind: ns.kind, full_path: ns.full, parent_id: null, avatar_url: null, web_url: `https://gitlab.example.com/gitlab/${ns.kind === 'group' ? 'groups/' : ''}${ns.full}` },
-});
-const memberProjects = () => [
-  simpleProject(11, 'alice/app', { id: 2, full: 'alice', kind: 'user' }, '2026-09-26T08:00:00.000Z'),
-  simpleProject(12, 'alice/corp.tools', { id: 2, full: 'alice', kind: 'user' }, '2025-06-01T09:30:00.000Z', true),
-  simpleProject(21, 'platform/team/svc', { id: 30, full: 'platform/team', kind: 'group' }, '2026-09-25T09:00:00.000Z'),
-  simpleProject(22, 'platform/api', { id: 31, full: 'platform', kind: 'group' }, '2026-08-01T09:00:00.000Z'),
-];
+/**
+ * The projects the fake knows, as GraphQL shows them with their probe fields: alice/app and alice/corp.tools (alice's
+ * own), platform/team/svc and team/platform/api (a group's), and the rest of the membership list.
+ */
+function knownProjects(): Known[] {
+  const [app, corp] = ownedFixture.projects.nodes.map((n, i) => ({ ...clone(n), ...clone(probesFixture.projects.nodes[i]!) }));
+  const svc = {
+    ...clone(app!),
+    id: gid(21),
+    path: 'svc',
+    fullPath: 'platform/team/svc',
+    namespace: { fullPath: 'platform/team' },
+    webUrl: 'https://gitlab.example.com/gitlab/platform/team/svc',
+    visibility: 'internal',
+    lastActivityAt: '2026-09-28T09:00:00Z',
+    openMergeRequests: { count: 0 },
+    openIssues: { count: 0 },
+    latestMergeRequest: { nodes: [] },
+    latestIssue: { nodes: [] },
+    latestReleases: { nodes: [] },
+  };
+  const others = memberProjectsFixture.filter((p) => ![11, 12, 21, 40].includes(p.id)).map(fromMembership);
+  return [app!, corp!, svc, clone(projectFixture.project), ...others];
+}
 
 /**
  * The smoke tool's own GraphQL operations (the integration wave's new calls), answered from the fixtures. Exported so a
@@ -110,15 +140,11 @@ export function smokeOps(): Ops {
         },
       };
     },
-    // A guest on the group's private project sees no code; one project has issues turned off.
+    // What the token may read of the projects it is a member of (RESTRICTED): to see the false values a lookup classifies.
     SmokePermissions: () => ({
       projects: {
         count: 3,
-        nodes: [
-          { id: 'gid://gitlab/Project/11', userPermissions: { downloadCode: true, readMergeRequest: true }, issuesEnabled: true },
-          { id: 'gid://gitlab/Project/12', userPermissions: { downloadCode: true, readMergeRequest: true }, issuesEnabled: false },
-          { id: 'gid://gitlab/Project/21', userPermissions: { downloadCode: false, readMergeRequest: false }, issuesEnabled: true },
-        ],
+        nodes: [11, 12, 21].map((id) => ({ id: gid(id), ...permissionsOf(gid(id)) })),
       },
     }),
     // A squash-merged MR (its squash commit is the second commit of commits.json), a merge-commit one (the first), and an
@@ -137,9 +163,37 @@ export function smokeOps(): Ops {
   };
 }
 
-/** The fake's routes; `over` replaces or adds some (say, to make one endpoint fail), `ops` GraphQL operations. */
+/** A project's probe fields alone (what `Probes` answers). */
+function probeOf(p: Known) {
+  const { id, openMergeRequests, openIssues, latestMergeRequest, latestIssue, latestReleases } = p;
+  return { id, openMergeRequests, openIssues, latestMergeRequest, latestIssue, latestReleases };
+}
+
+/**
+ * The fake's routes; `over` replaces or adds some (say, to make one endpoint fail), `ops` GraphQL operations (over the
+ * ones below, the smoke tool's included).
+ */
 export function fakeInstance(over: Record<string, Handler> = {}, base = BASE, ops: Ops = {}) {
-  const project = { ...clone(ownedFixture.projects.nodes[0]!), ...clone(probesFixture.projects.nodes[0]!) };
+  const known = knownProjects();
+  const byPath = (path: unknown) => known.find((p) => p.fullPath === path) ?? null;
+  const byIds = (ids: unknown) => known.filter((p) => (ids as string[]).includes(p.id));
+  const { currentUser } = viewerFixture;
+  // What a lookup adds to a project: what the token may read of it, and the counts sizing its first sync (nothing to
+  // count where merge requests or issues can't be read).
+  const lookup = (path: unknown) => {
+    const p = byPath(path);
+    if (!p) return null;
+    const { userPermissions, issuesEnabled } = permissionsOf(p.id);
+    const { recentMergeRequests, recentIssues, releaseCount } = lookupFixture.project;
+    return {
+      ...p,
+      userPermissions,
+      issuesEnabled,
+      recentMergeRequests: userPermissions.readMergeRequest ? recentMergeRequests : null,
+      recentIssues: issuesEnabled ? recentIssues : null,
+      releaseCount,
+    };
+  };
   const mrs = (keep: (mr: { iid: string; state: string }) => boolean) => {
     const data = clone(mergeRequestsFixture);
     data.project.mergeRequests.nodes = data.project.mergeRequests.nodes.filter(keep);
@@ -151,9 +205,13 @@ export function fakeInstance(over: Record<string, Handler> = {}, base = BASE, op
         SmokeMeta: () => ({ metadata: { version: '19.3.3-ee', enterprise: true } }),
         SmokeMembership: () => ({ projects: { nodes: [{ fullPath: 'alice/app' }] } }),
         Viewer: () => viewerFixture,
+        ViewerAccount: () => viewerAccountFixture,
         OwnedProjects: () => ownedFixture,
-        Project: (v) => ({ project: v.path === 'alice/app' ? project : null }),
-        Probes: (v) => ({ projects: { nodes: probesFixture.projects.nodes.filter((n) => (v.ids as string[]).includes(n.id)) } }),
+        Project: (v) => ({ currentUser, project: byPath(v.path) }),
+        ManualProjects: (v) => ({ projects: { nodes: byIds(v.ids) } }),
+        ProjectByNode: (v) => ({ currentUser, projects: { nodes: byIds(v.ids) } }),
+        ProjectLookup: (v) => ({ currentUser, project: lookup(v.path) }),
+        Probes: (v) => ({ projects: { nodes: byIds(v.ids).map(probeOf) } }),
         MergeRequests: (v) => mrs((m) => v.state === 'all' || m.state === v.state),
         RecheckMergeRequests: (v) => mrs((m) => (v.iids as string[]).includes(m.iid)),
         Releases: () => releasesFixture,
@@ -161,21 +219,21 @@ export function fakeInstance(over: Record<string, Handler> = {}, base = BASE, op
         ...smokeOps(),
         ...ops,
       }),
+      '/api/v4/personal_access_tokens/self': {
+        body: { id: 7, name: 'gh-dash', revoked: false, active: true, scopes: ['read_api'], user_id: 2, created_at: '2026-01-01T00:00:00.000Z', last_used_at: null, expires_at: '2027-01-31' },
+      },
+      // The token's memberships, filtered, ordered and paged like GitLab (an empty X-Next-Page on the last). The simple
+      // entity leaves out what only the full one has: visibility, whether it is archived, and the fork's upstream.
       '/api/v4/projects': (req) => {
         const q = req.url.searchParams;
         const perPage = Number(q.get('per_page') ?? 20);
         const n = Number(q.get('page') ?? 1);
-        const listed = memberProjects()
+        const listed = memberProjectsFixture
           .filter((p) => q.get('archived') !== 'false' || !p.archived)
           .sort((a, b) => (q.get('order_by') === 'last_activity_at' && q.get('sort') === 'desc' ? b.last_activity_at.localeCompare(a.last_activity_at) : 0));
-        return page(
-          listed.slice((n - 1) * perPage, n * perPage).map(({ archived: _archived, ...p }) => p),
-          n * perPage < listed.length ? n + 1 : null,
-          { 'x-total': String(listed.length) },
-        );
-      },
-      '/api/v4/personal_access_tokens/self': {
-        body: { id: 7, name: 'gh-dash', revoked: false, active: true, scopes: ['read_api'], user_id: 2, created_at: '2026-01-01T00:00:00.000Z', last_used_at: null, expires_at: '2027-01-31' },
+        const rows = listed.slice((n - 1) * perPage, n * perPage);
+        const body = q.get('simple') === 'true' ? rows.map(({ visibility: _v, archived: _a, forked_from_project: _f, ...simple }) => simple) : rows;
+        return page(body, n * perPage < listed.length ? n + 1 : null, { 'x-total': String(listed.length) });
       },
       '/api/v4/projects/11/issues': (req) => {
         const iids = req.url.searchParams.getAll('iids[]');

@@ -35,6 +35,11 @@
         { "tagName": "v2.1.0", "upcomingRelease": false },
         { "tagName": "v2.0.0", "upcomingRelease": false }
       ]
-    }
+    },
+    "userPermissions": { "downloadCode": true, "readMergeRequest": true },
+    "issuesEnabled": true,
+    "recentMergeRequests": { "count": 12 },
+    "recentIssues": { "count": 30 },
+    "releaseCount": { "count": 4 }
   }
 }

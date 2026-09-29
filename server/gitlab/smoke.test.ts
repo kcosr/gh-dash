@@ -444,10 +444,10 @@ describe('gitlab smoke: the integration wave\'s checks', () => {
 
     it('sends at most 25 ids per request, one of them the chosen project', async () => {
       const many = Array.from({ length: 60 }, (_, i) => ({ ...structuredClone(smokeOps().SmokeProjectsByIds!({ ids: ['gid://gitlab/Project/11'], first: 1 }) as Data).projects.nodes[0], id: `gid://gitlab/Project/${100 + i}`, path: `p${i}`, fullPath: `alice/p${i}` }));
-      const owned = { projects: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: many } };
+      const owned = { currentUser: ownedFixture.currentUser, projects: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: many } };
       const ops = {
         OwnedProjects: () => owned,
-        Project: (v: Record<string, unknown>) => ({ project: many.find((m) => m.fullPath === v.path) ?? null }),
+        Project: (v: Record<string, unknown>) => ({ currentUser: ownedFixture.currentUser, project: many.find((m) => m.fullPath === v.path) ?? null }),
         SmokeProjectsByIds: (v: Record<string, unknown>) => ({ projects: { nodes: (v.ids as string[]).map((id) => ({ ...many[0], id })) } }),
       };
       const { fake } = await run(['--project', 'alice/p0'], { ops });
@@ -472,7 +472,7 @@ describe('gitlab smoke: the integration wave\'s checks', () => {
 
     it('passes on the default listing and remembers a group project', async () => {
       const { text } = await run();
-      expect(block(text, 'candidates')).toMatch(/PASS\s+3 listed in 1 request\(s\) \(X-Total 3\) · in your namespace 1 · in groups 2 · in other users' namespaces 0/);
+      expect(block(text, 'candidates')).toMatch(/PASS\s+6 listed in 1 request\(s\) \(X-Total 6\) · in your namespace 1 · in groups 4 · in other users' namespaces 1/);
     });
 
     const cases: [string, Record<string, Handler>, RegExp][] = [

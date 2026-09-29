@@ -212,7 +212,7 @@ function checkRepo(c: Check, r: RepoRecord): void {
   c.expect(/^gid:\/\/gitlab\/Project\/\d+$/.test(r.nodeId), 'nodeId is not a Project global id');
   c.expect(!!r.name && !!r.owner && r.nameWithOwner === `${r.owner}/${r.name}`, 'nameWithOwner is not owner/name');
   c.expect(HTTP.test(r.url), 'url is not absolute');
-  c.expect(r.visibility === 'public' || r.visibility === 'private', 'visibility is not public/private');
+  c.expect(r.visibility === 'public' || r.visibility === 'private' || r.visibility === 'internal', 'visibility is not public/private/internal');
   c.expect(r.languageColor === null || /^#[0-9a-f]{6}$/i.test(r.languageColor), 'languageColor is not #hex');
   c.expect(r.stars >= 0 && r.forks >= 0, 'negative stars or forks');
   time(c, 'createdAt', r.createdAt);

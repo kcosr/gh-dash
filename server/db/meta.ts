@@ -16,6 +16,8 @@ export interface LastSyncMeta {
   newItems: number;
   errors: string[];
   pointsUsed: number;
+  /** Key of the one repository a single-repo run synced; absent for a full sync (and in databases from before). */
+  repo?: string;
 }
 
 export interface RateLimitMeta {

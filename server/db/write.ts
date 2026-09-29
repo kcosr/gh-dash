@@ -37,6 +37,22 @@ const recordVals = (r: RepoRecord): Param[] => [
   r.languageName, r.languageColor, JSON.stringify(r.topics), r.defaultBranch, r.stars, r.forks, r.createdAt, r.pushedAt,
 ];
 
+/** What the database has for the repo with this node id, as a record (null when there is none). */
+export function storedRepoRecord(db: Db, nodeId: string): RepoRecord | null {
+  const r = db.get<{
+    node_id: string; name: string; name_with_owner: string; owner: string; description: string | null; url: string; visibility: RepoRecord['visibility'];
+    is_archived: number; is_fork: number; language_name: string | null; language_color: string | null; topics: string; default_branch: string | null;
+    stars: number; forks: number; created_at: string; pushed_at: string | null;
+  }>('SELECT * FROM repos WHERE node_id = ?', [nodeId]);
+  return r
+    ? {
+        nodeId: r.node_id, name: r.name, nameWithOwner: r.name_with_owner, owner: r.owner, description: r.description, url: r.url, visibility: r.visibility,
+        isArchived: !!r.is_archived, isFork: !!r.is_fork, languageName: r.language_name, languageColor: r.language_color,
+        topics: JSON.parse(r.topics) as string[], defaultBranch: r.default_branch, stars: r.stars, forks: r.forks, createdAt: r.created_at, pushedAt: r.pushed_at,
+      }
+    : null;
+}
+
 /**
  * The provider says `key` (owner/name) now belongs to the repo `nodeId`, so any other live row holding it (a repo
  * deleted, renamed or transferred away since) stops being live. Its data and name are kept. Returns the rows released.
@@ -78,11 +94,15 @@ export function refreshManual(db: Db, r: RepoRecord, now: string): number | null
   });
 }
 
-/** A repo added by hand that the token can't read (any more): its data is kept, and the sync skips it until readable. */
-export function markUnavailable(db: Db, id: number, reason: string, now: string): void {
+/**
+ * A repo added by hand that the token can't read (any more): its data is kept, and the sync skips it until readable.
+ * Named by id and node id, so a row that took the id of a deleted one is never marked.
+ */
+export function markUnavailable(db: Db, id: number, nodeId: string, reason: string, now: string): void {
   db.run(
-    `UPDATE repos SET unavailable_at = coalesce(unavailable_at, ?), unavailable_reason = ? WHERE id = ? AND tracked_by = 'manual' AND removed_at IS NULL`,
-    [now, reason, id],
+    `UPDATE repos SET unavailable_at = coalesce(unavailable_at, ?), unavailable_reason = ?
+     WHERE id = ? AND node_id = ? AND tracked_by = 'manual' AND removed_at IS NULL`,
+    [now, reason, id, nodeId],
   );
 }
 
@@ -95,8 +115,8 @@ export type AddManualResult =
 
 /**
  * Tracks a repo by hand. A live row with its node id is left alone (reported back). A removed row is revived with
- * its earlier data (an owned repo transferred away, then added by hand); otherwise the repo is inserted. `hidden`
- * keeps it out of the default selection.
+ * its earlier data (an owned repo transferred away, then added by hand), waiting for a sync; otherwise the repo is
+ * inserted. `hidden` keeps it out of the default selection.
  */
 export function addManual(db: Db, r: RepoRecord, opts: { hidden: boolean }, now: string): AddManualResult {
   return db.tx(() => {
@@ -107,6 +127,10 @@ export function addManual(db: Db, r: RepoRecord, opts: { hidden: boolean }, now:
     if (live) return { added: false, id: live.id, trackedBy: live.tracked_by === 'manual' ? 'manual' : 'owned', hidden: !!live.hidden };
     releaseKey(db, r.nameWithOwner, r.nodeId, now);
     const row = db.get<{ id: number }>(UPSERT_MANUAL, [...recordVals(r), null, 'manual', now, null, null, Number(opts.hidden)]);
+    // A revived row keeps its sync state from before it was removed. Its high-water marks still save work, but it
+    // waits for its post-add sync like a new repo: synced_at is set again only by a successful run (queue draining
+    // and the scheduler both go by it).
+    db.run('UPDATE sync_state SET synced_at = NULL WHERE repo_id = ?', [row!.id]);
     return { added: true, id: row!.id };
   });
 }

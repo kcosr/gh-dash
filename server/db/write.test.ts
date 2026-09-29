@@ -153,12 +153,16 @@ describe('markUnavailable', () => {
   it('keeps the first time and the latest reason, for live repos added by hand only', () => {
     const db = openDb(':memory:');
     const id = manual(db, 'bob/tool', 'R_tool');
-    markUnavailable(db, id, 'first', '2026-09-29T01:00:00Z');
-    markUnavailable(db, id, 'second', '2026-09-29T02:00:00Z');
+    markUnavailable(db, id, 'R_tool', 'first', '2026-09-29T01:00:00Z');
+    markUnavailable(db, id, 'R_tool', 'second', '2026-09-29T02:00:00Z');
     expect(db.get('SELECT unavailable_at, unavailable_reason FROM repos WHERE id = ?', [id])).toEqual({ unavailable_at: '2026-09-29T01:00:00Z', unavailable_reason: 'second' });
     const owned = upsertOwned(db, rec('alice/app', 'R_app'), NOW);
-    markUnavailable(db, owned, 'x', NOW);
+    markUnavailable(db, owned, 'R_app', 'x', NOW);
     expect(row(db, owned).unavailable_at).toBeNull();
+    // Another repo that has this id now (the one it was meant for is gone) is never marked.
+    const other = manual(db, 'bob/lib', 'R_lib');
+    markUnavailable(db, other, 'R_tool', 'x', NOW);
+    expect(row(db, other).unavailable_at).toBeNull();
   });
 });
 
@@ -190,6 +194,15 @@ describe('addManual', () => {
     expect(res).toEqual({ added: true, id });
     expect(row(db, id)).toMatchObject({ name_with_owner: 'carol/lib', tracked_by: 'manual', added_at: '2026-09-30T00:00:00Z', removed_at: null, pinned: 1 });
     expect(db.get<{ n: number }>('SELECT count(*) AS n FROM pull_requests WHERE repo_id = ?', [id])!.n).toBe(1);
+  });
+
+  it('marks a revived repo as waiting for its sync, keeping its high-water marks', () => {
+    const db = openDb(':memory:');
+    const id = upsertOwned(db, rec('alice/lib', 'R_lib'), NOW);
+    db.run(`INSERT INTO sync_state (repo_id, synced_at, prs_hwm, commits_head) VALUES (?, '2026-09-01T00:00:00Z', '2026-08-31T00:00:00Z', 'abc')`, [id]);
+    markReposRemoved(db, [], NOW);
+    addManual(db, rec('carol/lib', 'R_lib'), { hidden: false }, NOW);
+    expect(db.get('SELECT synced_at, prs_hwm, commits_head FROM sync_state WHERE repo_id = ?', [id])).toEqual({ synced_at: null, prs_hwm: '2026-08-31T00:00:00Z', commits_head: 'abc' });
   });
 
   it('releases the key from another live row holding it', () => {

@@ -12,7 +12,7 @@ import { getRepo } from '../db/repos';
 import { getSettings } from '../db/settings';
 import { addManual, applyProbe } from '../db/write';
 import { DAY_MS, isoSec } from '../lib/time';
-import { saveViewer, viewerMismatch } from '../sync/sync';
+import { tryClaimViewer, viewerMismatch } from '../sync/sync';
 import { noTokenMessage, tokenKind, type TokenSupply } from '../token';
 import { type AccessFailure, accessFailure, notFound } from './access';
 import { GitHubClient } from './client';
@@ -88,8 +88,8 @@ const fromGql = (r: GqlRepoSummary): Found => ({
 
 export class Tracking {
   private readonly opts: TrackingOptions;
-  /** The last candidate lists, for the token they were fetched with. */
-  private cached: { token: string; at: number; items: Found[]; suggested: Found[]; truncated: boolean; fetchedAt: string } | null = null;
+  /** The last candidate lists, for the token they were fetched with and the account GitHub said it belongs to. */
+  private cached: { token: string; viewer: GqlViewer; at: number; items: Found[]; suggested: Found[]; truncated: boolean; fetchedAt: string } | null = null;
 
   constructor(opts: TrackingOptions) {
     this.opts = opts;
@@ -152,14 +152,15 @@ export class Tracking {
         }),
         c.graphql.query<RepoSuggestionsData>(REPO_SUGGESTIONS),
       ]).catch(httpError);
-      this.checkViewer(suggestions.viewer);
       const items = repos.items.map(fromRest);
       list = {
-        token: c.token, at: this.now(), items, truncated: items.length >= MAX_CANDIDATES, fetchedAt: new Date(this.now()).toISOString(),
+        token: c.token, viewer: suggestions.viewer, at: this.now(), items, truncated: items.length >= MAX_CANDIDATES, fetchedAt: new Date(this.now()).toISOString(),
         suggested: suggestions.viewer.repositoriesContributedTo.nodes.flatMap((n) => (n ? [fromGql(n)] : [])),
       };
       this.cached = list;
     }
+    // On every answer, cached ones too: the database may have been claimed by another account since they were fetched.
+    this.checkViewer(list.viewer);
     const tracked = this.trackedBy([...list.items, ...list.suggested].map((r) => r.nodeId));
     const out = ({ nodeId, ...r }: Found): RepoCandidate => ({ ...r, tracked: tracked.get(nodeId)?.trackedBy ?? null });
     return {
@@ -238,7 +239,9 @@ export class Tracking {
     const r = l.data.repository!;
     const now = isoSec(this.now());
     const res = db.tx(() => {
-      saveViewer(db, l.viewer);
+      // Again under the write lock: another add, or a sync, may have claimed the database since the lookup.
+      const mismatch = tryClaimViewer(db, l.viewer);
+      if (mismatch) throw new HttpError(409, mismatch);
       const added = addManual(db, mapRepo(r), { hidden: !includeInDefault }, now);
       if (added.added) applyProbe(db, added.id, mapProbe(r));
       return added;

@@ -8,7 +8,7 @@ import { GitHubClient } from '../github/client';
 import { VIEWER } from '../github/queries';
 import type { ViewerData } from '../github/types';
 import { tokenKind, type TokenSupply } from '../token';
-import { runSync, saveViewer, type SyncProgress, type SyncRequest, viewerMismatch } from './sync';
+import { runSync, type SyncProgress, type SyncRequest, tryClaimViewer } from './sync';
 
 /** A lock whose heartbeat is older than this belongs to a dead process. */
 const LOCK_STALE_MS = 90_000;
@@ -67,6 +67,10 @@ export class SyncManager {
     this.tokens.onChange(() => {
       this.noTokenUntil = 0;
     });
+    // The schedule counts from the last full sync. A database from before full syncs were recorded apart has only
+    // lastSync, and every such run was a full one: adopt it now, before a single-repo run can overwrite it.
+    const last = getMeta(this.db, 'lastSync');
+    if (last && !last.repo && !getMeta(this.db, 'lastFullSyncAt')) setMeta(this.db, 'lastFullSyncAt', last.at);
   }
 
   /** The token's source as last resolved; polling this picks up a login or logout within about 30 s. */
@@ -108,9 +112,8 @@ export class SyncManager {
     if (!token) return;
     const client = this.client(token);
     const { viewer } = await client.query<ViewerData>(VIEWER);
-    const mismatch = viewerMismatch(getMeta(this.db, 'viewer'), viewer);
+    const mismatch = tryClaimViewer(this.db, viewer);
     if (mismatch) this.log(`[sync] warning: ${mismatch}`);
-    else saveViewer(this.db, viewer);
   }
 
   private client(token: string): GitHubClient {
@@ -169,7 +172,7 @@ export class SyncManager {
 
   /**
    * The first sync of a repo just added (POST /repos): now if nothing runs, else after the sync this process is
-   * running. When another instance holds the lock, the scheduler's rule for never-synced repos picks it up.
+   * running. When another instance holds the lock, the scheduler's rule for repos waiting for a sync picks it up.
    */
   async startOrQueue(req: SyncRequest): Promise<'started' | 'queued'> {
     if (!this.current && !this.liveLock()) {
@@ -230,6 +233,7 @@ export class SyncManager {
         newItems,
         errors,
         pointsUsed: client.pointsUsed,
+        ...(req.repo ? { repo: getMeta(this.db, 'syncLock')?.repo ?? req.repo } : {}),
       });
       if (!req.repo) setMeta(this.db, 'lastFullSyncAt', new Date().toISOString());
       if (getMeta(this.db, 'syncLock')?.instance === this.instance) deleteMeta(this.db, 'syncLock');
@@ -262,16 +266,16 @@ export class SyncManager {
 
   private tick(trigger: Trigger): void {
     const interval = getSettings(this.db).syncIntervalMinutes * 60_000;
-    // Single-repo runs (a repo just added) don't move the schedule of full syncs.
-    const last = getMeta(this.db, 'lastFullSyncAt') ?? getMeta(this.db, 'lastSync')?.at;
+    // Single-repo runs (a repo just added) don't move the schedule of full syncs; with no full sync yet, one is due.
+    const last = getMeta(this.db, 'lastFullSyncAt');
     const due = Math.max(last ? Date.parse(last) + interval : 0, this.noTokenUntil);
     const next = new Date(Math.max(due, Date.now())).toISOString();
     if (getMeta(this.db, 'nextSyncAt') !== next && !this.current) setMeta(this.db, 'nextSyncAt', next);
     if (this.current || this.starting || this.liveLock() || Date.now() < this.noTokenUntil) return;
     let req: SyncRequest = {};
     if (Date.now() < due) {
-      // Not due, but a repo added by hand has never synced (added on another instance, or its first sync failed).
-      const key = this.neverSyncedManualRepo();
+      // Not due, but a repo added by hand waits for its sync (added on another instance, revived, or its sync failed).
+      const key = this.manualRepoAwaitingSync();
       if (!key) return;
       this.firstSyncRetry.set(key, Date.now() + FIRST_SYNC_RETRY_MS);
       req = { repo: key };
@@ -286,8 +290,11 @@ export class SyncManager {
       });
   }
 
-  /** A live, readable repo added by hand that has never synced, and isn't waiting out a failed first attempt. */
-  private neverSyncedManualRepo(): string | null {
+  /**
+   * A live, readable repo added by hand with no synced_at (never synced since it was added or revived), that isn't
+   * waiting out a failed attempt.
+   */
+  private manualRepoAwaitingSync(): string | null {
     const keys = this.db.all<{ key: string }>(
       `SELECT ${repoKeySql('r')} AS key FROM repos r LEFT JOIN sync_state s ON s.repo_id = r.id
        WHERE r.tracked_by = 'manual' AND r.removed_at IS NULL AND r.unavailable_at IS NULL AND s.synced_at IS NULL ORDER BY r.id`,

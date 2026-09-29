@@ -4,6 +4,8 @@ import { deleteMeta, getMeta, setMeta } from '../db/meta';
 import { fakeGitHub } from '../test/github';
 import { fakeGraphQL, prNode, repoNode } from '../test/graphql';
 import { addManualRepo } from '../test/seed';
+import { addManual } from '../db/write';
+import { mapRepo } from '../github/map';
 import { supplyOf, testTokens } from '../test/tokens';
 import type { TokenSupply } from '../token';
 import { SyncManager } from './manager';
@@ -84,10 +86,12 @@ describe('SyncManager', () => {
     }
   });
 
-  it('schedules from the last sync time and clears nextSyncAt on shutdown', async () => {
+  it('schedules from the last full sync and clears nextSyncAt on shutdown', async () => {
     db.run("DELETE FROM meta WHERE key = 'syncLock'");
     const lastAt = new Date(Date.now() - 10 * 60_000).toISOString();
-    setMeta(db, 'lastSync', { at: lastAt, durationMs: 1, trigger: 'manual', newItems: 0, errors: [], pointsUsed: 1 });
+    setMeta(db, 'lastFullSyncAt', lastAt);
+    // A later single-repo run doesn't move it.
+    setMeta(db, 'lastSync', { at: new Date().toISOString(), durationMs: 1, trigger: 'manual', newItems: 0, errors: [], pointsUsed: 1, repo: 'bob/tool' });
     const m = manager(true, null);
     m.startScheduler();
     expect(m.status().nextSyncAt).toBe(new Date(Date.parse(lastAt) + 30 * 60_000).toISOString());
@@ -196,6 +200,40 @@ describe('syncing repos added by hand', () => {
     expect(t.gql.state.ops.filter((o) => o.startsWith('RepoNode'))).toEqual(['RepoNode:R_bob/tool', 'RepoNode:R_carol/lib']);
   });
 
+  it('runs the queued sync of a repo revived by a new add, though it synced before it was removed', async () => {
+    const t = setup(true);
+    t.add('bob/tool');
+    expect(await t.m.startOrQueue({ repo: 'bob/tool' })).toBe('started');
+    await t.idle();
+    // Removed (say, transferred away and back), then added by hand again: the row comes back with its old sync state.
+    t.db.run(`UPDATE repos SET removed_at = '2026-09-29T00:00:00Z' WHERE name_with_owner = 'bob/tool'`);
+    t.add('carol/lib');
+    t.hold();
+    expect(await t.m.startOrQueue({ repo: 'carol/lib' })).toBe('started');
+    const revived = addManual(t.db, mapRepo(repoNode('bob/tool')), { hidden: false }, '2026-09-29T01:00:00Z');
+    expect(revived).toMatchObject({ added: true });
+    expect(await t.m.startOrQueue({ repo: 'bob/tool' })).toBe('queued');
+    t.gql.state.ops.length = 0;
+    t.release();
+    await vi.waitFor(() => expect(t.gql.state.ops).toContain('RepoNode:R_bob/tool'));
+    await t.idle();
+    expect(t.synced('bob/tool')).toBe(true);
+  });
+
+  it('the scheduler also picks up a revived repo that is waiting for its sync', async () => {
+    const t = setup(true);
+    t.add('bob/tool');
+    expect(await t.m.startOrQueue({ repo: 'bob/tool' })).toBe('started');
+    await t.idle();
+    t.db.run(`UPDATE repos SET removed_at = '2026-09-29T00:00:00Z' WHERE name_with_owner = 'bob/tool'`);
+    addManual(t.db, mapRepo(repoNode('bob/tool')), { hidden: false }, '2026-09-29T01:00:00Z');
+    setMeta(t.db, 'lastFullSyncAt', new Date().toISOString());
+    t.gql.state.ops.length = 0;
+    t.m.startScheduler();
+    await vi.waitFor(() => expect(t.gql.state.ops).toContain('RepoNode:R_bob/tool'));
+    await t.idle();
+  });
+
   it("doesn't run a queued first sync that the full sync it waited for already did", async () => {
     const t = setup();
     t.hold();
@@ -238,6 +276,31 @@ describe('syncing repos added by hand', () => {
     t.m.reschedule();
     await t.idle();
     expect(t.gql.state.ops.filter((o) => o.startsWith('RepoNode'))).toEqual(['RepoNode:R_bob/tool']);
+  });
+
+  it('single-repo runs never postpone the first full sync', async () => {
+    const t = setup();
+    t.add('bob/tool');
+    expect(await t.m.startOrQueue({ repo: 'bob/tool' })).toBe('started');
+    await t.idle();
+    expect(getMeta(t.db, 'lastSync')).toMatchObject({ repo: 'bob/tool' });
+    // No full sync has run: a scheduler, now or after a restart, finds one due at once.
+    const m = new SyncManager({ db: t.db, schedule: true, tokens: testTokens(null), log: () => {} });
+    managers.push(m);
+    m.startScheduler();
+    expect(Date.parse(getMeta(t.db, 'nextSyncAt')!)).toBeLessThanOrEqual(Date.now());
+    expect(getMeta(t.db, 'lastFullSyncAt')).toBeNull();
+  });
+
+  it('adopts the last sync of a database from before full syncs were told apart as its last full sync', () => {
+    const own = openDb(':memory:');
+    const at = new Date(Date.now() - 10 * 60_000).toISOString();
+    setMeta(own, 'lastSync', { at, durationMs: 1, trigger: 'scheduled', newItems: 0, errors: [], pointsUsed: 1 });
+    const m = new SyncManager({ db: own, schedule: true, tokens: testTokens(null), log: () => {} });
+    managers.push(m);
+    expect(getMeta(own, 'lastFullSyncAt')).toBe(at);
+    m.startScheduler();
+    expect(getMeta(own, 'nextSyncAt')).toBe(new Date(Date.parse(at) + 30 * 60_000).toISOString());
   });
 
   it('counts unavailable repos out of a full sync total', async () => {

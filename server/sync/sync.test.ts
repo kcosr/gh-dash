@@ -59,6 +59,8 @@ function fakeGitHub() {
     others: [] as Node[],
     /** GraphQL errors for a node id (ManualRepos, RepoNode, RepoProbes): the node comes back null. */
     nodeErrors: {} as Record<string, { type: string; message: string }>,
+    /** A field of a node the token may not read (ManualRepos, RepoNode): just that field is null, with its error. */
+    fieldErrors: {} as Record<string, { field: string; type: string; message: string }>,
     /** RepoDetail errors by owner/name; a path of just ['repository'] nulls the whole repository. */
     detailErrors: {} as Record<string, { type: string; message: string; path: (string | number)[] }>,
     /** Called when RepoDetail is asked for owner/name (before it answers). */
@@ -85,6 +87,11 @@ function fakeGitHub() {
       const err = fx.nodeErrors[id];
       const node = err ? null : pick(id);
       if (!node) errors.push({ ...(err ?? { type: 'NOT_FOUND', message: `Could not resolve to a node with the global id of '${id}'` }), path: path(i) });
+      const denied = node ? fx.fieldErrors[id] : undefined;
+      if (denied) {
+        errors.push({ type: denied.type, message: denied.message, path: [...path(i), denied.field] });
+        return { ...(node as object), [denied.field]: null };
+      }
       return node;
     });
     return { nodes, errors };
@@ -482,6 +489,46 @@ describe('repos added by hand', () => {
     expect(row('bob/tool')!.unavailable_at).toBeNull();
   });
 
+  it('on a fatal error, waits for the requests in flight before giving up (nothing is written after)', async () => {
+    // 26 repos added by hand: two MANUAL_REPOS chunks. The first is rate limited; the second answers later.
+    for (let i = 0; i < 25; i++) {
+      addManualRepo(db, `bob/r${i}`);
+      gh.fx.others.push(otherRepo(`bob/r${i}`));
+    }
+    gh.fx.nodeErrors['R_bob/tool'] = { type: 'RATE_LIMITED', message: 'API rate limit exceeded' };
+    const later = async (input: string | URL | Request, init?: RequestInit) => {
+      const ids = (JSON.parse(String(init?.body)) as { variables: { ids?: string[] } }).variables.ids ?? [];
+      if (ids.includes('R_bob/r24')) await new Promise((r) => setTimeout(r, 40));
+      return gh.fetchImpl(input as string, init!);
+    };
+    const client = new GitHubClient({ token: 't', fetchImpl: later as typeof fetch });
+    const err = await runSync({ db, client, settings: DEFAULT_SETTINGS, now: () => NOW + HOUR }).catch((e: unknown) => e);
+    expect(err).toMatchObject({ kind: 'rate-limit' });
+    const at = row('bob/r24');
+    await new Promise((r) => setTimeout(r, 100));
+    expect(row('bob/r24')).toEqual(at);
+    expect(at!.description).toBe('bob/r24 upstream');
+  });
+
+  it('keep what they had for a field the token may not read, and report the repo as failed', async () => {
+    await sync(NOW + HOUR);
+    const before = db.get<{ default_branch: string; language_name: string; synced_at: string }>(
+      `SELECT r.default_branch, r.language_name, s.synced_at FROM repos r JOIN sync_state s ON s.repo_id = r.id WHERE r.name_with_owner = 'bob/tool'`)!;
+    expect(before).toMatchObject({ default_branch: 'main', language_name: 'TypeScript' });
+    const reason = 'The token can see bob/tool but not its code history. Grant read access to Pull requests, Issues and Contents.';
+    gh.fx.fieldErrors['R_bob/tool'] = { field: 'defaultBranchRef', type: 'FORBIDDEN', message: 'Resource not accessible by personal access token' };
+    for (const req of [{}, { repo: 'bob/tool' }]) {
+      const res = await sync(NOW + 2 * HOUR, req);
+      expect(res.errors, JSON.stringify(req)).toEqual([`bob/tool: ${reason}`]);
+      expect(db.get(`SELECT r.default_branch, r.language_name, s.synced_at, s.last_error FROM repos r JOIN sync_state s ON s.repo_id = r.id WHERE r.name_with_owner = 'bob/tool'`))
+        .toEqual({ ...before, last_error: reason });
+      expect(row('bob/tool')!.unavailable_at).toBeNull();
+    }
+    gh.fx.fieldErrors['R_bob/tool'] = { field: 'primaryLanguage', type: 'FORBIDDEN', message: 'no' };
+    await sync(NOW + 3 * HOUR);
+    expect(db.get(`SELECT language_name, language_color FROM repos WHERE name_with_owner = 'bob/tool'`)).toEqual({ language_name: 'TypeScript', language_color: '#3178c6' });
+  });
+
   it('one repo failing with FORBIDDEN leaves the others to finish', async () => {
     gh.fx.detailErrors['alice/app'] = { type: 'FORBIDDEN', message: 'Resource not accessible by integration', path: ['repository', 'pullRequests'] };
     const res = await sync(NOW + HOUR, { full: true });
@@ -512,6 +559,38 @@ describe('repos added by hand', () => {
     gh.fx.onDetail = null;
     await sync(NOW + 2 * HOUR);
     expect(row('bob/tool')).toBeUndefined();
+  });
+
+  it('never writes into a repo that took the id of one removed while its answer was pending', async () => {
+    addManualRepo(db, 'bob/old');
+    gh.fx.others.push(otherRepo('bob/old'));
+    const oldId = row('bob/old')!.id;
+    gh.fx.onDetail = (key) => {
+      if (key !== 'bob/old') return;
+      db.run('DELETE FROM repos WHERE id = ?', [oldId]);
+      // Added meanwhile under the same id (a table without AUTOINCREMENT hands out the highest rowid again).
+      db.run(`INSERT INTO repos (id, node_id, name, name_with_owner, owner, url, visibility, created_at, tracked_by, added_at)
+        VALUES (?, 'R_carol/new', 'new', 'carol/new', 'carol', 'u', 'public', 'x', 'manual', 'x')`, [oldId]);
+    };
+    const res = await sync(NOW + HOUR);
+    expect(res.errors).toEqual([]);
+    expect(prsOf('carol/new')).toEqual([]);
+    expect(syncedAt('carol/new')).toBeNull();
+    expect(row('carol/new')).toMatchObject({ id: oldId, unavailable_at: null });
+  });
+
+  it('marks nothing unavailable in a repo that took the id of one removed while its answer was pending', async () => {
+    const oldId = row('bob/tool')!.id;
+    gh.fx.detailErrors['bob/tool'] = { type: 'NOT_FOUND', message: "Could not resolve to a Repository with the name 'bob/tool'.", path: ['repository'] };
+    gh.fx.onDetail = (key) => {
+      if (key !== 'bob/tool') return;
+      db.run('DELETE FROM repos WHERE id = ?', [oldId]);
+      db.run(`INSERT INTO repos (id, node_id, name, name_with_owner, owner, url, visibility, created_at, tracked_by, added_at)
+        VALUES (?, 'R_carol/new', 'new', 'carol/new', 'carol', 'u', 'public', 'x', 'manual', 'x')`, [oldId]);
+    };
+    expect((await sync(NOW + HOUR)).errors).toEqual([]);
+    expect(row('carol/new')).toMatchObject({ unavailable_at: null });
+    expect(db.get('SELECT last_error FROM sync_state WHERE repo_id = ?', [oldId])).toBeUndefined();
   });
 
   it('a single-repo sync of one that became unreadable marks it unavailable and syncs nothing', async () => {

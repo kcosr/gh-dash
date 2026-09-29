@@ -169,6 +169,31 @@ describe('GitLab transport', () => {
     expect(bad.calls).toHaveLength(0);
   });
 
+  it('masks the token before cutting a message short, so no part of it survives the cut', async () => {
+    // Each placement puts the token across the point where that detail is truncated (200, or 500 for GraphQL).
+    const across = (limit: number) => `${'e'.repeat(limit - 10)}${TOKEN} and more`;
+    const leaks = (msg: string) => msg.includes(TOKEN.slice(0, 10));
+    const json = setup({ '/api/v4/x': { status: 400, body: { message: across(200) } } });
+    const text = setup({ '/api/v4/x': { status: 400, text: across(200) } });
+    const redirect = setup({ '/api/v4/x': { status: 302, headers: { location: `https://other.example/${across(200 - 'https://other.example/'.length)}` } } });
+    const gql = setup({ '/api/graphql': { body: { errors: [{ message: across(500) }] } } });
+    const errors = {
+      json: await fail(json.rest.json('/x')),
+      text: await fail(text.rest.json('/x')),
+      redirect: await fail(redirect.rest.json('/x')),
+      graphql: await fail(gql.gql.query('query Q { x }')),
+    };
+    expect(Object.fromEntries(Object.entries(errors).map(([k, e]) => [k, leaks(e.message)]))).toEqual({ json: false, text: false, redirect: false, graphql: false });
+    for (const err of Object.values(errors)) expect(err.message).toContain('eeee[token]');
+  });
+
+  it('does not echo a malformed base URL, which may carry credentials', () => {
+    for (const raw of ['ftp://alice:s3cret@gitlab.example.com', 'alice:s3cret@gitlab.example.com', 'https://alice:s3cret@gitlab.example.com', 'http://[s3cret']) {
+      expect(() => normalizeBaseUrl(raw)).toThrow();
+      expect(() => normalizeBaseUrl(raw)).not.toThrow(/s3cret/);
+    }
+  });
+
   it('stops retrying once the caller gives up', async () => {
     const ctrl = new AbortController();
     const { rest, calls } = setup({

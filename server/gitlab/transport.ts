@@ -42,16 +42,17 @@ export interface SendOptions {
 
 /**
  * The instance URL without a trailing slash. Credentials, queries and fragments are refused: the API paths are
- * appended to it, and a URL carrying its own secrets has no business next to the token.
+ * appended to it, and a URL carrying its own secrets has no business next to the token. Errors don't quote the URL,
+ * since a malformed one may still hold a password.
  */
 export function normalizeBaseUrl(raw: string): string {
   let url: URL;
   try {
     url = new URL(raw.trim());
   } catch {
-    throw new Error(`Invalid GitLab URL: ${raw}`);
+    throw new Error('Invalid GitLab URL: expected something like https://gitlab.example.com');
   }
-  if (url.protocol !== 'https:' && url.protocol !== 'http:') throw new Error(`GitLab URL must be http(s): ${raw}`);
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') throw new Error('GitLab URL must start with https:// or http://');
   if (url.username || url.password || url.search || url.hash) {
     throw new Error('GitLab URL must not contain credentials, a query or a fragment');
   }
@@ -137,6 +138,14 @@ export class GitLabTransport {
     return url;
   }
 
+  /**
+   * `text` from a response, safe for an error message: the token masked, then cut to `max` characters. In that order: a
+   * token cut in half would no longer match and part of it would survive.
+   */
+  scrub(text: string, max: number): string {
+    return redact(this.token, text).slice(0, max);
+  }
+
   private clean(err: GitLabError): GitLabError {
     return new GitLabError(err.kind, redact(this.token, err.message), { status: err.status, resetAt: err.resetAt });
   }
@@ -162,7 +171,7 @@ export class GitLabTransport {
       throw new RetryableError(`network error: ${(err as Error).message}`, null);
     }
     this.trackRateLimit(res);
-    if (!res.ok) throw await failure(res, what);
+    if (!res.ok) throw await failure(res, what, (text) => this.scrub(text, 200));
     try {
       return await read(res);
     } catch (err) {
@@ -201,14 +210,17 @@ function retryAfterMs(res: Response): number | null {
   return Number.isNaN(at) ? null : Math.max(0, at - Date.now());
 }
 
-/** The error a non-2xx response stands for: a GitLabError, or a RetryableError for what may pass. */
-async function failure(res: Response, what: string): Promise<Error> {
+/**
+ * The error a non-2xx response stands for: a GitLabError, or a RetryableError for what may pass. `scrub` makes what
+ * the response said safe to quote.
+ */
+async function failure(res: Response, what: string, scrub: (text: string) => string): Promise<Error> {
   const text = await res.text().catch(() => '');
-  const detail = message(text);
+  const detail = scrub(message(text));
   const status = res.status;
   if (status >= 300 && status < 400) {
     const to = res.headers.get('location') ?? 'elsewhere';
-    return new GitLabError('http', `GitLab redirected ${what} to ${to.slice(0, 200)}; check the GitLab URL`, { status });
+    return new GitLabError('http', `GitLab redirected ${what} to ${scrub(to)}; check the GitLab URL`, { status });
   }
   // Invalid, expired and revoked tokens (GitLab says which in error_description).
   if (status === 401) return new GitLabError('auth', `GitLab rejected the token (401): ${detail}`, { status });
@@ -231,16 +243,16 @@ async function failure(res: Response, what: string): Promise<Error> {
   return new GitLabError(kind, `GitLab returned ${status} for ${what}: ${detail}`, { status });
 }
 
-/** GitLab's JSON error (REST `message` or OAuth-style `error_description`/`error`, GraphQL `errors`), else the start of the body. */
+/** GitLab's JSON error (REST `message` or OAuth-style `error_description`/`error`, GraphQL `errors`), else the body. */
 function message(text: string): string {
   try {
     const body = JSON.parse(text) as { message?: unknown; error?: unknown; error_description?: unknown; errors?: { message?: unknown }[] };
     const msg = body.message ?? body.error_description ?? body.error ?? body.errors?.map((e) => e.message).join('; ');
-    if (msg !== undefined) return (typeof msg === 'string' ? msg : JSON.stringify(msg)).slice(0, 200);
+    if (msg !== undefined) return typeof msg === 'string' ? msg : JSON.stringify(msg);
   } catch {
     // Not JSON: fall through.
   }
-  return text.trim().slice(0, 200);
+  return text.trim();
 }
 
 export async function readJson<T>(res: Response): Promise<T> {

@@ -238,6 +238,8 @@ export class Tracking {
     const r = l.data.repository!;
     const now = isoSec(this.now());
     const res = db.tx(() => {
+      // Again under the write lock: another add may have claimed the database for another account since the lookup.
+      this.checkViewer(l.viewer);
       saveViewer(db, l.viewer);
       const added = addManual(db, mapRepo(r), { hidden: !includeInDefault }, now);
       if (added.added) applyProbe(db, added.id, mapProbe(r));

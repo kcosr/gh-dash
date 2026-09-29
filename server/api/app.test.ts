@@ -376,7 +376,7 @@ describe('repo keys', () => {
 
 describe('adding and removing repositories', () => {
   /** seedDb (viewer Alice; alice/app, secret, old, fork, hidden) against a fake GitHub that also knows bob/tool. */
-  function trackApp(token: string | null = 'ghp_classic') {
+  function trackApp(token: string | null = 'ghp_classic', wrap: (f: typeof fetch) => typeof fetch = (f) => f) {
     const db = seedDb();
     const gql = fakeGraphQL();
     gql.state.owned.push(...['app', 'secret', 'old', 'fork', 'hidden'].map((n) => repoNode(`alice/${n}`, { id: `R_${n}` })));
@@ -395,7 +395,7 @@ describe('adding and removing repositories', () => {
     const config = { ...loadConfig({}), webDir: '/nonexistent' };
     const sync = new SyncManager({ db, schedule: false, tokens, log: () => {}, fetchImpl: gh.fetchImpl });
     const diffs = new DiffService({ db, cache: new DiffCache(':memory:'), sources: new GitHubDiffSources({ tokens }), log: () => {} });
-    const tracking = new Tracking({ db, tokens, sync, tz: 'UTC', fetchImpl: gh.fetchImpl, sleep: async () => {} });
+    const tracking = new Tracking({ db, tokens, sync, tz: 'UTC', fetchImpl: wrap(gh.fetchImpl), sleep: async () => {} });
     const app = createApp({ db, config, sync, diffs, tokens, tracking });
     const call = async (method: string, path: string, body?: unknown) => {
       const res = await app.request(`/api/v1${path}`, body === undefined ? { method } : { method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
@@ -463,6 +463,33 @@ describe('adding and removing repositories', () => {
       status: 409, body: { error: 'bob/tool is already tracked.', details: { key: 'bob/tool', trackedBy: 'manual', hidden: true } },
     });
     expect((await t.call('GET', '/repo-lookup?repo=bob/tool')).body).toMatchObject({ repo: { tracked: 'manual', hidden: true } });
+  });
+
+  it('lets one account claim an unclaimed database when adds by two accounts race', async () => {
+    const accounts = [
+      { id: 'U_alice', login: 'alice', name: null, avatarUrl: null },
+      { id: 'U_mallory', login: 'mallory', name: null, avatarUrl: null },
+    ];
+    let lookups = 0;
+    let release = () => {};
+    const answered = new Promise<void>((r) => (release = r));
+    // Each lookup is answered as the next account, and both answers arrive together.
+    const t = trackApp('ghp_classic', (f) => async (input, init) => {
+      if (!/RepoLookup/.test(String(init?.body))) return f(input, init);
+      t.gql.state.viewer = accounts[lookups++]!;
+      const res = await f(input, init);
+      if (lookups === 2) release();
+      await answered;
+      return res;
+    });
+    t.gql.state.others.push(repoNode('carol/lib'));
+    t.db.run(`DELETE FROM meta WHERE key = 'viewer'`);
+    const [a, b] = await Promise.all([t.call('POST', '/repos', { repo: 'bob/tool' }), t.call('POST', '/repos', { repo: 'carol/lib' })]);
+    await t.idle();
+    expect([a.status, b.status]).toEqual([201, 409]);
+    expect(b.body).toMatchObject({ error: 'This database belongs to @alice, but the GitHub token is for @mallory. Switch back to @alice, or use a different database.' });
+    expect(getMeta(t.db, 'viewer')).toMatchObject({ id: 'U_alice', login: 'alice' });
+    expect(t.db.get(`SELECT 1 FROM repos WHERE owner = 'carol'`)).toBeUndefined();
   });
 
   it('queues the first sync while a sync runs elsewhere', async () => {

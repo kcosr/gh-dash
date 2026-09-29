@@ -1,4 +1,4 @@
-import { RetryableError } from '../github/transport';
+import { RetryableError } from '../provider/transport';
 import { GitLabError, readJson, type GitLabTransport } from './transport';
 
 /** GitLab refuses longer query documents. */

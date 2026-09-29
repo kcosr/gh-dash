@@ -1,3 +1,4 @@
+import { readCapped, type CappedBody } from '../provider/transport';
 import { readJson, type GitLabTransport } from './transport';
 
 /** Query parameters; an array repeats its key (GitLab's `iids[]=1&iids[]=2`). */
@@ -15,12 +16,6 @@ export interface RestPage<T> {
   nextPage: number | null;
   /** X-Total, when GitLab counted (some endpoints never do, none do beyond 10,000 items). */
   total: number | null;
-}
-
-export interface RawFile {
-  bytes: Uint8Array;
-  /** The body exceeded maxBytes; `bytes` is empty. */
-  tooLarge: boolean;
 }
 
 /** Safety net against an X-Next-Page chain that never ends. */
@@ -59,8 +54,8 @@ export class GitLabRestClient {
   }
 
   /** Raw bytes (a file's contents), reading at most `maxBytes` of the body: GitLab itself sends files of any size. */
-  raw(path: string, maxBytes: number, opts: CallOptions = {}): Promise<RawFile> {
-    return this.transport.send(this.url(path, opts.query), (res) => readLimited(res, maxBytes), { signal: opts.signal });
+  raw(path: string, maxBytes: number, opts: CallOptions = {}): Promise<CappedBody> {
+    return this.transport.send(this.url(path, opts.query), (res) => readCapped(res, maxBytes), { signal: opts.signal });
   }
 
   private url(path: string, query: Query = {}): string {
@@ -85,26 +80,4 @@ export function encodeSegment(value: string): string {
 function headerInt(res: Response, name: string): number | null {
   const value = res.headers.get(name)?.trim();
   return value && /^\d+$/.test(value) ? Number(value) : null;
-}
-
-async function readLimited(res: Response, maxBytes: number): Promise<RawFile> {
-  if (Number(res.headers.get('content-length')) > maxBytes) {
-    await res.body?.cancel();
-    return { bytes: new Uint8Array(), tooLarge: true };
-  }
-  if (!res.body) return { bytes: new Uint8Array(), tooLarge: false };
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  const reader = res.body.getReader();
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value);
-    size += value.byteLength;
-    if (size > maxBytes) {
-      await reader.cancel();
-      return { bytes: new Uint8Array(), tooLarge: true };
-    }
-  }
-  return { bytes: Buffer.concat(chunks), tooLarge: false };
 }

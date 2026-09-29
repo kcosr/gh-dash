@@ -1,7 +1,8 @@
 // Shared by the GraphQL client (sync) and the REST client (diffs): errors, token checks, rate-limit
-// classification and retries with backoff.
+// classification and retries with backoff. The provider-neutral helpers (backoff, redaction) are in provider/transport.
 
 import { SourceError, type SourceErrorKind } from '../provider/errors';
+import { backoffMs, redact, RetryableError } from '../provider/transport';
 import type { GqlError } from './types';
 
 export type GitHubErrorKind = SourceErrorKind;
@@ -17,30 +18,11 @@ export class GitHubError extends SourceError {
   }
 }
 
-export class RetryableError extends Error {
-  /** null = use exponential backoff. */
-  readonly retryAfterMs: number | null;
-  constructor(message: string, retryAfterMs: number | null) {
-    super(message);
-    this.retryAfterMs = retryAfterMs;
-  }
-}
-
-/** Exponential backoff with jitter: ~1s, 2s, 4s, 8s … capped at 30s. */
-export function backoffMs(attempt: number): number {
-  return Math.min(30_000, 1000 * 2 ** (attempt - 1)) + Math.floor(Math.random() * 500);
-}
-
 // Checked before any request (not left to fetch) because fetch's header errors quote the offending value.
 export function checkToken(token: string): void {
   if (!/^[\x21-\x7e]+$/.test(token)) {
     throw new GitHubError('auth', 'The GitHub token contains characters that are not allowed in an HTTP header; check GITHUB_TOKEN');
   }
-}
-
-/** Error messages end up in logs, /sync/status and API errors: never let the token through. */
-export function redact(token: string, message: string): string {
-  return token.length >= 8 ? message.split(token).join('[token]') : message;
 }
 
 export function resetAt(res: Response): string | null {
@@ -95,5 +77,3 @@ export async function withRetries<T>(opts: RetryOptions, attempt: () => Promise<
     }
   }
 }
-
-export const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));

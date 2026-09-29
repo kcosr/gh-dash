@@ -5,7 +5,7 @@ import { homedir } from 'node:os';
 import { posix, win32 } from 'node:path';
 import { promisify } from 'node:util';
 import type { AccountStatus, TokenChoice, TokenKind, TokenSource } from '../shared/api';
-import { redact } from './github/transport';
+import { redact } from './provider/transport';
 
 /** A token and where it came from; `error` says why there is none. The token is only ever held in memory. */
 export interface ResolvedToken {

@@ -1,8 +1,8 @@
 // Shared by the GraphQL client and the REST client: the instance's URL, the token, error classification, rate-limit
 // readings and retries with backoff.
 
-import { backoffMs, defaultSleep, redact, RetryableError } from '../github/transport';
 import { SourceError, type SourceErrorKind } from '../provider/errors';
+import { backoffMs, defaultSleep, redact, RetryableError } from '../provider/transport';
 import type { RateLimitInfo } from '../provider/types';
 
 export interface GitLabOptions {

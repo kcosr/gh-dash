@@ -12,6 +12,7 @@ import { getRepo } from '../db/repos';
 import { getSettings } from '../db/settings';
 import { addManual, applyProbe } from '../db/write';
 import { DAY_MS, isoSec } from '../lib/time';
+import { defaultSleep } from '../provider/transport';
 import { tryClaimViewer, viewerMismatch } from '../sync/sync';
 import { noTokenMessage, tokenKind, type TokenSupply } from '../token';
 import { type AccessFailure, accessFailure, notFound } from './access';
@@ -19,7 +20,7 @@ import { GitHubClient } from './client';
 import { mapProbe, mapRepo } from './map';
 import { REPO_LOOKUP, REPO_SUGGESTIONS } from './queries';
 import { GitHubRestClient } from './rest';
-import { defaultSleep, GitHubError } from './transport';
+import { GitHubError } from './transport';
 import type { GqlRepoSummary, GqlViewer, RepoLookupData, RepoSuggestionsData } from './types';
 
 /** How long the candidate lists are reused (the Add dialog filters them locally as you type). */

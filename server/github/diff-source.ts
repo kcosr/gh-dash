@@ -3,11 +3,12 @@
 
 import type { DiffFile, DiffFileStatus } from '../../shared/api';
 import type { DiffSources } from '../diff/service';
+import { defaultSleep } from '../provider/transport';
 import type { BlobResult, CommitDiff, DiffRepo, DiffSource, PrRevision, RateLimitInfo } from '../provider/types';
 import { noTokenMessage, type TokenSupply } from '../token';
 import { GitHubClient } from './client';
 import { GitHubRestClient } from './rest';
-import { defaultSleep, GitHubError } from './transport';
+import { GitHubError } from './transport';
 import type { GqlRateLimit } from './types';
 
 /** GitHub lists at most this many files for a PR or commit. */

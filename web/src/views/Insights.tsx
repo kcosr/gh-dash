@@ -22,7 +22,7 @@ import {
   ttmLine,
 } from '../lib/statsCharts';
 import { repoPath } from '../../../shared/repos';
-import { passesRepoFilters, patchSearch, useUrlState } from '../lib/urlState';
+import { contextSearch, passesRepoFilters, patchSearch, useUrlState } from '../lib/urlState';
 
 export function InsightsView() {
   const { s, set, range, navigate, location } = useUrlState();
@@ -50,7 +50,7 @@ export function InsightsView() {
     (date: string) => navigate({ pathname: '/activity', search: patchSearch(search, 'activity', { range: 'custom', from: date, to: date }) }),
     [navigate, search],
   );
-  const openRepo = useCallback((key: string) => navigate(repoPath(key)), [navigate]);
+  const openRepo = useCallback((key: string) => navigate(repoPath(key) + contextSearch(search)), [navigate, search]);
 
   // Chart inputs are memoized on the response: the charts cache geometry by identity.
   const tiles = useMemo(() => st && [

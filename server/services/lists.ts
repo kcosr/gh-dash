@@ -22,9 +22,9 @@ import {
   encodeCursor,
   issueQuerySchema,
   listQuerySchema,
-  parseScope,
   parseTypes,
   prQuerySchema,
+  scopeFor,
   scopeSchema,
   splitList,
   statsQuerySchema,
@@ -52,9 +52,12 @@ type PageParams = { limit?: number; cursor?: string; format?: ListFormat };
  */
 export type ListReply<T> = { format: 'json'; body: T } | { format: 'md' | 'csv'; text: string };
 
-/** A request's scope and the per-request facts "me" and the default selection need; 400 for a bad range or timezone. */
+/**
+ * A request's scope and the per-request facts "me" and the default selection need. 400 for a bad range or timezone, and
+ * for a `source` host that isn't a source of this database (`scopeFor`: a typo shouldn't read as "nothing here").
+ */
 export function scopedQuery(db: Db, config: QueryDeps['config'], query: ScopeParams, now = Date.now()): { scope: Scope; ctx: QueryCtx } {
-  const scope = parseScope(query, config.defaultTz, now);
+  const scope = scopeFor(db, query, config.defaultTz, now);
   return { scope, ctx: loadQueryCtx(db, config.myEmails) };
 }
 

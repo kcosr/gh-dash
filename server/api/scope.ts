@@ -1,12 +1,15 @@
 import { z } from 'zod';
 import { EVENT_TYPES, type EventType } from '../../shared/api';
+import type { Db } from '../db/db';
 import type { Scope } from '../db/filters';
+import { listSources } from '../db/sources';
 import type { CursorKey } from '../db/lists';
 import { canonicalTz, DAY_MS, localDayNum, ymdToDayNum, zonedMidnight, zonedWallToUtc } from '../lib/time';
 import { HttpError } from './http';
 
 export const scopeSchema = z.object({
   repos: z.string().optional(),
+  source: z.string().max(4000).optional(),
   visibility: z.enum(['all', 'public', 'private', 'internal']).optional(),
   ownership: z.enum(['all', 'mine', 'others']).optional(),
   who: z.enum(['me', 'others', 'everyone']).optional(),
@@ -127,6 +130,7 @@ export function parseScope(q: z.infer<typeof scopeSchema>, defaultTz: string, no
   if (to - from > MAX_RANGE_DAYS * DAY_MS) throw new HttpError(400, `Range too long: at most ${MAX_RANGE_DAYS} days`);
   return {
     repos: splitList(q.repos),
+    source: parseSources(q.source),
     visibility: q.visibility ?? 'all',
     ownership: q.ownership ?? 'all',
     who: q.who ?? 'everyone',
@@ -135,6 +139,29 @@ export function parseScope(q: z.infer<typeof scopeSchema>, defaultTz: string, no
     tz,
     q: q.q?.trim() || null,
   };
+}
+
+/** `source=`: a comma list of hosts, lower-cased. Absent or empty: every source (null). */
+export function parseSources(value: string | undefined): string[] | null {
+  const hosts = [...new Set(splitList(value)?.map((h) => h.toLowerCase()) ?? [])];
+  return hosts.length ? hosts : null;
+}
+
+/** A 400 when `hosts` names a host that isn't a source in this database (a typo shouldn't read as "nothing here"). */
+export function requireSources(db: Db, hosts: readonly string[] | null | undefined): void {
+  if (!hosts) return;
+  const known = listSources(db).map((s) => s.host);
+  const unknown = hosts.filter((h) => !known.includes(h));
+  if (unknown.length) {
+    throw new HttpError(400, `${unknown.join(', ')} ${unknown.length === 1 ? "isn't a source" : "aren't sources"} here.`, { sources: known });
+  }
+}
+
+/** `parseScope` for a request: its `source` hosts must be sources of `db`. */
+export function scopeFor(db: Db, q: z.infer<typeof scopeSchema>, defaultTz: string, now = Date.now()): Scope {
+  const scope = parseScope(q, defaultTz, now);
+  requireSources(db, scope.source);
+  return scope;
 }
 
 export function parseTypes(value: string | undefined): EventType[] | null {

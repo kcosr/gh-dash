@@ -8,18 +8,19 @@ import { ChartCard, HBars, StackedColumns, StatTile } from '../charts';
 import { prIconClass, prIconName } from '../components/bits';
 import { DateRangeButton } from '../components/DateRange';
 import { EmptyState, ErrorNote, ProgressBar } from '../components/EmptyState';
-import { Icon } from '../components/Icon';
+import { Icon, ProviderIcon } from '../components/Icon';
 import { Labels } from '../components/Label';
 import { Markdown } from '../components/Markdown';
 import { RepoName } from '../components/RepoName';
 import { UnavailableNote } from '../components/RepoTracking';
-import { useProviderOf, useRepoLabel } from '../components/repoMapContext';
+import { useProviderOf, useRepoLabel, useSourceCtx } from '../components/repoMapContext';
+import { sourceTitle } from '../components/SourceBadge';
 import { Seg, WHO_OPTIONS } from '../components/Seg';
 import { useUI } from '../components/ui';
 import { ALL_TIME_FROM, repoPageScope, scopeParams, statsParams } from '../lib/apiQuery';
 import { activityColumns, contributorBars, mergedLabel, tileProps } from '../lib/statsCharts';
 import { fmtDate, fmtDateTime, isoDate, rel } from '../lib/time';
-import { carrySearch, encodeParams, repoFromPath, useUrlState } from '../lib/urlState';
+import { carrySearch, encodeParams, repoFromPath, repoLinkSearch, useUrlState } from '../lib/urlState';
 import { actorName, cx } from '../lib/util';
 import { InsightsSkeleton } from './Insights';
 
@@ -47,6 +48,8 @@ export function RepoDetailView() {
   const repos = useRepos();
   const patch = usePatchRepo();
   const repo = repos.data?.find((r) => r.key === key);
+  const sources = useSourceCtx();
+  const src = repo && sources.multi ? sources.byHost.get(repo.source) : undefined;
   const p = repoProvider(repo);
   const w = p.pr;
   const scoped = repoPageScope(s, key);
@@ -79,7 +82,7 @@ export function RepoDetailView() {
   }
 
   const seeAll = (extra: [string, string][], allTime = false) => {
-    const pairs: [string, string][] = [['repos', key], ...extra];
+    const pairs: [string, string][] = [...(s.source ? [['source', s.source] as [string, string]] : []), ['repos', key], ...extra];
     if (allTime) pairs.push(['range', 'custom'], ['from', ALL_TIME_FROM], ['to', isoDate(new Date())]);
     else if (s.range === 'custom' && s.from && s.to) pairs.push(['range', 'custom'], ['from', s.from], ['to', s.to]);
     else if (s.range !== '30d') pairs.push(['range', s.range]);
@@ -97,7 +100,7 @@ export function RepoDetailView() {
           <Seg value={s.who} onChange={(who) => set({ who })} options={WHO_OPTIONS} ariaLabel="Author" />
           <span className="summary">{range.text}</span>
           <span className="spacer" />
-          <Link className="btn" to={`/activity?${encodeParams([['repos', key]])}`}><Icon name="pulse" />Activity</Link>
+          <Link className="btn" to={`/activity?${repoLinkSearch(key, s.source)}`}><Icon name="pulse" />Activity</Link>
           <button type="button" className="btn" onClick={() => openExport('api')}><Icon name="braces" />API</button>
         </div>
       </div>
@@ -107,6 +110,8 @@ export function RepoDetailView() {
           <div className="repo-head">
             <div className="rh-top">
               <h1 title={label}><RepoName repo={repo.key} /></h1>
+              {/* Which source it's on, in every context once there are several (the name alone doesn't say). */}
+              {src && <span className="vis-badge src-name"><ProviderIcon kind={src.kind} />{sourceTitle(src)}</span>}
               <span className="vis-badge">{repo.visibility === 'private' ? <><Icon name="lock" />Private</> : repo.visibility === 'internal' ? <><Icon name="lock" title="Internal" />Internal</> : 'Public'}</span>
               {!repo.unavailable && repo.syncedAt === null && <span className="vis-badge">Syncing…</span>}
               {repo.isArchived && <span className="vis-badge">Archived</span>}

@@ -3,6 +3,7 @@
 
 import type { Repo, RepoQuery } from '../../shared/api';
 import { selectRepos } from '../../shared/repos';
+import { parseSources, requireSources } from '../api/scope';
 import type { Config } from '../config';
 import type { Db } from '../db/db';
 import { getRepo, listRepos, setRepoPrefs } from '../db/repos';
@@ -16,8 +17,12 @@ export interface RepoDeps {
 
 const notFound = () => new HttpError(404, 'Repository not found');
 
-/** The inventory (every live repo, on every source), or the selection `query` describes. */
+/**
+ * The inventory (every live repo, on every source), or the selection `query` describes. `query.source` (a comma list of
+ * hosts) narrows it to those sources; 400 for a host that isn't a source of this database.
+ */
 export function queryRepos({ db, config }: RepoDeps, query: RepoQuery): Repo[] {
+  requireSources(db, parseSources(query.source));
   return selectRepos(listRepos(db, config.defaultTz), query, getSettings(db).includeForks);
 }
 

@@ -1,4 +1,7 @@
 import type { DiffFile } from '../../shared/api';
+import type { ResolvedToken, TokenSupply } from '../credentials/types';
+import type { DiffSources } from '../diff/service';
+import { defaultSleep } from '../provider/transport';
 import type { BlobResult, CommitDiff, DiffRepo, DiffSource, PrRevision } from '../provider/types';
 import { GitLabClient } from './client';
 import { mapDiffFile, messageParts } from './map';
@@ -129,5 +132,48 @@ export class GitLabDiffSource implements DiffSource {
     const target = `/projects/${encodeSegment(repo.path)}/repository/files/${encodeSegment(path)}/raw`;
     const file = await this.rest.raw(target, maxBytes, { query: { ref: sha }, signal });
     return file.tooLarge ? { kind: 'too-large' } : { kind: 'file', bytes: file.bytes };
+  }
+}
+
+export interface GitLabDiffSourcesOptions {
+  /** The instance URL, relative root included. */
+  baseUrl: string;
+  /** The source's token (shared with its sync), and the 503 text when there is none. */
+  tokens: TokenSupply & { noTokenMessage(resolved: ResolvedToken): string };
+  fetchImpl?: typeof fetch;
+  sleep?: (ms: number) => Promise<void>;
+}
+
+/**
+ * A GitLabDiffSource for one source's current token (which its provider caches): a new token gets a new source, and a
+ * token GitLab rejected is resolved again before the next fetch. The GitHubDiffSources pattern, per GitLab source.
+ */
+export class GitLabDiffSources implements DiffSources {
+  private readonly opts: GitLabDiffSourcesOptions;
+  private current: GitLabDiffSource | null = null;
+  /** The token each source was made with, to invalidate the one that was rejected (the current one may be newer). */
+  private readonly tokens = new WeakMap<DiffSource, string>();
+
+  constructor(opts: GitLabDiffSourcesOptions) {
+    this.opts = opts;
+  }
+
+  async get(): Promise<DiffSource> {
+    const resolved = await this.opts.tokens.get();
+    const { token } = resolved;
+    if (!token) throw new GitLabError('auth', this.opts.tokens.noTokenMessage(resolved));
+    if (this.current && this.tokens.get(this.current) === token) return this.current;
+    // Explicit defaults: an undefined option would override the transport's own.
+    const { baseUrl, fetchImpl = fetch, sleep = defaultSleep } = this.opts;
+    this.current = new GitLabDiffSource({ baseUrl, token, fetchImpl, sleep });
+    this.tokens.set(this.current, token);
+    return this.current;
+  }
+
+  authFailed(source: DiffSource): void {
+    const token = this.tokens.get(source);
+    if (token === undefined) return;
+    if (this.current === source) this.current = null;
+    this.opts.tokens.invalidate(token);
   }
 }

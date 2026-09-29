@@ -4,10 +4,13 @@ import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:f
 import { request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DESKTOP_SECRET_HEADER } from '../shared/desktop';
 import { type Config, loadConfig } from './config';
+import { readConfigFile, writeConfigFile } from './config-file';
+import { getSource } from './db/sources';
 import { localApiUrl, type RunningServer, startServer } from './start';
+import { BASE, fakeGitLab, graphql } from './test/gitlab';
 
 const dirs: string[] = [];
 const running: RunningServer[] = [];
@@ -154,5 +157,61 @@ describe('startServer', () => {
     expect(localApiUrl('::', 4780)).toBe('http://[::1]:4780');
     expect(localApiUrl('192.168.1.5', 4780)).toBe('http://192.168.1.5:4780');
     expect(localApiUrl('localhost', 1)).toBe('http://localhost:1');
+  });
+
+  it('builds the GitLab sources from config, checks their tokens at startup, and reloads them from config.json', async () => {
+    const dir = temp();
+    const configPath = join(dir, 'config.json');
+    const first = { kind: 'gitlab' as const, url: BASE, tokenSource: 'file' as const, tokenFile: '/run/secrets/gitlab' };
+    writeConfigFile(configPath, { sources: [first] });
+    const env = { GITLAB_TOKEN: 'glpat-test-alice', GH_DASH_DB: join(dir, 'dash.db'), GH_DASH_SYNC: 'off' };
+    const config = { ...loadConfig(env, readConfigFile(configPath)), webDir: '/nonexistent', port: 0 };
+    const api = fakeGitLab({
+      '/api/graphql': graphql({
+        CredentialCheck: () => ({
+          currentUser: { id: 'gid://gitlab/User/2', username: 'alice', name: null, avatarUrl: null, publicEmail: null, commitEmail: null, emails: { nodes: [] } },
+          metadata: { version: '19.3.3-ee', enterprise: true },
+          personal: { count: 3 },
+        }),
+      }),
+      '/api/v4/personal_access_tokens/self': { body: { id: 7, name: 'gh-dash', revoked: false, active: true, scopes: ['api'], expires_at: '2026-10-05' } },
+    });
+    const logs: string[] = [];
+    const server = await startServer({
+      config,
+      env,
+      log: (line) => logs.push(line),
+      tokenOptions: { fs: noFiles, exec: async () => { throw new Error('gh must not run in tests'); }, fetchImpl: async () => { throw new Error('no network in tests'); } },
+      sourceOptions: { fs: noFiles, exec: async () => { throw new Error('glab must not run in tests'); }, fetchImpl: api.fetchImpl, sleep: async () => {}, now: () => Date.parse('2026-09-28T12:00:00Z') },
+    });
+    running.push(server);
+
+    const gl = server.sources.byHost('gitlab.example.com')!;
+    expect(gl).toMatchObject({ configured: true, config: { tokenChoice: 'file', tokenEnv: 'GITLAB_TOKEN', from: 'file' } });
+    expect(getSource(server.db, gl.id)).toMatchObject({ kind: 'gitlab', host: 'gitlab.example.com', baseUrl: BASE, name: 'GitLab' });
+    expect(server.sources.github().tokens).toBe(server.tokens.credentials);
+    const p = '[token gitlab.example.com]';
+    await vi.waitFor(() => expect(logs).toContain(`${p} env token is for @alice (personal, expires 2026-10-05)`));
+    expect(logs).toEqual(expect.arrayContaining([
+      `[sources] GitLab (gitlab.example.com) at ${BASE} · token: GITLAB_TOKEN (locked)`,
+      expect.stringMatching(/^\[token gitlab\.example\.com\] warning: the token expires 2026-10-05 \(in 7 days\)/),
+      expect.stringMatching(/^\[token gitlab\.example\.com\] note: This token can change things on GitLab \(api scope\)/),
+    ]));
+    // GitHub's own line is as it was.
+    expect(logs.find((line) => line.startsWith('gh-dash '))).toMatch(/ · token: none · viewer: unknown · sync: off · /);
+
+    // A second source: GITLAB_TOKEN can't say which it is for any more, so the first goes back to its token file.
+    writeConfigFile(configPath, { glabPath: '/opt/glab', sources: [first, { kind: 'gitlab', url: 'https://gitlab2.example.com', tokenSource: 'glab' }] });
+    expect(server.reloadSources().map((r) => [r.host, r.configured])).toEqual([['github.com', true], ['gitlab.example.com', true], ['gitlab2.example.com', true]]);
+    expect(server.config).toMatchObject({ glabPath: '/opt/glab', sourceConfigs: [{ host: 'gitlab.example.com', tokenEnv: null }, { host: 'gitlab2.example.com', tokenChoice: 'glab' }] });
+    expect(server.sources.byHost('gitlab.example.com')).not.toBe(gl);
+    expect(await server.sources.byHost('gitlab.example.com')!.tokens.get()).toMatchObject({ token: null, error: 'Token file /run/secrets/gitlab does not exist' });
+    expect(await server.sources.byHost('gitlab2.example.com')!.tokens.get()).toMatchObject({ token: null, error: 'glab not found at /opt/glab (glabPath)' });
+
+    // A config.json that doesn't validate changes nothing.
+    writeFileSync(configPath, JSON.stringify({ sources: [{ kind: 'gitlab', url: 'https://github.com' }] }));
+    expect(() => server.reloadSources()).toThrow(/github\.com is built in/);
+    expect(server.sources.list()).toHaveLength(3);
+    expect(server.config.glabPath).toBe('/opt/glab');
   });
 });

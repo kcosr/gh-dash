@@ -1,5 +1,6 @@
+import { defaultSleep, redact, RetryableError } from '../provider/transport';
 import type { GqlError, GqlRateLimit } from './types';
-import { checkToken, defaultSleep, GitHubError, limitError, redact, RetryableError, withRetries } from './transport';
+import { checkToken, GitHubError, limitError, withRetries } from './transport';
 
 export { GitHubError, type GitHubErrorKind } from './transport';
 

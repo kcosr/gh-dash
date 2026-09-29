@@ -21,6 +21,7 @@ function paramRows(params: ParamDoc[]): string {
 function curl(e: EndpointDoc, origin: string): string {
   const path = e.path
     .replace('{repo}', 'gh-dash')
+    .replace('{source}', 'github.com')
     .replace('{number}', '1')
     .replace('{name}', 'gh-dash')
     .replace('{id}', '1')
@@ -45,7 +46,7 @@ export function docsPage(origin: string, authNote: string | null): string {
 <p>${esc(e.summary)}${e.description ? `<br><span class="muted">${esc(e.description)}</span>` : ''}</p>
 ${e.params?.length ? `<table><thead><tr><th>Param</th><th>Type</th><th>Description</th></tr></thead><tbody>${paramRows(e.params)}</tbody></table>` : ''}
 ${e.body ? `<p class="muted">JSON body${e.body.optional ? ' (optional)' : ''}: <code>${esc(JSON.stringify(e.body.example))}</code></p>` : ''}
-<p class="muted">Response: ${e.response.status}${e.textFormats ? ' · JSON, or <code>format=md</code> / <code>format=csv</code>' : ''}</p>
+<p class="muted">Response: ${e.response.status}${e.textFormats ? ` · JSON, or <code>format=md</code>${e.textFormats === true ? ' / <code>format=csv</code>' : ''}` : ''}</p>
 <pre>${esc(curl(e, origin))}</pre></section>`,
         )
         .join('');

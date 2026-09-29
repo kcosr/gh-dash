@@ -21,6 +21,13 @@ const bridge: DesktopBridge = {
   chooseDataDir: () => call(DESKTOP_IPC.chooseDataDir),
   generateApiKey: () => call(DESKTOP_IPC.generateApiKey),
   chooseGhPath: () => call(DESKTOP_IPC.chooseGhPath),
+  testSource: (draft) => call(DESKTOP_IPC.testSource, draft),
+  addSource: (draft) => call(DESKTOP_IPC.addSource, draft),
+  setSourceCredential: (host, credential) => call(DESKTOP_IPC.setSourceCredential, host, credential),
+  signOutSource: (host) => call(DESKTOP_IPC.signOutSource, host),
+  removeSource: (host) => call(DESKTOP_IPC.removeSource, host),
+  chooseGlabPath: () => call(DESKTOP_IPC.chooseGlabPath),
+  chooseTokenFile: (url) => call(DESKTOP_IPC.chooseTokenFile, url),
 };
 
 contextBridge.exposeInMainWorld('ghDashDesktop', bridge);

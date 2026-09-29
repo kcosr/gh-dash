@@ -2,6 +2,8 @@ import { type RepoResolver, rewriteRepoParams, rewriteRepoPath } from '../../sha
 import type { Db } from './db';
 
 interface Migration {
+  /** Stable name: tests and code refer to a migration by it (`versionOf`), so renumbering one is a one-line change. */
+  name: string;
   version: number;
   /** Destructive migrations (drops/rebuilds) never run from a GH_DASH_SYNC=off instance. */
   destructive: boolean;
@@ -301,16 +303,170 @@ function rewriteSavedViews(db: Db): void {
   }
 }
 
+// Local review comments (never sent to GitHub). Authors are principals: row 1 is the dashboard's own user; agents
+// writing through the API get rows of their own. Threads are keyed by repo and PR number or commit oid, not by
+// pull_requests.id: sync may delete and re-create a PR row (a transfer), and the user's comments must outlive that.
+// A thread's revision (commit_oid, base_oid) and snippet let a later revision of the PR's diff relocate it.
+// AUTOINCREMENT: ids end up in URLs, client caches and agents' hands, so a deleted one must never name something new.
+const COMMENTS = `
+CREATE TABLE principals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind TEXT NOT NULL CHECK (kind IN ('self', 'agent')),
+  name TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+INSERT INTO principals (id, kind, name, created_at) VALUES (1, 'self', 'You', strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));
+
+CREATE TABLE comment_threads (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo_id INTEGER NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  pr_number INTEGER,
+  commit_oid TEXT NOT NULL,
+  base_oid TEXT,
+  path TEXT,
+  side TEXT CHECK (side IN ('old', 'new')),
+  start_line INTEGER,
+  end_line INTEGER,
+  snippet TEXT,
+  status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'resolved')),
+  resolved_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  CHECK (side IS NULL OR path IS NOT NULL),
+  CHECK ((side IS NULL) = (start_line IS NULL) AND (side IS NULL) = (end_line IS NULL) AND (side IS NULL) = (snippet IS NULL)),
+  CHECK (start_line IS NULL OR (start_line >= 1 AND end_line >= start_line))
+);
+CREATE INDEX comment_threads_target ON comment_threads(repo_id, pr_number, commit_oid);
+
+CREATE TABLE comments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  thread_id INTEGER NOT NULL REFERENCES comment_threads(id) ON DELETE CASCADE,
+  author_id INTEGER NOT NULL REFERENCES principals(id),
+  body TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  edited_at TEXT
+);
+CREATE INDEX comments_thread ON comments(thread_id);
+`;
+
+// Repositories from several code hosts ("sources"): github.com is source 1, created here (for new databases too) and
+// never removed. Every repo belongs to a source and gets its public key as a column (`owner/name` on github.com,
+// `<host>/<full path>` elsewhere; see repo-key.ts). node_id stops being globally unique: GitLab ids like
+// gid://gitlab/Project/5 exist on every instance, so it is unique per source. The rebuild copies ids, and the
+// AUTOINCREMENT high-water mark is carried over explicitly: DROP TABLE deletes the old table's sqlite_sequence row,
+// and a deleted repo's id must never come back (see v5). The copy leaves repos_new a sequence row even when it copies
+// nothing (seq 0; schema.test.ts pins that, for a table emptied by deletes). Also new: the provider's star count at the
+// last stars pass, and the commits an MR landed as (GitLab links commits to MRs by these), with their indexes.
+const SOURCES = `
+CREATE TABLE sources (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind TEXT NOT NULL,
+  host TEXT NOT NULL,
+  base_url TEXT NOT NULL,
+  name TEXT NOT NULL,
+  viewer_id TEXT,
+  viewer_login TEXT,
+  viewer_name TEXT,
+  viewer_avatar TEXT,
+  viewer_emails TEXT NOT NULL DEFAULT '[]',
+  last_sync TEXT,
+  rate_limit TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX sources_host ON sources(host);
+INSERT INTO sources (id, kind, host, base_url, name, created_at)
+  VALUES (1, 'github', 'github.com', 'https://github.com', 'GitHub', strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));
+CREATE TABLE repos_new (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_id INTEGER NOT NULL REFERENCES sources(id),
+  key TEXT NOT NULL,
+  node_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  name_with_owner TEXT NOT NULL,
+  owner TEXT NOT NULL,
+  description TEXT,
+  url TEXT NOT NULL,
+  visibility TEXT NOT NULL CHECK (visibility IN ('public', 'private', 'internal')),
+  is_archived INTEGER NOT NULL DEFAULT 0,
+  is_fork INTEGER NOT NULL DEFAULT 0,
+  language_name TEXT,
+  language_color TEXT,
+  topics TEXT NOT NULL DEFAULT '[]',
+  default_branch TEXT,
+  stars INTEGER NOT NULL DEFAULT 0,
+  forks INTEGER NOT NULL DEFAULT 0,
+  open_prs INTEGER NOT NULL DEFAULT 0,
+  open_issues INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  pushed_at TEXT,
+  pinned INTEGER NOT NULL DEFAULT 0,
+  hidden INTEGER NOT NULL DEFAULT 0,
+  removed_at TEXT,
+  tracked_by TEXT NOT NULL DEFAULT 'owned',
+  added_at TEXT,
+  unavailable_at TEXT,
+  unavailable_reason TEXT,
+  UNIQUE (source_id, node_id)
+);
+INSERT INTO repos_new (id, source_id, key, node_id, name, name_with_owner, owner, description, url, visibility, is_archived,
+  is_fork, language_name, language_color, topics, default_branch, stars, forks, open_prs, open_issues, created_at, pushed_at,
+  pinned, hidden, removed_at, tracked_by, added_at, unavailable_at, unavailable_reason)
+SELECT id, 1, name_with_owner, node_id, name, name_with_owner, owner, description, url, visibility, is_archived,
+  is_fork, language_name, language_color, topics, default_branch, stars, forks, open_prs, open_issues, created_at, pushed_at,
+  pinned, hidden, removed_at, tracked_by, added_at, unavailable_at, unavailable_reason FROM repos;
+UPDATE sqlite_sequence SET seq = max(seq, ifnull((SELECT seq FROM sqlite_sequence WHERE name = 'repos'), 0)) WHERE name = 'repos_new';
+DROP TABLE repos;
+ALTER TABLE repos_new RENAME TO repos;
+CREATE UNIQUE INDEX repos_key ON repos(key COLLATE NOCASE) WHERE removed_at IS NULL;
+ALTER TABLE sync_state ADD COLUMN stars_count INTEGER;
+ALTER TABLE pull_requests ADD COLUMN merge_commit_oid TEXT;
+ALTER TABLE pull_requests ADD COLUMN squash_commit_oid TEXT;
+CREATE INDEX pull_requests_landed ON pull_requests(merge_commit_oid, squash_commit_oid);
+CREATE INDEX pr_commits_oid ON pr_commits(oid);
+`;
+
+/**
+ * The GitHub account (`meta.viewer`) and rate limit (`meta.rateLimit`) the database recorded become source 1's. The
+ * run-level keys (lastSync, lastFullSyncAt, syncLock, nextSyncAt, sessionSecret) stay in meta.
+ */
+function moveViewerMeta(db: Db): void {
+  const read = (key: string): unknown => {
+    const row = db.get<{ value: string }>('SELECT value FROM meta WHERE key = ?', [key]);
+    return row ? JSON.parse(row.value) : null;
+  };
+  const viewer = read('viewer') as { id?: unknown; login?: unknown; name?: unknown; avatarUrl?: unknown } | null;
+  if (viewer && typeof viewer.login === 'string') {
+    const text = (v: unknown) => (typeof v === 'string' ? v : null);
+    db.run('UPDATE sources SET viewer_id = ?, viewer_login = ?, viewer_name = ?, viewer_avatar = ? WHERE id = 1', [
+      text(viewer.id), viewer.login, text(viewer.name), text(viewer.avatarUrl),
+    ]);
+  }
+  const rl = read('rateLimit') as { limit?: unknown; remaining?: unknown; resetAt?: unknown } | null;
+  if (rl && typeof rl.limit === 'number' && typeof rl.remaining === 'number' && typeof rl.resetAt === 'string') {
+    db.run('UPDATE sources SET rate_limit = ? WHERE id = 1', [JSON.stringify({ limit: rl.limit, remaining: rl.remaining, resetAt: rl.resetAt })]);
+  }
+  db.run(`DELETE FROM meta WHERE key IN ('viewer', 'rateLimit')`);
+}
+
 const MIGRATIONS: Migration[] = [
-  { version: 1, destructive: false, sql: V1 },
-  { version: 2, destructive: false, sql: V2 },
-  { version: 3, destructive: false, sql: V3 },
-  { version: 4, destructive: false, sql: V4 },
-  { version: 5, destructive: true, rebuild: true, sql: REPOS_REBUILD, up: rewriteSavedViews },
+  { name: 'initial', version: 1, destructive: false, sql: V1 },
+  { name: 'commits-repo-index', version: 2, destructive: false, sql: V2 },
+  { name: 'commits-head', version: 3, destructive: false, sql: V3 },
+  { name: 'pr-head-oid', version: 4, destructive: false, sql: V4 },
+  { name: 'repos-v5', version: 5, destructive: true, rebuild: true, sql: REPOS_REBUILD, up: rewriteSavedViews },
+  { name: 'comments', version: 6, destructive: false, sql: COMMENTS },
+  { name: 'sources', version: 7, destructive: true, rebuild: true, sql: SOURCES, up: moveViewerMeta },
 ];
 
 /** The schema version this build creates and understands. */
 export const SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]!.version;
+
+/** The version of the migration called `name` (throws for an unknown name). */
+export function versionOf(name: string): number {
+  const m = MIGRATIONS.find((x) => x.name === name);
+  if (!m) throw new Error(`No migration is called ${name}`);
+  return m.version;
+}
 
 const userVersion = (db: Db) => Number(db.get<{ user_version: number }>('PRAGMA user_version')?.user_version ?? 0);
 const foreignKeysOn = (db: Db) => Number(db.get<{ foreign_keys: number }>('PRAGMA foreign_keys')?.foreign_keys ?? 0) === 1;
@@ -343,10 +499,17 @@ function checkDestructive(version: number, pending: Migration[], allowDestructiv
   }
 }
 
-export function migrate(db: Db, allowDestructive: boolean): void {
+export interface MigrateOptions {
+  /** Stop after this version (tests build a database as it was before a migration: `versionOf(name) - 1`). */
+  upTo?: number;
+}
+
+export function migrate(db: Db, allowDestructive: boolean, opts: MigrateOptions = {}): void {
+  const upTo = opts.upTo ?? SCHEMA_VERSION;
+  const known = MIGRATIONS.filter((m) => m.version <= upTo);
   const current = userVersion(db);
   checkNotNewer(current);
-  const pending = MIGRATIONS.filter((m) => m.version > current);
+  const pending = known.filter((m) => m.version > current);
   if (pending.length === 0) return;
   checkDestructive(current, pending, allowDestructive);
   // PRAGMA foreign_keys is a silent no-op inside a transaction, so it is switched off before BEGIN.
@@ -357,7 +520,7 @@ export function migrate(db: Db, allowDestructive: boolean): void {
       // Re-check inside the write lock in case another process migrated concurrently.
       const now = userVersion(db);
       checkNotNewer(now);
-      const batch = MIGRATIONS.filter((x) => x.version > now);
+      const batch = known.filter((x) => x.version > now);
       // Another process may have created the database meanwhile: the fresh-database exception holds only while it is still v0.
       checkDestructive(now, batch, allowDestructive);
       const rebuild = batch.some((m) => m.rebuild);
@@ -369,7 +532,7 @@ export function migrate(db: Db, allowDestructive: boolean): void {
         m.up?.(db);
         db.exec(`PRAGMA user_version = ${m.version}`);
       }
-      if (rebuild) checkForeignKeys(db, now, SCHEMA_VERSION);
+      if (rebuild) checkForeignKeys(db, now, batch.at(-1)!.version);
     });
   } finally {
     if (suspendFks) db.exec('PRAGMA foreign_keys = ON');

@@ -3,6 +3,7 @@
  * Kept free of React so they're unit-tested (shared/account-view.test.ts).
  */
 import type { AccountStatus, ConfigSource, InstanceInfo, TokenKind, TokenSource } from '../../../shared/api';
+import { EXPIRY_WARN_DAYS } from '../../../shared/credentials';
 import type { DesktopConfig, DesktopConfigPatch } from '../../../shared/desktop';
 import { DAY, dayDiff, fmtDateY } from './time';
 
@@ -15,6 +16,7 @@ export function tokenSourceLabel(source: TokenSource, opts: { desktop?: boolean;
     case 'env': return opts.desktop ? 'GITHUB_TOKEN environment variable' : 'GITHUB_TOKEN (environment or env file)';
     case 'file': return 'Token file';
     case 'gh-cli': return 'GitHub CLI (gh auth token)';
+    case 'glab': return 'GitLab CLI (glab)';
     case 'app': return opts.remembered ? 'Pasted token, saved in the OS keychain' : 'Pasted token, kept until gh-dash quits';
     case 'none': return opts.desktop && opts.chosen === false ? 'Not connected' : 'No token found';
   }
@@ -26,6 +28,7 @@ export function tokenKindLabel(kind: TokenKind): string {
     case 'classic': return 'Classic personal access token';
     case 'oauth': return 'OAuth token';
     case 'app': return 'GitHub App token';
+    case 'personal': return 'Personal access token';
     case 'unknown': return 'Token';
   }
 }
@@ -41,9 +44,8 @@ export function tokenAccess(scopes: string[] | null): 'full' | 'public' | null {
 }
 
 /** Tokens that expire when GitHub says nothing (personal access tokens have an expiry unless created without one). */
-const PAT_KINDS: ReadonlySet<TokenKind> = new Set(['fine-grained', 'classic']);
-/** Warn this long before a token expires. */
-export const EXPIRY_WARN_DAYS = 14;
+const PAT_KINDS: ReadonlySet<TokenKind> = new Set(['fine-grained', 'classic', 'personal']);
+export { EXPIRY_WARN_DAYS };
 
 /**
  * The token's expiry for display: "expires Oct 3, 2026" (warn within 14 days, with "in 5 days"), "expired …",
@@ -83,8 +85,11 @@ export function resolveApiBase(instance: Pick<InstanceInfo, 'apiUrl'> | undefine
   return desktop ? null : origin;
 }
 
+/** The InstanceInfo settings that are one value with the place it came from (all but the list of GitLab sources). */
+export type SettingKey = Exclude<keyof InstanceInfo['settings'], 'sources'>;
+
 /** Environment variable behind each InstanceInfo setting (the env overrides config.json). */
-export const SETTING_ENV: Record<keyof InstanceInfo['settings'], string> = {
+export const SETTING_ENV: Record<SettingKey, string> = {
   host: 'HOST',
   port: 'PORT',
   dbPath: 'GH_DASH_DB',
@@ -93,10 +98,11 @@ export const SETTING_ENV: Record<keyof InstanceInfo['settings'], string> = {
   allowedHosts: 'GH_DASH_ALLOWED_HOSTS',
   tokenFile: 'GITHUB_TOKEN_FILE',
   defaultTz: 'TZ',
+  glabPath: 'GH_DASH_GLAB_PATH',
 };
 
 /** "default", "config.json", or the environment variable that set it. */
-export function settingSource(key: keyof InstanceInfo['settings'], source: ConfigSource): string {
+export function settingSource(key: SettingKey, source: ConfigSource): string {
   return source === 'default' ? 'default' : source === 'file' ? 'config.json' : SETTING_ENV[key];
 }
 

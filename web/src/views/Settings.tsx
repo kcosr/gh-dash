@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useLocation } from 'react-router';
 import type { Settings } from '../../../shared/api';
-import { useApiBase, useClearDiffCache, useDiffCacheStats, usePatchSettings, useSettings, useSyncStatus } from '../api/hooks';
+import { useApiBase, useClearDiffCache, useDiffCacheStats, usePatchSettings, useSettings, useSyncStatus, useWorkSources } from '../api/hooks';
 import { useSyncNow } from '../components/TopBar';
 import { ChipsInput } from '../components/ChipsInput';
 import { Icon } from '../components/Icon';
@@ -10,10 +10,11 @@ import { ErrorNote } from '../components/EmptyState';
 import { useRepoLabel } from '../components/repoMapContext';
 import { useToast } from '../components/Toasts';
 import { apiLink } from '../lib/account';
+import { hostNames } from '../lib/sources';
 import { dur, fmtBytes, fmtDateTime, fmtNum, fmtTime, plural, relFuture, relLong } from '../lib/time';
 import { cx } from '../lib/util';
-import { AccountSection } from './SettingsAccount';
 import { InstanceSection } from './SettingsInstance';
+import { SourcesSection } from './SettingsSources';
 import { TrackedSection } from './SettingsTracked';
 
 /** A link to this API from outside the app; disabled with a hint while the Local API is off. */
@@ -77,7 +78,7 @@ function DiffCacheSection() {
   return (
     <section className="card set-sec">
       <h2>Diff cache</h2>
-      <p>Diffs and the file contents they show are fetched from GitHub when you open a diff, then kept on the server.</p>
+      <p>Diffs and the file contents they show are fetched from {hostNames(useWorkSources()) || 'GitHub'} when you open a diff, then kept on the server.</p>
       <form className="set-form" onSubmit={(e) => { e.preventDefault(); submit(); }}>
         <div className="set-row">
           <span className="set-l">In use<small>Cached diffs and files.</small></span>
@@ -173,7 +174,7 @@ export function SettingsView() {
               <ErrorNote error={status.error} onRetry={() => { void status.refetch(); void settings.refetch(); }} />
             </section>
           )}
-          <AccountSection rateLimit={st?.rateLimit} />
+          <SourcesSection rateLimit={st?.rateLimit} />
 
           <TrackedSection />
 

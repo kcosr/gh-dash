@@ -1,17 +1,26 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { type Db, openDb } from '../db/db';
-import { getMeta, setMeta } from '../db/meta';
 import type { RepoProbe, RepoRecord } from '../db/records';
+import { ensureSource, GITHUB_SOURCE_ID, getSource, type SourceRow, viewerMismatch } from '../db/sources';
+import { upsertOwned } from '../db/write';
+import { mapRepo } from '../github/map';
 import { DEFAULT_SETTINGS } from '../db/settings';
 import type { Settings } from '../../shared/api';
 import type { SyncStateRow } from '../db/write';
-import { GitHubClient } from '../github/client';
+import { GitHubSyncSource } from '../github/sync-source';
 import type { GqlIssue, GqlProbe, GqlPullRequest, GqlRepo } from '../github/types';
 import detailFixture from '../test/fixtures/repo-detail.json';
 import probesFixture from '../test/fixtures/repo-probes.json';
 import reposFixture from '../test/fixtures/viewer-repos.json';
-import { planRepo, runSync, viewerMismatch } from './sync';
-import { addManualRepo } from '../test/seed';
+import { fakeGitHub as fakeApi } from '../test/github';
+import { fakeGraphQL, releaseNode, repoNode } from '../test/graphql';
+import { planRepo, runSync } from './sync';
+import { addManualRepo, setViewer } from '../test/seed';
+
+const viewerOf = (db: Db) => getSource(db, GITHUB_SOURCE_ID)!.viewer;
+/** The github.com source a run syncs, and its client for the fake. */
+const github = (db: Db) => getSource(db, GITHUB_SOURCE_ID)!;
+const on = (fetchImpl: typeof fetch, tokenKind: 'classic' | null = null) => new GitHubSyncSource({ token: 't', fetchImpl, tokenKind });
 
 const NOW = Date.parse('2026-09-27T12:00:00Z');
 const HOUR = 3_600_000;
@@ -172,7 +181,7 @@ describe('runSync', () => {
   let db: Db;
   let gh: ReturnType<typeof fakeGitHub>;
   const sync = (at: number, req = {}, settings: Settings = DEFAULT_SETTINGS) =>
-    runSync({ db, client: new GitHubClient({ token: 't', fetchImpl: gh.fetchImpl }), settings, now: () => at }, req);
+    runSync({ db, source: on(gh.fetchImpl), src: github(db), settings, now: () => at }, req);
   const detailCalls = () => gh.calls.filter((c) => c.op === 'RepoDetail');
   const state = (table: string, number: number) => db.get<{ state: string }>(`SELECT state FROM ${table} WHERE number = ?`, [number])?.state ?? null;
 
@@ -185,7 +194,7 @@ describe('runSync', () => {
   });
 
   it('stores everything on the first sync', () => {
-    expect(getMeta(db, 'viewer')).toEqual({ id: 'U_alice', login: 'alice', name: 'Alice A', avatarUrl: 'https://avatars.example/alice' });
+    expect(viewerOf(db)).toEqual({ id: 'U_alice', login: 'alice', name: 'Alice A', avatarUrl: 'https://avatars.example/alice', emails: [] });
     expect([count(db, 'repos'), count(db, 'commits'), count(db, 'pull_requests'), count(db, 'pr_commits'), count(db, 'issues'), count(db, 'releases'), count(db, 'stars')])
       .toEqual([2, 3, 2, 1, 2, 1, 2]);
     expect(db.all('SELECT headline, pr_number FROM commits ORDER BY committed_at')).toEqual([
@@ -242,6 +251,9 @@ describe('runSync', () => {
     gh.fx.detail.repository.pullRequests.nodes.unshift(newPr);
     gh.fx.detail.repository.pullRequests.pageInfo.hasNextPage = true;
     gh.fx.probes.nodes[0]!.latestPr.nodes[0]!.updatedAt = '2026-09-27T08:00:00Z';
+    // The new PR is open: GitHub counts it, and lists it among the open ones.
+    gh.fx.probes.nodes[0]!.openPrs.totalCount = 2;
+    gh.fx.openPrs.unshift(newPr as unknown as Item);
 
     expect(await sync(NOW + HOUR)).toEqual({ repos: 2, newItems: 1, errors: [], forksSkipped: 0 });
     const details = gh.calls.filter((c) => c.op === 'RepoDetail');
@@ -405,7 +417,7 @@ describe('repos added by hand', () => {
   let db: Db;
   let gh: ReturnType<typeof fakeGitHub>;
   const sync = (at: number, req = {}, tokenKind: 'classic' | null = null) =>
-    runSync({ db, client: new GitHubClient({ token: 't', fetchImpl: gh.fetchImpl }), settings: DEFAULT_SETTINGS, now: () => at, tokenKind }, req);
+    runSync({ db, source: on(gh.fetchImpl, tokenKind), src: github(db), settings: DEFAULT_SETTINGS, now: () => at }, req);
   const row = (key: string) =>
     db.get<{ id: number; description: string | null; stars: number; open_prs: number; unavailable_at: string | null; unavailable_reason: string | null; removed_at: string | null }>(
       'SELECT id, description, stars, open_prs, unavailable_at, unavailable_reason, removed_at FROM repos WHERE name_with_owner = ?', [key]);
@@ -501,8 +513,8 @@ describe('repos added by hand', () => {
       if (ids.includes('R_bob/r24')) await new Promise((r) => setTimeout(r, 40));
       return gh.fetchImpl(input as string, init!);
     };
-    const client = new GitHubClient({ token: 't', fetchImpl: later as typeof fetch });
-    const err = await runSync({ db, client, settings: DEFAULT_SETTINGS, now: () => NOW + HOUR }).catch((e: unknown) => e);
+    const source = on(later as typeof fetch);
+    const err = await runSync({ db, source, src: github(db), settings: DEFAULT_SETTINGS, now: () => NOW + HOUR }).catch((e: unknown) => e);
     expect(err).toMatchObject({ kind: 'rate-limit' });
     const at = row('bob/r24');
     await new Promise((r) => setTimeout(r, 100));
@@ -543,8 +555,9 @@ describe('repos added by hand', () => {
     gh.fx.nodeErrors['R_corp'] = { type: 'FORBIDDEN', message: 'Resource protected by organization SAML enforcement.' };
     gh.calls.length = 0;
     expect(await sync(NOW + 2 * HOUR)).toMatchObject({ errors: [] });
-    // corp, without a probe, is fetched as if changed; app's and bob/tool's probes match: nothing else.
-    expect(details()).toEqual(['alice/corp']);
+    // corp, without a probe, is fetched as if changed (its open items in a second round, once the first has read the
+    // updatedAt passes); app's and bob/tool's probes match: nothing else.
+    expect(details()).toEqual(['alice/corp', 'alice/corp']);
     expect(gh.calls.filter((c) => c.op === 'RepoProbes')).toHaveLength(1);
   });
 
@@ -569,8 +582,8 @@ describe('repos added by hand', () => {
       if (key !== 'bob/old') return;
       db.run('DELETE FROM repos WHERE id = ?', [oldId]);
       // Added meanwhile under the same id (a table without AUTOINCREMENT hands out the highest rowid again).
-      db.run(`INSERT INTO repos (id, node_id, name, name_with_owner, owner, url, visibility, created_at, tracked_by, added_at)
-        VALUES (?, 'R_carol/new', 'new', 'carol/new', 'carol', 'u', 'public', 'x', 'manual', 'x')`, [oldId]);
+      db.run(`INSERT INTO repos (id, source_id, key, node_id, name, name_with_owner, owner, url, visibility, created_at, tracked_by, added_at)
+        VALUES (?, 1, 'carol/new', 'R_carol/new', 'new', 'carol/new', 'carol', 'u', 'public', 'x', 'manual', 'x')`, [oldId]);
     };
     const res = await sync(NOW + HOUR);
     expect(res.errors).toEqual([]);
@@ -585,8 +598,8 @@ describe('repos added by hand', () => {
     gh.fx.onDetail = (key) => {
       if (key !== 'bob/tool') return;
       db.run('DELETE FROM repos WHERE id = ?', [oldId]);
-      db.run(`INSERT INTO repos (id, node_id, name, name_with_owner, owner, url, visibility, created_at, tracked_by, added_at)
-        VALUES (?, 'R_carol/new', 'new', 'carol/new', 'carol', 'u', 'public', 'x', 'manual', 'x')`, [oldId]);
+      db.run(`INSERT INTO repos (id, source_id, key, node_id, name, name_with_owner, owner, url, visibility, created_at, tracked_by, added_at)
+        VALUES (?, 1, 'carol/new', 'R_carol/new', 'new', 'carol/new', 'carol', 'u', 'public', 'x', 'manual', 'x')`, [oldId]);
     };
     expect((await sync(NOW + HOUR)).errors).toEqual([]);
     expect(row('carol/new')).toMatchObject({ unavailable_at: null });
@@ -607,8 +620,8 @@ describe('repos added by hand', () => {
     gh.fx.others[0] = otherRepo('bob/tool');
     const orig = gh.fetchImpl;
     const res = await runSync({
-      db, settings: DEFAULT_SETTINGS, now: () => NOW + HOUR,
-      client: new GitHubClient({ token: 't', fetchImpl: async (u, init) => { db.run('DELETE FROM repos WHERE id = ?', [id]); return orig(u, init!); } }),
+      db, settings: DEFAULT_SETTINGS, now: () => NOW + HOUR, src: github(db),
+      source: on(async (u, init) => { db.run('DELETE FROM repos WHERE id = ?', [id]); return orig(u, init!); }),
     }, { repo: 'bob/tool' });
     expect(res).toMatchObject({ repos: 0, errors: [] });
     expect(row('bob/tool')).toBeUndefined();
@@ -616,11 +629,11 @@ describe('repos added by hand', () => {
 });
 
 describe('account guard', () => {
-  const MISMATCH = 'This database belongs to @alice, but the GitHub token is for @mallory. Switch back to @alice, or use a different database.';
+  const MISMATCH = "This database's GitHub account is @alice, but the token is for @mallory. Switch back to @alice, or use a different database.";
   function setup() {
     const db = openDb(':memory:');
     const gh = fakeGitHub();
-    const sync = (req = {}) => runSync({ db, client: new GitHubClient({ token: 't', fetchImpl: gh.fetchImpl }), settings: DEFAULT_SETTINGS, now: () => NOW }, req);
+    const sync = (req = {}) => runSync({ db, source: on(gh.fetchImpl), src: github(db), settings: DEFAULT_SETTINGS, now: () => NOW }, req);
     return { db, gh, sync };
   }
 
@@ -628,7 +641,7 @@ describe('account guard', () => {
     const { db, gh, sync } = setup();
     await sync();
     const repos = () => db.all('SELECT * FROM repos ORDER BY id');
-    const before = { repos: repos(), viewer: getMeta(db, 'viewer') };
+    const before = { repos: repos(), viewer: viewerOf(db) };
     // `gh auth switch` to another account, with its own repos of the same names.
     const v = gh.fx.repos.viewer;
     Object.assign(v, { id: 'U_mallory', login: 'mallory' });
@@ -638,26 +651,53 @@ describe('account guard', () => {
     await expect(sync({ repo: 'app' })).rejects.toThrow(MISMATCH);
     await expect(sync({ repo: 'brand-new' })).rejects.toThrow(MISMATCH);
     expect(gh.calls.map((c) => c.op)).toEqual(['ViewerRepos', 'RepoNode', 'ViewerRepo']);
-    expect({ repos: repos(), viewer: getMeta(db, 'viewer') }).toEqual(before);
+    expect({ repos: repos(), viewer: viewerOf(db) }).toEqual(before);
   });
 
   it('follows a renamed account by id, and matches logins for databases stored without one', async () => {
     const { db, gh, sync } = setup();
-    setMeta(db, 'viewer', { login: 'Alice', name: null, avatarUrl: null });
+    setViewer(db, { login: 'Alice', name: null, avatarUrl: null });
     await sync({ repo: 'app' });
-    expect(getMeta(db, 'viewer')).toMatchObject({ id: 'U_alice', login: 'alice' });
+    expect(viewerOf(db)).toMatchObject({ id: 'U_alice', login: 'alice' });
     gh.fx.repos.viewer.login = 'alice-renamed';
     expect(await sync()).toMatchObject({ errors: [] });
-    expect(getMeta(db, 'viewer')).toMatchObject({ id: 'U_alice', login: 'alice-renamed' });
+    expect(viewerOf(db)).toMatchObject({ id: 'U_alice', login: 'alice-renamed' });
   });
 
   it('compares ids when both sides have one', () => {
-    const alice = { id: 'U_alice', login: 'alice', name: null, avatarUrl: null };
-    expect(viewerMismatch(null, { id: 'U_x', login: 'x' })).toBeNull();
-    expect(viewerMismatch(alice, { id: 'U_alice', login: 'someone-else' })).toBeNull();
-    expect(viewerMismatch(alice, { id: 'U_new', login: 'alice' })).toContain('belongs to @alice');
-    expect(viewerMismatch({ ...alice, id: undefined }, { id: 'U_new', login: 'ALICE' })).toBeNull();
-    expect(viewerMismatch({ ...alice, id: undefined }, { login: 'mallory' })).toBe(MISMATCH);
+    const github = (viewer: SourceRow['viewer']) => ({ id: GITHUB_SOURCE_ID, host: 'github.com', name: 'GitHub', viewer });
+    const alice = { id: 'U_alice', login: 'alice', name: null, avatarUrl: null, emails: [] };
+    expect(viewerMismatch(github(null), { id: 'U_x', login: 'x' })).toBeNull();
+    expect(viewerMismatch(github(alice), { id: 'U_alice', login: 'someone-else' })).toBeNull();
+    expect(viewerMismatch(github(alice), { id: 'U_new', login: 'alice' })).toContain('account is @alice');
+    expect(viewerMismatch(github({ ...alice, id: null }), { id: 'U_new', login: 'ALICE' })).toBeNull();
+    expect(viewerMismatch(github({ ...alice, id: null }), { login: 'mallory' })).toBe(MISMATCH);
+  });
+});
+
+describe('other sources', () => {
+  it("a GitHub run never reads, removes or marks another source's repos", async () => {
+    const db = openDb(':memory:');
+    const gh = fakeGitHub();
+    const gl = ensureSource(db, { kind: 'gitlab', host: 'gitlab.example.com', baseUrl: 'https://gitlab.example.com' });
+    // The viewer's GitLab namesake of alice/app, and a nested project added by hand.
+    const project = { ...otherRepo('alice/app'), id: 'gid://gitlab/Project/5', url: 'https://gitlab.example.com/alice/app' };
+    upsertOwned(db, gl, mapRepo(project), '2026-09-27T00:00:00Z');
+    addManualRepo(db, 'platform/team/svc', { source: gl, nodeId: 'gid://gitlab/Project/9' });
+    const sync = (req = {}) => runSync({ db, source: on(gh.fetchImpl), src: github(db), settings: DEFAULT_SETTINGS, now: () => NOW }, req);
+
+    expect(await sync()).toMatchObject({ repos: 2, errors: [] });
+    expect(JSON.stringify(gh.calls)).not.toContain('gid://gitlab');
+    expect(gh.calls.map((c) => c.op)).not.toContain('ManualRepos');
+    expect(db.all('SELECT key, removed_at, unavailable_at FROM repos WHERE source_id = ? ORDER BY id', [gl.id])).toEqual([
+      { key: 'gitlab.example.com/alice/app', removed_at: null, unavailable_at: null },
+      { key: 'gitlab.example.com/platform/team/svc', removed_at: null, unavailable_at: null },
+    ]);
+    expect(db.all('SELECT key FROM repos WHERE source_id = 1 AND removed_at IS NULL ORDER BY key')).toEqual([{ key: 'alice/app' }, { key: 'alice/corp' }]);
+    // A single-repo run is refused another source's repo before any request.
+    gh.calls.length = 0;
+    await expect(sync({ repo: 'gitlab.example.com/platform/team/svc' })).rejects.toThrow("gitlab.example.com/platform/team/svc isn't on GitHub");
+    expect(gh.calls).toEqual([]);
   });
 });
 
@@ -667,7 +707,7 @@ describe('fork commit history', () => {
     const gh = fakeGitHub();
     gh.fx.repos.viewer.repositories.nodes[0]!.isFork = true;
     const sync = (at: number, includeForks: boolean) =>
-      runSync({ db, client: new GitHubClient({ token: 't', fetchImpl: gh.fetchImpl }), settings: { ...DEFAULT_SETTINGS, includeForks }, now: () => at });
+      runSync({ db, source: on(gh.fetchImpl), src: github(db), settings: { ...DEFAULT_SETTINGS, includeForks }, now: () => at });
     const commitsFetched = () => gh.calls.filter((c) => c.op === 'RepoDetail' && c.vars.withCommits).map((c) => c.vars.commitsAfter);
 
     expect(await sync(NOW, false)).toMatchObject({ forksSkipped: 1, errors: [] });
@@ -691,9 +731,9 @@ describe('planRepo', () => {
   const probe: RepoProbe = { openPrs: 0, openIssues: 0, latestPrUpdatedAt: '2026-09-20T00:00:00Z', latestIssueUpdatedAt: null, releaseTags: ['v1'], latestStarredAt: '2026-09-01T00:00:00Z' };
   const state: SyncStateRow = {
     repo_id: 1, commits_pushed_at: '2026-09-25T00:00:00Z', commits_branch: 'main', commits_head: null, prs_hwm: '2026-09-20T00:00:00Z', issues_hwm: '2026-09-01T00:00:00Z',
-    releases_synced_at: '2026-09-27T00:00:00Z', stars_synced_at: '2026-09-27T00:00:00Z', stars_full_at: '2026-09-27T00:00:00Z', synced_at: '2026-09-27T00:00:00Z', last_error: null,
+    releases_synced_at: '2026-09-27T00:00:00Z', stars_synced_at: '2026-09-27T00:00:00Z', stars_full_at: '2026-09-27T00:00:00Z', stars_count: 3, synced_at: '2026-09-27T00:00:00Z', last_error: null,
   };
-  const ctx = { full: false, syncStars: true, includeForks: false, backfillStart: '2025-09-27T00:00:00Z', now: NOW, storedStars: { count: 3, latest: '2026-09-01T00:00:00Z' }, isKnownRelease: () => true };
+  const ctx = { full: false, syncStars: true, probesStars: true, includeForks: false, backfillStart: '2025-09-27T00:00:00Z', now: NOW, storedStars: { count: 3, latest: '2026-09-01T00:00:00Z' }, isKnownRelease: () => true };
   const none = { commits: null, prs: null, issues: null, releases: null, stars: null };
 
   it('plans nothing when every probe matches the stored marks', () => {
@@ -720,6 +760,27 @@ describe('planRepo', () => {
     expect(planRepo({ ...repo, stars: 5000 }, probe, state, { ...ctx, now: NOW + 48 * HOUR }).stars).toBeNull();
   });
 
+  it("plans stars from the star count when the probe can't tell new ones (a source that doesn't probe stars)", () => {
+    const blind = { ...ctx, probesStars: false };
+    const noStar = { ...probe, latestStarredAt: null };
+    // Unchanged since the last pass: nothing, whatever the probe says, or without one.
+    expect(planRepo(repo, noStar, state, blind).stars).toBeNull();
+    expect(planRepo(repo, null, state, blind).stars).toBeNull();
+    // The count moved: an incremental pass, big projects (never re-listed in full) included.
+    expect(planRepo({ ...repo, stars: 4 }, noStar, state, blind).stars).toEqual({ mode: 'incremental' });
+    const big = { ...blind, now: NOW + 48 * HOUR };
+    expect(planRepo({ ...repo, stars: 5000 }, noStar, { ...state, stars_count: 4990 }, big).stars).toEqual({ mode: 'incremental' });
+    expect(planRepo({ ...repo, stars: 5000 }, noStar, { ...state, stars_count: 5000 }, big).stars).toBeNull();
+    // No count kept by the last pass: once.
+    expect(planRepo(repo, noStar, { ...state, stars_count: null }, blind).stars).toEqual({ mode: 'incremental' });
+    // The first pass, the daily diff and fewer stars than stored are as with a probe.
+    expect(planRepo(repo, noStar, { ...state, stars_synced_at: null }, blind).stars).toEqual({ mode: 'full' });
+    expect(planRepo(repo, noStar, state, { ...blind, now: Date.parse(state.stars_full_at!) + 25 * HOUR }).stars).toEqual({ mode: 'full' });
+    expect(planRepo({ ...repo, stars: 2 }, noStar, state, blind).stars).toEqual({ mode: 'full' });
+    // A source that probes stars goes by the probe, not the count.
+    expect(planRepo({ ...repo, stars: 4 }, { ...probe, latestStarredAt: '2026-08-01T00:00:00Z' }, state, ctx).stars).toBeNull();
+  });
+
   it('skips fork commit history unless forks are included', () => {
     const fork = { ...repo, isFork: true };
     expect(planRepo(fork, probe, { ...state, commits_pushed_at: null }, ctx).commits).toBeNull();
@@ -737,5 +798,47 @@ describe('planRepo', () => {
 
   it('skips commits for empty repos', () => {
     expect(planRepo({ ...repo, defaultBranch: null }, probe, { ...state, commits_pushed_at: null }, ctx).commits).toBeNull();
+  });
+
+  it('walks commits when the head a source reads moved, even to a commit of the same time', () => {
+    const walked = { ...state, commits_head: 'a'.repeat(40) };
+    // A push or force-push to a commit dated like the old head: only the head tells.
+    expect(planRepo({ ...repo, headOid: 'b'.repeat(40) }, probe, walked, ctx).commits).toEqual({ stopAtKnown: true });
+    // The same head is the same branch, whatever its time says.
+    expect(planRepo({ ...repo, headOid: 'a'.repeat(40) }, probe, walked, ctx).commits).toBeNull();
+    expect(planRepo({ ...repo, headOid: 'a'.repeat(40), pushedAt: '2026-09-26T00:00:00Z' }, probe, walked, ctx).commits).toBeNull();
+    // No head read (GitHub, or none found): the push time decides, as before.
+    expect(planRepo(repo, probe, walked, ctx).commits).toBeNull();
+    expect(planRepo({ ...repo, headOid: null, pushedAt: '2026-09-26T00:00:00Z' }, probe, walked, ctx).commits).toEqual({ stopAtKnown: true });
+  });
+});
+
+describe('releases', () => {
+  it("record a draft published after a newer release: a pass stops at a known release only once it has the probe's", async () => {
+    const gql = fakeGraphQL();
+    gql.state.strict = true;
+    const app = 'alice/app';
+    gql.state.releases[app] = [
+      releaseNode(app, 'v3', '2026-09-26T09:00:00Z'), releaseNode(app, 'v2.5', '2026-09-25T09:00:00Z', { isDraft: true }),
+      releaseNode(app, 'v2', '2026-09-24T09:00:00Z'), releaseNode(app, 'v1', '2026-09-20T09:00:00Z'),
+    ];
+    const probed = () => repoNode(app, { latestReleases: { nodes: gql.state.releases[app]!.slice(0, 3).map((r) => ({ tagName: r.tagName, isDraft: r.isDraft })) } });
+    gql.state.owned.push(probed());
+    const api = fakeApi({ '/graphql': gql.handler });
+    const db = openDb(':memory:');
+    const sync = (at: number) => runSync({ db, source: on(api.fetchImpl), src: github(db), settings: DEFAULT_SETTINGS, now: () => at });
+    const tags = () => db.all<{ tag: string }>('SELECT tag FROM releases ORDER BY tag').map((r) => r.tag);
+    await sync(NOW);
+    expect(tags()).toEqual(['v1', 'v2', 'v3']);
+
+    // Published: it keeps its place in the list (by creation), behind v3, which is known.
+    Object.assign(gql.state.releases[app]![1]!, { isDraft: false, publishedAt: '2026-09-27T10:00:00Z' });
+    gql.state.owned[0] = probed();
+    expect(await sync(NOW + HOUR)).toMatchObject({ newItems: 1, errors: [] });
+    expect(tags()).toEqual(['v1', 'v2', 'v2.5', 'v3']);
+    // Known now: not asked for again.
+    gql.state.ops.length = 0;
+    await sync(NOW + 2 * HOUR);
+    expect(gql.state.ops.filter((op) => op.startsWith('RepoDetail'))).toEqual([]);
   });
 });

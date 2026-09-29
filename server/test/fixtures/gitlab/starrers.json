@@ -1,0 +1,10 @@
+[
+  {
+    "starred_since": "2026-09-20T00:00:00.000Z",
+    "user": { "id": 5, "username": "carol", "name": "Carol C", "state": "active", "avatar_url": "https://secure.gravatar.com/avatar/ca401", "web_url": "https://gitlab.example.com/gitlab/carol" }
+  },
+  {
+    "starred_since": "2026-09-25T06:00:00.000Z",
+    "user": { "id": 6, "username": "dave", "name": "", "state": "active", "avatar_url": "https://gitlab.example.com/gitlab/uploads/-/system/user/avatar/6/avatar.png", "web_url": "https://gitlab.example.com/gitlab/dave" }
+  }
+]

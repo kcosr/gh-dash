@@ -3,20 +3,23 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent, ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import type { PullRequest } from '../../../shared/api';
+import { capitalize, refText } from '../../../shared/provider';
 import { highlightParts } from '../../../shared/repo-display';
-import { matchRepoRef, repoParts, repoRefKeys } from '../../../shared/repos';
+import { matchRepoRef, paletteRefKeys, repoParts } from '../../../shared/repos';
 import { api } from '../api/client';
 import { useApiBase, useRepos, useViews } from '../api/hooks';
 import { API_OFF_HINT, apiLink } from '../lib/account';
 import { ALL_TIME_FROM, exportTarget, exportUrl } from '../lib/apiQuery';
 import { useFocusTrap, useLayer } from '../lib/layers';
 import { browserTz, fmtDate } from '../lib/time';
-import { carrySearch, encodeParams, keepRepoInScope, patchSearch, repoFromPath, useUrlState } from '../lib/urlState';
+import { ALL, useSwitchContext } from '../lib/contexts';
+import { carrySearch, keepRepoInScope, patchSearch, repoFromPath, repoLinkSearch, useUrlState } from '../lib/urlState';
 import { copyText, useDebounced } from '../lib/util';
 import { prIconClass, prIconName } from './bits';
-import { Icon } from './Icon';
+import { Icon, ProviderIcon } from './Icon';
 import type { IconName } from './Icon';
-import { useRepoLabel, useRepoMapCtx } from './repoMapContext';
+import { useProviderOf, useRepoLabel, useRepoMapCtx, useSourceCtx, useWords } from './repoMapContext';
+import { sourceTitle } from './SourceBadge';
 import { useToast } from './Toasts';
 import { useUI } from './ui';
 
@@ -52,7 +55,12 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggle
   const toast = useToast();
   const { openAddRepo } = useUI();
   const repoLabel = useRepoLabel();
+  const providerOf = useProviderOf();
+  const w = useWords().pr;
   const { repos: repoMap } = useRepoMapCtx();
+  const { sources, multi, current, byHost } = useSourceCtx();
+  const ctx = current?.host ?? null;
+  const switchTo = useSwitchContext();
   const repos = useRepos();
   const views = useViews();
   const apiBase = useApiBase();
@@ -66,19 +74,23 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggle
   useFocusTrap(box);
   useEffect(() => { input.current?.focus(); }, []);
 
-  // "<repo>#<n>": the repo part is a key, an alias, or (failing both) a short name shared by any tracked repos.
-  const refMatch = matchRepoRef(dq);
-  const refRepos = useMemo(() => {
-    if (!refMatch) return undefined;
-    const keys = repoRefKeys(refMatch.repo, repos.data ?? []);
-    return keys.length ? keys.join(',') : refMatch.repo; // unknown here: let the server decide
-  }, [refMatch?.repo, repos.data]);
+  // "<repo>#<n>" (a PR) or "<repo>!<n>" (an MR): the repo part is a key, an alias, or (failing both) a short name shared
+  // by tracked repos of that kind, the context's first (paletteRefKeys). A `!` naming no GitLab repo is text.
+  const refKeys = useMemo(() => {
+    const m = matchRepoRef(dq);
+    return m && { m, keys: paletteRefKeys(m, repos.data ?? [], ctx) };
+  }, [dq, repos.data, ctx]);
+  const refMatch = refKeys && refKeys.keys !== null ? refKeys.m : null;
+  // Unknown here: let the server decide. A reference looks across contexts (opening one takes you to its source).
+  const refRepos = refMatch ? (refKeys!.keys!.length ? refKeys!.keys!.join(',') : refMatch.repo) : undefined;
+  // Searches and recent PRs follow the context, like the lists.
+  const source = refMatch ? undefined : ctx ?? undefined;
   const prSearch = useQuery({
-    queryKey: ['palette-prs', dq, refRepos],
+    queryKey: ['palette-prs', dq, refRepos, source],
     queryFn: () =>
       dq
-        ? api.prs({ q: refMatch ? undefined : dq, repos: refRepos, state: 'all', who: 'everyone', from: ALL_TIME_FROM, tz: browserTz(), limit: refMatch ? 200 : 8 })
-        : api.prs({ state: 'all', who: 'me', from: '-90d', tz: browserTz(), limit: 5 }),
+        ? api.prs({ q: refMatch ? undefined : dq, repos: refRepos, source, state: 'all', who: 'everyone', from: ALL_TIME_FROM, tz: browserTz(), limit: refMatch ? 200 : 8 })
+        : api.prs({ source, state: 'all', who: 'me', from: '-90d', tz: browserTz(), limit: 5 }),
     placeholderData: keepPreviousData,
     staleTime: 30_000,
     retry: false,
@@ -96,14 +108,16 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggle
     const out: Section[] = [];
     const go = (path: string) => navigate(`${path}${carrySearch(location.search)}`);
 
-    // A repo is found by what it shows: its name, and for someone else's repo the owner as well.
+    // A repo is found by what it shows: its name, and for someone else's repo the owner as well. Every source's repos
+    // are found; the context's come first, and choosing another's takes you to its context.
     const shown = (repos.data ?? []).map((r) => {
       const { owner, name } = repoParts(r.key, repoMap);
       return { r, label: repoLabel(r.key), parts: [owner === null ? '' : `${owner}/`, name] as [string, string] };
     });
+    const away = (r: { source: string }) => Number(!!ctx && r.source !== ctx);
     const rs = shown
-      .filter(({ label }) => has(label))
-      .sort((a, b) => (ql ? Number(!a.label.toLowerCase().startsWith(ql)) - Number(!b.label.toLowerCase().startsWith(ql)) : 0) || (b.r.lastActivityAt ?? '').localeCompare(a.r.lastActivityAt ?? ''))
+      .filter(({ r, label }) => has(label) && (ql || !away(r)))
+      .sort((a, b) => away(a.r) - away(b.r) || (ql ? Number(!a.label.toLowerCase().startsWith(ql)) - Number(!b.label.toLowerCase().startsWith(ql)) : 0) || (b.r.lastActivityAt ?? '').localeCompare(a.r.lastActivityAt ?? ''))
       .slice(0, ql ? 6 : 4);
     if (rs.length) {
       out.push({
@@ -111,13 +125,14 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggle
         items: rs.flatMap(({ r, label, parts }) => [
           {
             key: `repo:${r.key}`,
-            icon: ic('book'),
+            // With several sources the mark says which one (the palette searches them all).
+            icon: multi ? <span className="pal-src" title={sourceTitle(byHost.get(r.source) ?? { host: r.source, name: r.source })}><ProviderIcon kind={r.provider} /></span> : ic('book'),
             label,
             labelParts: parts,
-            right: <>{r.visibility === 'private' && <Icon name="lock" title="Private" />}{r.visibility === 'internal' && <Icon name="lock" title="Internal" />}<span>Select only this repo</span></>,
+            right: <>{r.visibility === 'private' && <Icon name="lock" title="Private" />}{r.visibility === 'internal' && <Icon name="lock" title="Internal" />}<span>{away(r) ? `Switch to ${byHost.get(r.source)?.name ?? r.source}` : 'Select only this repo'}</span></>,
             run: () => {
               if (view === 'prs' || view === 'issues' || view === 'repos' || view === 'activity' || view === 'insights') set({ repos: [r.key], ...keepRepoInScope(r, s) });
-              else navigate(`/prs?${encodeParams([['repos', r.key]])}`);
+              else navigate(`/prs?${repoLinkSearch(r.key, ctx ? r.source : null)}`);
             },
           },
         ]),
@@ -130,7 +145,7 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggle
       prItems.push({
         key: 'search-prs',
         icon: ic('search'),
-        label: `Search pull requests for “${q.trim()}”`,
+        label: `Search ${w.many} for “${q.trim()}”`,
         right: <span>/prs?q=</span>,
         run: () => navigate({ pathname: '/prs', search: patchSearch(carrySearch(location.search), 'prs', { q: q.trim(), state: 'all' }) }),
       });
@@ -141,11 +156,11 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggle
         key: `pr:${p.id}`,
         icon: <span className={`pr-ic ${prIconClass(p)}`}><Icon name={prIconName(p)} /></span>,
         label: p.title,
-        right: <span>{repoLabel(p.repo)}#{p.number} · {fmtDate(p.activityAt)}</span>,
+        right: <span>{refText(providerOf(p.repo).kind, repoLabel(p.repo), p.number, 'pr')} · {fmtDate(p.activityAt)}</span>,
         run: () => openPr(p),
       });
     }
-    if (prItems.length) out.push({ title: ql ? 'Pull requests' : 'Recent pull requests', items: prItems });
+    if (prItems.length) out.push({ title: ql ? capitalize(w.many) : `Recent ${w.many}`, items: prItems });
 
     if (ql && !refMatch) out.push({ title: 'Issues', items: [{
       key: 'search-issues', icon: ic('issue'), label: `Search issues for “${q.trim()}”`,
@@ -155,12 +170,22 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggle
     const vs = (views.data ?? []).filter((v) => has(v.name));
     if (vs.length) out.push({ title: 'Saved views', items: vs.map((v) => ({ key: `view:${v.id}`, icon: ic('bookmark'), label: v.name, run: () => navigate(`${v.path}${v.query ? `?${v.query}` : ''}`) })) });
 
-    const nav: [string, string, IconName][] = [['Pull requests', '/prs', 'merge'], ['Issues', '/issues', 'issue'], ['Activity', '/activity', 'pulse'], ['Repositories', '/repos', 'book'], ['Insights', '/insights', 'chart'], ['Settings', '/settings', 'sliders']];
+    const nav: [string, string, IconName][] = [[w.nav, '/prs', 'merge'], ['Issues', '/issues', 'issue'], ['Activity', '/activity', 'pulse'], ['Repositories', '/repos', 'book'], ['Insights', '/insights', 'chart'], ['Settings', '/settings', 'sliders']];
     const navItems = nav.filter(([l]) => has(l)).map(([l, p, i]) => ({ key: `go:${p}`, icon: ic(i), label: l, run: () => go(p) }));
     if (navItems.length) out.push({ title: 'Go to', items: navItems });
 
     const t = exportTarget(view, s, repoParam);
+    // Switching context: each option but the current one (no new shortcut; the top bar has the control).
+    const switches: Item[] = multi
+      ? [...sources.map((x) => ({ host: x.host, name: x.name, kind: x.kind as typeof x.kind | null })), { host: ALL, name: 'All', kind: null }]
+        .filter((x) => x.host !== (ctx ?? ALL))
+        .map((x) => ({
+          key: `ctx:${x.host}`, icon: x.kind ? <span className="pal-src"><ProviderIcon kind={x.kind} /></span> : ic('layers'),
+          label: `Switch to ${x.name}`, run: () => switchTo(x.host),
+        }))
+      : [];
     const acts: Item[] = [
+      ...switches,
       { key: 'do:sync', icon: ic('sync'), label: 'Sync now', run: onSync },
       { key: 'do:addrepo', icon: ic('plus'), label: 'Add repository…', run: openAddRepo },
       { key: 'do:theme', icon: ic('moon'), label: 'Toggle dark mode', run: onToggleTheme },
@@ -175,7 +200,7 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggle
     ].filter((a) => has(a.label));
     if (acts.length) out.push({ title: 'Actions', items: acts });
     return out;
-  }, [q, repos.data, repoMap, repoLabel, views.data, prSearch.data, view, s, location.search, location.pathname, repoParam, onToggleSidebar, sidebarHidden, apiBase, openAddRepo]);
+  }, [q, repos.data, repoMap, repoLabel, providerOf, w, views.data, prSearch.data, view, s, location.search, location.pathname, repoParam, onToggleSidebar, sidebarHidden, apiBase, openAddRepo, sources, multi, ctx, byHost, switchTo]);
 
   const flat = sections.flatMap((sec) => sec.items);
   const cur = Math.min(idx, Math.max(0, flat.length - 1));
@@ -207,7 +232,7 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggle
           <Icon name="search" />
           <input
             ref={input}
-            placeholder="Search repos, pull requests, views, actions…"
+            placeholder={`Search repos, ${w.many}, views, actions…`}
             value={q}
             onChange={(e) => setQ(e.target.value)}
             autoComplete="off"

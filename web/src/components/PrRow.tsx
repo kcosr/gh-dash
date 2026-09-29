@@ -11,6 +11,7 @@ import { Icon } from './Icon';
 import { Labels } from './Label';
 import { Markdown } from './Markdown';
 import { RepoChip } from './RepoChip';
+import { useProviderOf } from './repoMapContext';
 
 interface PrRowProps {
   pr: PullRequest;
@@ -20,8 +21,16 @@ interface PrRowProps {
   onOpen: (pr: PullRequest) => void;
 }
 
-const GhLink = ({ url }: { url: string }) => (
-  <a className="gh" href={url} target="_blank" rel="noopener noreferrer" title="Open on GitHub (o)" onClick={(e) => e.stopPropagation()}>
+/** Local comment threads on the PR: the count, in the accent while any is unresolved. */
+function Comments({ pr }: { pr: PullRequest }) {
+  const c = pr.comments;
+  if (!c?.threads) return null;
+  const title = `${c.threads} comment ${c.threads === 1 ? 'thread' : 'threads'}${c.unresolved ? `, ${c.unresolved} unresolved` : ', all resolved'}`;
+  return <span className={cx('pr-comments', c.unresolved > 0 && 'open')} title={title} aria-label={title}><Icon name="comment" />{c.unresolved || c.threads}</span>;
+}
+
+const GhLink = ({ url, host }: { url: string; host: string }) => (
+  <a className="gh" href={url} target="_blank" rel="noopener noreferrer" title={`Open on ${host} (o)`} onClick={(e) => e.stopPropagation()}>
     <Icon name="ext" />
   </a>
 );
@@ -31,6 +40,7 @@ const GhLink = ({ url }: { url: string }) => (
  * callbacks or refs) so only the rows whose cursor/active state changed re-render.
  */
 export const PrRow = memo(function PrRow({ pr, density, cursor, active, onOpen }: PrRowProps) {
+  const p = useProviderOf()(pr.repo);
   const at = pr.activityAt;
   const cls = cx('pr', density === 'titles' && 't', cursor && 'cursor', active && 'active');
   const open = () => onOpen(pr);
@@ -41,11 +51,11 @@ export const PrRow = memo(function PrRow({ pr, density, cursor, active, onOpen }
     return (
       <article className={cls} onClick={open} tabIndex={-1} aria-label={pr.title} data-id={pr.id}>
         <span className={`pr-ic ${prIconClass(pr)}`}><Icon name={prIconName(pr)} /></span>
-        <span className="t-repo"><RepoChip repo={pr.repo} /><span className="num">#{pr.number}</span></span>
-        <span className="t-title">{pr.title}{pr.isDraft && <span className="draft-tag">Draft</span>}<Labels labels={pr.labels} /></span>
+        <span className="t-repo"><RepoChip repo={pr.repo} /><span className="num">{p.prRef}{pr.number}</span></span>
+        <span className="t-title">{pr.title}{pr.isDraft && <span className="draft-tag">Draft</span>}<Labels labels={pr.labels} /><Comments pr={pr} /></span>
         <Avatar actor={pr.author} size={18} />
         {time}
-        <GhLink url={pr.url} />
+        <GhLink url={pr.url} host={p.name} />
       </article>
     );
   }
@@ -63,7 +73,7 @@ export const PrRow = memo(function PrRow({ pr, density, cursor, active, onOpen }
         </div>
         <div className="pr-meta">
           <RepoChip repo={pr.repo} />
-          <span className="num">#{pr.number}</span>
+          <span className="num">{p.prRef}{pr.number}</span>
           <span className="sep">·</span>
           <span>{verb} {rel(at)} by</span>
           <span className="author">
@@ -72,9 +82,10 @@ export const PrRow = memo(function PrRow({ pr, density, cursor, active, onOpen }
           </span>
           <span className="sep">·</span>
           <Diffstat add={pr.additions} del={pr.deletions} />
+          <Comments pr={pr} />
         </div>
         {density === 'full'
-          ? <Markdown source={pr.body} />
+          ? <Markdown source={pr.body} repo={pr.repo} />
           : pr.body.trim() && <p className="pr-desc">{plainPreview(pr.body)}</p>}
       </div>
       <div className="pr-side">
@@ -82,7 +93,7 @@ export const PrRow = memo(function PrRow({ pr, density, cursor, active, onOpen }
           {isNew && <span className="new-dot" title="New since your last visit" />}
           {time}
         </span>
-        <GhLink url={pr.url} />
+        <GhLink url={pr.url} host={p.name} />
       </div>
     </article>
   );
@@ -90,6 +101,7 @@ export const PrRow = memo(function PrRow({ pr, density, cursor, active, onOpen }
 
 /** A release interleaved in the PR list. */
 export const ReleaseRow = memo(function ReleaseRow({ release: r, density }: { release: Release; density: Density }) {
+  const p = useProviderOf()(r.repo);
   const title = r.name && r.name !== r.tag ? `${r.tag} · ${r.name}` : r.tag;
   const time = <time dateTime={r.publishedAt} title={fmtDateTime(r.publishedAt)}>{fmtDate(r.publishedAt)}</time>;
   const releaseLabel = <Labels labels={[{ name: r.isPrerelease ? 'pre-release' : 'release', color: r.isPrerelease ? 'c98500' : '1a7f37' }]} />;
@@ -116,12 +128,12 @@ export const ReleaseRow = memo(function ReleaseRow({ release: r, density }: { re
           <span>released {rel(r.publishedAt)}</span>
         </div>
         {density === 'full'
-          ? r.body.trim() && <Markdown source={r.body} />
+          ? r.body.trim() && <Markdown source={r.body} repo={r.repo} />
           : r.body.trim() && <p className="pr-desc">{plainPreview(r.body)}</p>}
       </div>
       <div className="pr-side">
         <span className="when">{isNewSinceLastVisit(r.publishedAt) && <span className="new-dot" title="New since your last visit" />}{time}</span>
-        <a className="gh" href={r.url} target="_blank" rel="noopener noreferrer" title="Open on GitHub"><Icon name="ext" /></a>
+        <a className="gh" href={r.url} target="_blank" rel="noopener noreferrer" title={`Open on ${p.name}`}><Icon name="ext" /></a>
       </div>
     </article>
   );

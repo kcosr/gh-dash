@@ -129,4 +129,48 @@ describe('ServerChild', () => {
     procs[1]!.reply({ type: 'token-result', id: (request as { id: number }).id, ok: true, account: {} as AccountStatus });
     expect(await token).toMatchObject({ ok: true });
   });
+
+  it('routes the answers to the GitLab sources\' requests by id, and rejects a failed one with its reason', async () => {
+    await startRunning();
+    const proc = procs[0]!;
+    const tested = child.testSource({ url: 'https://gitlab.example.com', method: 'glab' });
+    const reloaded = child.reloadSources();
+    const token = child.setSourceToken('gitlab.example.com', 'glpat-x');
+    const deleted = child.deleteSource('gitlab2.example.com');
+    const synced = child.syncSource('gitlab.example.com');
+    await flush();
+    const ids = Object.fromEntries(proc.sent.map((m) => [m.type, (m as { id: number }).id]));
+    expect(proc.sent).toEqual([
+      { type: 'test-source', id: ids['test-source'], draft: { url: 'https://gitlab.example.com', method: 'glab' } },
+      { type: 'reload-sources', id: ids['reload-sources'] },
+      { type: 'set-token', id: ids['set-token'], source: 'gitlab.example.com', token: 'glpat-x' },
+      { type: 'delete-source', id: ids['delete-source'], source: 'gitlab2.example.com' },
+      { type: 'sync-source', id: ids['sync-source'], source: 'gitlab.example.com' },
+    ]);
+    // Answered out of order.
+    proc.reply({ type: 'sync-started', id: ids['sync-source']!, result: 'queued' });
+    proc.reply({ type: 'request-failed', id: ids['delete-source']!, message: 'gitlab2.example.com is still configured on this server.' });
+    proc.reply({ type: 'token-result', id: ids['set-token']!, ok: true, account: { login: 'alice' } as never });
+    proc.reply({ type: 'sources-result', id: ids['reload-sources']!, ok: true, error: null, sources: ['gitlab.example.com'] });
+    proc.reply({ type: 'source-test-result', id: ids['test-source']!, check: { ok: true, host: 'gitlab.example.com' } as never });
+    expect(await synced).toBe('queued');
+    await expect(deleted).rejects.toThrow('gitlab2.example.com is still configured on this server.');
+    expect(await token).toEqual({ ok: true, account: { login: 'alice' } });
+    expect(await reloaded).toEqual({ ok: true, error: null, sources: ['gitlab.example.com'] });
+    expect(await tested).toMatchObject({ ok: true, host: 'gitlab.example.com' });
+  });
+
+  it('rejects a request the child answers with the wrong type, or not at all', async () => {
+    await startRunning();
+    const proc = procs[0]!;
+    const reloaded = child.reloadSources();
+    await flush();
+    proc.reply({ type: 'source-deleted', id: (proc.sent[0] as { id: number }).id, repos: 1 });
+    await expect(reloaded).rejects.toThrow('The gh-dash server answered source-deleted instead of sources-result.');
+    const late = child.syncSource('gitlab.example.com');
+    const caught = late.catch((e: Error) => e.message);
+    await flush();
+    await vi.advanceTimersByTimeAsync(90_000);
+    expect(await caught).toBe('The gh-dash server did not answer in time.');
+  });
 });

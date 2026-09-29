@@ -9,6 +9,7 @@ import { FilterToolbar } from '../components/FilterToolbar';
 import { Icon } from '../components/Icon';
 import { PrRow, ReleaseRow } from '../components/PrRow';
 import { RepoChip } from '../components/RepoChip';
+import { useWords } from '../components/repoMapContext';
 import { Seg, WHO_OPTIONS } from '../components/Seg';
 import { useUI } from '../components/ui';
 import { prFetchParams, releaseListParams } from '../lib/apiQuery';
@@ -26,8 +27,11 @@ export function PullRequestsView() {
   const { s, set, range } = useUrlState();
   const { openExport } = useUI();
   const repoMap = useRepoMap();
+  const words = useWords();
+  const w = words.pr;
   const prs = usePrList(prFetchParams(s));
-  const relOn = s.rel && (s.state === 'merged' || s.state === 'all');
+  // Releases have no comments: a comments filter shows PRs alone.
+  const relOn = s.rel && (s.state === 'merged' || s.state === 'all') && !s.comments;
   const rels = useReleases(releaseListParams(s), relOn);
 
   const groups = useMemo(() => {
@@ -93,16 +97,16 @@ export function PullRequestsView() {
   const whoWord = WHO_WORD[s.who];
   const fetching = (prs.isFetching && !!data) || (relOn && rels.isFetching && !!rels.data);
   const cursorId = cursor >= 0 ? order[cursor]?.id : undefined;
-  const summaryRest = `${[stWord, plural(total, 'PR'), whoWord].filter(Boolean).join(' ')} · ${nRepos} ${plural(nRepos, 'repo')}`;
+  const summaryRest = `${[stWord, plural(total, w.short, w.shortMany), whoWord].filter(Boolean).join(' ')} · ${nRepos} ${plural(nRepos, 'repo')}`;
 
   return (
     <main className="main">
-      <FilterToolbar summary={[s.state === 'all' ? 'All PRs' : s.state[0].toUpperCase() + s.state.slice(1), s.who === 'me' ? 'By you' : s.who === 'others' ? 'By others' : 'Everyone', range.text, s.q && `“${s.q}”`].filter(Boolean).join(' · ')}>
+      <FilterToolbar summary={[s.state === 'all' ? `All ${w.shortMany}` : s.state[0].toUpperCase() + s.state.slice(1), s.who === 'me' ? 'By you' : s.who === 'others' ? 'By others' : 'Everyone', range.text, s.q && `“${s.q}”`].filter(Boolean).join(' · ')}>
         <div className="row">
           <Seg
             value={s.state}
             onChange={(state) => set({ state })}
-            ariaLabel="PR state"
+            ariaLabel={`${w.short} state`}
             options={[
               { value: 'open', label: <><Icon name="prOpen" className="st-open" />Open</> },
               { value: 'merged', label: <><Icon name="merge" className="st-merged" />Merged</> },
@@ -140,6 +144,16 @@ export function PullRequestsView() {
           >
             <Icon name="tag" />Releases
           </button>
+          {/* Local review comments, one chip stepping through: all PRs → with comments → with unresolved ones. */}
+          <button
+            type="button"
+            className={`chip-toggle${s.comments ? ' on' : ''}`}
+            aria-pressed={!!s.comments}
+            title={s.comments === 'any' ? 'PRs with your comments · click for unresolved only' : s.comments === 'unresolved' ? 'PRs with unresolved comments · click for all PRs' : 'Only PRs with your comments'}
+            onClick={() => set({ comments: s.comments === null ? 'any' : s.comments === 'any' ? 'unresolved' : null })}
+          >
+            <Icon name="comment" />{s.comments === 'any' ? 'Commented' : s.comments === 'unresolved' ? 'Unresolved' : 'Comments'}
+          </button>
           <span className="spacer" />
           <Ctl label="Group">
             <Seg className="sm" value={s.group} onChange={(group) => set({ group })} ariaLabel="Group by" options={[
@@ -166,7 +180,7 @@ export function PullRequestsView() {
           ) : groups.length === 0 ? (
             <EmptyState
               icon="merge"
-              title={`No ${[stWord, 'PRs', whoWord].filter(Boolean).join(' ')} in ${range.phrase}${s.q ? ` matching “${s.q}”` : ''}`}
+              title={`No ${[stWord, w.shortMany, whoWord].filter(Boolean).join(' ')} in ${range.phrase}${s.q ? ` matching “${s.q}”` : ''}`}
               action={
                 <div className="empty-actions">
                   {s.range !== '90d' && s.range !== 'ytd' && <button type="button" className="btn" onClick={() => set({ range: '90d' })}>Show last 90 days</button>}
@@ -186,7 +200,7 @@ export function PullRequestsView() {
                     {g.sub && s.group !== 'repo' && <span className="gs">{g.sub}</span>}
                     <span className="rule" />
                     <span className="gc">
-                      {g.prs} {plural(g.prs, 'PR')}{g.releases ? ` · ${g.releases} ${plural(g.releases, 'release')}` : ''}
+                      {g.prs} {plural(g.prs, w.short, w.shortMany)}{g.releases ? ` · ${g.releases} ${plural(g.releases, 'release')}` : ''}
                     </span>
                   </div>
                   {g.items.map((it) =>
@@ -206,13 +220,13 @@ export function PullRequestsView() {
                 </section>
               ))}
               {data.nextCursor && (
-                <div className="list-note">Showing the {data.items.length.toLocaleString()} most recent of {total.toLocaleString()} PRs. Narrow the range to see the rest.</div>
+                <div className="list-note">Showing the {data.items.length.toLocaleString()} most recent of {total.toLocaleString()} {w.shortMany}. Narrow the range to see the rest.</div>
               )}
               <div className="list-foot">
                 <span><kbd>j</kbd> <kbd>k</kbd> move</span>
                 <span><kbd>↵</kbd> details</span>
                 <span><kbd>d</kbd> diff</span>
-                <span><kbd>o</kbd> open on GitHub</span>
+                <span><kbd>o</kbd> {words.host ? `open on ${words.host}` : 'open'}</span>
                 <span><kbd>/</kbd> filter</span>
                 <span><kbd>{MOD_K}</kbd> jump anywhere</span>
               </div>

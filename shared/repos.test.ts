@@ -2,7 +2,11 @@ import { describe, expect, it } from 'vitest';
 import type { Repo, TrackedBy } from './api';
 import {
   defaultRepoScope,
+  inputHost,
   matchRepoRef,
+  paletteRefKeys,
+  parseGitHubInput,
+  parseGitLabInput,
   parseRepoInput,
   repoLabel,
   repoParts,
@@ -10,6 +14,7 @@ import {
   repoRefKeys,
   repoResolver,
   resolveRepoKey,
+  sourceForInput,
   selectRepos,
   splitKey,
 } from './repos';
@@ -18,10 +23,10 @@ function repo(key: string, over: Partial<Repo> = {}, trackedBy: TrackedBy = 'own
   const i = key.lastIndexOf('/');
   const name = i < 0 ? key : key.slice(i + 1);
   return {
-    key, name, nameWithOwner: i < 0 ? `alice/${key}` : key, owner: i < 0 ? 'alice' : key.slice(0, i), description: null,
+    key, source: 'github.com', provider: 'github', name, nameWithOwner: i < 0 ? `alice/${key}` : key, owner: i < 0 ? 'alice' : key.slice(0, i), description: null,
     url: `https://github.com/${key}`, visibility: 'public', isArchived: false, isFork: false, language: null, topics: [],
     defaultBranch: 'main', stars: 0, forks: 0, createdAt: '2026-01-01T00:00:00Z', pushedAt: null, lastActivityAt: null,
-    pinned: false, hidden: false, setIds: [], syncedAt: null, trackedBy, addedAt: null, unavailable: null,
+    pinned: false, hidden: false, setIds: [], syncedAt: null, trackedBy, addedAt: null, unavailable: null, commentCount: 0,
     stats: { openPrs: 0, openIssues: 0, mergedPrs30d: 0, commits30d: 0, newStars30d: 0, weeklyCommits: [] },
     ...over,
   };
@@ -127,6 +132,20 @@ describe('repoParts', () => {
     expect(repoParts('gone/repo', many)).toEqual({ owner: 'gone', name: 'repo' });
     expect(repoParts('gone', new Map())).toEqual({ owner: null, name: 'gone' });
   });
+  it('never shows a source\'s host: the namespace path is the owner, and a gone key drops its host', () => {
+    const GL = 'gitlab.example.com';
+    const gl = repo(`${GL}/platform/team/api`, { source: GL, provider: 'gitlab', nameWithOwner: 'platform/team/api', owner: 'platform/team', name: 'api' }, 'manual');
+    const mine = repo(`${GL}/alice/sedes`, { source: GL, provider: 'gitlab', nameWithOwner: 'alice/sedes', owner: 'alice', name: 'sedes' });
+    const list = [...many, gl, mine];
+    expect(repoParts(gl.key, list)).toEqual({ owner: 'platform/team', name: 'api' });
+    expect(repoLabel(gl.key, list)).toBe('platform/team/api');
+    expect(repoLabel(mine.key, list)).toBe('sedes');
+    expect(repoParts(`${GL}/platform/gone`, list)).toEqual({ owner: 'platform', name: 'gone' });
+    expect(repoParts(`${GL}/a/b/c`, new Map())).toEqual({ owner: 'a/b', name: 'c' });
+    expect(repoParts('my.org/repo', new Map())).toEqual({ owner: 'my.org', name: 'repo' }); // one '/': a GitHub key
+    expect(repoParts('org/team.x/proj', new Map())).toEqual({ owner: 'org/team.x', name: 'proj' }); // no '.' in the first segment
+  });
+
   it('agrees with repoLabel: the owner and the name joined by a slash', () => {
     for (const r of many) {
       const { owner, name } = repoParts(r.key, map);
@@ -205,6 +224,127 @@ describe('parseRepoInput', () => {
   });
 });
 
+describe('parseGitLabInput', () => {
+  const gitlab = { host: 'gitlab.example.com', baseUrl: 'https://gitlab.example.com' };
+  const ok = { path: 'platform/team/app' };
+  it.each([
+    'platform/team/app',
+    '  platform/team/app/  ',
+    'platform/team/app.git',
+    'gitlab.example.com/platform/team/app', // its key
+    'GITLAB.example.com/platform/team/app',
+    'gitlab.example.com/platform/team/app/-/issues/3',
+    'https://gitlab.example.com/platform/team/app',
+    'https://gitlab.example.com/platform/team/app/',
+    'https://gitlab.example.com/platform/team/app.git',
+    'https://gitlab.example.com/platform/team/app/-/merge_requests/12',
+    'https://gitlab.example.com/platform/team/app/-/merge_requests/12/diffs#note_7',
+    'https://gitlab.example.com/platform/team/app/-/tree/main/src?ref_type=heads',
+    'https://gitlab.example.com/platform/team/app#readme',
+    'http://gitlab.example.com:8080/platform/team/app',
+    'HTTPS://GitLab.Example.com/platform/team/app',
+    'git@gitlab.example.com:platform/team/app.git',
+    'git@gitlab.example.com:platform/team/app',
+    'ssh://git@gitlab.example.com/platform/team/app.git',
+    'ssh://git@gitlab.example.com:2222/platform/team/app.git',
+  ])('parses %s', (text) => {
+    expect(parseGitLabInput(text, gitlab)).toEqual(ok);
+  });
+
+  it('takes any depth of groups, and keeps dots, underscores and hyphens as typed', () => {
+    expect(parseGitLabInput('alice/app', gitlab)).toEqual({ path: 'alice/app' });
+    expect(parseGitLabInput('alice/corp.tools', gitlab)).toEqual({ path: 'alice/corp.tools' });
+    expect(parseGitLabInput('Platform/Team_2/sub-group/My.App', gitlab)).toEqual({ path: 'Platform/Team_2/sub-group/My.App' });
+  });
+
+  it('reads web URLs below the relative root, and keys and ssh addresses without it', () => {
+    const rooted = { host: 'code.example.com', baseUrl: 'https://code.example.com/gitlab/' };
+    expect(parseGitLabInput('https://code.example.com/gitlab/platform/team/app/-/merge_requests/1', rooted)).toEqual(ok);
+    expect(parseGitLabInput('https://code.example.com/gitlab/alice/app', rooted)).toEqual({ path: 'alice/app' });
+    expect(parseGitLabInput('code.example.com/alice/app', rooted)).toEqual({ path: 'alice/app' });
+    expect(parseGitLabInput('git@code.example.com:alice/app.git', rooted)).toEqual({ path: 'alice/app' });
+    // A URL outside the root isn't a page of this instance.
+    for (const text of ['https://code.example.com/alice/app', 'https://code.example.com/gitlab', 'https://code.example.com/gitlab/alice', 'https://code.example.com/gitlabx/alice/app']) {
+      expect(parseGitLabInput(text, rooted), text).toBeNull();
+    }
+  });
+
+  it.each([
+    '',
+    '   ',
+    'app', // a project needs its namespace
+    'alice/',
+    '/alice/app',
+    'alice//app',
+    'alice/app#3', // '#', '@', ',', '%', '?' and whitespace can't be in a key
+    'alice/app@abc1234',
+    'alice/app,bob/tool',
+    'alice/a%2Fb',
+    'alice/app?x=1',
+    'ali ce/app',
+    'alice/..',
+    './app',
+    'alice/.',
+    'alice/.git',
+    '-/profile',
+    'alice/-app',
+    'ünï/app',
+    'https://gitlab.example.com/alice',
+    'https://gitlab.example.com/-/profile',
+    'https://gitlab.example.com/',
+    'https://alice:secret@gitlab.example.com/alice/app', // an address carrying credentials
+    // Another host.
+    'https://gitlab.other.example/alice/app',
+    'https://gitlab.example.com.evil.example/alice/app',
+    'git@github.com:alice/app.git',
+    'https://github.com/alice/app',
+    'github.com/alice/app',
+  ])('rejects %j', (text) => {
+    expect(parseGitLabInput(text, gitlab)).toBeNull();
+  });
+});
+
+describe('inputHost and sourceForInput', () => {
+  it.each([
+    ['https://gitlab.example.com/gitlab/alice/app', 'gitlab.example.com'],
+    ['http://GitLab.Example.com:8080/alice/app', 'gitlab.example.com'],
+    ['git@GitLab.example.com:alice/app.git', 'gitlab.example.com'],
+    ['ssh://git@gitlab.example.com:2222/alice/app.git', 'gitlab.example.com'],
+    ['https://www.github.com/alice/app', 'github.com'],
+    ['github.com/alice/app', 'github.com'],
+    ['www.github.com/alice/app', 'github.com'],
+    ['alice/app', null],
+    ['platform/team/app', null],
+    ['gitlab.example.com/alice/app', null], // a key's host counts when it's a source's
+    ['not an address', null],
+  ])('%s names %s', (text, host) => {
+    expect(inputHost(text)).toBe(host);
+  });
+
+  it("reads a key's first segment as a host when it's a source's, or with guess when it reads like one", () => {
+    expect(inputHost('GITLAB.example.com/alice/app', ['gitlab.example.com'])).toBe('gitlab.example.com');
+    expect(inputHost('gitlab.example.com/alice/app', [], { guess: true })).toBe('gitlab.example.com');
+    expect(inputHost('gitlab.example.com/alice/app/-/issues', [], { guess: true })).toBe('gitlab.example.com');
+    // Two segments are a path: GitLab groups may have dots.
+    expect(inputHost('my.group/app', [], { guess: true })).toBeNull();
+    expect(inputHost('alice/team/app', [], { guess: true })).toBeNull();
+  });
+
+  it('picks the source an input names among those given', () => {
+    const sources = [{ host: 'github.com', id: 1 }, { host: 'gitlab.example.com', id: 2 }];
+    expect(sourceForInput('https://gitlab.example.com/gitlab/alice/app/-/merge_requests/3', sources)?.id).toBe(2);
+    expect(sourceForInput('GITLAB.EXAMPLE.COM/alice/app', sources)?.id).toBe(2);
+    expect(sourceForInput('git@github.com:alice/app.git', sources)?.id).toBe(1);
+    expect(sourceForInput('https://github.com/alice/app', sources)?.id).toBe(1);
+    expect(sourceForInput('alice/app', sources)).toBeNull();
+    expect(sourceForInput('https://gitlab.other.example/alice/app', sources)).toBeNull();
+  });
+
+  it("keeps GitHub's parser as parseGitHubInput", () => {
+    expect(parseGitHubInput).toBe(parseRepoInput);
+  });
+});
+
 describe('the palette reference', () => {
   it.each([
     ['gh-dash#12', 'gh-dash', '12'],
@@ -213,10 +353,17 @@ describe('the palette reference', () => {
     ['my.repo_x#1', 'my.repo_x', '1'],
     ['Kcosr/Gh-Dash#007', 'Kcosr/Gh-Dash', '007'],
   ])('matches %s', (text, repoPart, number) => {
-    expect(matchRepoRef(text)).toEqual({ repo: repoPart, number });
+    expect(matchRepoRef(text)).toEqual({ repo: repoPart, sep: '#', number });
   });
 
-  it.each(['', 'gh-dash', 'gh-dash#', '#12', 'gh dash#1', 'a//b#1', '/a#1', 'a/#1', 'a/b/#1', 'a#1b', 'a#x', 'a#1#2', 'a@b#1'])('does not match %j', (text) => {
+  it.each([
+    ['app!12', 'app', '12'],
+    ['gitlab.example.com/platform/team/app!3', 'gitlab.example.com/platform/team/app', '3'],
+  ])('matches the MR reference %s', (text, repoPart, number) => {
+    expect(matchRepoRef(text)).toEqual({ repo: repoPart, sep: '!', number });
+  });
+
+  it.each(['', 'gh-dash', 'gh-dash#', 'gh-dash!', '#12', '!12', 'gh dash#1', 'a//b#1', '/a#1', 'a/#1', 'a/b/#1', 'a#1b', 'a#x', 'a#1#2', 'a!1#2', 'a#1!2', 'a@b#1'])('does not match %j', (text) => {
     expect(matchRepoRef(text)).toBeNull();
   });
 
@@ -229,6 +376,30 @@ describe('the palette reference', () => {
     expect(repoRefKeys('TWIN', many).sort()).toEqual(['a/twin', 'b/twin']);
     expect(repoRefKeys('nope', many)).toEqual([]);
     expect(repoRefKeys('team/proj', many)).toEqual([]);
+  });
+
+  describe('by kind and context', () => {
+    const GL = 'gitlab.example.com';
+    const gl = (path: string, trackedBy: TrackedBy = 'owned') =>
+      repo(`${GL}/${path}`, { source: GL, provider: 'gitlab', nameWithOwner: path, owner: path.slice(0, path.lastIndexOf('/')) }, trackedBy);
+    const both = [repo('alice/app'), repo('alice/tool'), gl('alice/app'), gl('platform/team/svc', 'manual')];
+    const keys = (text: string, context: string | null = null) => paletteRefKeys(matchRepoRef(text)!, both, context);
+
+    it('reads ! as a GitLab MR, and anything else as text', () => {
+      expect(keys('app!3')).toEqual([`${GL}/alice/app`]);
+      expect(keys('svc!3', 'github.com')).toEqual([`${GL}/platform/team/svc`]);
+      expect(keys('tool!3')).toBeNull(); // only on GitHub: a text search, as before
+      expect(keys('nope!3')).toBeNull();
+    });
+
+    it('reads # as a GitHub PR, the context first, then leniently any repo', () => {
+      expect(keys('app#3')).toEqual(['alice/app']);
+      expect(keys('app#3', 'github.com')).toEqual(['alice/app']);
+      expect(keys('app#3', GL)).toEqual([`${GL}/alice/app`]); // in GitLab's context, its app
+      expect(keys('svc#3')).toEqual([`${GL}/platform/team/svc`]); // no GitHub repo of that name
+      expect(keys('tool#3', GL)).toEqual(['alice/tool']); // not in the context: anywhere
+      expect(keys('nope#3')).toEqual([]);
+    });
   });
 });
 
@@ -282,5 +453,26 @@ describe('selectRepos with keys', () => {
     expect(keys(selectRepos(all, { scope: 'default' }))).toEqual(['dlvhdr/gh-dash', 'kcosr/gh-dash', 'kcosr/sedes']); // most recent activity first
     const pinned = all.map((r) => (r.key === 'kcosr/sedes' ? { ...r, pinned: true } : r));
     expect(keys(selectRepos(pinned, { scope: 'default' }))[0]).toBe('kcosr/sedes');
+  });
+});
+
+describe('selectRepos by source', () => {
+  const keys = (list: Repo[]) => list.map((r) => r.key).sort();
+  const gl = (key: string, over: Partial<Repo> = {}) =>
+    repo(`gitlab.example.com/${key}`, { source: 'gitlab.example.com', provider: 'gitlab', nameWithOwner: key, ...over });
+  const all = [repo('kcosr/gh-dash'), repo('kcosr/old', { isArchived: true }), gl('alice/gh-dash'), gl('platform/team/svc', { hidden: true })];
+
+  it('keeps the repos of the sources named, case-insensitively; none named is every source', () => {
+    expect(keys(selectRepos(all, { source: 'gitlab.example.com' }))).toEqual(['gitlab.example.com/alice/gh-dash', 'gitlab.example.com/platform/team/svc']);
+    expect(keys(selectRepos(all, { source: 'GitHub.com' }))).toEqual(['kcosr/gh-dash', 'kcosr/old']);
+    expect(keys(selectRepos(all, { source: 'github.com, gitlab.example.com' }))).toHaveLength(4);
+    expect(keys(selectRepos(all, { source: '' }))).toHaveLength(4);
+    expect(selectRepos(all, { source: 'nowhere.example.com' })).toEqual([]);
+  });
+
+  it('intersects the explicit selection and the default one', () => {
+    expect(keys(selectRepos(all, { scope: 'default', source: 'gitlab.example.com' }))).toEqual(['gitlab.example.com/alice/gh-dash']);
+    expect(keys(selectRepos(all, { repos: 'gh-dash,gitlab.example.com/platform/team/svc', source: 'gitlab.example.com' }))).toEqual(['gitlab.example.com/platform/team/svc']);
+    expect(selectRepos(all, { repos: 'kcosr/gh-dash', source: 'gitlab.example.com' })).toEqual([]);
   });
 });

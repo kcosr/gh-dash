@@ -1,15 +1,11 @@
 import { Hono } from 'hono';
-import { loadQueryCtx } from '../../db/filters';
-import { computeStats } from '../../db/stats';
+import { queryStats } from '../../services/lists';
 import type { AppDeps } from '../app';
 import { parseWith } from '../http';
-import { parseScope, statsQuerySchema } from '../scope';
+import { statsQuerySchema } from '../scope';
 
 export function statsRoutes({ db, config }: AppDeps): Hono {
   const r = new Hono();
-  r.get('/stats', (c) => {
-    const q = parseWith(statsQuerySchema, c.req.query());
-    return c.json(computeStats(db, loadQueryCtx(db, config.myEmails), parseScope(q, config.defaultTz), q.bucket));
-  });
+  r.get('/stats', (c) => c.json(queryStats({ db, config }, parseWith(statsQuerySchema, c.req.query()))));
   return r;
 }

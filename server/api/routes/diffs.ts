@@ -1,9 +1,10 @@
 import { type Context, Hono } from 'hono';
 import { z } from 'zod';
-import { type Payload, payloadText } from '../../diff/service';
+import { isFullSha, type Payload, payloadText } from '../../diff/service';
+import { parsePrNumber } from '../../services/lists';
 import type { AppDeps } from '../app';
 import { noCrossSiteReads } from '../auth';
-import { HttpError, parseWith } from '../http';
+import { parseWith } from '../http';
 
 const refreshQuery = z.object({ refresh: z.literal('1').optional() });
 const blobQuery = z.object({ ref: z.string(), path: z.string() });
@@ -40,8 +41,7 @@ export function diffRoutes({ diffs }: AppDeps): Hono {
 
   // These spend the owner's GitHub quota: not on behalf of other sites.
   r.get('/prs/:repo/:number/diff', noCrossSiteReads, async (c) => {
-    const number = Number(c.req.param('number'));
-    if (!Number.isInteger(number) || number <= 0) throw new HttpError(400, 'Invalid PR number');
+    const number = parsePrNumber(c.req.param('number'));
     const { refresh } = parseWith(refreshQuery, c.req.query());
     return send(c, await diffs.prDiff(c.req.param('repo'), number, !!refresh), JSON_TYPE);
   });
@@ -55,7 +55,7 @@ export function diffRoutes({ diffs }: AppDeps): Hono {
     const { ref, path } = parseWith(blobQuery, c.req.query());
     const body = await diffs.blob(c.req.param('repo'), ref, path);
     // Contents at a full SHA never change.
-    const immutable = ref.length === 40 ? { 'Cache-Control': 'private, max-age=31536000, immutable' } : undefined;
+    const immutable = isFullSha(ref) ? { 'Cache-Control': 'private, max-age=31536000, immutable' } : undefined;
     return send(c, body, 'text/plain; charset=utf-8', immutable);
   });
 

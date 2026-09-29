@@ -411,8 +411,50 @@ img.acct-av { width: 20px; height: 20px; border-radius: 50%; flex: none; backgro
 .acct-check { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--text-2); cursor: pointer; }
 .acct-check:has(input:disabled) { cursor: default; opacity: .6; }
 .set-c.stack > small { font-size: 12px; line-height: 1.45; }
+/* Settings → Sources: a block per source inside the card, each under its mark and host (design §7.6). */
+.src-block { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border); }
+.set-sec h2 + .src-block { margin-top: 0; padding-top: 0; border-top: 0; }
+.src-head { display: flex; align-items: center; gap: 7px; min-width: 0; margin-bottom: 12px; font-size: 13.5px; }
+.src-head svg { width: 14px; height: 14px; flex: none; color: var(--muted); }
+.src-head b { font-weight: 600; color: var(--text); }
+.src-host { min-width: 0; font-size: 12.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.src-block .set-actions { flex-wrap: wrap; }
+.set-sec dl.kv dd.src-dd { flex-direction: column; align-items: flex-start; }
+.src-warn { display: flex; align-items: baseline; gap: 8px; font-size: 12.5px; color: var(--text-2); line-height: 1.5; }
+.src-warn::before { content: ""; flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--star); transform: translateY(-1px); }
+.src-link { white-space: nowrap; }
+.src-link svg { display: inline-block; width: 11px; height: 11px; margin-left: 3px; vertical-align: -1px; }
+/* Inside a source the blocks' own rules separate things: the help and the notes under it go without one. */
+.src-block .help, .src-block .set-foot { margin-top: 12px; padding-top: 0; border-top: 0; }
+.src-add-btn { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border); }
+.src-url { flex: 1; min-width: 0; max-width: 460px; }
+.acct-token > .input { width: 100%; }
+.src-methods { display: flex; flex-wrap: wrap; gap: 6px 18px; }
+.src-method { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; color: var(--text); cursor: pointer; }
+.src-method code { font-size: 12px; }
+.src-file { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.src-file small { flex-basis: 100%; font-size: 12px; }
+.src-check { display: flex; flex-direction: column; gap: 4px; max-width: 640px; margin-top: 12px; padding: 10px 12px; border-radius: 8px; background: var(--surface-2); font-size: 12.5px; color: var(--text-2); }
+.src-check-who { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; font-size: 13px; color: var(--text); }
+.src-check-who svg { width: 13px; height: 13px; color: var(--add); }
+.src-check.bad .src-check-who svg { color: var(--star); }
+.src-check .form-err { margin-top: 0; }
+.src-row-actions { display: flex; gap: 8px; }
+.src-block small code { white-space: nowrap; }
+.set-c.stack > .src-check { margin-top: 4px; }
 .setup-card .acct-choice { margin-bottom: 4px; }
 .setup-card .acct-token { margin-bottom: 8px; }
+/* The context's source can't show anything yet (SourceNotice): one quiet line under the filters. */
+.src-notice { flex: none; display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 7px; padding: 7px 24px; border-bottom: 1px solid var(--border); background: var(--surface); font-size: 12.5px; line-height: 1.45; color: var(--muted); }
+.src-notice::before { content: ""; flex: none; align-self: center; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+.src-notice.warn::before { background: var(--star); }
+.src-notice a { color: var(--accent-text); text-decoration: none; white-space: nowrap; }
+.src-notice a:hover { text-decoration: underline; }
+.setup-alt { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border); font-size: 13px; }
+.setup-alt p { margin: 0 0 8px; }
+.setup-alt details > summary { cursor: pointer; color: var(--accent-text); list-style: none; }
+.setup-alt details > summary::-webkit-details-marker { display: none; }
+.setup-alt details[open] > summary { margin-bottom: 8px; }
 .setup-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; margin-top: 16px; }
 a.sync { border-radius: 6px; }
 a.sync:hover .sync-text { color: var(--text); text-decoration: underline; text-underline-offset: 3px; }
@@ -442,6 +484,9 @@ a.sync:hover .sync-text { color: var(--text); text-decoration: underline; text-u
 @media (max-width: 900px) {
   .app { height: 100dvh; grid-template-rows: auto minmax(0, 1fr); }
   .filter-toolbar { flex: none; padding: 4px 12px; gap: 0; max-height: 60dvh; overflow-y: auto; }
+  .src-notice { padding: 6px 12px; }
+  /* The link wraps under the text on a phone: no separator left hanging at the end of the first line. */
+  .src-notice-sep { display: none; }
   .filter-toggle { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 44px; text-align: left; font-weight: 600; }
   .filter-toggle > svg { flex: none; }
   .filter-summary { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 400; color: var(--text-2); }
@@ -572,6 +617,8 @@ a.sync:hover .sync-text { color: var(--text); text-decoration: underline; text-u
 .ar-card-h .pin-btn { flex: none; width: 26px; height: 26px; margin: -4px -6px -4px 0; }
 .ar-card-desc { margin: 0; font-size: 13px; line-height: 1.45; color: var(--text-2); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .ar-card .rc-stats { flex-wrap: wrap; row-gap: 4px; }
+.ar-src { align-self: flex-start; }
+.ar-off { margin: 0; font-size: 12.5px; color: var(--muted); line-height: 1.45; }
 .ar-backfill { margin: 0; padding-top: 8px; border-top: 1px solid var(--border); font-size: 12.5px; color: var(--muted); }
 .ar-inc { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; color: var(--text-2); cursor: pointer; }
 .ar-inc input { width: 15px; height: 15px; margin: 0; accent-color: var(--accent); }
@@ -596,3 +643,36 @@ a.sync:hover .sync-text { color: var(--text); text-decoration: underline; text-u
 .trk-st svg { width: 12px; height: 12px; }
 .trk-st.warn svg { color: var(--star); }
 .trk-row .switch, .trk-row .pin-btn { flex: none; }
+
+/* Sources: the context switcher (top bar) and the small marks that say which source a repo is on (All only). */
+.ctx-switch { flex: none; }
+.ctx-switch button { height: 24px; padding: 0 9px; font-size: 12.5px; }
+.ctx-switch .pv { width: 14px; height: 14px; color: var(--muted); }
+.ctx-switch button.on .pv { color: var(--text-2); }
+/* The switcher's room comes from the rest of the bar, in steps, so the tabs stay whole (one source: nothing changes). */
+@media (max-width: 1600px) {
+  .ctx-switch .ctx-name { display: none; }
+  .ctx-switch button { padding: 0 8px; }
+}
+@media (max-width: 1440px) { .topbar.has-ctx .sync-label { display: none; } }
+@media (min-width: 1321px) and (max-width: 1440px) { .topbar.has-ctx .top-search { flex-basis: 224px; } }
+@media (min-width: 901px) and (max-width: 1320px) {
+  .topbar.has-ctx .top-search span, .topbar.has-ctx .brand-name { display: none; }
+  .topbar.has-ctx .top-search { flex: none; width: auto; }
+  .topbar.has-ctx .brand { margin-right: 0; }
+}
+@media (min-width: 901px) and (max-width: 1180px) { .topbar.has-ctx { gap: 6px; } .ctx-switch button { padding: 0 6px; } }
+/* Phones: the switcher stays in the first row (glyphs), so that row packs tighter. */
+@media (max-width: 900px) {
+  .topbar.has-ctx { gap: 4px; }
+  .ctx-switch button { height: 32px; min-width: 30px; padding: 0 6px; }
+}
+@media (max-width: 380px) { .topbar.has-ctx .brand { display: none; } }
+.src-badge { display: inline-flex; flex: none; align-items: center; color: var(--muted); }
+.src-badge .pv, .repo-chip .src-badge .pv { width: 12px; height: 12px; color: var(--muted); }
+.repo-item .src-badge { margin-right: 2px; }
+.rc-h .src-badge, .rtable .src-badge { margin-right: 6px; }
+.rtable td > .src-badge { display: inline-flex; vertical-align: -1px; }
+.vis-badge.src-name .pv { width: 11px; height: 11px; color: var(--muted); }
+.pal-src { display: grid; place-items: center; width: 15px; height: 15px; flex: none; }
+.pal-item .pal-src .pv { width: 14px; height: 14px; }

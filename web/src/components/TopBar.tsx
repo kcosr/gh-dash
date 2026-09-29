@@ -2,25 +2,31 @@ import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Link, useLocation } from 'react-router';
 import { isUnreachable } from '../api/client';
-import { useAccount, useStartSync, useSyncStatus } from '../api/hooks';
+import { useAccount, useStartSync, useSyncStatus, useWorkSources } from '../api/hooks';
+import { PROVIDERS } from '../../../shared/provider';
+import type { PrWords } from '../../../shared/provider';
 import { getTheme, setTheme } from '../lib/storage';
 import type { Theme } from '../lib/storage';
 import { fmtNum, fmtTime, relFuture, relLong } from '../lib/time';
+import { ALL, useSwitchContext } from '../lib/contexts';
+import { GITHUB_HOST } from '../../../shared/api';
+import { firstTrouble, hostNames, sourceSettingsLink, troubleLabel } from '../lib/sources';
 import { carrySearch, viewFromPath } from '../lib/urlState';
 import { useNow } from '../lib/util';
 import { MOD_K } from './bits';
-import { Icon } from './Icon';
+import { Icon, ProviderIcon } from './Icon';
 import type { IconName } from './Icon';
-import { useRepoLabel } from './repoMapContext';
+import { useRepoLabel, useSourceCtx, useWords } from './repoMapContext';
+import { sourceTitle } from './SourceBadge';
 import { useToast } from './Toasts';
 import { useUI } from './ui';
 
-const NAV: { path: string; label: string; icon: IconName; views: string[] }[] = [
-  { path: '/prs', label: 'Pull requests', icon: 'merge', views: ['prs'] },
-  { path: '/issues', label: 'Issues', icon: 'issue', views: ['issues'] },
-  { path: '/activity', label: 'Activity', icon: 'pulse', views: ['activity'] },
-  { path: '/repos', label: 'Repositories', icon: 'book', views: ['repos', 'repo'] },
-  { path: '/insights', label: 'Insights', icon: 'chart', views: ['insights'] },
+const NAV: { path: string; label: (w: PrWords) => string; icon: IconName; views: string[] }[] = [
+  { path: '/prs', label: (w) => w.nav, icon: 'merge', views: ['prs'] },
+  { path: '/issues', label: () => 'Issues', icon: 'issue', views: ['issues'] },
+  { path: '/activity', label: () => 'Activity', icon: 'pulse', views: ['activity'] },
+  { path: '/repos', label: () => 'Repositories', icon: 'book', views: ['repos', 'repo'] },
+  { path: '/insights', label: () => 'Insights', icon: 'chart', views: ['insights'] },
 ];
 
 export function useTheme(): [Theme, () => void] {
@@ -40,8 +46,11 @@ export function useSyncNow() {
   const label = useRepoLabel();
   return {
     pending: start.isPending,
-    /** `repo`: sync only that repository (for one added by hand, this also checks again whether it can be read). */
-    run: (body: { full?: boolean; repo?: string } = {}) =>
+    /**
+     * `repo`: sync only that repository (for one added by hand, this also checks again whether it can be read).
+     * `source`: sync only that source (a host); without it, every source with a token.
+     */
+    run: (body: { full?: boolean; repo?: string; source?: string } = {}) =>
       start.mutate(body, {
         onSuccess: () => toast(body.full ? 'Full resync started' : body.repo ? `Syncing ${label(body.repo)}…` : 'Sync started'),
         onError: (e) => {
@@ -63,7 +72,10 @@ export function TopBar({ theme, onToggleTheme, onOpenSidebar, sidebarOpen = fals
   const location = useLocation();
   const view = viewFromPath(location.pathname);
   const { openPalette } = useUI();
-  const carry = carrySearch(location.search);
+  const w = useWords().pr;
+  const { current, multi } = useSourceCtx();
+  // Settings is context-free (its URL has none): its tabs lead back to the context you came from.
+  const carry = view === 'settings' ? (current ? `?source=${encodeURIComponent(current.host)}` : '') : carrySearch(location.search);
   const navRef = useRef<HTMLElement>(null);
   useEffect(() => {
     const nav = navRef.current;
@@ -79,7 +91,7 @@ export function TopBar({ theme, onToggleTheme, onOpenSidebar, sidebarOpen = fals
   }, [view]);
 
   return (
-    <header className="topbar">
+    <header className={multi ? 'topbar has-ctx' : 'topbar'}>
       {onOpenSidebar && <button type="button" className="btn icon" onClick={onOpenSidebar}
         aria-label="Open sidebar" aria-haspopup="dialog" aria-controls="mobile-sidebar" aria-expanded={sidebarOpen}>
         <Icon name="list" />
@@ -92,21 +104,22 @@ export function TopBar({ theme, onToggleTheme, onOpenSidebar, sidebarOpen = fals
       <Link to={`/prs${carry}`} className="brand" aria-label="gh-dash home">
         <span className="mark"><Icon name="pulse" /></span><span className="brand-name">gh-dash</span>
       </Link>
+      <ContextSwitcher />
       <nav ref={navRef} className="nav" aria-label="Main">
         {NAV.map((n) => {
           const on = n.views.includes(view);
           return (
             <Link key={n.path} to={`${n.path}${carry}`} className={on ? 'on' : undefined} aria-current={on ? 'page' : undefined}>
               <Icon name={n.icon} />
-              {n.label}
+              {n.label(w)}
             </Link>
           );
         })}
       </nav>
       <span className="spacer" />
-      <button type="button" className="top-search" onClick={openPalette} aria-label="Search repos, PRs, views">
+      <button type="button" className="top-search" onClick={openPalette} aria-label={`Search repos, ${w.shortMany}, views`}>
         <Icon name="search" />
-        <span>Search repos, PRs, views…</span>
+        <span>Search repos, {w.shortMany}, views…</span>
         <kbd>{MOD_K}</kbd>
       </button>
       <SyncIndicator />
@@ -121,6 +134,36 @@ export function TopBar({ theme, onToggleTheme, onOpenSidebar, sidebarOpen = fals
   );
 }
 
+/**
+ * GitHub | GitLab | All (design §7.1): a quiet segmented control, shown only with two sources or more. Each context
+ * keeps its own place; switching is one navigation to it. Names give way to the marks on narrow screens (tooltips keep
+ * them).
+ */
+function ContextSwitcher() {
+  const { sources, multi, current } = useSourceCtx();
+  const switchTo = useSwitchContext();
+  const view = viewFromPath(useLocation().pathname);
+  if (!multi) return null;
+  const on = current?.host ?? ALL;
+  const options = [
+    ...sources.map((s) => ({ value: s.host, kind: s.kind, name: s.name, title: `${sourceTitle(s)}: only its repositories` })),
+    { value: ALL, kind: null, name: 'All', title: 'All sources' },
+  ];
+  return (
+    <div className="seg ctx-switch" role="group" aria-label="Source">
+      {options.map((o) => (
+        <button key={o.value} type="button" className={o.value === on ? 'on' : undefined} aria-pressed={o.value === on}
+          title={o.title} aria-label={o.name}
+          // On Settings (context-free) the current one also leads back to its place.
+          onClick={() => { if (o.value !== on || view === 'settings') switchTo(o.value); }}>
+          {o.kind && <ProviderIcon kind={o.kind} />}
+          <span className={o.kind ? 'ctx-name' : undefined}>{o.name}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function SyncStatus({ label, title, to, children }: { label: string; title?: string; to?: string; children: ReactNode }) {
   const tip = [label, title].filter(Boolean).join(' · ');
   if (to) return <Link to={to} className="sync" title={tip}>{children}<span className="sync-text">{label}</span></Link>;
@@ -131,20 +174,32 @@ function SyncIndicator() {
   const { data: st, isError } = useSyncStatus();
   const repoLabel = useRepoLabel();
   const { data: account } = useAccount();
+  const sources = useWorkSources();
+  const { current } = useSourceCtx();
   const now = useNow(20_000);
   if (isError) {
     return <SyncStatus label="Server unreachable" title="The gh-dash server is not responding"><span className="dot err" /></SyncStatus>;
   }
   if (!st) return <SyncStatus label="Loading sync status"><span className="dot off" /></SyncStatus>;
 
+  // A source's context shows that source's own status; All shows the run's (every source together), and names the
+  // first source that can't sync.
+  const scope = current ? sources.find((s) => s.host === current.host) ?? null : null;
+  const part = scope?.status ?? null;
+  const running = part ? part.running : st.running;
+  const progress = part ? part.progress : st.progress;
+  const lastSyncAt = part ? part.lastSyncAt : st.lastSyncAt;
+  const errors = (part ? part.lastResult : st.lastResult)?.errors.length ?? 0;
+  const rateLimit = part ? part.rateLimit : st.rateLimit;
+
   const tip: string[] = [];
   if (st.nextSyncAt && !st.running) tip.push(`Next automatic sync ${relFuture(st.nextSyncAt, now)} (${fmtTime(st.nextSyncAt)})`);
   if (!st.nextSyncAt && !st.running) tip.push('Automatic sync is off');
-  if (st.rateLimit) tip.push(`API quota ${fmtNum(st.rateLimit.remaining)} / ${fmtNum(st.rateLimit.limit)}`);
-  if (st.lastResult?.errors.length) tip.push(`${st.lastResult.errors.length} error(s) in the last sync`);
+  if (rateLimit) tip.push(`API quota ${fmtNum(rateLimit.remaining)} / ${fmtNum(rateLimit.limit)}`);
+  if (errors) tip.push(`${errors} error(s) in the last sync`);
 
-  if (st.running) {
-    const p = st.progress;
+  if (running) {
+    const p = progress;
     // A single-repo sync (a repo just added, or "Sync now" in its menu) names the repo instead of counting "0/1 repos".
     const label = st.repo ? `Syncing ${repoLabel(st.repo)}…` : p && p.total ? `Syncing ${p.done}/${p.total} repos…` : 'Syncing…';
     return (
@@ -153,34 +208,56 @@ function SyncIndicator() {
       </SyncStatus>
     );
   }
-  if (account?.mismatch) {
-    const title = `The GitHub token is for ${account.login ?? 'another account'}, but this database belongs to ${account.dbLogin ?? 'another account'}. Syncing is paused: see Settings.`;
-    return <SyncStatus label="Account mismatch" title={title} to="/settings"><span className="dot warn" /></SyncStatus>;
-  }
-  if (st.tokenSource === 'none') {
-    return <SyncStatus label="No token" title="No GitHub token. Connect an account in Settings." to="/settings"><span className="dot warn" /></SyncStatus>;
+  const bad = scope ?? firstTrouble(sources);
+  if (bad?.trouble) {
+    const github = bad.host === GITHUB_HOST;
+    const named = !scope && sources.length > 1;
+    const title = github && bad.trouble === 'mismatch' && account?.mismatch
+      ? `The GitHub token is for ${account.login ?? 'another account'}, but this database belongs to ${account.dbLogin ?? 'another account'}. Syncing is paused: see Settings.`
+      : github && bad.trouble === 'no-token' ? 'No GitHub token. Connect an account in Settings.'
+        // In All the last sync is the run's; the source's own problem is what needs saying.
+        : [bad.status.problem, named && lastSyncAt ? `Last synced ${relLong(lastSyncAt, now)}` : null].filter(Boolean).join(' · ');
+    return (
+      <SyncStatus label={troubleLabel(bad, named)} title={title} to={github ? '/settings' : sourceSettingsLink(bad.host)}>
+        <span className="dot warn" />
+      </SyncStatus>
+    );
   }
   return (
-    <SyncStatus label={st.lastSyncAt ? `Synced ${relLong(st.lastSyncAt, now)}` : 'Never synced'} title={tip.join(' · ')}>
-      <span className={`dot${st.lastResult?.errors.length ? ' warn' : ''}${st.lastSyncAt ? '' : ' off'}`} />
+    <SyncStatus label={lastSyncAt ? `Synced ${relLong(lastSyncAt, now)}` : 'Never synced'} title={tip.join(' · ')}>
+      <span className={`dot${errors ? ' warn' : ''}${lastSyncAt ? '' : ' off'}`} />
     </SyncStatus>
   );
 }
 
-function SyncButton() {
-  const { data: st } = useSyncStatus();
+/**
+ * "Sync now" for the current context (design §7.9): a source's context syncs that source alone, All syncs every
+ * source with a token. `tip` says which, or why it can't.
+ */
+export function useContextSync() {
   const sync = useSyncNow();
-  // Enabled without a token too: the server resolves one afresh, or answers why it can't sync.
-  const disabled = !!st?.running || sync.pending;
+  const { data: st } = useSyncStatus();
+  const { current } = useSourceCtx();
+  const sources = useWorkSources().filter((s) => s.trouble !== 'not-configured');
+  const scope = current ? sources.find((s) => s.host === current.host) ?? null : null;
+  // The one source the button is about: the context's, or the only one there is.
+  const only = scope ?? (sources.length === 1 ? sources[0]! : null);
+  const tip = only?.trouble === 'no-token'
+    ? (only.host === GITHUB_HOST ? 'No GitHub token yet: connect an account in Settings' : `No ${PROVIDERS[only.kind].name} token yet: connect one in Settings`)
+    : only?.trouble === 'mismatch' ? only.status.problem ?? 'The token belongs to another account'
+      : `Fetch what changed on ${only ? PROVIDERS[only.kind].name : sources.length ? hostNames(sources) : 'GitHub'}`;
+  return {
+    tip,
+    // Enabled without a token too: the server resolves one afresh, or answers why it can't sync.
+    disabled: !!st?.running || sync.pending,
+    run: () => sync.run(current ? { source: current.host } : {}),
+  };
+}
+
+function SyncButton() {
+  const sync = useContextSync();
   return (
-    <button
-      type="button"
-      className="btn sync-trigger"
-      aria-label="Sync now"
-      disabled={disabled}
-      onClick={() => sync.run()}
-      title={st?.tokenSource === 'none' ? 'No GitHub token yet: connect an account in Settings' : 'Fetch what changed on GitHub'}
-    >
+    <button type="button" className="btn sync-trigger" aria-label="Sync now" disabled={sync.disabled} onClick={sync.run} title={sync.tip}>
       <Icon name="sync" />
       <span className="sync-label">Sync now</span>
     </button>

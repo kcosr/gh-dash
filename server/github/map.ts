@@ -61,6 +61,16 @@ export function mapRepo(r: GqlRepo): RepoRecord {
   };
 }
 
+/**
+ * The RepoRecord fields each repository field fills (mapRepo). When GitHub denies one of those fields, these are the
+ * values a read by node id can't give: the sync keeps what it has stored for them.
+ */
+export const RECORD_FIELDS: Record<string, (keyof RepoRecord)[]> = {
+  description: ['description'], visibility: ['visibility'], isArchived: ['isArchived'], isFork: ['isFork'],
+  primaryLanguage: ['languageName', 'languageColor'], repositoryTopics: ['topics'], defaultBranchRef: ['defaultBranch'],
+  stargazerCount: ['stars'], forkCount: ['forks'], createdAt: ['createdAt'], pushedAt: ['pushedAt'],
+};
+
 export function mapProbe(p: GqlProbe): RepoProbe {
   return {
     openPrs: p.openPrs.totalCount,
@@ -110,6 +120,9 @@ export function mapPullRequest(p: GqlPullRequest): PrRecord {
       url: c.url,
       author: mapGitActor(c.author),
     })),
+    // Commits come with their PR number (associatedPullRequests): nothing to derive them from.
+    mergeCommitOid: null,
+    squashCommitOid: null,
   };
 }
 

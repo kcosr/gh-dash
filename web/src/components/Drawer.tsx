@@ -1,9 +1,11 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import type { PullRequest, PullRequestDetail } from '../../../shared/api';
-import { findCachedPr, splitPrId, usePrDetail } from '../api/hooks';
+import type { CommentThread, PullRequest, PullRequestDetail } from '../../../shared/api';
+import { capitalize, refText } from '../../../shared/provider';
+import { findCachedPr, splitPrId, usePrDetail, useThreads } from '../api/hooks';
 import { hasBlockingLayer, isTypingTarget, useLayer } from '../lib/layers';
+import { plainPreview } from '../lib/markdown';
 import { dur, fmtDate, fmtDateTime, plural, rel } from '../lib/time';
 import { commitDiffId, useUrlState } from '../lib/urlState';
 import { actorName, actorSubject, copyText, isPlainClick } from '../lib/util';
@@ -13,8 +15,12 @@ import { Icon } from './Icon';
 import { Labels } from './Label';
 import { Markdown } from './Markdown';
 import { RepoChip } from './RepoChip';
-import { useRepoLabel } from './repoMapContext';
+import { useProviderOf, useRepoLabel } from './repoMapContext';
 import { useToast } from './Toasts';
+
+/** Threads in reading order without a diff at hand: general first, then by path and line. */
+const sortThreads = (list: CommentThread[]) =>
+  [...list].sort((a, b) => (a.path ?? '').localeCompare(b.path ?? '') || (a.startLine ?? 0) - (b.startLine ?? 0) || a.id - b.id);
 
 /**
  * PR details: a right column on desktop, the content pane on narrow screens. `resize` is the
@@ -25,7 +31,9 @@ export function PrDrawer({ id, compact, resize }: { id: string; compact: boolean
   const qc = useQueryClient();
   const toast = useToast();
   const label = useRepoLabel();
+  const providerOf = useProviderOf();
   const detail = usePrDetail(id);
+  const threads = useThreads(id);
   const cached = useMemo(() => findCachedPr(qc, id), [qc, id, detail.dataUpdatedAt]);
   const pr: PullRequest | undefined = detail.data ?? cached;
   const full: PullRequestDetail | undefined = detail.data;
@@ -35,7 +43,7 @@ export function PrDrawer({ id, compact, resize }: { id: string; compact: boolean
   const close = () => set({ pr: null });
   useLayer(true, close, false);
   // Diffs come from GitHub on demand: nothing is fetched until one is opened. A PR's diff id is its id.
-  const openDiff = useCallback((diffId: string) => set({ diff: diffId }), [set]);
+  const openDiff = useCallback((diffId: string, thread?: number) => set({ diff: diffId, thread: thread ?? null }), [set]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -81,9 +89,10 @@ export function PrDrawer({ id, compact, resize }: { id: string; compact: boolean
 
   if (!pr) {
     const [idRepo, idNumber] = splitPrId(id);
-    const loadingId = idRepo && idNumber ? `${label(idRepo)}#${idNumber}` : id;
+    const ip = providerOf(idRepo ?? '');
+    const loadingId = idRepo && idNumber ? refText(ip.kind, label(idRepo), idNumber, 'pr') : id;
     return withResize(
-      <aside className="drawer" id="pr-drawer" ref={scroller} aria-label="Pull request details">
+      <aside className="drawer" id="pr-drawer" ref={scroller} aria-label={`${capitalize(ip.pr.one)} details`}>
         <div className="dr-head">
           <div className="dr-top">
             <span className="num">{loadingId}</span>
@@ -91,13 +100,14 @@ export function PrDrawer({ id, compact, resize }: { id: string; compact: boolean
             <button type="button" className="btn icon ghost" onClick={close} title="Close (Esc)" aria-label="Close"><Icon name="x" /></button>
           </div>
           {detail.isError
-            ? <p className="dr-missing">{(detail.error as { status?: number }).status === 404 ? 'This pull request is not in the local cache.' : `Couldn't load: ${(detail.error as Error).message}`}</p>
+            ? <p className="dr-missing">{(detail.error as { status?: number }).status === 404 ? `This ${ip.pr.one} is not in the local cache.` : `Couldn't load: ${(detail.error as Error).message}`}</p>
             : <div className="skel-block" aria-busy="true"><i style={{ width: '70%', height: 22 }} /><i style={{ width: '45%' }} /><i style={{ width: '90%' }} /><i style={{ width: '80%' }} /></div>}
         </div>
       </aside>,
     );
   }
 
+  const p = providerOf(pr.repo);
   const pill = pr.state === 'merged' ? ['Merged', 'merged'] : pr.state === 'closed' ? ['Closed', 'closed'] : pr.isDraft ? ['Draft', 'draft'] : ['Open', 'open'];
   const n = pr.commitCount;
   const when = pr.activityAt;
@@ -107,14 +117,14 @@ export function PrDrawer({ id, compact, resize }: { id: string; compact: boolean
     : pr.state === 'closed'
       ? <>closed this without merging</>
       : <>wants to merge {n} {plural(n, 'commit')} into {base}</>;
-  const mdCopy = `**${pr.title}** ([${label(pr.repo)}#${pr.number}](${pr.url}))${pr.body.trim() ? `\n\n${pr.body.trim()}` : ''}`;
+  const mdCopy = `**${pr.title}** ([${refText(p.kind, label(pr.repo), pr.number, 'pr')}](${pr.url}))${pr.body.trim() ? `\n\n${pr.body.trim()}` : ''}`;
 
   return withResize(
-    <aside className="drawer" id="pr-drawer" ref={scroller} aria-label="Pull request details">
+    <aside className="drawer" id="pr-drawer" ref={scroller} aria-label={`${capitalize(p.pr.one)} details`}>
       <div className="dr-head">
         <div className="dr-top">
           <RepoChip repo={pr.repo} />
-          <span className="num">#{pr.number}</span>
+          <span className="num">{p.prRef}{pr.number}</span>
           <span className="spacer" />
           <button type="button" className="btn icon ghost" onClick={close} title="Close (Esc)" aria-label="Close"><Icon name="x" /></button>
         </div>
@@ -125,7 +135,7 @@ export function PrDrawer({ id, compact, resize }: { id: string; compact: boolean
           <b>{actorSubject(pr.author)}</b> {verb} · <span title={fmtDateTime(when)}>{rel(when)}</span>
         </div>
         <div className="dr-actions">
-          <a className="btn primary" href={pr.url} target="_blank" rel="noopener noreferrer"><Icon name="ext" />Open on GitHub</a>
+          <a className="btn primary" href={pr.url} target="_blank" rel="noopener noreferrer"><Icon name="ext" />Open on {p.name}</a>
           <button type="button" className="btn" data-diff={id} onClick={() => openDiff(id)} title="View the diff (d)">
             <Icon name="diff" />Files changed<span className="n">{pr.changedFiles.toLocaleString()}</span>
           </button>
@@ -134,10 +144,31 @@ export function PrDrawer({ id, compact, resize }: { id: string; compact: boolean
         </div>
       </div>
 
+      {!!threads.data?.length && (
+        <section className="dr-sec">
+          <h3>Comments <span className="n">{threads.data.length}</span></h3>
+          {sortThreads(threads.data).map((t) => {
+            const first = t.comments[0]!;
+            const lines = t.startLine === null ? '' : `:${t.startLine === t.endLine ? t.startLine : `${t.startLine}–${t.endLine}`}`;
+            const name = t.path === null ? 'General' : t.path.slice(t.path.lastIndexOf('/') + 1);
+            return (
+              <button key={t.id} type="button" className={`th-li${t.status === 'resolved' ? ' resolved' : ''}`} onClick={() => openDiff(id, t.id)}
+                title={`${t.path ?? 'General'}${lines}${t.status === 'resolved' ? ' · resolved' : ''} · open the diff at this thread`}>
+                <Icon name={t.status === 'resolved' ? 'check' : 'comment'} />
+                <span className="th-where"><span className="name">{name}</span>{lines && <span className="ln">{lines}</span>}</span>
+                <span className="th-text">{plainPreview(first.body, 140)}</span>
+                {t.comments.length > 1 && <span className="th-n" title={`${t.comments.length - 1} ${plural(t.comments.length - 1, 'reply', 'replies')}`}>+{t.comments.length - 1}</span>}
+              </button>
+            );
+          })}
+        </section>
+      )}
+
       <section className="dr-sec">
         <h3>Description</h3>
-        <Markdown source={pr.body} />
+        <Markdown source={pr.body} repo={pr.repo} />
       </section>
+
 
       {full ? (
         full.closingIssues.length > 0 && (
@@ -148,7 +179,7 @@ export function PrDrawer({ id, compact, resize }: { id: string; compact: boolean
                 <Icon name={i.state === 'closed' ? 'issueClosed' : 'issue'} className={i.state === 'open' ? 'open' : undefined} />
                 <span className="num">#{i.number}</span>
                 <span className="iss-t">{i.title}</span>
-                <span className="st">{i.state === 'closed' ? (pr.state === 'merged' ? 'closed by this PR' : 'closed') : pr.state === 'open' ? 'closes on merge' : 'open'}</span>
+                <span className="st">{i.state === 'closed' ? (pr.state === 'merged' ? `closed by this ${p.pr.short}` : 'closed') : pr.state === 'open' ? 'closes on merge' : 'open'}</span>
               </a>
             ))}
           </section>
@@ -172,7 +203,7 @@ export function PrDrawer({ id, compact, resize }: { id: string; compact: boolean
           <div className="skel-block" aria-busy="true">{Array.from({ length: Math.min(4, Math.max(1, n)) }, (_, i) => <i key={i} style={{ width: `${88 - i * 9}%` }} />)}</div>
         )}
         {full && full.commits.length < pr.commitCount && (
-          <div className="muted small">Showing {full.commits.length} of {pr.commitCount} commits · <a href={`${pr.url}/commits`} target="_blank" rel="noopener noreferrer">all on GitHub</a></div>
+          <div className="muted small">Showing {full.commits.length} of {pr.commitCount} commits · <a href={p.link.prCommits(pr.url)} target="_blank" rel="noopener noreferrer">all on {p.name}</a></div>
         )}
       </section>
 

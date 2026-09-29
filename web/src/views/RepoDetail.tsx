@@ -2,34 +2,37 @@ import { useMemo } from 'react';
 import type { CSSProperties } from 'react';
 import { Link } from 'react-router';
 import type { PullRequest } from '../../../shared/api';
+import { capitalize, repoProvider } from '../../../shared/provider';
 import { usePatchRepo, usePrList, useReleases, useRepos, useStats, useSyncStatus } from '../api/hooks';
 import { ChartCard, HBars, StackedColumns, StatTile } from '../charts';
 import { prIconClass, prIconName } from '../components/bits';
 import { DateRangeButton } from '../components/DateRange';
 import { EmptyState, ErrorNote, ProgressBar } from '../components/EmptyState';
-import { Icon } from '../components/Icon';
+import { Icon, ProviderIcon } from '../components/Icon';
 import { Labels } from '../components/Label';
 import { Markdown } from '../components/Markdown';
 import { RepoName } from '../components/RepoName';
 import { UnavailableNote } from '../components/RepoTracking';
-import { useRepoLabel } from '../components/repoMapContext';
+import { useProviderOf, useRepoLabel, useSourceCtx } from '../components/repoMapContext';
+import { sourceTitle } from '../components/SourceBadge';
 import { Seg, WHO_OPTIONS } from '../components/Seg';
 import { useUI } from '../components/ui';
 import { ALL_TIME_FROM, repoPageScope, scopeParams, statsParams } from '../lib/apiQuery';
-import { activityColumns, contributorBars, tileProps } from '../lib/statsCharts';
+import { activityColumns, contributorBars, mergedLabel, tileProps } from '../lib/statsCharts';
 import { fmtDate, fmtDateTime, isoDate, rel } from '../lib/time';
-import { carrySearch, encodeParams, repoFromPath, useUrlState } from '../lib/urlState';
+import { carrySearch, encodeParams, repoFromPath, repoLinkSearch, useUrlState } from '../lib/urlState';
 import { actorName, cx } from '../lib/util';
 import { InsightsSkeleton } from './Insights';
 
 const LIST_MAX = 8;
 
 function CompactPr({ pr, onOpen, active }: { pr: PullRequest; onOpen: () => void; active: boolean }) {
+  const p = useProviderOf()(pr.repo);
   return (
     <div className={cx('mini-pr', active && 'active')} role="button" tabIndex={0} onClick={onOpen} onKeyDown={(e) => { if (e.key === 'Enter') onOpen(); }}>
       <span className={`pr-ic ${prIconClass(pr)}`}><Icon name={prIconName(pr)} /></span>
       <span className="mp-title">{pr.title}<Labels labels={pr.labels} /></span>
-      <span className="num">#{pr.number}</span>
+      <span className="num">{p.prRef}{pr.number}</span>
       <span className="mp-who">{pr.author.isMe ? 'you' : actorName(pr.author)}</span>
       <time dateTime={pr.activityAt} title={fmtDateTime(pr.activityAt)}>{pr.state === 'open' ? rel(pr.activityAt) : fmtDate(pr.activityAt)}</time>
     </div>
@@ -45,6 +48,10 @@ export function RepoDetailView() {
   const repos = useRepos();
   const patch = usePatchRepo();
   const repo = repos.data?.find((r) => r.key === key);
+  const sources = useSourceCtx();
+  const src = repo && sources.multi ? sources.byHost.get(repo.source) : undefined;
+  const p = repoProvider(repo);
+  const w = p.pr;
   const scoped = repoPageScope(s, key);
   const stats = useStats(statsParams(scoped), !!repo);
   const merged = usePrList({ ...scopeParams(scoped, { q: false }), state: 'merged', limit: 50 }, !!repo);
@@ -55,12 +62,12 @@ export function RepoDetailView() {
   const byWho = s.who === 'me' ? ' by you' : s.who === 'others' ? ' by others' : '';
   const tiles = useMemo(() => st && [
     tileProps(st, 'commits', `Commits${byWho}`, 'commits', range),
-    tileProps(st, 'prsMerged', `PRs merged${byWho}`, 'PRs', range),
+    tileProps(st, 'prsMerged', `${mergedLabel(w)}${byWho}`, w.shortMany, range),
     tileProps(st, 'issuesClosed', 'Issues closed', 'issues', range),
     tileProps(st, 'newStars', 'New stars', 'stars', range),
-  ], [st, byWho, range]);
-  const activity = useMemo(() => st && activityColumns(st), [st]);
-  const people = useMemo(() => st && contributorBars(st, viewer), [st, viewer]);
+  ], [st, byWho, range, w]);
+  const activity = useMemo(() => st && activityColumns(st, w), [st, w]);
+  const people = useMemo(() => st && contributorBars(st, viewer, w), [st, viewer, w]);
 
   if (repos.isSuccess && !repo) {
     return (
@@ -75,7 +82,7 @@ export function RepoDetailView() {
   }
 
   const seeAll = (extra: [string, string][], allTime = false) => {
-    const pairs: [string, string][] = [['repos', key], ...extra];
+    const pairs: [string, string][] = [...(s.source ? [['source', s.source] as [string, string]] : []), ['repos', key], ...extra];
     if (allTime) pairs.push(['range', 'custom'], ['from', ALL_TIME_FROM], ['to', isoDate(new Date())]);
     else if (s.range === 'custom' && s.from && s.to) pairs.push(['range', 'custom'], ['from', s.from], ['to', s.to]);
     else if (s.range !== '30d') pairs.push(['range', s.range]);
@@ -93,7 +100,7 @@ export function RepoDetailView() {
           <Seg value={s.who} onChange={(who) => set({ who })} options={WHO_OPTIONS} ariaLabel="Author" />
           <span className="summary">{range.text}</span>
           <span className="spacer" />
-          <Link className="btn" to={`/activity?${encodeParams([['repos', key]])}`}><Icon name="pulse" />Activity</Link>
+          <Link className="btn" to={`/activity?${repoLinkSearch(key, s.source)}`}><Icon name="pulse" />Activity</Link>
           <button type="button" className="btn" onClick={() => openExport('api')}><Icon name="braces" />API</button>
         </div>
       </div>
@@ -103,6 +110,8 @@ export function RepoDetailView() {
           <div className="repo-head">
             <div className="rh-top">
               <h1 title={label}><RepoName repo={repo.key} /></h1>
+              {/* Which source it's on, in every context once there are several (the name alone doesn't say). */}
+              {src && <span className="vis-badge src-name"><ProviderIcon kind={src.kind} />{sourceTitle(src)}</span>}
               <span className="vis-badge">{repo.visibility === 'private' ? <><Icon name="lock" />Private</> : repo.visibility === 'internal' ? <><Icon name="lock" title="Internal" />Internal</> : 'Public'}</span>
               {!repo.unavailable && repo.syncedAt === null && <span className="vis-badge">Syncing…</span>}
               {repo.isArchived && <span className="vis-badge">Archived</span>}
@@ -117,7 +126,7 @@ export function RepoDetailView() {
               >
                 <Icon name="pin" />{repo.pinned ? 'Pinned' : 'Pin'}
               </button>
-              <a className="btn primary" href={repo.url} target="_blank" rel="noopener noreferrer"><Icon name="ext" />Open on GitHub</a>
+              <a className="btn primary" href={repo.url} target="_blank" rel="noopener noreferrer"><Icon name="ext" />Open on {p.name}</a>
             </div>
             {repo.unavailable && <UnavailableNote repo={repo} />}
             {repo.description && <p className="rh-desc">{repo.description}</p>}
@@ -125,13 +134,13 @@ export function RepoDetailView() {
               {repo.language && <span><i className="lang" style={{ '--lc': repo.language.color ?? 'var(--muted)' } as CSSProperties} />{repo.language.name}</span>}
               {repo.visibility === 'public' && <span><Icon name="star" />{repo.stars.toLocaleString()} stars{repo.stats.newStars30d > 0 && repo.trackedBy === 'owned' && <em>+{repo.stats.newStars30d}</em>}</span>}
               <span><Icon name="fork" />{repo.forks.toLocaleString()} forks</span>
-              <span><Icon name="prOpen" />{repo.stats.openPrs} open PRs</span>
+              <span><Icon name="prOpen" />{repo.stats.openPrs} open {w.shortMany}</span>
               <span><Icon name="issue" />{repo.stats.openIssues} open issues</span>
               {repo.defaultBranch && <span><code>{repo.defaultBranch}</code></span>}
               <span className="muted">Updated {rel(repo.lastActivityAt ?? repo.pushedAt ?? repo.createdAt)}</span>
-              <a className="rh-link" href={`${repo.url}/pulls`} target="_blank" rel="noopener noreferrer">Pull requests ↗</a>
-              <a className="rh-link" href={`${repo.url}/issues`} target="_blank" rel="noopener noreferrer">Issues ↗</a>
-              <a className="rh-link" href={`${repo.url}/releases`} target="_blank" rel="noopener noreferrer">Releases ↗</a>
+              <a className="rh-link" href={p.link.prs(repo.url)} target="_blank" rel="noopener noreferrer">{capitalize(w.many)} ↗</a>
+              <a className="rh-link" href={p.link.issues(repo.url)} target="_blank" rel="noopener noreferrer">Issues ↗</a>
+              <a className="rh-link" href={p.link.releases(repo.url)} target="_blank" rel="noopener noreferrer">Releases ↗</a>
             </div>
             {repo.topics.length > 0 && <div className="rh-topics">{repo.topics.map((t) => <span key={t} className="set-chip">{t}</span>)}</div>}
           </div>
@@ -157,19 +166,19 @@ export function RepoDetailView() {
                 </div>
                 {merged.data?.items.length
                   ? merged.data.items.slice(0, LIST_MAX).map((p) => <CompactPr key={p.id} pr={p} onOpen={() => openPr(p.id)} active={s.pr === p.id} />)
-                  : <div className="chart-empty">{merged.data ? 'No merged PRs in this range' : 'Loading…'}</div>}
+                  : <div className="chart-empty">{merged.data ? `No merged ${w.shortMany} in this range` : 'Loading…'}</div>}
                 {(merged.data?.total ?? 0) > LIST_MAX && <div className="card-more">+{merged.data!.total - LIST_MAX} more</div>}
               </section>
 
               <section className="card list-card">
                 <div className="card-h">
-                  <div><h3>Open pull requests</h3><div className="sub">all authors, any age</div></div>
+                  <div><h3>Open {w.many}</h3><div className="sub">all authors, any age</div></div>
                   <span className="spacer" />
                   <Link className="tbl-btn" to={seeAll([['who', 'everyone'], ['state', 'open']], true)}>See all</Link>
                 </div>
                 {open.data?.items.length
                   ? open.data.items.slice(0, LIST_MAX).map((p) => <CompactPr key={p.id} pr={p} onOpen={() => openPr(p.id)} active={s.pr === p.id} />)
-                  : <div className="chart-empty">{open.data ? 'No open pull requests' : 'Loading…'}</div>}
+                  : <div className="chart-empty">{open.data ? `No open ${w.many}` : 'Loading…'}</div>}
                 {(open.data?.total ?? 0) > LIST_MAX && <div className="card-more">+{open.data!.total - LIST_MAX} more</div>}
               </section>
 
@@ -177,7 +186,7 @@ export function RepoDetailView() {
                 <div className="card-h">
                   <div><h3>Releases</h3><div className="sub">latest first</div></div>
                   <span className="spacer" />
-                  {repo && <a className="tbl-btn" href={`${repo.url}/releases`} target="_blank" rel="noopener noreferrer">GitHub ↗</a>}
+                  {repo && <a className="tbl-btn" href={p.link.releases(repo.url)} target="_blank" rel="noopener noreferrer">{p.name} ↗</a>}
                 </div>
                 {releases.data?.items.length ? (
                   <div className="rel-list">
@@ -190,14 +199,14 @@ export function RepoDetailView() {
                           <span className="spacer" />
                           <time dateTime={r.publishedAt} title={fmtDateTime(r.publishedAt)}>{fmtDate(r.publishedAt)}</time>
                         </summary>
-                        <Markdown source={r.body} />
+                        <Markdown source={r.body} repo={r.repo} />
                       </details>
                     ))}
                   </div>
                 ) : <div className="chart-empty">{releases.data ? 'No releases' : 'Loading…'}</div>}
               </section>
 
-              <ChartCard id="repo-people" title="Top contributors" subtitle={`commits + PRs merged, ${range.phrase}`} table={people.table}>
+              <ChartCard id="repo-people" title="Top contributors" subtitle={`commits + ${mergedLabel(w)}, ${range.phrase}`} table={people.table}>
                 <HBars rows={people.rows} unit="contributions" ariaLabel={`Top contributors to ${label}`} emptyText="No contributors in this range" />
               </ChartCard>
             </div>

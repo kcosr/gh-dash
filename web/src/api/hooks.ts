@@ -6,8 +6,10 @@ import type {
   ActivityQuery,
   ActivityResponse,
   Commit,
+  CommentThread,
   Diff,
   IssueQuery,
+  NewPrThread,
   PrListResponse,
   PrQuery,
   PullRequest,
@@ -17,12 +19,18 @@ import type {
   SavedView,
   ScopeQuery,
   Settings,
+  Source,
   StatsQuery,
   SyncStatus,
 } from '../../../shared/api';
-import { api, isClientError, isUnreachable } from './client';
+import { GITHUB_HOST } from '../../../shared/api';
+import { ApiError, api, isClientError, isUnreachable } from './client';
 import { resolveApiBase } from '../lib/account';
 import { defaultRepoScope } from '../../../shared/repos';
+import { presentSources } from '../lib/contexts';
+import type { SourceInfo } from '../lib/contexts';
+import { sourceStatuses, workSources } from '../lib/sources';
+import type { WorkSource } from '../lib/sources';
 import { parseDiffId } from '../lib/urlState';
 
 export const qk = {
@@ -34,6 +42,8 @@ export const qk = {
   sync: ['sync-status'] as const,
   account: ['account'] as const,
   instance: ['instance'] as const,
+  /** GET /sources: every source's account, sync state and repository counts. */
+  sources: ['sources'] as const,
   /** DesktopState from the desktop app's bridge (not an HTTP query). */
   desktop: ['desktop-state'] as const,
   prs: (q: PrQuery) => ['prs', q] as const,
@@ -43,11 +53,14 @@ export const qk = {
   releases: (q: ScopeQuery) => ['releases', q] as const,
   stats: (q: StatsQuery) => ['stats', q] as const,
   diff: (id: string) => ['diff', id] as const,
+  /** A PR's ("<repo>#<n>") or a commit's ("<repo>@<full oid>") comment threads. */
+  threads: (id: string) => ['threads', id] as const,
   blob: (repo: string, ref: string, path: string) => ['blob', repo, ref, path] as const,
   diffCache: ['diff-cache'] as const,
   /** The Add dialog's lists and access checks: read from GitHub, never refetched by a sync. */
   repoCandidates: ['repo-candidates'] as const,
-  repoLookup: (key: string) => ['repo-lookup', key] as const,
+  repoCandidatesOf: (source: string) => ['repo-candidates', source] as const,
+  repoLookup: (source: string, key: string) => ['repo-lookup', source, key] as const,
 };
 
 /**
@@ -56,7 +69,7 @@ export const qk = {
  * refresh); a PR diff is revalidated when it's next opened (useDiff).
  */
 export const refetchAfterSync = (q: Query) =>
-  !['sync-status', 'diff', 'blob', 'instance', 'desktop-state', 'repo-candidates', 'repo-lookup'].includes(q.queryKey[0] as string);
+  !['sync-status', 'diff', 'blob', 'threads', 'instance', 'desktop-state', 'repo-candidates', 'repo-lookup'].includes(q.queryKey[0] as string);
 
 /**
  * Queries whose answers follow the default selection: every list or stats request without an explicit `repos=`
@@ -118,6 +131,61 @@ export function invalidateAccountData(qc: QueryClient) {
   for (const queryKey of [qk.me, qk.sync]) void qc.invalidateQueries({ queryKey });
 }
 
+/**
+ * Every source with its account, sync state and repository counts (Settings → Sources). GET /sources never calls a
+ * code host, so it is refetched freely: on focus (after `glab auth login` in a terminal, say) and after every sync.
+ */
+export function useSources() {
+  return useQuery({
+    queryKey: qk.sources,
+    queryFn: api.sources,
+    select: (d) => d.items,
+    staleTime: 30_000,
+    refetchOnWindowFocus: true,
+    retry: (count, err) => count < 1 && !isClientError(err),
+  });
+}
+
+function putSource(qc: QueryClient, source: Source) {
+  const prev = qc.getQueryData<{ items: Source[] }>(qk.sources);
+  if (prev) qc.setQueryData(qk.sources, { items: prev.items.map((s) => (s.host === source.host ? source : s)) });
+}
+
+const isSource = (x: unknown): x is Source => !!x && typeof x === 'object' && typeof (x as Source).host === 'string' && 'sync' in x;
+
+/**
+ * Re-resolve a source's token and validate it now (POST /sources/:host/check). With no token the server answers 503
+ * with the source as it stands, which is shown too; the error still reaches the caller.
+ */
+export function useCheckSource() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (host: string) => api.checkSource(host),
+    onSuccess: (source) => putSource(qc, source),
+    onError: (e) => {
+      if (e instanceof ApiError && isSource(e.details)) putSource(qc, e.details);
+    },
+    onSettled: (_s, _e, host) => {
+      void qc.invalidateQueries({ queryKey: qk.sync });
+      if (host === 'github.com') void qc.invalidateQueries({ queryKey: qk.account });
+    },
+  });
+}
+
+/** Remove a source this server no longer configures, with all its data (DELETE /sources/:host). */
+export function useDeleteSource() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (host: string) => api.deleteSource(host),
+    onSuccess: (_r, host) => {
+      const prev = qc.getQueryData<{ items: Source[] }>(qk.sources);
+      if (prev) qc.setQueryData(qk.sources, { items: prev.items.filter((s) => s.host !== host) });
+      // Its repositories, and everything synced from them, are gone.
+      void qc.invalidateQueries({ predicate: refetchAfterSync });
+    },
+  });
+}
+
 /** How this server runs. Changes only when it restarts (the desktop app invalidates it then). */
 export function useInstance() {
   return useQuery({
@@ -156,6 +224,30 @@ export function useSyncStatus() {
   });
 }
 
+/**
+ * The sources present (see `presentSources`), from the repos and GET /sources. `complete`: /sources has answered (or
+ * failed, and the repos alone decide), so a source missing from `sources` isn't one. Null until the repos load.
+ */
+export function usePresentSources(): { sources: SourceInfo[]; complete: boolean } | null {
+  const repos = useRepos().data;
+  const all = useSources();
+  const loaded = all.data ?? null;
+  const failed = all.isError;
+  return useMemo(() => (repos ? { sources: presentSources(repos, loaded), complete: !!loaded || failed } : null), [repos, loaded, failed]);
+}
+
+/**
+ * The sources the app works with (see `workSources`): each one's sync status, problem and where it lives. Empty until
+ * the sync status has loaded; github.com alone until /sources has.
+ */
+export function useWorkSources(): WorkSource[] {
+  const st = useSyncStatus().data;
+  const sources = useSources().data ?? null;
+  const repos = useRepos().data;
+  const githubMismatch = !!useAccount().data?.mismatch;
+  return useMemo(() => workSources(sources, sourceStatuses(st), repos ?? [], { githubMismatch }), [sources, st, repos, githubMismatch]);
+}
+
 /** The default selection: not archived, not hidden, not a fork (unless includeForks). */
 export function defaultScope(repos: Repo[], settings?: Settings): string[] {
   return defaultRepoScope(repos, settings?.includeForks);
@@ -163,27 +255,42 @@ export function defaultScope(repos: Repo[], settings?: Settings): string[] {
 
 // ---------------------------------------------------------------- lists
 
+/**
+ * Whether a list in a source's context may be asked for: once that source is known to be present (it has repos, or
+ * /sources says it is set up here). The API refuses a host that isn't a source (400); the address bar drops such a
+ * `source` once the sources are known (useCanonicalRepoUrl), so the list waits for that rather than failing first.
+ * The repos (and /sources) come first on a cold load only (they're cached after), and only when the URL names a source.
+ */
+export function useSourceReady(source: string | undefined): boolean {
+  const present = usePresentSources();
+  return useMemo(() => !source || !!present?.sources.some((s) => s.host === source), [source, present]);
+}
+
 /** PR lists for 30–90 days are small; fetch up to 1000 in one go. */
 export const PR_LIMIT = 1000;
 
 export function usePrList(q: PrQuery, enabled = true) {
   const params = { ...q, limit: q.limit ?? PR_LIMIT };
-  return useQuery({ queryKey: qk.prs(params), queryFn: () => api.prs(params), placeholderData: keepPreviousData, enabled });
+  const ready = useSourceReady(q.source);
+  return useQuery({ queryKey: qk.prs(params), queryFn: () => api.prs(params), placeholderData: keepPreviousData, enabled: enabled && ready });
 }
 
 export function useReleases(q: ScopeQuery, enabled = true) {
   const params = { ...q, limit: 200 };
-  return useQuery({ queryKey: qk.releases(params), queryFn: () => api.releases(params), placeholderData: keepPreviousData, enabled });
+  const ready = useSourceReady(q.source);
+  return useQuery({ queryKey: qk.releases(params), queryFn: () => api.releases(params), placeholderData: keepPreviousData, enabled: enabled && ready });
 }
 
 export function useIssueList(q: IssueQuery) {
   const params = { ...q, limit: 100 };
+  const ready = useSourceReady(q.source);
   return useInfiniteQuery({
     queryKey: qk.issues(params),
     queryFn: ({ pageParam }) => api.issues({ ...params, cursor: pageParam ?? undefined }),
     initialPageParam: null as string | null,
     getNextPageParam: (last) => last.nextCursor,
     placeholderData: keepPreviousData,
+    enabled: ready,
   });
 }
 
@@ -191,18 +298,20 @@ export const ACTIVITY_PAGE = 200;
 
 export function useActivityFeed(q: ActivityQuery, enabled = true) {
   const params = { ...q, limit: ACTIVITY_PAGE };
+  const ready = useSourceReady(q.source);
   return useInfiniteQuery({
     queryKey: qk.activity(params),
     queryFn: ({ pageParam }) => api.activity({ ...params, cursor: pageParam ?? undefined }),
     initialPageParam: null as string | null,
     getNextPageParam: (last) => last.nextCursor,
     placeholderData: keepPreviousData,
-    enabled,
+    enabled: enabled && ready,
   });
 }
 
 export function useStats(q: StatsQuery, enabled = true) {
-  return useQuery({ queryKey: qk.stats(q), queryFn: () => api.stats(q), placeholderData: keepPreviousData, enabled });
+  const ready = useSourceReady(q.source);
+  return useQuery({ queryKey: qk.stats(q), queryFn: () => api.stats(q), placeholderData: keepPreviousData, enabled: enabled && ready });
 }
 
 export function usePrDetail(id: string | null) {
@@ -327,6 +436,64 @@ export function useClearDiffCache() {
   });
 }
 
+// ---------------------------------------------------------------- comment threads
+
+/** Threads of a PR ("<repo>#<n>") or a commit (commitDiffId with the full oid, as a diff's headOid gives it). */
+export function useThreads(id: string | null) {
+  const t = parseDiffId(id);
+  return useQuery({
+    queryKey: qk.threads(id ?? ''),
+    queryFn: () => (t!.kind === 'pr' ? api.prThreads(t!.repo, t!.number) : api.commitThreads(t!.repo, t!.oid)).then((r) => r.items),
+    // Commit threads need the full oid; an abbreviated one waits for the diff.
+    enabled: !!t && (t.kind === 'pr' || t.oid.length === 40 || t.oid.length === 64),
+    staleTime: 30_000,
+  });
+}
+
+/**
+ * Everything that changes a target's threads. Each answer updates the list in place, and PR counts are refetched (and
+ * repos' comment counts, which the Remove confirmation quotes, when comments come or go). A list fetch still in flight may have read the threads before the change and would answer with them after it, undoing
+ * it on screen: it is cancelled before the answer goes in, and the list is fetched again afterwards to settle.
+ */
+export function threadActions(qc: QueryClient, id: string) {
+  const t = parseDiffId(id);
+  const key = qk.threads(id);
+  const put = (thread: CommentThread) => {
+    qc.setQueryData<CommentThread[]>(key, (list = []) =>
+      list.some((x) => x.id === thread.id) ? list.map((x) => (x.id === thread.id ? thread : x)) : [...list, thread]);
+  };
+  const drop = (threadId: number) => qc.setQueryData<CommentThread[]>(key, (list = []) => list.filter((x) => x.id !== threadId));
+  const counts = () => {
+    if (t?.kind !== 'pr') return;
+    void qc.invalidateQueries({ queryKey: ['prs'] });
+    void qc.invalidateQueries({ queryKey: qk.pr(t.repo, t.number) });
+  };
+  const done = async <T,>(p: Promise<T>, apply: (v: T) => void, commentsChanged = false) => {
+    const v = await p;
+    await qc.cancelQueries({ queryKey: key });
+    apply(v);
+    void qc.invalidateQueries({ queryKey: key });
+    counts();
+    if (commentsChanged) void qc.invalidateQueries({ queryKey: qk.repos });
+    return v;
+  };
+  return {
+    create: (body: NewPrThread) =>
+      done(t?.kind === 'pr' ? api.createPrThread(t.repo, t.number, body) : api.createCommitThread(t!.repo, (t as { oid: string }).oid, body), put, true),
+    reply: (threadId: number, body: string) => done(api.reply(threadId, body), put, true),
+    setStatus: (threadId: number, status: 'open' | 'resolved') => done(api.setThreadStatus(threadId, status), put),
+    edit: (commentId: number, body: string) => done(api.editComment(commentId, body), put),
+    deleteComment: (threadId: number, commentId: number) =>
+      done(api.deleteComment(commentId), (r) => (r.thread ? put(r.thread) : drop(threadId)), true),
+    deleteThread: (threadId: number) => done(api.deleteThread(threadId), () => drop(threadId), true),
+  };
+}
+
+export function useThreadActions(id: string) {
+  const qc = useQueryClient();
+  return useMemo(() => threadActions(qc, id), [qc, id]);
+}
+
 // ---------------------------------------------------------------- mutations
 
 export function usePatchRepo() {
@@ -353,21 +520,22 @@ export function usePatchRepo() {
  * What the Add dialog offers: the token's repositories of other owners and recent contributions. Fetched only while
  * the dialog is open; the server caches the lists for 5 minutes too, and the dialog filters them locally as you type.
  */
-export function useRepoCandidates(enabled: boolean) {
+export function useRepoCandidates(enabled: boolean, source: string = GITHUB_HOST) {
   return useQuery({
-    queryKey: qk.repoCandidates,
-    queryFn: () => api.repoCandidates(),
+    queryKey: qk.repoCandidatesOf(source),
+    // github.com is the API's default source: its requests stay as they were.
+    queryFn: () => api.repoCandidates(false, source === GITHUB_HOST ? undefined : source),
     enabled,
     staleTime: 5 * 60_000,
     retry: (count, err) => count < 1 && !isClientError(err),
   });
 }
 
-/** Whether the token can read the repo `key` (owner/name), with a preview; idle while `key` is null. One GraphQL point. */
-export function useRepoLookup(key: string | null) {
+/** Whether the source's token can read the repo `key` (owner/name, or a GitLab key), with a preview; idle while `key` is null. One GraphQL point. */
+export function useRepoLookup(key: string | null, source: string = GITHUB_HOST) {
   return useQuery({
-    queryKey: qk.repoLookup(key ?? ''),
-    queryFn: () => api.repoLookup(key!),
+    queryKey: qk.repoLookup(source, key ?? ''),
+    queryFn: () => api.repoLookup(key!, source === GITHUB_HOST ? undefined : source),
     enabled: !!key,
     staleTime: 60_000,
     retry: false,

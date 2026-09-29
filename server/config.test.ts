@@ -4,8 +4,9 @@ import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { configFilePath, configJsonPath, findPackageRoot, loadConfig, loadEnvironment, loadServerConfig, rootDir } from './config';
-import { readConfigFile, writeConfigFile, type ConfigFile } from './config-file';
+import { configFileSchemaFor, readConfigFile, writeConfigFile, type ConfigFile } from './config-file';
 import { openDb } from './db/db';
+import { loadSources } from './sources/config';
 import { testTokens } from './test/tokens';
 
 const posix = process.platform !== 'win32';
@@ -250,5 +251,174 @@ describe('app root', () => {
     const config = loadConfig({ GH_DASH_ROOT_DIR: join(app, 'app.asar') });
     expect(config).toMatchObject({ version: '9.9.9', webDir: join(app, 'app.asar/dist/web') });
     expect(() => loadConfig({ GH_DASH_ROOT_DIR: app + '/nope' })).toThrow(/Can't read the app's .*package\.json/);
+  });
+});
+
+describe('GitLab sources', () => {
+  function json(data: ConfigFile | Record<string, unknown>) {
+    const path = join(temp(), 'config.json');
+    writeFileSync(path, JSON.stringify(data), { mode: 0o600 });
+    return path;
+  }
+  const load = (data: ConfigFile | Record<string, unknown>, env: NodeJS.ProcessEnv = {}) => loadConfig(env, readConfigFile(json(data)));
+  const gitlab = (url: string, over: Record<string, unknown> = {}) => ({ kind: 'gitlab', url, ...over });
+
+  it('reads sources from config.json: the host is the identity, the URL keeps its relative root', () => {
+    const config = load({ glabPath: '/opt/homebrew/bin/glab', sources: [gitlab(' https://GitLab.Example.com:8443/gitlab/ ', { tokenSource: 'glab' })] });
+    expect(config.glabPath).toBe('/opt/homebrew/bin/glab');
+    expect(config.sourceConfigs).toEqual([
+      { kind: 'gitlab', host: 'gitlab.example.com', baseUrl: 'https://gitlab.example.com:8443/gitlab', tokenChoice: 'glab', tokenFile: null, tokenEnv: 'GITLAB_TOKEN', from: 'file' },
+    ]);
+    expect(config.sources).toMatchObject({ glabPath: 'file', sources: 'file' });
+    expect(loadConfig({})).toMatchObject({ glabPath: null, sourceConfigs: [] });
+    expect(loadConfig({}).sources).toMatchObject({ glabPath: 'default', sources: 'default' });
+  });
+
+  it('defaults the method to a token file (headless) or nothing chosen (desktop)', () => {
+    const headless = load({ sources: [gitlab('https://gitlab.example.com', { tokenFile: '/home/alice/.config/gh-dash/gitlab-token' })] });
+    expect(headless.sourceConfigs[0]).toMatchObject({ tokenChoice: 'auto', tokenFile: '/home/alice/.config/gh-dash/gitlab-token' });
+    const dir = temp();
+    const desktop = load({ sources: [gitlab('https://gitlab.example.com')] }, { GH_DASH_DESKTOP: '1', GH_DASH_DATA_DIR: dir });
+    expect(desktop.sourceConfigs[0]).toMatchObject({ tokenChoice: null, tokenFile: null });
+    expect(load({ sources: [gitlab('https://gitlab.example.com', { tokenSource: null })] }).sourceConfigs[0]!.tokenChoice).toBeNull();
+    // `file` without a file is allowed, and said at startup.
+    expect(load({ sources: [gitlab('https://gitlab.example.com', { tokenSource: 'file' })] }).warnings).toEqual([expect.stringMatching(/gitlab\.example\.com uses a token file, but none is set/)]);
+  });
+
+  it('gives GITLAB_TOKEN to the only GitLab source; with several, each names its own tokenEnv or has none', () => {
+    const several = load({
+      sources: [gitlab('https://gitlab.example.com', { tokenEnv: 'WORK_GITLAB_TOKEN' }), gitlab('https://gitlab2.example.com/gitlab'), gitlab('http://gitlab.test', { tokenEnv: 'GITLAB_TOKEN' })],
+    });
+    expect(several.sourceConfigs.map((s) => [s.host, s.tokenEnv])).toEqual([
+      ['gitlab.example.com', 'WORK_GITLAB_TOKEN'],
+      ['gitlab2.example.com', null],
+      ['gitlab.test', 'GITLAB_TOKEN'],
+    ]);
+  });
+
+  it('never gives GITLAB_TOKEN to a source by default in the desktop app: only an entry that names it has it', () => {
+    const dir = temp();
+    const desktop = (data: Record<string, unknown>) => load(data, { GH_DASH_DESKTOP: '1', GH_DASH_DATA_DIR: dir, GITLAB_TOKEN: 'glpat-not-a-real-token' });
+    // The only source, as when the app starts with GITLAB_TOKEN set, or after the one that named it was removed.
+    expect(desktop({ sources: [gitlab('https://gitlab.example.com', { tokenSource: 'app' })] }).sourceConfigs[0]!.tokenEnv).toBeNull();
+    expect(desktop({ sources: [gitlab('https://gitlab.example.com', { tokenEnv: 'GITLAB_TOKEN' })] }).sourceConfigs[0]!.tokenEnv).toBe('GITLAB_TOKEN');
+    // Headless keeps the default.
+    expect(load({ sources: [gitlab('https://gitlab.example.com', { tokenSource: 'glab' })] }).sourceConfigs[0]!.tokenEnv).toBe('GITLAB_TOKEN');
+  });
+
+  it('refuses github.com, other kinds, duplicate hosts and bad URLs, naming the entry', () => {
+    const bad = (data: Record<string, unknown>) => {
+      const path = json(data);
+      return () => readConfigFile(path);
+    };
+    expect(bad({ sources: [gitlab('https://github.com')] })).toThrow(/sources\.0\.url: github\.com is built in; configure it with tokenSource/);
+    expect(bad({ sources: [{ kind: 'github', url: 'https://github.example.com' }] })).toThrow(/sources\.0\.kind/);
+    expect(bad({ sources: [gitlab('https://gitlab.example.com'), gitlab('http://GITLAB.example.com:8080/gitlab')] })).toThrow(/sources\.1\.url: gitlab\.example\.com is already sources\[0\]/);
+    expect(bad({ sources: [gitlab('ftp://gitlab.example.com')] })).toThrow(/sources\.0\.url: GitLab URL must start with https:\/\/ or http:\/\//);
+    expect(bad({ sources: [gitlab('https://alice:secret@gitlab.example.com')] })).toThrow(/must not contain credentials, a query or a fragment/);
+    expect(bad({ sources: [gitlab('https://gitlab.example.com/?x=1')] })).toThrow(/must not contain credentials/);
+    expect(bad({ sources: [gitlab('not a url')] })).toThrow(/Invalid GitLab URL/);
+    expect(bad({ sources: [gitlab('https://[::1]:8443')] })).toThrow(/host must be a host name/);
+    expect(bad({ sources: [gitlab('https://gitlab.example.com', { tokenFile: 'token.txt' })] })).toThrow(/sources\.0\.tokenFile: must be an absolute path: token\.txt/);
+    expect(bad({ sources: [gitlab('https://gitlab.example.com', { tokenSource: 'gh' })] })).toThrow(/sources\.0\.tokenSource/);
+  });
+
+  it('refuses a tokenEnv that holds another secret, or one two sources share', () => {
+    const bad = (data: Record<string, unknown>) => {
+      const path = json(data);
+      return () => readConfigFile(path);
+    };
+    expect(bad({ sources: [gitlab('https://gitlab.example.com', { tokenEnv: 'GITHUB_TOKEN' })] })).toThrow(/sources\.0\.tokenEnv: GITHUB_TOKEN holds another secret/);
+    expect(bad({ sources: [gitlab('https://gitlab.example.com', { tokenEnv: 'GH_DASH_PASSWORD' })] })).toThrow(/GH_DASH_PASSWORD holds another secret/);
+    expect(bad({ sources: [gitlab('https://gitlab.example.com', { tokenEnv: 'NOT-A-NAME' })] })).toThrow(/must be an environment variable name/);
+    expect(bad({ sources: [gitlab('https://gitlab.example.com', { tokenEnv: 'T' }), gitlab('https://gitlab2.example.com', { tokenEnv: 'T' })] })).toThrow(/sources\.1\.tokenEnv: T is already sources\[0\]'s tokenEnv/);
+  });
+
+  it("refuses tokenEnv names Windows can't tell apart there, as its credential lookup would give both sources one token", () => {
+    const two = { sources: [gitlab('https://gitlab.example.com', { tokenEnv: 'TEAM_TOKEN' }), gitlab('https://gitlab2.example.com', { tokenEnv: 'team_token' })] };
+    const win = configFileSchemaFor('win32').safeParse(two);
+    expect(win.success).toBe(false);
+    expect(win.error?.issues.map((i) => [i.path.join('.'), i.message])).toEqual([
+      ['sources.1.tokenEnv', "team_token is already sources[0]'s tokenEnv (TEAM_TOKEN: Windows doesn't tell them apart)"],
+    ]);
+    // Elsewhere they are two variables.
+    expect(configFileSchemaFor('linux').safeParse(two).success).toBe(true);
+    expect(configFileSchemaFor('darwin').safeParse(two).success).toBe(true);
+
+    // The final check, after the environment's source takes GITLAB_TOKEN: config.json's gitlab_token is that variable on Windows.
+    const file = { path: '/etc/gh-dash/config.json', exists: true, data: { sources: [{ kind: 'gitlab' as const, url: 'https://gitlab.example.com', tokenEnv: 'gitlab_token' }] }, unknownKeys: [] };
+    const env = { GH_DASH_GITLAB_URL: 'https://gitlab2.example.com' };
+    expect(() => loadSources(env, file, 'win32')).toThrow(
+      'GITLAB_TOKEN (the same variable as gitlab_token on Windows) would lock both gitlab.example.com and gitlab2.example.com: give one of them its own tokenEnv',
+    );
+    expect(loadSources(env, file, 'linux').sources.map((s) => [s.host, s.tokenEnv])).toEqual([['gitlab.example.com', 'gitlab_token'], ['gitlab2.example.com', 'GITLAB_TOKEN']]);
+    // Two config.json entries meet the same check.
+    expect(() => loadSources({}, { ...file, data: two as ConfigFile }, 'win32')).toThrow(/^team_token \(the same variable as TEAM_TOKEN on Windows\) would lock both/);
+  });
+
+  it('warns about unknown keys inside a source, and keeps sources when the desktop app writes config.json', () => {
+    const file = readConfigFile(json({ sources: [gitlab('https://gitlab.example.com', { tokenfile: '/x' })] }));
+    expect(loadConfig({}, file).warnings).toEqual([`${file.path}: unknown key "sources[0].tokenfile" ignored`]);
+
+    const path = join(temp(), 'config.json');
+    const sources = [{ kind: 'gitlab' as const, url: 'https://gitlab.example.com/gitlab', tokenSource: 'app' as const }];
+    writeConfigFile(path, { tokenSource: 'gh', glabPath: '/usr/local/bin/glab', sources });
+    expect(readConfigFile(path).data).toEqual({ tokenSource: 'gh', glabPath: '/usr/local/bin/glab', sources });
+    expect(() => writeConfigFile(path, { sources: [...sources, { kind: 'gitlab', url: 'https://gitlab.example.com' }] })).toThrow(/already sources\[0\]/);
+    expect(readConfigFile(path).data.sources).toEqual(sources);
+  });
+
+  it('lets the environment declare a source on a headless server, with GITLAB_TOKEN as its lock', () => {
+    const config = loadConfig({ GH_DASH_GITLAB_URL: 'http://127.0.0.1:4885/gitlab', GITLAB_TOKEN_FILE: '/run/secrets/gitlab', GH_DASH_GITLAB_TOKEN_SOURCE: 'FILE' });
+    expect(config.sourceConfigs).toEqual([
+      { kind: 'gitlab', host: '127.0.0.1', baseUrl: 'http://127.0.0.1:4885/gitlab', tokenChoice: 'file', tokenFile: '/run/secrets/gitlab', tokenEnv: 'GITLAB_TOKEN', from: 'env' },
+    ]);
+    expect(config.sources.sources).toBe('env');
+    // Next to config.json's sources: GITLAB_TOKEN is for the one the environment named, not the others.
+    const both = load({ sources: [gitlab('https://gitlab.example.com', { tokenSource: 'glab' })] }, { GH_DASH_GITLAB_URL: 'https://gitlab2.example.com' });
+    expect(both.sourceConfigs.map((s) => [s.host, s.tokenEnv, s.tokenChoice, s.from])).toEqual([
+      ['gitlab.example.com', null, 'glab', 'file'],
+      ['gitlab2.example.com', 'GITLAB_TOKEN', 'auto', 'env'],
+    ]);
+    expect(() => load({ sources: [gitlab('https://gitlab.example.com', { tokenEnv: 'GITLAB_TOKEN' })] }, { GH_DASH_GITLAB_URL: 'https://gitlab2.example.com' }))
+      .toThrow('GITLAB_TOKEN would lock both gitlab.example.com and gitlab2.example.com: give one of them its own tokenEnv');
+  });
+
+  it('lets the environment override the config.json source on the same host, or the only one', () => {
+    const file = { sources: [gitlab('https://gitlab.example.com', { tokenSource: 'glab', tokenEnv: 'WORK_GITLAB_TOKEN' })] };
+    const byUrl = load(file, { GH_DASH_GITLAB_URL: 'https://GITLAB.example.com/gitlab', GITLAB_TOKEN_FILE: '/run/t' });
+    expect(byUrl.sourceConfigs).toEqual([
+      { kind: 'gitlab', host: 'gitlab.example.com', baseUrl: 'https://gitlab.example.com/gitlab', tokenChoice: 'glab', tokenFile: '/run/t', tokenEnv: 'WORK_GITLAB_TOKEN', from: 'env' },
+    ]);
+    const only = load(file, { GH_DASH_GITLAB_TOKEN_SOURCE: 'file', GITLAB_TOKEN_FILE: '/run/t' });
+    expect(only.sourceConfigs[0]).toMatchObject({ baseUrl: 'https://gitlab.example.com', tokenChoice: 'file', tokenFile: '/run/t', from: 'env' });
+    // Set but empty: the default, as for every other variable.
+    expect(load(file, { GH_DASH_GITLAB_TOKEN_SOURCE: '', GITLAB_TOKEN_FILE: '' }).sourceConfigs[0]).toMatchObject({ tokenChoice: 'auto', tokenFile: null });
+    expect(load(file, { GH_DASH_GITLAB_URL: '' }).sourceConfigs[0]).toMatchObject({ from: 'file' });
+  });
+
+  it('refuses what the environment says unclearly, and ignores it with nothing to apply to', () => {
+    const two = { sources: [gitlab('https://gitlab.example.com'), gitlab('https://gitlab2.example.com')] };
+    expect(() => load(two, { GITLAB_TOKEN_FILE: '/run/t' })).toThrow('GITLAB_TOKEN_FILE applies to one GitLab source, and 2 are configured: set GH_DASH_GITLAB_URL to say which');
+    expect(loadConfig({ GITLAB_TOKEN_FILE: '/run/t' }).warnings).toEqual(['GITLAB_TOKEN_FILE is ignored: no GitLab source is configured (set GH_DASH_GITLAB_URL)']);
+    expect(loadConfig({ GITLAB_TOKEN: 'glpat-not-a-real-token' })).toMatchObject({ sourceConfigs: [], warnings: [] });
+    expect(() => loadConfig({ GH_DASH_GITLAB_URL: 'gitlab.example.com' })).toThrow(/Invalid GH_DASH_GITLAB_URL: Invalid GitLab URL/);
+    expect(() => loadConfig({ GH_DASH_GITLAB_URL: 'https://github.com' })).toThrow(/Invalid GH_DASH_GITLAB_URL: github\.com is built in/);
+    expect(() => loadConfig({ GH_DASH_GITLAB_URL: 'https://gitlab.example.com', GH_DASH_GITLAB_TOKEN_SOURCE: 'app' })).toThrow('Invalid GH_DASH_GITLAB_TOKEN_SOURCE: app (expected glab, file)');
+    expect(() => loadConfig({ GH_DASH_GITLAB_URL: 'https://gitlab.example.com', GITLAB_TOKEN_FILE: 'token' })).toThrow('GITLAB_TOKEN_FILE must be an absolute path: token');
+  });
+
+  it("takes the desktop app's sources from config.json alone, with an absolute glabPath", () => {
+    const dir = temp();
+    const env = { GH_DASH_DESKTOP: '1', GH_DASH_DATA_DIR: dir, GH_DASH_GITLAB_URL: 'https://gitlab2.example.com', GITLAB_TOKEN_FILE: '/run/t' };
+    const config = load({ sources: [gitlab('https://gitlab.example.com', { tokenSource: 'app' })] }, env);
+    expect(config.sourceConfigs).toEqual([
+      { kind: 'gitlab', host: 'gitlab.example.com', baseUrl: 'https://gitlab.example.com', tokenChoice: 'app', tokenFile: null, tokenEnv: null, from: 'file' },
+    ]);
+    expect(() => load({ glabPath: 'glab' }, env)).toThrow(/glabPath in .*config\.json must be an absolute path: glab/);
+    expect(() => loadConfig({ ...env, GH_DASH_GLAB_PATH: 'glab' })).toThrow('GH_DASH_GLAB_PATH must be an absolute path: glab');
+    // Headless, a bare name is found on PATH like ghPath's; env (even empty) beats config.json.
+    expect(load({ glabPath: '/opt/glab' }, { GH_DASH_GLAB_PATH: '' })).toMatchObject({ glabPath: null });
+    expect(load({ glabPath: '/opt/glab' }, { GH_DASH_GLAB_PATH: 'glab' }).sources.glabPath).toBe('env');
   });
 });

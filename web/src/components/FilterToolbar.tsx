@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { hasBlockingLayer, isTypingTarget } from '../lib/layers';
 import { Icon } from './Icon';
+import { SourceNotice } from './SourceNotice';
 
 /** One compact disclosure on mobile; the full toolbar remains visible on desktop. */
 export function FilterToolbar({ summary, children }: { summary: string; children: ReactNode }) {
@@ -36,16 +37,20 @@ export function FilterToolbar({ summary, children }: { summary: string; children
   }, [expanded]);
 
   return (
-    <div className={`toolbar filter-toolbar${expanded ? ' expanded' : ''}`}>
-      <button ref={toggle} type="button" className="filter-toggle" aria-expanded={expanded}
-        aria-controls={id} aria-label={`${expanded ? 'Collapse' : 'Expand'} filters`} aria-describedby={`${id}-summary`}
-        onClick={() => setExpanded((value) => !value)}>
-        <Icon name="sliders" /><span>Filters</span>
-        <span id={`${id}-summary`} className="filter-summary" title={summary}>{summary}</span>
-        <Icon name="chevron" className="filter-chevron" />
-      </button>
-      {/* Keep focused desktop controls visible if the viewport subsequently narrows. */}
-      <div ref={controls} id={id} className="filter-controls" onFocusCapture={() => setExpanded(true)}>{children}</div>
-    </div>
+    <>
+      <div className={`toolbar filter-toolbar${expanded ? ' expanded' : ''}`}>
+        <button ref={toggle} type="button" className="filter-toggle" aria-expanded={expanded}
+          aria-controls={id} aria-label={`${expanded ? 'Collapse' : 'Expand'} filters`} aria-describedby={`${id}-summary`}
+          onClick={() => setExpanded((value) => !value)}>
+          <Icon name="sliders" /><span>Filters</span>
+          <span id={`${id}-summary`} className="filter-summary" title={summary}>{summary}</span>
+          <Icon name="chevron" className="filter-chevron" />
+        </button>
+        {/* Keep focused desktop controls visible if the viewport subsequently narrows. */}
+        <div ref={controls} id={id} className="filter-controls" onFocusCapture={() => setExpanded(true)}>{children}</div>
+      </div>
+      {/* Every list view starts with this toolbar: the context's source says here why it may show nothing. */}
+      <SourceNotice />
+    </>
   );
 }

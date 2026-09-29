@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { accessFailure, notFound, reasonOf } from './access';
+import { reasonOf } from '../provider/access';
+import { accessFailure, notFound } from './access';
 
 const at = ['nodes', 1];
 

@@ -6,6 +6,7 @@ const SIDEBAR_KEY = 'gh-dash:sidebarWidth';
 const SIDEBAR_HIDDEN_KEY = 'gh-dash:sidebarHidden';
 const DRAWER_KEY = 'gh-dash:drawerWidth';
 const DIFF_KEY = 'gh-dash:diffView';
+const ADD_SOURCE_KEY = 'gh-dash:addSource';
 export const SIDEBAR_MIN = 220;
 export const SIDEBAR_MAX = 480;
 export const SIDEBAR_DEFAULT = 268;
@@ -67,20 +68,31 @@ export function setTheme(t: Theme) {
   write(THEME_KEY, t);
 }
 
+/** The source (host) the Add dialog last added to or was set to, offered again where no context decides (All). */
+export function getAddSource(): string | null {
+  return read(ADD_SOURCE_KEY) || null;
+}
+
+export function setAddSource(host: string) {
+  write(ADD_SOURCE_KEY, host);
+}
+
 /** Diff viewer preferences (desktop; the compact layout is always unified with the file list hidden). */
 export interface DiffPrefs {
   split: boolean;
   wrap: boolean;
   /** File list column shown. */
   files: boolean;
+  /** Comments column shown. */
+  comments: boolean;
 }
-const DIFF_DEFAULTS: DiffPrefs = { split: false, wrap: false, files: true };
+const DIFF_DEFAULTS: DiffPrefs = { split: false, wrap: false, files: true, comments: false };
 
 export function getDiffPrefs(): DiffPrefs {
   try {
     const v = JSON.parse(read(DIFF_KEY) ?? '{}') as Partial<Record<keyof DiffPrefs, unknown>>;
     const pick = (k: keyof DiffPrefs) => { const x = v[k]; return typeof x === 'boolean' ? x : DIFF_DEFAULTS[k]; };
-    return { split: pick('split'), wrap: pick('wrap'), files: pick('files') };
+    return { split: pick('split'), wrap: pick('wrap'), files: pick('files'), comments: pick('comments') };
   } catch {
     return DIFF_DEFAULTS;
   }

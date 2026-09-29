@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider, useIsFetching, useQueryClient } from '@tanstack/react-query';
-import { Suspense, lazy, useEffect, useRef, useState } from 'react';
+import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import { Navigate, Outlet, RouterProvider, createBrowserRouter, useLocation, useRouteError } from 'react-router';
-import { qk, refetchAfterSync, useRepos, useSyncStatus } from './api/hooks';
+import { qk, refetchAfterSync, usePresentSources, useRepos, useSyncStatus } from './api/hooks';
 import { CommandPalette } from './components/CommandPalette';
 import { DiffView } from './components/DiffView';
 import { PrDrawer } from './components/Drawer';
@@ -14,17 +14,21 @@ import { Sidebar } from './components/Sidebar';
 import { usePanes } from './components/PaneResize';
 import { MobileSidebar, useCompactSidebar } from './components/MobileSidebar';
 import { ToastProvider, useToast } from './components/Toasts';
-import { TopBar, useSyncNow, useTheme } from './components/TopBar';
+import { TopBar, useContextSync, useSyncNow, useTheme } from './components/TopBar';
 import { UIProvider, useUI } from './components/ui';
 import { hasBlockingLayer, isTypingTarget, topLayer } from './lib/layers';
 import { useCanonicalRepoUrl } from './lib/canonicalUrl';
+import { homePlace, readPlaces, useContextMemory } from './lib/contexts';
+import { sourceStatuses } from './lib/sources';
 import { getSidebarHidden, setSidebarHidden } from './lib/storage';
 import { plural } from './lib/time';
+import { capitalize } from '../../shared/provider';
 import { repoLabel } from '../../shared/repos';
 import { repoFromPath, useUrlState } from './lib/urlState';
 import { cx, isChunkLoadError } from './lib/util';
 import { preloadMarkdown } from './components/Markdown';
 import { RepoMapProvider } from './components/RepoChip';
+import { useWords } from './components/repoMapContext';
 import { Icon } from './components/Icon';
 import { PullRequestsView } from './views/PullRequests';
 
@@ -73,7 +77,9 @@ function usePreloadWhenIdle() {
 
 const queryClient = new QueryClient({
   defaultOptions: {
-    queries: { staleTime: 30_000, refetchOnWindowFocus: false, retry: 1 },
+    // Each context's data stays cached for half an hour (the context is in every query key through its params), so
+    // switching back paints at once and then revalidates.
+    queries: { staleTime: 30_000, gcTime: 30 * 60_000, refetchOnWindowFocus: false, retry: 1 },
   },
 });
 
@@ -88,11 +94,11 @@ function useSyncWatcher() {
 
   useEffect(() => {
     if (!st) return;
-    // The token changed on the server (gh auth login, a new token file, the desktop app): refresh the account.
-    const token = `${st.tokenSource}:${st.viewer ?? ''}`;
+    // A token changed on the server (gh auth login, glab auth login, a new token file, the desktop app), or a source
+    // came or went: refresh the accounts (GitHub's, and every source's).
+    const token = JSON.stringify([st.tokenSource, st.viewer, ...(st.sources ?? []).map((x) => [x.source, x.tokenSource, x.viewer, x.problem])]);
     if (lastToken.current !== null && lastToken.current !== token) {
-      void qc.invalidateQueries({ queryKey: qk.account });
-      void qc.invalidateQueries({ queryKey: qk.me });
+      for (const queryKey of [qk.account, qk.me, qk.sources]) void qc.invalidateQueries({ queryKey });
     }
     lastToken.current = token;
     const prev = wasRunning.current;
@@ -151,21 +157,28 @@ function Shell() {
   const ui = useUI();
   const [theme, toggleTheme] = useTheme();
   const sync = useSyncNow();
+  const contextSync = useContextSync();
   const status = useSyncStatus();
   const repos = useRepos();
   useSyncWatcher();
   usePreloadWhenIdle();
-  useCanonicalRepoUrl();
+  const { settled } = useCanonicalRepoUrl();
+  // The contexts to keep places for, once every source present is known (the same list `settled` was judged on).
+  const present = usePresentSources();
+  const hosts = useMemo(() => (present?.complete ? present.sources.map((x) => x.host) : null), [present]);
+  useContextMemory(settled, hosts);
   const repoKey = repoFromPath(useLocation().pathname);
   const name = repoKey && repoLabel(repoKey, repos.data ?? []);
+  const prsTitle = capitalize(useWords().pr.many);
   useEffect(() => {
-    const t = { prs: 'Pull requests', issues: 'Issues', activity: 'Activity', repos: 'Repositories', repo: name || 'Repository', insights: 'Insights', settings: 'Settings' }[view];
+    const t = { prs: prsTitle, issues: 'Issues', activity: 'Activity', repos: 'Repositories', repo: name || 'Repository', insights: 'Insights', settings: 'Settings' }[view];
     document.title = `${t} · gh-dash`;
-  }, [view, name]);
+  }, [view, name, prsTitle]);
 
   const noData = repos.isSuccess && repos.data.length === 0;
+  // No repos yet: ask for a token only when no source has one (a GitLab-only setup has no GitHub token to ask for).
   const setup = noData && view !== 'settings'
-    ? status.data?.tokenSource === 'none' ? 'token' : 'first'
+    ? sourceStatuses(status.data).every((x) => x.tokenSource === 'none') && status.data ? 'token' : 'first'
     : null;
   const hasSide = !setup && view !== 'repo' && view !== 'settings';
   const drawer = !setup && s.pr ? s.pr : null;
@@ -240,7 +253,7 @@ function Shell() {
         {diff && <DiffView key={`diff:${diff}`} id={diff} compact={compact} />}
       </div>
       {mobileOpen && <MobileSidebar focusSearch={sidebarSearch} onClose={() => setSidebarOpen(false)} />}
-      {ui.paletteOpen && <CommandPalette onClose={ui.closePalette} onRun={() => setSidebarOpen(false)} onSync={() => sync.run()} onToggleTheme={toggleTheme}
+      {ui.paletteOpen && <CommandPalette onClose={ui.closePalette} onRun={() => setSidebarOpen(false)} onSync={contextSync.run} onToggleTheme={toggleTheme}
         onToggleSidebar={canHideSide ? toggleSide : undefined} sidebarHidden={sideHidden} />}
       {ui.exportTab && <ExportModal initialTab={ui.exportTab} onClose={ui.closeExport} />}
       {ui.prompt && <PromptDialog req={ui.prompt} onClose={ui.closePrompt} />}
@@ -293,9 +306,10 @@ function AppError() {
   );
 }
 
+/** `/`: the last context's last place (the app reopens where you were); a query on `/` is a deep link and wins. */
 function RedirectHome() {
   const { search } = useLocation();
-  return <Navigate to={{ pathname: '/prs', search }} replace />;
+  return <Navigate to={search ? { pathname: '/prs', search } : homePlace(readPlaces())} replace />;
 }
 
 const router = createBrowserRouter([

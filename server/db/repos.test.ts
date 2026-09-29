@@ -1,14 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { addManualRepo, seedDb } from '../test/seed';
+import { addManualRepo, GITHUB, seedDb } from '../test/seed';
+import { addComment, createThread, getPrincipal, SELF_PRINCIPAL_ID } from './comments';
 import { listRepos } from './repos';
-import { repoKey } from './repo-key';
 import { upsertOwned, upsertStar } from './write';
 
 describe('listRepos lastActivityAt', () => {
   it('is the latest push / PR / issue / release activity; stars do not count', () => {
     const db = seedDb();
     // An inactive repository: last pushed in January, starred in September.
-    const dusty = upsertOwned(db, {
+    const dusty = upsertOwned(db, GITHUB, {
       nodeId: 'R_dusty', name: 'dusty', nameWithOwner: 'alice/dusty', owner: 'alice', description: null, url: 'https://github.com/alice/dusty',
       visibility: 'public', isArchived: false, isFork: false, languageName: null, languageColor: null, topics: [], defaultBranch: 'main',
       stars: 1, forks: 0, createdAt: '2025-01-01T00:00:00Z', pushedAt: '2026-01-29T01:03:25Z',
@@ -33,7 +33,8 @@ describe('listRepos identity', () => {
     const unavailable = addManualRepo(db, 'carol/tool');
     db.run(`UPDATE repos SET unavailable_at = '2026-09-29T00:00:00Z', unavailable_reason = 'Not found' WHERE id = ?`, [unavailable]);
     const repos = listRepos(db, 'UTC');
-    for (const r of repos) expect(r.key).toBe(repoKey({ name: r.name, name_with_owner: r.nameWithOwner }));
+    // On github.com the key is the provider path.
+    for (const r of repos) expect(r).toMatchObject({ key: r.nameWithOwner, source: 'github.com', provider: 'github' });
     const byKey = new Map(repos.map((r) => [r.key, r]));
     expect(byKey.get('alice/app')).toMatchObject({ name: 'app', trackedBy: 'owned', addedAt: null, unavailable: null });
     expect(byKey.get('bob/app')).toMatchObject({ name: 'app', owner: 'bob', trackedBy: 'manual', addedAt: '2026-09-28T00:00:00Z', unavailable: null });
@@ -49,5 +50,27 @@ describe('listRepos new stars', () => {
     upsertStar(db, kept, { login: 'zed', name: null, avatarUrl: null, starredAt: '2026-09-24T22:11:34Z' });
     const repos = listRepos(db, 'UTC', Date.parse('2026-09-27T12:00:00Z'));
     expect(repos.find((r) => r.key === 'bob/kept')!.stats.newStars30d).toBe(0);
+  });
+});
+
+describe('listRepos comment counts', () => {
+  it("counts each repo's local comments, every thread and author, for the Remove confirmation", () => {
+    const db = seedDb();
+    const you = getPrincipal(db, SELF_PRINCIPAL_ID)!;
+    const bob = addManualRepo(db, 'bob/app');
+    const general = { path: null, side: null, startLine: null, endLine: null, snippet: null };
+    const open = (repoId: number, target: { kind: 'pr'; number: number } | { kind: 'commit'; oid: string }, body: string) =>
+      createThread(db, { repoId, ...target }, { commitOid: 'a'.repeat(40), baseOid: null, anchor: general, body }, you);
+    const app = db.get<{ id: number }>(`SELECT id FROM repos WHERE key = 'alice/app'`)!.id;
+    const t = open(app, { kind: 'pr', number: 2 }, 'Why?');
+    addComment(db, t.id, you, 'Never mind.');
+    open(app, { kind: 'commit', oid: 'b'.repeat(40) }, 'Commit note');
+    open(bob, { kind: 'pr', number: 1 }, 'Namesake');
+    const counts = () => Object.fromEntries(listRepos(db, 'UTC').map((r) => [r.key, r.commentCount]));
+    expect(counts()).toMatchObject({ 'alice/app': 3, 'bob/app': 1, 'alice/secret': 0 });
+    // Removing a repo takes its comments along; the other repo keeps its own.
+    db.run('DELETE FROM repos WHERE id = ?', [bob]);
+    expect(counts()).toMatchObject({ 'alice/app': 3 });
+    expect(db.get<{ n: number }>('SELECT count(*) AS n FROM comments')!.n).toBe(3);
   });
 });

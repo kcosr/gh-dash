@@ -1,5 +1,6 @@
 /** Map StatsResponse into chart component props (web/src/charts). */
 import type { Bucket, Repo, StatsResponse, Tile, Who } from '../../../shared/api';
+import type { PrWords } from '../../../shared/provider';
 import { repoLabel, repoParts } from '../../../shared/repos';
 import { ACTIVITY_SERIES, YOU_VS_OTHERS } from '../charts';
 import type { ColumnDatum, HBarRow, LinePoint, SeriesDef, StatTileProps } from '../charts';
@@ -73,8 +74,11 @@ export function fmtHoursText(h: number): string {
 
 // ------------------------------------------------------------------ charts
 
-export function activityColumns(st: StatsResponse): { data: ColumnDatum[]; series: SeriesDef[]; table: { columns: string[]; rows: (string | number)[][] } } {
-  const series = [ACTIVITY_SERIES.commits, ACTIVITY_SERIES.prsMerged, ACTIVITY_SERIES.issues];
+/** "PRs merged" in the words of the page (`w`): "MRs merged", "PRs & MRs merged". */
+export const mergedLabel = (w: PrWords) => `${w.shortMany} merged`;
+
+export function activityColumns(st: StatsResponse, w: PrWords): { data: ColumnDatum[]; series: SeriesDef[]; table: { columns: string[]; rows: (string | number)[][] } } {
+  const series = [ACTIVITY_SERIES.commits, { ...ACTIVITY_SERIES.prsMerged, label: mergedLabel(w) }, ACTIVITY_SERIES.issues];
   const data = st.series.map((b) => ({
     ...bucketLabel(b.start, st.range.bucket),
     values: { commits: b.commits, prsMerged: b.prsMerged, issues: b.issuesOpened + b.issuesClosed },
@@ -83,7 +87,7 @@ export function activityColumns(st: StatsResponse): { data: ColumnDatum[]; serie
     data,
     series,
     table: {
-      columns: [BUCKET_COL[st.range.bucket], 'Commits', 'PRs merged', 'Issues opened', 'Issues closed'],
+      columns: [BUCKET_COL[st.range.bucket], 'Commits', mergedLabel(w), 'Issues opened', 'Issues closed'],
       rows: st.series.map((b) => [bucketLabel(b.start, st.range.bucket).title, b.commits, b.prsMerged, b.issuesOpened, b.issuesClosed]),
     },
   };
@@ -121,7 +125,7 @@ export function starsLine(st: StatsResponse): { points: LinePoint[]; table: { co
   };
 }
 
-export function ttmLine(st: StatsResponse): { points: LinePoint[]; table: { columns: string[]; rows: (string | number)[][] } } {
+export function ttmLine(st: StatsResponse, w: PrWords): { points: LinePoint[]; table: { columns: string[]; rows: (string | number)[][] } } {
   // Buckets without merges are NaN, which the LineChart draws as a gap.
   const points = st.series.map((b) => {
     const { label, title } = bucketLabel(b.start, st.range.bucket);
@@ -130,21 +134,21 @@ export function ttmLine(st: StatsResponse): { points: LinePoint[]; table: { colu
       label,
       title,
       value: h === null ? NaN : Math.round(h * 100) / 100,
-      extra: h === null ? [{ label: 'PRs merged', value: '0' }] : [{ label: 'PRs merged', value: String(b.prsMerged) }],
+      extra: [{ label: mergedLabel(w), value: h === null ? '0' : String(b.prsMerged) }],
     };
   });
   const withData = st.series.filter((b) => b.medianHoursToMerge !== null);
   return {
     points,
     table: {
-      columns: [BUCKET_COL[st.range.bucket], 'Median time to merge', 'PRs merged'],
+      columns: [BUCKET_COL[st.range.bucket], 'Median time to merge', mergedLabel(w)],
       rows: withData.map((b) => [bucketLabel(b.start, st.range.bucket).title, fmtHoursText(b.medianHoursToMerge!), b.prsMerged]),
     },
   };
 }
 
 /** Bars of the busiest repos. A repo you own is labelled by its bare name; any other has its muted owner as `labelPrefix`. */
-export function repoBars(st: StatsResponse, repos: ReadonlyMap<string, Repo>, onClick: (repo: string) => void): { rows: HBarRow[]; table: { columns: string[]; rows: (string | number)[][] } } {
+export function repoBars(st: StatsResponse, repos: ReadonlyMap<string, Repo>, onClick: (repo: string) => void, w: PrWords): { rows: HBarRow[]; table: { columns: string[]; rows: (string | number)[][] } } {
   return {
     rows: st.byRepo.filter((r) => r.total > 0).map((r) => {
       const { owner, name } = repoParts(r.repo, repos);
@@ -155,7 +159,7 @@ export function repoBars(st: StatsResponse, repos: ReadonlyMap<string, Repo>, on
         value: r.total,
         breakdown: [
           { label: 'commits', value: r.commits, color: ACTIVITY_SERIES.commits.color },
-          { label: 'PRs merged', value: r.prsMerged, color: ACTIVITY_SERIES.prsMerged.color },
+          { label: mergedLabel(w), value: r.prsMerged, color: ACTIVITY_SERIES.prsMerged.color },
           { label: 'issues', value: r.issues, color: ACTIVITY_SERIES.issues.color },
           { label: 'releases', value: r.releases },
           { label: 'stars', value: r.stars },
@@ -164,7 +168,7 @@ export function repoBars(st: StatsResponse, repos: ReadonlyMap<string, Repo>, on
       };
     }),
     table: {
-      columns: ['Repository', 'Commits', 'PRs merged', 'Issues', 'Releases', 'Stars', 'Total'],
+      columns: ['Repository', 'Commits', mergedLabel(w), 'Issues', 'Releases', 'Stars', 'Total'],
       rows: st.byRepo.map((r) => [repoLabel(r.repo, repos), r.commits, r.prsMerged, r.issues, r.releases, r.stars, r.total]),
     },
   };
@@ -196,7 +200,7 @@ export function contributorName(c: Contributor, viewer?: string | null): string 
   return `${c.actor.login ?? viewer ?? c.actor.name ?? 'you'} (you)`;
 }
 
-export function contributorBars(st: StatsResponse, viewer?: string | null): { rows: HBarRow[]; table: { columns: string[]; rows: (string | number)[][] } } {
+export function contributorBars(st: StatsResponse, viewer: string | null | undefined, w: PrWords): { rows: HBarRow[]; table: { columns: string[]; rows: (string | number)[][] } } {
   const list = mergeContributors(st.contributors);
   // Unique keys even when two unlinked authors share a display name.
   const seen = new Set<string>();
@@ -214,11 +218,11 @@ export function contributorBars(st: StatsResponse, viewer?: string | null): { ro
       value: c.total,
       breakdown: [
         { label: 'commits', value: c.commits, color: ACTIVITY_SERIES.commits.color },
-        { label: 'PRs merged', value: c.prsMerged, color: ACTIVITY_SERIES.prsMerged.color },
+        { label: mergedLabel(w), value: c.prsMerged, color: ACTIVITY_SERIES.prsMerged.color },
       ].filter((b) => b.value > 0),
     })),
     table: {
-      columns: ['Person', 'Commits', 'PRs merged', 'Total'],
+      columns: ['Person', 'Commits', mergedLabel(w), 'Total'],
       rows: list.map((c) => [contributorName(c, viewer), c.commits, c.prsMerged, c.total]),
     },
   };

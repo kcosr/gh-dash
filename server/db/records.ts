@@ -27,6 +27,14 @@ export interface RepoRecord {
   forks: number;
   createdAt: string;
   pushedAt: string | null;
+  /**
+   * The default branch's head commit, when the source reads it with the record (GitLab): the sync then plans the commit
+   * walk by it, since a push can move the head without moving its commit's time, and the source walks from this very
+   * commit, so the head recorded is the one walked. null = the source reads it but found none (an empty or unreadable
+   * repository); absent = the source doesn't read it (GitHub, whose pushedAt moves with every push). Not stored with
+   * the repo: the sync keeps it as sync_state.commits_head.
+   */
+  headOid?: string | null;
 }
 
 /** Cheap change indicators fetched with the repo list, used to decide what to sync. */
@@ -79,6 +87,13 @@ export interface PrRecord {
   closingIssues: ClosingIssueRecord[];
   url: string;
   commits: PrCommitRecord[];
+  /**
+   * What a merge put on the target branch: the merge commit, and the squashed commit when the PR was squashed. Null when
+   * not merged, or when the provider doesn't say (GitHub, whose commits carry their PR number). A source that doesn't
+   * link commits (SyncSource.linksCommits false) fills them, and the sync links commits to PRs from them.
+   */
+  mergeCommitOid: string | null;
+  squashCommitOid: string | null;
 }
 
 export interface CommitRecord {

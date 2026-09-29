@@ -1,9 +1,23 @@
 import { type Db, openDb } from '../db/db';
-import { setMeta } from '../db/meta';
 import type { ActorRecord, CommitRecord, IssueRecord, PrRecord, RepoRecord } from '../db/records';
 import { patchSettings } from '../db/settings';
 import { setRepoPrefs } from '../db/repos';
+import { ensureSource, GITHUB_HOST, GITHUB_SOURCE_ID, type SourceRef, type SourceRow, type SourceViewer, sourceKey } from '../db/sources';
 import { upsertCommit, upsertIssue, upsertPr, upsertRelease, upsertOwned, upsertStar } from '../db/write';
+
+/** The github.com source, as the write helpers take it. */
+export const GITHUB: SourceRef = { id: GITHUB_SOURCE_ID, host: GITHUB_HOST };
+
+/**
+ * Stores `v` as the account of source `sourceId` (github.com by default), unconditionally, or forgets it (null): the
+ * state a claim leaves, or another process's claim.
+ */
+export function setViewer(db: Db, v: (Partial<SourceViewer> & { login: string }) | null, sourceId = GITHUB_SOURCE_ID): void {
+  db.run(
+    'UPDATE sources SET viewer_id = ?, viewer_login = ?, viewer_name = ?, viewer_avatar = ?, viewer_emails = ? WHERE id = ?',
+    [v?.id ?? null, v?.login ?? null, v?.name ?? null, v?.avatarUrl ?? null, JSON.stringify(v?.emails ?? []), sourceId],
+  );
+}
 
 export const actor = (login: string | null, email: string | null = null): ActorRecord => ({
   login,
@@ -60,6 +74,8 @@ function pr(number: number, over: Partial<PrRecord> & Pick<PrRecord, 'state' | '
     closingIssues: [],
     url: `https://github.com/alice/x/pull/${number}`,
     commits: [],
+    mergeCommitOid: null,
+    squashCommitOid: null,
     ...over,
   };
 }
@@ -87,19 +103,25 @@ function issue(number: number, over: Partial<IssueRecord> & Pick<IssueRecord, 's
 
 /**
  * A repository added by hand, stored as adding one will store it (tracked_by 'manual'). Returns its id.
- * `key` is owner/name; the owner is everything before the last '/'.
+ * `path` is the provider path (owner/name on GitHub); the owner is everything before the last '/'. On github.com (the
+ * default `source`) the path is the key; elsewhere the key is `<host>/<path>`.
  */
-export function addManualRepo(db: Db, key: string, over: Partial<RepoRecord> & { hidden?: boolean; addedAt?: string } = {}): number {
-  const i = key.lastIndexOf('/');
-  const r: RepoRecord = { ...repo(key.slice(i + 1)), nodeId: `R_${key}`, nameWithOwner: key, owner: key.slice(0, i), url: `https://github.com/${key}`, ...over };
+export function addManualRepo(
+  db: Db,
+  path: string,
+  over: Partial<RepoRecord> & { hidden?: boolean; addedAt?: string; source?: SourceRef } = {},
+): number {
+  const { hidden, addedAt, source = GITHUB, ...fields } = over;
+  const i = path.lastIndexOf('/');
+  const r: RepoRecord = { ...repo(path.slice(i + 1)), nodeId: `R_${path}`, nameWithOwner: path, owner: path.slice(0, i), url: `https://${source.host}/${path}`, ...fields };
   return db.run(
-    `INSERT INTO repos (node_id, name, name_with_owner, owner, description, url, visibility, is_archived, is_fork, language_name,
+    `INSERT INTO repos (source_id, key, node_id, name, name_with_owner, owner, description, url, visibility, is_archived, is_fork, language_name,
        language_color, topics, default_branch, stars, forks, created_at, pushed_at, hidden, tracked_by, added_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?)`,
     [
-      r.nodeId, r.name, r.nameWithOwner, r.owner, r.description, r.url, r.visibility, Number(r.isArchived), Number(r.isFork), r.languageName,
-      r.languageColor, JSON.stringify(r.topics), r.defaultBranch, r.stars, r.forks, r.createdAt, r.pushedAt, Number(over.hidden ?? false),
-      over.addedAt ?? '2026-09-27T12:00:00Z',
+      source.id, sourceKey(source, r.nameWithOwner), r.nodeId, r.name, r.nameWithOwner, r.owner, r.description, r.url, r.visibility,
+      Number(r.isArchived), Number(r.isFork), r.languageName, r.languageColor, JSON.stringify(r.topics), r.defaultBranch, r.stars, r.forks,
+      r.createdAt, r.pushedAt, Number(hidden ?? false), addedAt ?? '2026-09-27T12:00:00Z',
     ],
   ).lastInsertRowid;
 }
@@ -110,13 +132,13 @@ export function addManualRepo(db: Db, key: string, over: Partial<RepoRecord> & {
  */
 export function seedDb(): Db {
   const db = openDb(':memory:');
-  setMeta(db, 'viewer', { login: 'Alice', name: 'Alice A', avatarUrl: 'https://avatars.example/alice' });
+  setViewer(db, { login: 'Alice', name: 'Alice A', avatarUrl: 'https://avatars.example/alice' });
   const now = '2026-09-27T12:00:00Z';
-  const app = upsertOwned(db, repo('app', { stars: 5 }), now);
-  const secret = upsertOwned(db, repo('secret', { visibility: 'private' }), now);
-  const old = upsertOwned(db, repo('old', { isArchived: true, stars: 1 }), now);
-  const fork = upsertOwned(db, repo('fork', { isFork: true }), now);
-  const hidden = upsertOwned(db, repo('hidden'), now);
+  const app = upsertOwned(db, GITHUB, repo('app', { stars: 5 }), now);
+  const secret = upsertOwned(db, GITHUB, repo('secret', { visibility: 'private' }), now);
+  const old = upsertOwned(db, GITHUB, repo('old', { isArchived: true, stars: 1 }), now);
+  const fork = upsertOwned(db, GITHUB, repo('fork', { isFork: true }), now);
+  const hidden = upsertOwned(db, GITHUB, repo('hidden'), now);
   setRepoPrefs(db, 'hidden', { hidden: true });
 
   upsertPr(db, app, pr(1, {
@@ -155,3 +177,53 @@ export function seedDb(): Db {
   patchSettings(db, { myEmails: ['alice@work.example'] });
   return db;
 }
+
+/** The GitLab instance `seedGitLab` adds. */
+export const GITLAB_HOST = 'gitlab.example.com';
+
+/**
+ * Adds a GitLab source (gitlab.example.com) to `db`, claimed by "bob" with the commit address bob@corp.example, and one
+ * repo on it: platform/app, key gitlab.example.com/platform/app. Its authors are chosen to tell the accounts apart:
+ * GitHub's alice (the seed's viewer) and GitLab's alice are different people, as are GitHub's bob and GitLab's bob.
+ *   - MR !1 merged by bob (me on GitLab), !2 open by alice (not me), !3 merged by alice (not me)
+ *   - commits gl1 by bob@corp.example (viewer address), gl2 by alice@work.example (settings.myEmails), gl3 by login
+ *     alice (not me), gl4 by login carol (not me). None carries a login of the viewer's: GitLab commits have none.
+ *   - issue 1 opened by bob (me), issue 2 opened by alice and closed by bob, release v2.0.0 by bob
+ * All times are September 2026 UTC, after the seed's own data began.
+ */
+export function seedGitLab(db: Db): { src: SourceRow; repoId: number } {
+  const src = ensureSource(db, { kind: 'gitlab', host: GITLAB_HOST, baseUrl: `https://${GITLAB_HOST}` });
+  setViewer(db, { id: '7', login: 'bob', name: 'Bob B', avatarUrl: 'https://avatars.example/bob-gl', emails: ['Bob@Corp.example'] }, src.id);
+  const path = 'platform/app';
+  const repoId = upsertOwned(
+    db,
+    src,
+    { ...repo('app'), nodeId: 'gid://gitlab/Project/1', nameWithOwner: path, owner: 'platform', url: `https://${GITLAB_HOST}/${path}` },
+    '2026-09-27T12:00:00Z',
+  );
+  const by = (login: string | null, email: string | null = null, name = login ?? 'Nobody'): ActorRecord => ({ login, name, email, avatarUrl: null });
+  upsertPr(db, repoId, pr(1, {
+    state: 'merged', createdAt: '2026-09-20T10:00:00Z', mergedAt: '2026-09-21T12:00:00Z', author: by('bob'), title: 'Ship parser',
+    commits: [
+      { oid: 'm1', headline: 'parser', committedAt: '2026-09-20T09:00:00Z', url: 'u', author: by(null, 'bob@corp.example', 'Bob (laptop)') },
+      { oid: 'm2', headline: 'review fixes', committedAt: '2026-09-20T11:00:00Z', url: 'u', author: by('alice') },
+    ],
+  }));
+  upsertPr(db, repoId, pr(2, { state: 'open', createdAt: '2026-09-22T11:00:00Z', author: by('alice'), title: 'Rework config' }));
+  upsertPr(db, repoId, pr(3, { state: 'merged', createdAt: '2026-09-23T10:00:00Z', mergedAt: '2026-09-24T12:00:00Z', author: by('alice'), title: 'Tidy tests' }));
+  upsertCommit(db, repoId, commit('gl1', '2026-09-21T09:00:00Z', by(null, 'bob@corp.example', 'Bob (laptop)'), null, 'Bootstrap service'));
+  upsertCommit(db, repoId, commit('gl2', '2026-09-22T10:00:00Z', by(null, 'alice@work.example', 'Alice (work)'), null, 'Tune pipeline'));
+  upsertCommit(db, repoId, commit('gl3', '2026-09-23T10:00:00Z', by('alice'), null, 'Rotate keys'));
+  upsertCommit(db, repoId, commit('gl4', '2026-09-24T10:00:00Z', by('carol'), null, 'Bump deps'));
+  upsertIssue(db, repoId, issue(1, { state: 'open', createdAt: '2026-09-24T09:00:00Z', author: by('bob'), title: 'Flaky deploy' }));
+  upsertIssue(db, repoId, issue(2, {
+    state: 'closed', createdAt: '2026-09-10T00:00:00Z', closedAt: '2026-09-25T10:00:00Z', author: by('alice'), closedBy: by('bob'), title: 'Stale cache',
+  }));
+  upsertRelease(db, repoId, {
+    tag: 'v2.0.0', name: 'Two', body: '', author: by('bob'), publishedAt: '2026-09-25T15:00:00Z', isPrerelease: false,
+    url: `https://${GITLAB_HOST}/${path}/-/releases/v2.0.0`,
+  });
+  return { src, repoId };
+}
+
+export { commit as commitRecord, issue as issueRecord, pr as prRecord, repo as repoRecord };

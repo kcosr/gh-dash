@@ -6,6 +6,9 @@ import { repoKey, repoKeySql, resolveRepo, resolveRepoIds } from './repo-key';
 
 interface RepoRow {
   id: number;
+  key: string;
+  source_host: string;
+  source_kind: string;
   name: string;
   name_with_owner: string;
   owner: string;
@@ -36,14 +39,14 @@ interface RepoRow {
 
 // Stars are deliberately not activity: a star on an old repo must not bump it in the sidebar.
 const REPO_SELECT = `
-  SELECT r.*, ss.synced_at,
+  SELECT r.*, ss.synced_at, src.host AS source_host, src.kind AS source_kind,
     max(
       ifnull(r.pushed_at, ''),
       ifnull((SELECT max(updated_at) FROM pull_requests WHERE repo_id = r.id), ''),
       ifnull((SELECT max(updated_at) FROM issues WHERE repo_id = r.id), ''),
       ifnull((SELECT max(published_at) FROM releases WHERE repo_id = r.id), '')
     ) AS last_activity_at
-  FROM repos r LEFT JOIN sync_state ss ON ss.repo_id = r.id
+  FROM repos r JOIN sources src ON src.id = r.source_id LEFT JOIN sync_state ss ON ss.repo_id = r.id
   WHERE r.removed_at IS NULL`;
 
 const WEEKS = 12;
@@ -87,6 +90,9 @@ export function listRepos(db: Db, tz: string, now = Date.now(), onlyKey?: string
     arr[i]!++;
   }
 
+  // Local comments (diff comments): what Remove deletes with the repo, counted for its confirmation.
+  const comments = countBy(db, 'SELECT t.repo_id, count(*) AS n FROM comments c JOIN comment_threads t ON t.id = c.thread_id GROUP BY t.repo_id', []);
+
   const setIds = new Map<number, number[]>();
   for (const m of db.all<{ repo_id: number; set_id: number }>('SELECT repo_id, set_id FROM repo_set_members ORDER BY set_id')) {
     const list = setIds.get(m.repo_id) ?? [];
@@ -96,6 +102,8 @@ export function listRepos(db: Db, tz: string, now = Date.now(), onlyKey?: string
 
   return rows.map((r) => ({
     key: repoKey(r),
+    source: r.source_host,
+    provider: r.source_kind === 'gitlab' ? ('gitlab' as const) : ('github' as const),
     name: r.name,
     nameWithOwner: r.name_with_owner,
     owner: r.owner,
@@ -127,6 +135,7 @@ export function listRepos(db: Db, tz: string, now = Date.now(), onlyKey?: string
     trackedBy: r.tracked_by === 'manual' ? ('manual' as const) : ('owned' as const),
     addedAt: r.added_at,
     unavailable: r.unavailable_at ? { since: r.unavailable_at, reason: r.unavailable_reason ?? '' } : null,
+    commentCount: comments.get(r.id) ?? 0,
   }));
 }
 

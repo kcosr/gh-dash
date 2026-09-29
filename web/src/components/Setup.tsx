@@ -1,12 +1,38 @@
+import { Link } from 'react-router';
 import type { SyncStatus } from '../../../shared/api';
 import { useDesktop } from '../api/desktop';
-import { useAccount, useCheckAccount } from '../api/hooks';
+import { useAccount, useCheckAccount, useWorkSources } from '../api/hooks';
+import { hostNames, kindOfHost, sourceStatuses } from '../lib/sources';
 import { CreateTokenNote, GhCliChoice, TokenForm, TokenOrder } from './Account';
 import { Icon } from './Icon';
 import { useRepoLabel } from './repoMapContext';
 import { useToast } from './Toasts';
 
-/** Shown instead of a view when there's no GitHub token and nothing synced yet. */
+/**
+ * The second, smaller way in (design §7.9): GitLab instead of GitHub. The desktop app connects it in Settings →
+ * Sources; a server is told by its environment (config.json takes the same). A GitLab that is configured but has no
+ * token yet says why.
+ */
+function ConnectGitLab({ desktop }: { desktop: boolean }) {
+  const gitlab = useWorkSources().filter((s) => s.kind === 'gitlab' && s.trouble && s.trouble !== 'not-configured');
+  return (
+    <div className="setup-alt">
+      {gitlab.map((s) => <p key={s.host} className="muted small">{s.status.problem}</p>)}
+      {desktop ? (
+        <p>Using GitLab? <Link to="/settings#add-gitlab">Connect GitLab instead</Link>.</p>
+      ) : (
+        <details>
+          <summary>Connect GitLab instead</summary>
+          <p>Point gh-dash at your GitLab and give it a token (<code>read_api</code> is enough), then start it again:</p>
+          <pre className="code">{'GH_DASH_GITLAB_URL=https://gitlab.example.com \\\nGITLAB_TOKEN_FILE=~/.config/gh-dash/gitlab-token npm start'}</pre>
+          <p>Or sign in with <code>glab auth login</code> and add <code>GH_DASH_GITLAB_TOKEN_SOURCE=glab</code>.</p>
+        </details>
+      )}
+    </div>
+  );
+}
+
+/** Shown instead of a view when no source has a token and nothing synced yet. */
 export function NoTokenCard() {
   const { bridge, state } = useDesktop();
   const { data: account } = useAccount();
@@ -42,6 +68,7 @@ export function NoTokenCard() {
               {lastError}
             </>
           )}
+          <ConnectGitLab desktop />
         </div>
       </div>
     );
@@ -67,6 +94,7 @@ export function NoTokenCard() {
           <button type="button" className="btn" onClick={retry} disabled={check.isPending}><Icon name="sync" />{check.isPending ? 'Checking…' : 'Check again'}</button>
           <span className="muted small">This page moves on by itself once a token is found.</span>
         </div>
+        <ConnectGitLab desktop={false} />
       </div>
     </div>
   );
@@ -77,6 +105,11 @@ export function FirstSyncCard({ status, onSync }: { status: SyncStatus | undefin
   const p = status?.progress;
   const repoLabel = useRepoLabel();
   const running = !!status?.running;
+  // Who it is syncing for: the sources that have a token (GitHub's account, GitLab's, or both).
+  const active = sourceStatuses(status).filter((x) => x.tokenSource !== 'none');
+  const from = hostNames(active.map((x) => ({ kind: kindOfHost(x.source) }))) || 'GitHub';
+  const viewers = active.flatMap((x) => (x.viewer ? [x.viewer] : []));
+  const who = viewers.length ? <> for {viewers.map((v, i) => <span key={v}>{i > 0 ? ' and ' : ''}<b>{v}</b></span>)}</> : null;
   return (
     <div className="setup">
       <div className="setup-card center">
@@ -85,7 +118,7 @@ export function FirstSyncCard({ status, onSync }: { status: SyncStatus | undefin
           <>
             <h2>First sync in progress…{p && p.total ? ` ${p.done}/${p.total} repos` : ''}</h2>
             <p>
-              gh-dash is fetching your repositories{status?.viewer ? <> for <b>{status.viewer}</b></> : null}. Pull requests, commits, issues,
+              gh-dash is fetching your repositories{who}. {from === 'GitHub' ? 'Pull requests' : from === 'GitLab' ? 'Merge requests' : 'Pull and merge requests'}, commits, issues,
               releases and stars appear as each repository finishes.
             </p>
             {p && p.total > 0 && (
@@ -98,7 +131,7 @@ export function FirstSyncCard({ status, onSync }: { status: SyncStatus | undefin
         ) : (
           <>
             <h2>No data yet</h2>
-            <p>Nothing has been synced from GitHub yet{status?.viewer ? <> for <b>{status.viewer}</b></> : null}.</p>
+            <p>Nothing has been synced from {from} yet{who}.</p>
             {status?.lastResult?.errors.length ? (
               <pre className="code err">{status.lastResult.errors.slice(0, 5).join('\n')}</pre>
             ) : null}

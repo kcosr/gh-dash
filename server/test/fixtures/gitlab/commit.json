@@ -1,0 +1,21 @@
+{
+  "id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "short_id": "bbbbbbbb",
+  "created_at": "2026-09-27T11:10:00.000+02:00",
+  "parent_ids": ["9999999999999999999999999999999999999999"],
+  "title": "Retry logins three times",
+  "message": "Retry logins three times\n\nThe identity provider drops the first request after a deploy.\n",
+  "author_name": "Alice A",
+  "author_email": "alice@example.com",
+  "authored_date": "2026-09-27T11:10:00.000+02:00",
+  "committer_name": "Alice A",
+  "committer_email": "alice@example.com",
+  "committed_date": "2026-09-27T11:10:00.000+02:00",
+  "trailers": {},
+  "extended_trailers": {},
+  "web_url": "https://gitlab.example.com/gitlab/team/platform/api/-/commit/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "stats": { "additions": 5, "deletions": 2, "total": 7 },
+  "status": "success",
+  "project_id": 40,
+  "last_pipeline": null
+}

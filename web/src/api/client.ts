@@ -5,6 +5,7 @@ import type {
   AddRepoResponse,
   ActivityResponse,
   Commit,
+  CommentThread,
   Diff,
   DiffCacheStats,
   InstanceInfo,
@@ -12,6 +13,8 @@ import type {
   IssueQuery,
   ListResponse,
   Me,
+  NewPrThread,
+  NewThread,
   PageQuery,
   PrListResponse,
   PrQuery,
@@ -24,6 +27,7 @@ import type {
   SavedView,
   ScopeQuery,
   Settings,
+  Source,
   Star,
   StatsQuery,
   StatsResponse,
@@ -147,14 +151,22 @@ export const api = {
   /** How this server runs: version, API URL, auth mode and instance settings with their sources. */
   instance: () => get<InstanceInfo>('/api/v1/instance'),
 
+  /** Every source (github.com first) with its account, sync state and repository counts. Calls no code host. */
+  sources: () => get<{ items: Source[] }>('/api/v1/sources'),
+  source: (host: string) => get<Source>(`/api/v1/sources/${enc(host)}`),
+  /** Resolve the source's token again and validate it now. 503 (the Source in `details`) when there is no token. */
+  checkSource: (host: string) => request<Source>('POST', `/api/v1/sources/${enc(host)}/check`),
+  /** Remove a source this server no longer configures, and everything synced from it (nothing changes on the host). */
+  deleteSource: (host: string) => request<void>('DELETE', `/api/v1/sources/${enc(host)}`),
+
   repos: () => get<{ items: Repo[] }>('/api/v1/repos'),
   repo: (key: string) => get<Repo>(`/api/v1/repos/${enc(key)}`),
   patchRepo: (key: string, body: { pinned?: boolean; hidden?: boolean }) => request<Repo>('PATCH', `/api/v1/repos/${enc(key)}`, body),
-  /** Repositories of other owners the token can read, and suggestions (the Add dialog). */
-  repoCandidates: (refresh = false) => get<RepoCandidatesResponse>(apiUrl('repo-candidates', { refresh: refresh ? '1' : undefined })),
-  /** Whether the token can read `repo` (owner/name or a URL), with a preview. */
-  repoLookup: (repo: string) => get<RepoLookup>(apiUrl('repo-lookup', { repo })),
-  addRepo: (body: { repo: string; includeInDefault?: boolean }) => request<AddRepoResponse>('POST', '/api/v1/repos', body),
+  /** Repositories of other owners the token can read, and suggestions (the Add dialog). `source`: a host (default github.com). */
+  repoCandidates: (refresh = false, source?: string) => get<RepoCandidatesResponse>(apiUrl('repo-candidates', { refresh: refresh ? '1' : undefined, source })),
+  /** Whether the token can read `repo` (owner/name, a project path, a key or a URL), with a preview. */
+  repoLookup: (repo: string, source?: string) => get<RepoLookup>(apiUrl('repo-lookup', { repo, source })),
+  addRepo: (body: { repo: string; source?: string; includeInDefault?: boolean }) => request<AddRepoResponse>('POST', '/api/v1/repos', body),
   /** Stop tracking a repository added by hand and delete its data from this dashboard (not on GitHub). */
   removeRepo: (key: string) => request<void>('DELETE', `/api/v1/repos/${enc(key)}`),
 
@@ -177,7 +189,8 @@ export const api = {
   stats: (q: StatsQuery) => get<StatsResponse>(apiUrl('stats', { ...q })),
 
   syncStatus: () => get<SyncStatus>('/api/v1/sync/status'),
-  sync: (body: { repo?: string; full?: boolean } = {}) => request<SyncStatus>('POST', '/api/v1/sync', body),
+  /** `source`: sync that source (a host) alone; without it, every source with a token. */
+  sync: (body: { repo?: string; full?: boolean; source?: string } = {}) => request<SyncStatus>('POST', '/api/v1/sync', body),
 
   /** refresh re-checks GitHub for the PR's current head instead of the last synced one. */
   prDiff: (repo: string, number: number, refresh = false) =>
@@ -192,6 +205,17 @@ export const api = {
     }),
   diffCache: () => get<DiffCacheStats>('/api/v1/diff-cache'),
   clearDiffCache: () => request<DiffCacheStats>('DELETE', '/api/v1/diff-cache'),
+
+  /** Local comment threads (never sent to GitHub). A commit's need its full oid. */
+  prThreads: (repo: string, number: number) => get<{ items: CommentThread[] }>(`/api/v1/prs/${enc(repo)}/${number}/threads`),
+  commitThreads: (repo: string, oid: string) => get<{ items: CommentThread[] }>(`/api/v1/commits/${enc(repo)}/${enc(oid)}/threads`),
+  createPrThread: (repo: string, number: number, body: NewPrThread) => request<CommentThread>('POST', `/api/v1/prs/${enc(repo)}/${number}/threads`, body),
+  createCommitThread: (repo: string, oid: string, body: NewThread) => request<CommentThread>('POST', `/api/v1/commits/${enc(repo)}/${enc(oid)}/threads`, body),
+  reply: (threadId: number, body: string) => request<CommentThread>('POST', `/api/v1/threads/${threadId}/comments`, { body }),
+  setThreadStatus: (threadId: number, status: 'open' | 'resolved') => request<CommentThread>('PATCH', `/api/v1/threads/${threadId}`, { status }),
+  deleteThread: (threadId: number) => request<void>('DELETE', `/api/v1/threads/${threadId}`),
+  editComment: (commentId: number, body: string) => request<CommentThread>('PATCH', `/api/v1/comments/${commentId}`, { body }),
+  deleteComment: (commentId: number) => request<{ thread: CommentThread | null }>('DELETE', `/api/v1/comments/${commentId}`),
 
   settings: () => get<Settings>('/api/v1/settings'),
   patchSettings: (body: Partial<Settings>) => request<Settings>('PATCH', '/api/v1/settings', body),

@@ -8,7 +8,9 @@ describe('diff URL state', () => {
     expect(parseDiffId('kcosr/gh-dash#12')).toEqual({ kind: 'pr', repo: 'kcosr/gh-dash', number: 12 });
     expect(parseDiffId('kcosr/gh-dash@6df2155')).toEqual({ kind: 'commit', repo: 'kcosr/gh-dash', oid: '6df2155' });
     expect(parseDiffId(commitDiffId('kcosr/my.repo', '6df21550c42ff69731e827d728f33f1577aba87f'))).toMatchObject({ kind: 'commit', repo: 'kcosr/my.repo' });
-    for (const bad of [null, '', 'kcosr/gh-dash', 'kcosr/gh-dash#0', 'kcosr/gh-dash#x', '#12', 'kcosr/gh-dash@6df215', 'kcosr/gh-dash@xyz1234', `kcosr/gh-dash@${'a'.repeat(41)}`, 'a b#1', 'a#1@abcdefg']) {
+    // A SHA-256 repository's SHAs are 64 characters, and its abbreviations any length from 7.
+    for (const oid of ['a'.repeat(64), 'a'.repeat(45)]) expect(parseDiffId(commitDiffId('gitlab.example.com/alice/app', oid))).toEqual({ kind: 'commit', repo: 'gitlab.example.com/alice/app', oid });
+    for (const bad of [null, '', 'kcosr/gh-dash', 'kcosr/gh-dash#0', 'kcosr/gh-dash#x', '#12', 'kcosr/gh-dash@6df215', 'kcosr/gh-dash@xyz1234', `kcosr/gh-dash@${'a'.repeat(65)}`, 'a b#1', 'a#1@abcdefg']) {
       expect(parseDiffId(bad)).toBeNull();
     }
   });
@@ -30,7 +32,7 @@ describe('diff URL state', () => {
   });
 
   it('never saves or carries what is open on top of a view', () => {
-    expect(OVERLAY_KEYS).toEqual(['pr', 'diff', 'file']);
+    expect(OVERLAY_KEYS).toEqual(['pr', 'diff', 'file', 'thread', 'only']);
     expect(canonicalQuery('?who=me&diff=kcosr/gh-dash%232&file=a.ts&pr=kcosr/gh-dash%232&range=7d')).toBe('range=7d&who=me');
     expect(canonicalQuery('?range=7d&who=me')).toBe(canonicalQuery('?who=me&range=7d&diff=x@abcdef1'));
     expect(parseUrlState(carrySearch('?repos=alice/app&diff=alice/app@abcdef1&file=a.ts'), 'activity')).toMatchObject({ repos: ['alice/app'], diff: null, file: null });

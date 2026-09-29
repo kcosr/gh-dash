@@ -1,7 +1,7 @@
 import { promisify } from 'node:util';
 import { gunzip as gunzipCb, gzip as gzipCb } from 'node:zlib';
 import type { DiffCacheStats, Diff } from '../../shared/api';
-import { HttpError } from '../api/http';
+import { HttpError } from '../lib/errors';
 import type { Db } from '../db/db';
 import { repoKeySql, resolveRepo } from '../db/repo-key';
 import { getSettings } from '../db/settings';
@@ -43,11 +43,22 @@ interface PrRow {
   updated_at: string;
 }
 
-/** Where the diff service gets the source each fetch asks. */
+/**
+ * Where the diff service gets the source each fetch asks, by the source the repo is on. DiffRouter (sources/diffs.ts)
+ * answers with the SourceRegistry's; a SourceDiffSupply serves one source's repos and is a DiffSources of its own.
+ */
 export interface DiffSources {
-  /** Rejects with a SourceError when there is none to use (say, no token): the API answers 503 with its message. */
-  get(): Promise<DiffSource>;
+  /** Rejects with a SourceError when there is none to use (not configured here, no token): the API answers 503 with its message. */
+  get(repo: { sourceId: number }): Promise<DiffSource>;
   /** `source` failed to authenticate (a revoked or replaced token): don't hand it out again. */
+  authFailed(source: DiffSource): void;
+}
+
+/** The DiffSource of one source (github.com, or one GitLab instance) for its current token: what a SourceRuntime holds. */
+export interface SourceDiffSupply {
+  /** Rejects with a SourceError when there is none to use (say, no token). */
+  get(): Promise<DiffSource>;
+  /** `source` failed to authenticate (a revoked or replaced token): resolve the token again, don't hand it out again. */
   authFailed(source: DiffSource): void;
 }
 
@@ -62,9 +73,19 @@ export interface DiffServiceOptions {
 
 type Fetcher = (source: DiffSource, signal: AbortSignal) => Promise<Payload>;
 
+/**
+ * A commit SHA or an abbreviation of one, lower-cased: 7-40 hex characters in a SHA-1 repository, up to 64 in a SHA-256
+ * one. The length alone can't tell the two apart (a 45-character abbreviation is valid only in SHA-256), so the range
+ * is the wider one; a SHA the repository doesn't have is the source's not-found.
+ */
 function hexOid(value: string, what: string): string {
-  if (!/^[0-9a-f]{7,40}$/i.test(value)) throw new HttpError(400, `Invalid ${what}: expected 7-40 hex characters`);
+  if (!/^[0-9a-f]{7,64}$/i.test(value)) throw new HttpError(400, `Invalid ${what}: expected 7-64 hex characters`);
   return value.toLowerCase();
+}
+
+/** Whether `value` (already checked by hexOid, or any string) is a whole SHA: 40 hex characters (SHA-1) or 64 (SHA-256). */
+export function isFullSha(value: string): boolean {
+  return /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(value);
 }
 
 /** A repository-relative path: no empty, "." or ".." segments, and no control characters (they'd end up in logs). */
@@ -154,16 +175,19 @@ export class DiffService {
   // Lookups
   // ---------------------------------------------------------------------------
 
-  /** A tracked repository by its key: its row id (synced PRs and commits hang off it) and what sources are told. */
-  private repo(key: string): { id: number; repo: DiffRepo } {
+  /**
+   * A tracked repository by its key: its row id (synced PRs and commits hang off it), the source it is on, and what
+   * that source is told.
+   */
+  private repo(key: string): { id: number; sourceId: number; repo: DiffRepo } {
     const ref = resolveRepo(this.db, key);
     if (!ref) throw new HttpError(404, 'Repository not found');
-    return { id: ref.id, repo: { key: ref.key, owner: ref.owner, name: ref.name, path: ref.path } };
+    return { id: ref.id, sourceId: ref.sourceId, repo: { key: ref.key, owner: ref.owner, name: ref.name, path: ref.path } };
   }
 
   /** Full SHA for an abbreviated one, from synced commits or cached commit diffs, when unambiguous. */
   private expandOid(id: number, repo: DiffRepo, oid: string): string | null {
-    if (oid.length === 40) return oid;
+    if (isFullSha(oid)) return oid;
     const rows = this.db.all<{ oid: string }>('SELECT oid FROM commits WHERE repo_id = ? AND oid >= ? AND oid < ? LIMIT 2', [
       id,
       oid,
@@ -173,10 +197,10 @@ export class DiffService {
     return rows.length ? null : this.safely('lookup', () => this.cache.findCommit(repo.key, oid), null);
   }
 
-  /** The source for a fetch; none to use (say, no token) is a 503 with the reason. */
-  private async source(): Promise<DiffSource> {
+  /** The source for a fetch about a repo on source `sourceId`; none to use (not configured here, no token) is a 503 with the reason. */
+  private async source(sourceId: number): Promise<DiffSource> {
     try {
-      return await this.opts.sources.get();
+      return await this.opts.sources.get({ sourceId });
     } catch (err) {
       throw err instanceof SourceError ? new HttpError(503, err.message) : err;
     }
@@ -192,8 +216,8 @@ export class DiffService {
   }
 
   /** Runs a fetch from the source under the build deadline, mapping failures to API errors and logging what it cost. */
-  private async fetching(label: string, fn: Fetcher): Promise<Payload> {
-    const source = await this.source();
+  private async fetching(sourceId: number, label: string, fn: Fetcher): Promise<Payload> {
+    const source = await this.source(sourceId);
     const started = Date.now();
     const before = source.requests;
     try {
@@ -235,7 +259,7 @@ export class DiffService {
    * with a retryable 502.
    */
   async prDiff(repoName: string, number: number, refresh = false): Promise<Payload> {
-    const { id, repo } = this.repo(repoName);
+    const { id, sourceId, repo } = this.repo(repoName);
     const pr = this.db.get<PrRow>('SELECT head_oid, base_ref, state, updated_at FROM pull_requests WHERE repo_id = ? AND number = ?', [
       id,
       number,
@@ -249,7 +273,7 @@ export class DiffService {
     }
 
     const fetched = this.once(`pr/${repo.key}/${number}/${refresh}`, () =>
-      this.fetching(`${repo.key}#${number}`, async (source, signal) => {
+      this.fetching(sourceId, `${repo.key}#${number}`, async (source, signal) => {
         if (current && (await source.prHeadIs(repo, number, current.oid, signal))) {
           const hit = this.cached(current.key);
           if (hit) return hit;
@@ -321,7 +345,7 @@ export class DiffService {
   /** A commit's diff against its first parent. The commit needn't be synced (PR branch commits aren't). */
   async commitDiff(repoName: string, oid: string, refresh = false): Promise<Payload> {
     const short = hexOid(oid, 'commit');
-    const { id, repo } = this.repo(repoName);
+    const { id, sourceId, repo } = this.repo(repoName);
     const full = this.expandOid(id, repo, short);
     const key = (sha: string) => `commit/${repo.key}/${sha}`;
     const hit = full && !refresh ? this.cached(key(full)) : null;
@@ -329,7 +353,7 @@ export class DiffService {
 
     const ref = full ?? short;
     return this.once(`commit/${repo.key}/${ref}/${refresh}`, () =>
-      this.fetching(`${repo.key}@${ref.slice(0, 7)}`, async (source, signal) => {
+      this.fetching(sourceId, `${repo.key}@${ref.slice(0, 7)}`, async (source, signal) => {
         const commit = await source.commit(repo, ref, signal).catch((err: unknown) => {
           if (err instanceof SourceError && err.kind === 'not-found') throw new HttpError(404, `Commit ${ref} not found on ${HOSTS[source.kind]}`);
           throw err;
@@ -353,14 +377,14 @@ export class DiffService {
   async blob(repoName: string, ref: string, path: string): Promise<Payload> {
     const short = hexOid(ref, 'ref');
     checkPath(path);
-    const { id, repo } = this.repo(repoName);
+    const { id, sourceId, repo } = this.repo(repoName);
     const sha = this.expandOid(id, repo, short) ?? short;
     const key = `blob/${repo.key}/${sha}/${path}`;
-    const hit = sha.length === 40 ? this.cached(key) : null;
+    const hit = isFullSha(sha) ? this.cached(key) : null;
     if (hit) return hit;
 
     return this.once(key, () =>
-      this.fetching(`${repo.key}@${sha.slice(0, 7)}:${path}`, async (source, signal) => {
+      this.fetching(sourceId, `${repo.key}@${sha.slice(0, 7)}:${path}`, async (source, signal) => {
         const file = await source.blob(repo, sha, path, MAX_BLOB_BYTES, signal).catch((err: unknown) => {
           if (err instanceof SourceError && err.kind === 'not-found') throw new HttpError(404, `${path} not found at ${sha.slice(0, 7)}`);
           throw err;
@@ -370,7 +394,7 @@ export class DiffService {
         // Git's own heuristic: a NUL byte in the first 8000 bytes means binary.
         if (file.bytes.subarray(0, 8000).includes(0)) throw new HttpError(415, `${path} is a binary file`);
         // What a short ref names isn't fixed (it can become ambiguous, or name another commit later): don't keep it.
-        const entry = sha.length === 40 ? { key, kind: 'blob' as const, repo: repo.key, oid: sha, fetchedAt: this.now() } : null;
+        const entry = isFullSha(sha) ? { key, kind: 'blob' as const, repo: repo.key, oid: sha, fetchedAt: this.now() } : null;
         return this.store(entry, new TextDecoder('utf-8', { ignoreBOM: true }).decode(file.bytes));
       }),
     );

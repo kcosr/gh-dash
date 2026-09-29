@@ -1,0 +1,41 @@
+[
+  {
+    "diff": "@@ -1,4 +1,4 @@\n import { login } from './auth';\n-const retries = 1;\n+const retries = 3;\n export { login };\n",
+    "collapsed": false,
+    "too_large": false,
+    "new_path": "src/login.ts",
+    "old_path": "src/login.ts",
+    "a_mode": "100644",
+    "b_mode": "100644",
+    "new_file": false,
+    "renamed_file": false,
+    "deleted_file": false,
+    "generated_file": null
+  },
+  {
+    "diff": "@@ -0,0 +1,3 @@\n+# Auth\n+\n+Retries three times.\n",
+    "collapsed": false,
+    "too_large": false,
+    "new_path": "docs/auth.md",
+    "old_path": "docs/auth.md",
+    "a_mode": "0",
+    "b_mode": "100644",
+    "new_file": true,
+    "renamed_file": false,
+    "deleted_file": false,
+    "generated_file": null
+  },
+  {
+    "diff": "@@ -1 +0,0 @@\n-old = 1\n",
+    "collapsed": false,
+    "too_large": false,
+    "new_path": "old.cfg",
+    "old_path": "old.cfg",
+    "a_mode": "100644",
+    "b_mode": "0",
+    "new_file": false,
+    "renamed_file": false,
+    "deleted_file": true,
+    "generated_file": null
+  }
+]

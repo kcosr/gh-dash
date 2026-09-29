@@ -1,4 +1,5 @@
-import { checkToken, defaultSleep, GitHubError, limitError, resetAt, RetryableError, withRetries } from './transport';
+import { defaultSleep, readCapped, RetryableError } from '../provider/transport';
+import { checkToken, GitHubError, limitError, resetAt, withRetries } from './transport';
 
 const API = 'https://api.github.com';
 // Newest version as of 2026-09 (GET /versions); its breaking changes don't touch the endpoints used here.
@@ -45,7 +46,7 @@ interface Fetched<T> {
 
 export interface RawFile {
   bytes: Uint8Array;
-  /** The body exceeded maxBytes; `bytes` holds only the first part. */
+  /** The body exceeded maxBytes; `bytes` is empty. */
   tooLarge: boolean;
   /** Directories, submodules and symlinks outside the repo come back as JSON descriptions, not content. */
   isFile: boolean;
@@ -217,23 +218,5 @@ const readText = (res: Response) => res.text();
 
 async function readLimited(res: Response, maxBytes: number): Promise<RawFile> {
   const isFile = !/^application\/json\b/i.test(res.headers.get('content-type') ?? '');
-  if (Number(res.headers.get('content-length')) > maxBytes) {
-    await res.body?.cancel();
-    return { bytes: new Uint8Array(), tooLarge: true, isFile };
-  }
-  if (!res.body) return { bytes: new Uint8Array(), tooLarge: false, isFile };
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  const reader = res.body.getReader();
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value);
-    size += value.byteLength;
-    if (size > maxBytes) {
-      await reader.cancel();
-      return { bytes: new Uint8Array(), tooLarge: true, isFile };
-    }
-  }
-  return { bytes: Buffer.concat(chunks), tooLarge: false, isFile };
+  return { ...(await readCapped(res, maxBytes)), isFile };
 }

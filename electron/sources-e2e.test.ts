@@ -80,7 +80,7 @@ beforeEach(async () => {
     tcp: false,
     log: () => {},
     tokenOptions: { fs: noFiles, exec: async () => { throw new Error('gh must not run in tests'); }, fetchImpl: async () => { throw new Error('no network in tests'); } },
-    sourceOptions: { fs: fakeFs({ '/usr/bin/glab': { exec: true } }), exec: glab.exec, fetchImpl: api.fetchImpl, sleep: async () => {} },
+    sourceOptions: { platform: 'linux', fs: fakeFs({ '/usr/bin/glab': { exec: true } }), exec: glab.exec, fetchImpl: api.fetchImpl, sleep: async () => {} },
   });
   // A first sync would go on to fetch projects: here it is enough that it was asked for.
   vi.spyOn(server.sync, 'startOrQueue').mockResolvedValue('started');

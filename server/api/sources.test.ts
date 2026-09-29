@@ -76,6 +76,8 @@ function sourcesApp(setup: Setup = {}) {
       sleep: async () => {},
       fs: setup.glab ? fakeFs({ '/usr/bin/glab': { exec: true } }) : noFiles,
       exec: setup.glab ?? (async () => { throw new Error('glab must not run in tests'); }),
+      // The fake file system is POSIX (/usr/bin/glab on PATH), on every OS.
+      platform: 'linux',
     },
   });
   if (gitlab === 'configured') {

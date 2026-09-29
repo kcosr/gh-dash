@@ -887,7 +887,7 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
     </div>
   )), [compact]);
   const onOnly = comments.onOnlyChange;
-  const title = diff.kind === 'pr' ? `${diff.repo}#${diff.number}` : `${diff.repo}@${diff.headOid.slice(0, 7)}`;
+  const title = diff.kind === 'pr' ? `${diff.repo}${provider.prRef}${diff.number}` : `${diff.repo}@${diff.headOid.slice(0, 7)}`;
 
   return (
     <div className={cx('diff-viewer', compact && 'compact')} ref={root} onKeyDown={expandControls.onKeyDown}>
@@ -938,7 +938,7 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
           )}
           {showColumn && (
             <LayerParent.Provider value={columnLayer.scope}>
-              <CommentsColumn threads={ordered} order={indexOf} title={title} kind={diff.kind} error={comments.error} onRetry={comments.retry}
+              <CommentsColumn threads={ordered} order={indexOf} title={title} kind={diff.kind} provider={provider} error={comments.error} onRetry={comments.retry}
                 onJump={(id) => focusThread(id, { scroll: true })} onClose={() => setColumn(false)} onCreateGeneral={createGeneral}
                 unsent={unsent} sending={sending} headOid={diff.headOid} onResume={resumeDraft} onDiscardDraft={removeNewDraft} />
             </LayerParent.Provider>

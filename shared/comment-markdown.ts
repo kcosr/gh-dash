@@ -4,10 +4,13 @@
  */
 import type { CommentThread, ThreadComment } from './api';
 import type { ThreadPlacement } from './comment-placement';
+import { capitalize, PROVIDERS, type Provider } from './provider';
 
 export interface ThreadsMarkdownOptions {
-  /** Top heading, e.g. "gh-dash#12". */
+  /** Top heading, e.g. "gh-dash#12" (or "app!12" for a GitLab merge request). */
   title?: string;
+  /** The repo's code host: a PR-level thread is headed "Pull request" or "Merge request". GitHub when absent. */
+  provider?: Pick<Provider, 'pr'>;
   /**
    * Placement in the diff on screen (the server has none): relocated threads show their current lines, outdated
    * ones are marked. Without it, threads show the lines they were made on.
@@ -28,10 +31,10 @@ function fence(code: string): string {
 const extension = (path: string) => /\.([\w+-]+)$/.exec(path)?.[1] ?? '';
 const lineRange = (start: number, end: number) => (start === end ? `line ${start}` : `lines ${start}–${end}`);
 
-function heading(t: CommentThread, placement: ThreadPlacement | undefined): string {
+function heading(t: CommentThread, placement: ThreadPlacement | undefined, p: Pick<Provider, 'pr'>): string {
   const notes: string[] = [];
   let where: string;
-  if (t.path === null) where = t.kind === 'pr' ? 'Pull request' : 'Commit';
+  if (t.path === null) where = t.kind === 'pr' ? capitalize(p.pr.one) : 'Commit';
   else if (t.side === null || t.startLine === null || t.endLine === null) where = `\`${t.path}\``;
   else {
     const at = placement?.kind === 'line' ? placement : { startLine: t.startLine, endLine: t.endLine };
@@ -55,7 +58,7 @@ function compare(a: CommentThread, b: CommentThread): number {
 export function threadsMarkdown(threads: readonly CommentThread[], opts: ThreadsMarkdownOptions = {}): string {
   const parts: string[] = opts.title ? [`# ${opts.title}`] : [];
   for (const t of [...threads].sort(compare)) {
-    const lines = [heading(t, opts.placements?.get(t.id))];
+    const lines = [heading(t, opts.placements?.get(t.id), opts.provider ?? PROVIDERS.github)];
     if (t.snippet !== null && t.path !== null) {
       const f = fence(t.snippet);
       lines.push(`${f}${extension(t.path)}\n${t.snippet}\n${f}`);

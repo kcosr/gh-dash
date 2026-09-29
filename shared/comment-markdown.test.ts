@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { CommentThread, Principal } from './api';
 import { threadsMarkdown } from './comment-markdown';
+import { PROVIDERS } from './provider';
 
 const you: Principal = { id: 1, kind: 'self', name: 'You' };
 const bot: Principal = { id: 2, kind: 'agent', name: 'Reviewer' };
@@ -60,6 +61,7 @@ describe('threadsMarkdown', () => {
     expect(md).toContain('### `a.ts` line 9 (new)\n');
     expect(md).toContain('### `b.ts` lines 5–6 (new) · outdated, made on 0123456 · resolved\n');
     expect(threadsMarkdown([thread({})])).toBe('### Pull request\n\n- **You**: Why?\n');
+    expect(threadsMarkdown([thread({})], { provider: PROVIDERS.gitlab })).toBe('### Merge request\n\n- **You**: Why?\n');
     expect(threadsMarkdown([thread({ kind: 'commit', number: null })])).toMatch(/^### Commit\n/);
     expect(threadsMarkdown([])).toBe('');
   });

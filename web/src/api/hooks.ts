@@ -445,7 +445,7 @@ export function useThreads(id: string | null) {
     queryKey: qk.threads(id ?? ''),
     queryFn: () => (t!.kind === 'pr' ? api.prThreads(t!.repo, t!.number) : api.commitThreads(t!.repo, t!.oid)).then((r) => r.items),
     // Commit threads need the full oid; an abbreviated one waits for the diff.
-    enabled: !!t && (t.kind === 'pr' || t.oid.length === 40),
+    enabled: !!t && (t.kind === 'pr' || t.oid.length === 40 || t.oid.length === 64),
     staleTime: 30_000,
   });
 }

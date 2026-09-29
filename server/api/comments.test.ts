@@ -6,7 +6,7 @@ import { DiffCache } from '../diff/cache';
 import { DiffService } from '../diff/service';
 import { GitHubDiffSources } from '../github/diff-source';
 import { SyncManager } from '../sync/manager';
-import { seedDb } from '../test/seed';
+import { GITLAB_HOST, seedDb, seedGitLab } from '../test/seed';
 import { testTokens } from '../test/tokens';
 import { createApp } from './app';
 
@@ -103,6 +103,44 @@ describe('comment threads API', () => {
     expect((await json<{ items: CommentThread[] }>('GET', `/prs/app/2/threads`)).body.items).toEqual([]);
   });
 
+  it("keys a GitLab merge request's threads by repo and iid, and words its Markdown as GitLab does", async () => {
+    const db = seedDb();
+    seedGitLab(db);
+    const { json, send } = makeApp(db);
+    const key = encodeURIComponent(`${GITLAB_HOST}/platform/app`);
+    const t = await json('POST', `/prs/${key}/2/threads`, lineThread);
+    expect(t.status).toBe(200);
+    expect(t.body).toMatchObject({ kind: 'pr', repo: `${GITLAB_HOST}/platform/app`, number: 2 });
+    await json('POST', `/prs/${key}/2/threads`, { commitOid: HEAD, body: 'Overall fine.' });
+    // The GitHub repo with the same path and number keeps its own (none).
+    expect((await json<{ items: CommentThread[] }>('GET', '/prs/app/2/threads')).body.items).toEqual([]);
+    expect((await json<{ items: CommentThread[] }>('GET', `/prs/${key}/2/threads`)).body.items).toHaveLength(2);
+    const md = await (await send('GET', `/prs/${key}/2/threads?format=md`)).text();
+    expect(md.split('\n').filter((l) => l.startsWith('#'))).toEqual([`# ${GITLAB_HOST}/platform/app!2`, '### Merge request', '### `src/a.ts` lines 3–4 (new)']);
+    // The MR list counts them, as the PR list does.
+    const range = `from=2026-09-01&to=2026-09-30&tz=UTC&repos=${key}`;
+    const items = (await json<{ items: { id: string; comments: unknown }[] }>('GET', `/prs?${range}`)).body.items;
+    expect(items.find((p) => p.id === `${GITLAB_HOST}/platform/app#2`)?.comments).toEqual({ threads: 2, unresolved: 2 });
+    // GitHub's Markdown is unchanged.
+    await json('POST', '/prs/app/2/threads', { commitOid: HEAD, body: 'Overall fine.' });
+    const gh = await (await send('GET', '/prs/app/2/threads?format=md')).text();
+    expect(gh.split('\n').filter((l) => l.startsWith('#'))).toEqual(['# app#2', '### Pull request']);
+  });
+
+  it('takes the 64-character SHAs of a SHA-256 repository (GitLab can host those)', async () => {
+    const { json } = makeApp();
+    const sha256 = 'd'.repeat(64);
+    const t = await json('POST', `/commits/app/${sha256}/threads`, { baseOid: 'e'.repeat(64), body: 'Note' });
+    expect(t.status).toBe(200);
+    expect(t.body).toMatchObject({ kind: 'commit', commitOid: sha256, baseOid: 'e'.repeat(64) });
+    expect((await json<{ items: CommentThread[] }>('GET', `/commits/app/${sha256}/threads`)).body.items).toHaveLength(1);
+    const line = await json('POST', '/prs/app/2/threads', { ...lineThread, commitOid: 'f'.repeat(64), baseOid: null });
+    expect(line.status).toBe(200);
+    for (const bad of ['d'.repeat(63), 'd'.repeat(65), 'd'.repeat(41)]) {
+      expect((await json('POST', `/commits/app/${bad}/threads`, { body: 'x' })).status, bad).toBe(400);
+    }
+  });
+
   it('validates targets, anchors and bodies', async () => {
     const { send } = makeApp();
     const post = async (path: string, body: unknown) => {
@@ -113,11 +151,11 @@ describe('comment threads API', () => {
     expect((await post('/prs/old/1/threads', lineThread)).status).toBe(200); // archived repos are still repos
     expect(await post('/prs/app/99/threads', lineThread)).toEqual({ status: 404, error: 'Pull request not found' });
     expect((await post('/prs/app/0/threads', lineThread)).status).toBe(400);
-    expect(await post('/commits/app/abc1234/threads', { body: 'x' })).toEqual({ status: 400, error: 'Invalid oid: expected a full 40-character commit SHA' });
+    expect(await post('/commits/app/abc1234/threads', { body: 'x' })).toEqual({ status: 400, error: 'Invalid oid: expected a full commit SHA (40 or 64 characters)' });
 
     const bad: [Record<string, unknown>, string][] = [
       [{ commitOid: undefined }, 'commitOid'],
-      [{ commitOid: 'abc1234' }, 'commitOid: expected a full 40-character commit SHA'],
+      [{ commitOid: 'abc1234' }, 'commitOid: expected a full commit SHA (40 or 64 characters)'],
       [{ body: '  \n ' }, 'body: must not be empty'],
       [{ body: 'x'.repeat(65_537) }, 'body'],
       [{ path: null }, 'a line thread needs a path'],

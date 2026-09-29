@@ -46,7 +46,7 @@ export const newDraftKey = (scope: string, a: DraftAnchor) =>
   `${scope}|${a.commitOid}|${a.baseOid ?? '-'}|${a.path}|${a.side}|${a.startLine}-${a.endLine}`;
 
 function validAnchor(v: DraftAnchor | undefined): v is DraftAnchor {
-  const oid = (x: unknown) => typeof x === 'string' && /^[0-9a-f]{40}$/.test(x);
+  const oid = (x: unknown) => typeof x === 'string' && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(x);
   return !!v && typeof v.path === 'string' && (v.side === 'old' || v.side === 'new') && Number.isInteger(v.startLine) && Number.isInteger(v.endLine)
     && v.startLine >= 1 && v.endLine >= v.startLine && oid(v.commitOid) && (v.baseOid === null || oid(v.baseOid))
     && typeof v.snippet === 'string' && v.snippet.split('\n').length === v.endLine - v.startLine + 1;

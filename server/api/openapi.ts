@@ -438,12 +438,12 @@ function commentEndpoints(): EndpointDoc[] {
     },
     {
       method: 'get', path: '/api/v1/commits/{repo}/{oid}/threads', tag, summary: "A commit's comment threads, with their comments",
-      params: [repo, p('oid', 'Full 40-character commit SHA'), format], response: { status: 200, schema: threads }, textFormats: 'md',
+      params: [repo, p('oid', 'Full commit SHA (40 characters, or 64 for SHA-256)'), format], response: { status: 200, schema: threads }, textFormats: 'md',
     },
     {
       method: 'post', path: '/api/v1/commits/{repo}/{oid}/threads', tag, summary: 'Start a thread on a commit with its first comment',
       description: 'The commit need not be synced.',
-      params: [repo, p('oid', 'Full 40-character commit SHA')], body: { schema: ref('NewThread'), example: { path: 'README.md', body: 'Typo in the intro' } },
+      params: [repo, p('oid', 'Full commit SHA (40 characters, or 64 for SHA-256)')], body: { schema: ref('NewThread'), example: { path: 'README.md', body: 'Typo in the intro' } },
       response: { status: 200, schema: ref('CommentThread') },
     },
     { method: 'get', path: '/api/v1/threads/{id}', tag, summary: 'One thread', params: [id('Thread')], response: { status: 200, schema: ref('CommentThread') } },

@@ -1,7 +1,8 @@
 import { type Context, Hono } from 'hono';
 import { z } from 'zod';
-import type { Principal, ThreadAnchor } from '../../../shared/api';
+import type { Principal, ProviderKind, ThreadAnchor } from '../../../shared/api';
 import { threadsMarkdown } from '../../../shared/comment-markdown';
+import { PROVIDERS, refText } from '../../../shared/provider';
 import {
   addComment,
   createThread,
@@ -30,9 +31,10 @@ const MAX_BODY_CHARS = 65_536;
 const MAX_THREAD_LINES = 1000;
 const MAX_SNIPPET_CHARS = 256 * 1024;
 
+// A full commit SHA: 40 characters, or 64 for a SHA-256 repository (GitLab can host those).
 const fullOid = z
   .string()
-  .regex(/^[0-9a-f]{40}$/i, 'expected a full 40-character commit SHA')
+  .regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i, 'expected a full commit SHA (40 or 64 characters)')
   .transform((s) => s.toLowerCase());
 const commentBody = z.string().max(MAX_BODY_CHARS).refine((s) => s.trim() !== '', 'must not be empty');
 const repoPath = z
@@ -85,6 +87,12 @@ const replyBody = z.object({ body: commentBody }).strict();
 const statusBody = z.object({ status: z.enum(['open', 'resolved']) }).strict();
 const listQuery = z.object({ format: z.enum(['json', 'md']).optional() });
 
+/** The code host of a local repo (its source's kind): a GitLab MR's threads say "!12" and "Merge request". */
+function providerKindOf(db: Db, repoId: number): ProviderKind {
+  const row = db.get<{ kind: string }>('SELECT s.kind FROM repos r JOIN sources s ON s.id = r.source_id WHERE r.id = ?', [repoId]);
+  return row?.kind === 'gitlab' ? 'gitlab' : 'github';
+}
+
 /** The local repos.id for a route's repo key, by the shared resolver (removed repos are not found). */
 function repoIdForKey(db: Db, key: string): number {
   const ref = resolveRepo(db, key);
@@ -121,7 +129,7 @@ function prNumberParam(c: Context): number {
 
 function oidParam(c: Context): string {
   const oid = fullOid.safeParse(c.req.param('oid'));
-  if (!oid.success) throw new HttpError(400, 'Invalid oid: expected a full 40-character commit SHA');
+  if (!oid.success) throw new HttpError(400, 'Invalid oid: expected a full commit SHA (40 or 64 characters)');
   return oid.data;
 }
 
@@ -144,10 +152,13 @@ const found = <T>(value: T | null, what: string): T => {
 export function commentRoutes({ db }: AppDeps): Hono {
   const r = new Hono();
 
-  const list = (c: Context, target: ThreadTarget, title: string) => {
+  const list = (c: Context, target: ThreadTarget, title: (kind: ProviderKind) => string) => {
     const { format } = parseWith(listQuery, c.req.query());
     const items = listThreads(db, target);
-    if (format === 'md') return c.body(threadsMarkdown(items, { title }), 200, { 'Content-Type': 'text/markdown; charset=utf-8' });
+    if (format === 'md') {
+      const kind = providerKindOf(db, target.repoId);
+      return c.body(threadsMarkdown(items, { title: title(kind), provider: PROVIDERS[kind] }), 200, { 'Content-Type': 'text/markdown; charset=utf-8' });
+    }
     return c.json({ items });
   };
 
@@ -156,7 +167,7 @@ export function commentRoutes({ db }: AppDeps): Hono {
 
   r.get('/prs/:repo/:number/threads', (c) => {
     const target = prTarget(db, c, prNumberParam(c));
-    return list(c, target, `${c.req.param('repo')}#${target.number}`);
+    return list(c, target, (kind) => refText(kind, c.req.param('repo')!, target.number, 'pr'));
   });
 
   r.post('/prs/:repo/:number/threads', async (c) => {
@@ -174,7 +185,7 @@ export function commentRoutes({ db }: AppDeps): Hono {
   // Commits need not be synced (like their diffs): PR branch commits aren't.
   r.get('/commits/:repo/:oid/threads', (c) => {
     const target = commitTarget(db, c, oidParam(c));
-    return list(c, target, `${c.req.param('repo')}@${target.oid.slice(0, 7)}`);
+    return list(c, target, () => `${c.req.param('repo')}@${target.oid.slice(0, 7)}`);
   });
 
   r.post('/commits/:repo/:oid/threads', async (c) => {

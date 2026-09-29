@@ -8,6 +8,7 @@ import { memo, useState } from 'react';
 import type { CommentThread } from '../../../shared/api';
 import { threadsMarkdown } from '../../../shared/comment-markdown';
 import type { ThreadPlacement } from '../../../shared/comment-placement';
+import type { Provider } from '../../../shared/provider';
 import { Icon } from '../components/Icon';
 import { useToast } from '../components/Toasts';
 import { plainPreview } from '../lib/markdown';
@@ -39,15 +40,17 @@ function ThreadLink({ t, p, onJump }: { t: CommentThread; p: ThreadPlacement | u
 }
 
 export const CommentsColumn = memo(function CommentsColumn({
-  threads, order, title, kind, error, onRetry, onJump, onClose, onCreateGeneral, unsent, sending, headOid, onResume, onDiscardDraft,
+  threads, order, title, kind, provider, error, onRetry, onJump, onClose, onCreateGeneral, unsent, sending, headOid, onResume, onDiscardDraft,
 }: {
   /** In n/p order: general, then by file (file-list order) and line. */
   threads: CommentThread[];
   /** File ids in file-list order, to group the in-diff entries. */
   order: ReadonlyMap<string, number>;
-  /** "repo#12" or "repo@abc1234", the Markdown heading. */
+  /** "repo#12", "repo!12" or "repo@abc1234", the Markdown heading. */
   title: string;
   kind: 'pr' | 'commit';
+  /** The repo's code host: "Comment on this merge request" on GitLab. */
+  provider: Provider;
   /** The threads couldn't be loaded. */
   error: boolean;
   onRetry: () => void;
@@ -81,10 +84,10 @@ export const CommentsColumn = memo(function CommentsColumn({
   const open = threads.filter((t) => t.status === 'open').length;
   const copy = async (unresolvedOnly: boolean) => {
     const list = unresolvedOnly ? threads.filter((t) => t.status === 'open') : threads;
-    const ok = await copyText(threadsMarkdown(list, { title, placements: s.placements }));
+    const ok = await copyText(threadsMarkdown(list, { title, placements: s.placements, provider }));
     toast(ok ? `Copied ${list.length} ${plural(list.length, 'thread')} as Markdown` : 'Copy failed');
   };
-  const what = kind === 'pr' ? 'pull request' : 'commit';
+  const what = kind === 'pr' ? provider.pr.one : 'commit';
 
   return (
     <aside className="dcc" aria-label="Comments">

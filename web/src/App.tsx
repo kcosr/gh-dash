@@ -9,7 +9,7 @@ import { ExportModal } from './components/ExportModal';
 import { PromptDialog } from './components/PromptDialog';
 import { FirstSyncCard, NoTokenCard } from './components/Setup';
 import { Sidebar } from './components/Sidebar';
-import { useSidebarResize } from './components/SidebarResize';
+import { usePanes } from './components/PaneResize';
 import { MobileSidebar, useCompactSidebar } from './components/MobileSidebar';
 import { ToastProvider, useToast } from './components/Toasts';
 import { TopBar, useSyncNow, useTheme } from './components/TopBar';
@@ -204,15 +204,18 @@ function Shell() {
       : canHideSide && sideHidden ? () => { setSearchSide(true); toggleSide(); } : undefined,
     canHideSide ? toggleSide : undefined,
   );
-  const sidebar = useSidebarResize(desktopSide, !!drawer);
+  // The drawer is a column of its own only in the desktop layout, and hidden under the diff view.
+  const drawerResizable = !!drawer && !compact && !diff;
+  const panes = usePanes(desktopSide, !!drawer, drawerResizable);
 
   return (
     <>
-      <div ref={sidebar.frame} style={sidebar.style} inert={mobileOpen} className={cx('app', !desktopSide && 'no-side', drawer && 'has-drawer', diff && 'has-diff', sidebar.dragging && 'resizing-sidebar')}>
+      <div ref={panes.frame} style={panes.style} inert={mobileOpen}
+        className={cx('app', !desktopSide && 'no-side', drawer && 'has-drawer', diff && 'has-diff', panes.sidebar.dragging && 'resizing-sidebar', panes.drawer.dragging && 'resizing-drawer')}>
         <TopBar theme={theme} onToggleTheme={toggleTheme} sidebarOpen={mobileOpen}
           onOpenSidebar={hasSide && compact ? () => { setSidebarSearch(false); setSidebarOpen(true); } : undefined}
           onToggleSidebar={canHideSide ? toggleSide : undefined} sidebarHidden={sideHidden} />
-        {desktopSide && <div id="sidebar" className="sidebar-pane"><Sidebar />{sidebar.separator}</div>}
+        {desktopSide && <div id="sidebar" className="sidebar-pane"><Sidebar />{panes.sidebar.separator}</div>}
         {setup ? (
           <main className="main tint">
             <div className="scroll">
@@ -226,7 +229,7 @@ function Shell() {
             <Outlet />
           </Suspense>
         )}
-        {drawer && <PrDrawer key={drawer} id={drawer} compact={compact} />}
+        {drawer && <PrDrawer key={drawer} id={drawer} compact={compact} resize={drawerResizable ? panes.drawer.separator : null} />}
         {/* A PR's diff id is its drawer id: keep the sibling keys distinct. */}
         {diff && <DiffView key={`diff:${diff}`} id={diff} compact={compact} />}
       </div>

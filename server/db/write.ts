@@ -115,8 +115,8 @@ export type AddManualResult =
 
 /**
  * Tracks a repo by hand. A live row with its node id is left alone (reported back). A removed row is revived with
- * its earlier data (an owned repo transferred away, then added by hand); otherwise the repo is inserted. `hidden`
- * keeps it out of the default selection.
+ * its earlier data (an owned repo transferred away, then added by hand), waiting for a sync; otherwise the repo is
+ * inserted. `hidden` keeps it out of the default selection.
  */
 export function addManual(db: Db, r: RepoRecord, opts: { hidden: boolean }, now: string): AddManualResult {
   return db.tx(() => {
@@ -127,6 +127,10 @@ export function addManual(db: Db, r: RepoRecord, opts: { hidden: boolean }, now:
     if (live) return { added: false, id: live.id, trackedBy: live.tracked_by === 'manual' ? 'manual' : 'owned', hidden: !!live.hidden };
     releaseKey(db, r.nameWithOwner, r.nodeId, now);
     const row = db.get<{ id: number }>(UPSERT_MANUAL, [...recordVals(r), null, 'manual', now, null, null, Number(opts.hidden)]);
+    // A revived row keeps its sync state from before it was removed. Its high-water marks still save work, but it
+    // waits for its post-add sync like a new repo: synced_at is set again only by a successful run (queue draining
+    // and the scheduler both go by it).
+    db.run('UPDATE sync_state SET synced_at = NULL WHERE repo_id = ?', [row!.id]);
     return { added: true, id: row!.id };
   });
 }

@@ -196,6 +196,15 @@ describe('addManual', () => {
     expect(db.get<{ n: number }>('SELECT count(*) AS n FROM pull_requests WHERE repo_id = ?', [id])!.n).toBe(1);
   });
 
+  it('marks a revived repo as waiting for its sync, keeping its high-water marks', () => {
+    const db = openDb(':memory:');
+    const id = upsertOwned(db, rec('alice/lib', 'R_lib'), NOW);
+    db.run(`INSERT INTO sync_state (repo_id, synced_at, prs_hwm, commits_head) VALUES (?, '2026-09-01T00:00:00Z', '2026-08-31T00:00:00Z', 'abc')`, [id]);
+    markReposRemoved(db, [], NOW);
+    addManual(db, rec('carol/lib', 'R_lib'), { hidden: false }, NOW);
+    expect(db.get('SELECT synced_at, prs_hwm, commits_head FROM sync_state WHERE repo_id = ?', [id])).toEqual({ synced_at: null, prs_hwm: '2026-08-31T00:00:00Z', commits_head: 'abc' });
+  });
+
   it('releases the key from another live row holding it', () => {
     const db = openDb(':memory:');
     const stale = manual(db, 'bob/tool', 'R_old');

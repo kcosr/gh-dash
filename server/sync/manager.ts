@@ -169,7 +169,7 @@ export class SyncManager {
 
   /**
    * The first sync of a repo just added (POST /repos): now if nothing runs, else after the sync this process is
-   * running. When another instance holds the lock, the scheduler's rule for never-synced repos picks it up.
+   * running. When another instance holds the lock, the scheduler's rule for repos waiting for a sync picks it up.
    */
   async startOrQueue(req: SyncRequest): Promise<'started' | 'queued'> {
     if (!this.current && !this.liveLock()) {
@@ -270,8 +270,8 @@ export class SyncManager {
     if (this.current || this.starting || this.liveLock() || Date.now() < this.noTokenUntil) return;
     let req: SyncRequest = {};
     if (Date.now() < due) {
-      // Not due, but a repo added by hand has never synced (added on another instance, or its first sync failed).
-      const key = this.neverSyncedManualRepo();
+      // Not due, but a repo added by hand waits for its sync (added on another instance, revived, or its sync failed).
+      const key = this.manualRepoAwaitingSync();
       if (!key) return;
       this.firstSyncRetry.set(key, Date.now() + FIRST_SYNC_RETRY_MS);
       req = { repo: key };
@@ -286,8 +286,11 @@ export class SyncManager {
       });
   }
 
-  /** A live, readable repo added by hand that has never synced, and isn't waiting out a failed first attempt. */
-  private neverSyncedManualRepo(): string | null {
+  /**
+   * A live, readable repo added by hand with no synced_at (never synced since it was added or revived), that isn't
+   * waiting out a failed attempt.
+   */
+  private manualRepoAwaitingSync(): string | null {
     const keys = this.db.all<{ key: string }>(
       `SELECT ${repoKeySql('r')} AS key FROM repos r LEFT JOIN sync_state s ON s.repo_id = r.id
        WHERE r.tracked_by = 'manual' AND r.removed_at IS NULL AND r.unavailable_at IS NULL AND s.synced_at IS NULL ORDER BY r.id`,

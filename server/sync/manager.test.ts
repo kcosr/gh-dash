@@ -4,6 +4,8 @@ import { deleteMeta, getMeta, setMeta } from '../db/meta';
 import { fakeGitHub } from '../test/github';
 import { fakeGraphQL, prNode, repoNode } from '../test/graphql';
 import { addManualRepo } from '../test/seed';
+import { addManual } from '../db/write';
+import { mapRepo } from '../github/map';
 import { supplyOf, testTokens } from '../test/tokens';
 import type { TokenSupply } from '../token';
 import { SyncManager } from './manager';
@@ -194,6 +196,40 @@ describe('syncing repos added by hand', () => {
     await vi.waitFor(() => expect(t.synced('carol/lib')).toBe(true));
     await t.idle();
     expect(t.gql.state.ops.filter((o) => o.startsWith('RepoNode'))).toEqual(['RepoNode:R_bob/tool', 'RepoNode:R_carol/lib']);
+  });
+
+  it('runs the queued sync of a repo revived by a new add, though it synced before it was removed', async () => {
+    const t = setup(true);
+    t.add('bob/tool');
+    expect(await t.m.startOrQueue({ repo: 'bob/tool' })).toBe('started');
+    await t.idle();
+    // Removed (say, transferred away and back), then added by hand again: the row comes back with its old sync state.
+    t.db.run(`UPDATE repos SET removed_at = '2026-09-29T00:00:00Z' WHERE name_with_owner = 'bob/tool'`);
+    t.add('carol/lib');
+    t.hold();
+    expect(await t.m.startOrQueue({ repo: 'carol/lib' })).toBe('started');
+    const revived = addManual(t.db, mapRepo(repoNode('bob/tool')), { hidden: false }, '2026-09-29T01:00:00Z');
+    expect(revived).toMatchObject({ added: true });
+    expect(await t.m.startOrQueue({ repo: 'bob/tool' })).toBe('queued');
+    t.gql.state.ops.length = 0;
+    t.release();
+    await vi.waitFor(() => expect(t.gql.state.ops).toContain('RepoNode:R_bob/tool'));
+    await t.idle();
+    expect(t.synced('bob/tool')).toBe(true);
+  });
+
+  it('the scheduler also picks up a revived repo that is waiting for its sync', async () => {
+    const t = setup(true);
+    t.add('bob/tool');
+    expect(await t.m.startOrQueue({ repo: 'bob/tool' })).toBe('started');
+    await t.idle();
+    t.db.run(`UPDATE repos SET removed_at = '2026-09-29T00:00:00Z' WHERE name_with_owner = 'bob/tool'`);
+    addManual(t.db, mapRepo(repoNode('bob/tool')), { hidden: false }, '2026-09-29T01:00:00Z');
+    setMeta(t.db, 'lastFullSyncAt', new Date().toISOString());
+    t.gql.state.ops.length = 0;
+    t.m.startScheduler();
+    await vi.waitFor(() => expect(t.gql.state.ops).toContain('RepoNode:R_bob/tool'));
+    await t.idle();
   });
 
   it("doesn't run a queued first sync that the full sync it waited for already did", async () => {

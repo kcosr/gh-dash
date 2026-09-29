@@ -35,10 +35,10 @@ export async function runAgentsCommand(args: string[], io: CliIo = { out: consol
     (command === undefined ? io.err : io.out)(USAGE);
     return command === undefined ? 2 : 0;
   }
-  let db: Db | null = null;
+  const opened: { db?: Db } = {};
   try {
     const { config } = loadServerConfig(io.env);
-    const open = () => (db ??= openDb(config.dbPath, { allowDestructiveMigrations: config.syncEnabled }));
+    const open = () => (opened.db ??= openDb(config.dbPath, { allowDestructiveMigrations: config.syncEnabled }));
     const mcpUrl = `${localApiUrl(config.host, config.port)}/mcp`;
     const one = (what: string): string => {
       if (rest.length !== 1 || !rest[0]!.trim()) throw new UsageError(`agents ${command} takes one ${what}`);
@@ -49,18 +49,17 @@ export async function runAgentsCommand(args: string[], io: CliIo = { out: consol
       if (!agent) throw new HttpError(404, `No agent is called or numbered ${idOrName} (see: gh-dash agents list)`);
       return agent;
     };
-    const printToken = (agent: Agent, token: string) => {
+    const printToken = (token: string) => {
       io.out(`Token (shown once, keep it somewhere safe): ${token}`);
       io.out(`MCP server: ${mcpUrl} (this server's address; use the one agents reach it at)`);
       io.out(`Claude Code: claude mcp add --transport http gh-dash ${mcpUrl} --header "Authorization: Bearer <token>"`);
-      io.out(`Its comments are shown as ${agent.name}'s.`);
     };
 
     switch (command) {
       case 'add': {
         const { agent, token } = createAgent(open(), one('name'));
         io.out(`Added agent ${agent.name} (id ${agent.id}).`);
-        printToken(agent, token);
+        printToken(token);
         return 0;
       }
       case 'list': {
@@ -79,7 +78,7 @@ export async function runAgentsCommand(args: string[], io: CliIo = { out: consol
       case 'regenerate': {
         const { agent, token } = regenerateAgentToken(open(), agentBy(one('agent id or name')).id)!;
         io.out(`New token for ${agent.name} (id ${agent.id}); the old one no longer works.`);
-        printToken(agent, token);
+        printToken(token);
         return 0;
       }
       case 'revoke': {
@@ -99,7 +98,7 @@ export async function runAgentsCommand(args: string[], io: CliIo = { out: consol
     io.err(`gh-dash: ${(err as Error).message}`);
     return 1;
   } finally {
-    (db as Db | null)?.close();
+    opened.db?.close();
   }
 }
 

@@ -26,7 +26,7 @@ type Params = { f: string; theme: 'light' | 'dark'; compact: boolean; file: stri
 // No server here: no threads, and writing one says so.
 const noServer = () => Promise.reject(new Error('the gallery has no server'));
 const COMMENTS: DiffComments = {
-  key: 'gallery', threads: [], error: false, me: undefined, initialThread: null, onThreadFocus: () => {}, only: null, onOnlyChange: () => {},
+  key: 'gallery', threads: [], error: false, retry: () => {}, me: undefined, initialThread: null, onThreadFocus: () => {}, only: null, onOnlyChange: () => {},
   actions: { create: noServer, reply: noServer, setStatus: noServer, edit: noServer, deleteComment: noServer, deleteThread: noServer },
 };
 

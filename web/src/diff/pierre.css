@@ -30,3 +30,9 @@
 /* The gutter's "comment on this line" button: a quiet outlined square, the accent only on hover. */
 [data-utility-button] { background-color: var(--surface); color: var(--accent-text); box-shadow: 0 0 0 1px var(--border-strong); border-radius: 4px; transform: scale(.86); }
 [data-utility-button]:hover { background-color: var(--accent); color: #fff; box-shadow: none; }
+
+/* The focused comment thread's lines, marked by DiffViewer (paintThreadLines). */
+[data-line][data-thread-line] { background-image: linear-gradient(var(--dvr-thread-tint), var(--dvr-thread-tint)); }
+[data-column-number][data-thread-line] { background-image: linear-gradient(var(--dvr-thread-number-tint), var(--dvr-thread-number-tint)); color: var(--text-2); }
+/* The line number last clicked: where a shift-click extends a range from. */
+[data-column-number][data-anchor-line] { color: var(--accent-text); font-weight: 600; }

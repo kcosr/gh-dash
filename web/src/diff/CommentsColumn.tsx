@@ -38,7 +38,7 @@ function ThreadLink({ t, p, onJump }: { t: CommentThread; p: ThreadPlacement | u
   );
 }
 
-export const CommentsColumn = memo(function CommentsColumn({ threads, order, title, kind, onJump, onClose, onCreateGeneral }: {
+export const CommentsColumn = memo(function CommentsColumn({ threads, order, title, kind, error, onRetry, onJump, onClose, onCreateGeneral }: {
   /** In n/p order: general, then by file (file-list order) and line. */
   threads: CommentThread[];
   /** File ids in file-list order, to group the in-diff entries. */
@@ -46,6 +46,9 @@ export const CommentsColumn = memo(function CommentsColumn({ threads, order, tit
   /** "repo#12" or "repo@abc1234", the Markdown heading. */
   title: string;
   kind: 'pr' | 'commit';
+  /** The threads couldn't be loaded. */
+  error: boolean;
+  onRetry: () => void;
   onJump: (id: number) => void;
   onClose: () => void;
   onCreateGeneral: (body: string) => Promise<unknown>;
@@ -82,6 +85,9 @@ export const CommentsColumn = memo(function CommentsColumn({ threads, order, tit
         <button type="button" className="btn icon ghost" onClick={onClose} title="Close comments (c)" aria-label="Close comments"><Icon name="x" /></button>
       </div>
       <div className="dcc-body">
+        {error && (
+          <p className="dcc-error">Couldn't load the comments. <button type="button" className="dth-btn" onClick={onRetry}>Retry</button></p>
+        )}
         <section className="dcc-sec">
           <h4>Conversation</h4>
           {general.map((t) => <ThreadCard key={t.id} thread={t} />)}

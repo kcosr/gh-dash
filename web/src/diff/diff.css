@@ -49,6 +49,9 @@
   --diffs-bg-selection-override: color-mix(in srgb, var(--accent) 45%, var(--surface));
   --diffs-bg-selection-number-override: color-mix(in srgb, var(--accent) 60%, var(--surface));
   --diffs-selection-number-fg: var(--accent-text);
+  /* The focused thread's lines (pierre.css): a quiet grey veil over whatever colour the line has. */
+  --dvr-thread-tint: color-mix(in srgb, var(--text-2) 9%, transparent);
+  --dvr-thread-number-tint: color-mix(in srgb, var(--accent) 10%, transparent);
 
   display: flex;
   flex-direction: column;
@@ -130,7 +133,8 @@ a.dvh-note:hover, .dvh-note.link:hover { color: var(--accent-text); }
    UI type at the viewer's size, the app's tokens, text buttons; the thread's state is a 2px left rule. */
 .dth { --dth-rule: var(--accent); margin: 6px 12px 8px; padding: 8px 12px 8px 12px; max-width: 760px; background: var(--surface); border: 1px solid var(--border); border-left: 2px solid var(--dth-rule); border-radius: 6px; font: 12.5px/1.5 var(--font); color: var(--text); white-space: normal; }
 .dth.resolved { --dth-rule: var(--border-strong); }
-.dth.focus { box-shadow: 0 0 0 2px var(--accent-weak); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); border-left-color: var(--dth-rule); }
+/* Focus: a 1px border a shade toward the accent (the thread's lines are tinted too), no ring. */
+.dth.focus { border-color: color-mix(in srgb, var(--accent) 30%, var(--border-strong)); border-left-color: var(--dth-rule); }
 .dth + .dth { margin-top: -2px; }
 .dth-top { display: flex; align-items: center; gap: 8px; margin: -2px 0 6px; font-size: 11.5px; color: var(--muted); }
 .dth-state { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); }
@@ -228,3 +232,9 @@ a.dvh-note:hover, .dvh-note.link:hover { color: var(--accent-text); }
 .dvr-cm-btn .n.err { color: var(--del); }
 .dvr-bar .dvr-cm-btn.on { background: var(--surface-2); color: var(--text); }
 .diff-viewer.compact .dvr-bar .dvr-cm-btn { height: 40px; }
+.dth-btn.icon { display: grid; place-items: center; width: 24px; padding: 0; color: var(--muted); }
+.dth-btn.icon svg { width: 13px; height: 13px; }
+.dcc-error { margin: 10px 14px 0; font-size: 12px; color: var(--del); }
+/* Compact: cards take the width a phone has. */
+.diff-viewer.compact .dth, .diff-viewer.compact .dth-outdated { margin-left: 8px; margin-right: 8px; }
+.diff-viewer.compact .dth-btn, .diff-viewer.compact .dth-reply { height: 32px; }

@@ -168,7 +168,7 @@ export function DiffView({ id, compact }: { id: string; compact: boolean }) {
                 <DiffViewer
                   diff={d} loadFile={loadFile} compact={compact} isActive={isActive} file={initialFile} onFileChange={onFileChange}
                   comments={{
-                    key: threadsId ?? id, threads: threads.data, error: threads.isError, actions: threadActions, me: me.data,
+                    key: threadsId ?? id, threads: threads.data, error: threads.isError, retry: () => void threads.refetch(), actions: threadActions, me: me.data,
                     initialThread, onThreadFocus, only: s.only, onOnlyChange,
                   }}
                 />

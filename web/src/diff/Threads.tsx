@@ -14,7 +14,7 @@ import { useToast } from '../components/Toasts';
 import { useLayer } from '../lib/layers';
 import { plainPreview } from '../lib/markdown';
 import { fmtDateTime, plural, rel } from '../lib/time';
-import { cx } from '../lib/util';
+import { copyText, cx } from '../lib/util';
 import { clearDraft, getDraft, setDraft } from './drafts';
 import type { DraftAnchor } from './threadModel';
 
@@ -41,6 +41,9 @@ export interface ThreadsState {
   /** Files whose Outdated block is open. */
   outdatedOpen: ReadonlySet<string>;
   setOutdatedOpen: (path: string, open: boolean) => void;
+  /** `r`: the thread whose reply box should open (and take focus); its card takes it with takeReply. */
+  replyRequest: number | null;
+  takeReply: () => void;
 }
 
 export const ThreadsCtx = createContext<ThreadsState | null>(null);
@@ -73,7 +76,7 @@ function Author({ c }: { c: ThreadComment }) {
  * composer away (the viewer is virtualized) or reloading loses nothing. Mod+Enter sends; Esc closes it and keeps
  * the draft, Cancel discards it.
  */
-export function Composer({ draftKey, initial = '', placeholder, submitLabel, onSubmit, onClose, autoFocus = true }: {
+export function Composer({ draftKey, initial = '', placeholder, submitLabel, onSubmit, onClose, autoFocus = true, focusKey = 0 }: {
   draftKey: string;
   initial?: string;
   placeholder: string;
@@ -81,6 +84,8 @@ export function Composer({ draftKey, initial = '', placeholder, submitLabel, onS
   onSubmit: (body: string) => Promise<unknown>;
   onClose: () => void;
   autoFocus?: boolean;
+  /** A change focuses the textarea again (`r` on a thread whose reply box is already open). */
+  focusKey?: number;
 }) {
   const [text, setText] = useState(() => getDraft(draftKey) || initial);
   const [busy, setBusy] = useState(false);
@@ -108,7 +113,7 @@ export function Composer({ draftKey, initial = '', placeholder, submitLabel, onS
     };
     attempt();
     return () => cancelAnimationFrame(frame);
-  }, [autoFocus]);
+  }, [autoFocus, focusKey]);
   const change = (v: string) => {
     setText(v);
     if (v !== initial) setDraft(draftKey, v);
@@ -204,6 +209,14 @@ export function ThreadCard({ thread, snippet = false, note }: { thread: CommentT
   const toast = useToast();
   const replyKey = `${s.draftScope}|reply|${thread.id}`;
   const [replying, setReplying] = useState(() => getDraft(replyKey) !== '');
+  const [replyFocus, setReplyFocus] = useState(0);
+  const { replyRequest, takeReply } = s;
+  useEffect(() => {
+    if (replyRequest !== thread.id) return;
+    takeReply();
+    setReplying(true);
+    setReplyFocus((n) => n + 1);
+  }, [replyRequest, takeReply, thread.id]);
   const resolved = thread.status === 'resolved';
   const focused = s.focused === thread.id;
   const open = !resolved || s.expanded.has(thread.id) || focused;
@@ -242,16 +255,25 @@ export function ThreadCard({ thread, snippet = false, note }: { thread: CommentT
       {snippet && thread.snippet !== null && <pre className="dth-snippet">{thread.snippet}</pre>}
       {thread.comments.map((c, i) => <CommentRow key={c.id} thread={thread} c={c} first={i === 0} />)}
       {replying
-        ? <Composer draftKey={replyKey} placeholder="Reply" submitLabel="Reply" onSubmit={(body) => s.actions.reply(thread.id, body)} onClose={() => setReplying(false)} />
+        ? <Composer draftKey={replyKey} placeholder="Reply" submitLabel="Reply" focusKey={replyFocus} onSubmit={(body) => s.actions.reply(thread.id, body)} onClose={() => setReplying(false)} />
         : (
           <div className="dth-foot">
-            <button type="button" className="dth-reply" onClick={() => setReplying(true)}>Reply…</button>
-            <button type="button" className="dth-btn" onClick={() => void setStatus(resolved ? 'open' : 'resolved')}>{resolved ? 'Reopen' : 'Resolve'}</button>
+            <button type="button" className="dth-reply" onClick={() => setReplying(true)} title="Reply (r)">Reply…</button>
+            <button type="button" className="dth-btn" onClick={() => void setStatus(resolved ? 'open' : 'resolved')} title={`${resolved ? 'Reopen' : 'Resolve'} (e)`}>{resolved ? 'Reopen' : 'Resolve'}</button>
+            <button type="button" className="dth-btn icon" onClick={() => void copyLink(thread.id).then((ok) => toast(ok ? 'Link to the thread copied' : 'Copy failed'))}
+              title="Copy a link to this thread" aria-label="Copy a link to this thread"><Icon name="copy" /></button>
           </div>
         )}
     </div>
   );
 }
+
+/** This page's address with the thread in focus: it reopens the diff at the thread. */
+const copyLink = (id: number) => {
+  const url = new URL(location.href);
+  url.searchParams.set('thread', String(id));
+  return copyText(url.toString());
+};
 
 const lineRange = (a: number, b: number) => (a === b ? `line ${a}` : `lines ${a}–${b}`);
 

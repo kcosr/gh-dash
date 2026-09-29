@@ -54,6 +54,8 @@ export interface DiffComments {
   /** undefined while loading. */
   threads: CommentThread[] | undefined;
   error: boolean;
+  /** Load the threads again (after an error). */
+  retry: () => void;
   actions: ReturnType<typeof useThreadActions>;
   me: Me | undefined;
   /** Thread to show on open (deep link, URL `thread`). */
@@ -320,15 +322,76 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
   const scroller = useRef<HTMLDivElement>(null);
   const expandControls = useExpandControls(scroller);
 
-  // Selecting lines (their numbers: click, drag, shift-click) or the gutter's "+" opens the composer under them.
+  // A comment starts, as on GitHub, from the gutter's "+" (one line, or drag it over several) or from a range of
+  // line numbers (drag, shift-click). A plain click on a number only selects that line.
   const openDraftRef = useRef((_id: string, _range: PierreRange) => {});
   openDraftRef.current = (id, range) => {
     const vf = byId.get(id);
     if (vf) setDraft(selectionAnchor(id, vf.file.patch, range));
   };
-  const onLinesPicked = useCallback((range: PierreRange | null, context: { item?: { id: string } }) => {
+  // A plain click's line is let go at once (while any selection stands, Pierre parks the "+" at its end instead of
+  // following the pointer; an open composer keeps its own lines selected). It's remembered instead, marked on its
+  // number, as where a shift-click extends a range from.
+  const dropClickRef = useRef(() => {});
+  const clickAnchor = useRef<{ id: string; line: number; side: 'deletions' | 'additions' } | null>(null);
+  const shiftClick = useRef(false);
+  const onLineSelected = useCallback((range: PierreRange | null, context: { item?: { id: string } }) => {
+    if (!range || !context.item) return;
+    const id = context.item.id;
+    const several = range.start !== range.end || (range.endSide !== undefined && range.endSide !== range.side);
+    const a = clickAnchor.current;
+    if (several) openDraftRef.current(id, range);
+    else if (shiftClick.current && a?.id === id) openDraftRef.current(id, { start: a.line, side: a.side, end: range.end, endSide: range.side ?? 'additions' });
+    else {
+      clickAnchor.current = { id, line: range.start, side: range.side ?? 'additions' };
+      requestAnimationFrame(() => dropClickRef.current());
+      return;
+    }
+    clickAnchor.current = null;
+    requestAnimationFrame(() => dropClickRef.current());
+  }, []);
+  const onGutterPlus = useCallback((range: PierreRange | null, context: { item?: { id: string } }) => {
     if (range && context.item) openDraftRef.current(context.item.id, range);
   }, []);
+
+  // The focused thread's lines get a quiet tint: marked in Pierre's shadow DOM ([data-thread-line], styled in
+  // pierre.css) after every render of their file, and again whenever focus moves. Not Pierre's selection: that
+  // belongs to the reader, and while there is one Pierre parks the "+" at its end instead of following the pointer.
+  const threadLines = useRef<{ path: string; side: 'old' | 'new'; start: number; end: number } | null>(null);
+  const paintThreadLines = useCallback((host: HTMLElement) => {
+    const root = host.shadowRoot;
+    if (!root) return;
+    for (const el of root.querySelectorAll('[data-thread-line], [data-anchor-line]')) {
+      el.removeAttribute('data-thread-line');
+      el.removeAttribute('data-anchor-line');
+    }
+    const path = host.querySelector('[data-path]')?.getAttribute('data-path');
+    const a = clickAnchor.current;
+    if (a && a.id === path) {
+      const column = root.querySelector(a.side === 'deletions' ? '[data-deletions]' : '[data-additions]') ?? root;
+      for (const cell of column.querySelectorAll(`[data-column-number="${a.line}"]`)) {
+        if (cell.getAttribute('data-line-type') !== (a.side === 'deletions' ? 'change-addition' : 'change-deletion')) cell.setAttribute('data-anchor-line', '');
+      }
+    }
+    const t = threadLines.current;
+    if (!t || path !== t.path) return;
+    // Split: the side's own column, where every row's number is that side's. Unified: a context row's number is the
+    // new side's, its old one data-alt-line.
+    const column = root.querySelector(t.side === 'old' ? '[data-deletions]' : '[data-additions]');
+    const scope: ParentNode = column ?? root;
+    for (const line of scope.querySelectorAll('[data-line][data-line-type]')) {
+      const type = line.getAttribute('data-line-type');
+      if (type === (t.side === 'new' ? 'change-deletion' : 'change-addition')) continue;
+      const n = Number(line.getAttribute(!column && type === 'context' && t.side === 'old' ? 'data-alt-line' : 'data-line'));
+      if (n < t.start || n > t.end) continue;
+      line.setAttribute('data-thread-line', '');
+      for (const cell of scope.querySelectorAll(`[data-column-number][data-line-index="${line.getAttribute('data-line-index')}"]`)) cell.setAttribute('data-thread-line', '');
+    }
+  }, []);
+  const onPostRender = useCallback((node: HTMLElement, instance: unknown, phase: PostRenderPhase) => {
+    expandControls.onPostRender(node, instance, phase);
+    if (phase !== 'unmount') paintThreadLines(node);
+  }, [expandControls.onPostRender, paintThreadLines]);
 
   const options = useMemo((): CodeViewOptions<Note, undefined> => ({
     theme: THEMES,
@@ -353,12 +416,12 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
     // Compact files run edge to edge from the toolbar down.
     layout: { paddingTop: compact ? 0 : GAP, paddingBottom: 2 * GAP, gap: GAP },
     unsafeCSS,
-    onPostRender: expandControls.onPostRender,
+    onPostRender,
     enableLineSelection: true,
     enableGutterUtility: true,
-    onLineSelected: onLinesPicked as CodeViewOptions<Note, undefined>['onLineSelected'],
-    onGutterUtilityClick: onLinesPicked as CodeViewOptions<Note, undefined>['onGutterUtilityClick'],
-  }), [theme, split, wrap, compact, diff.baseOid, loadDiffFiles, expandControls.onPostRender, onLinesPicked]);
+    onLineSelected: onLineSelected as CodeViewOptions<Note, undefined>['onLineSelected'],
+    onGutterUtilityClick: onGutterPlus as CodeViewOptions<Note, undefined>['onGutterUtilityClick'],
+  }), [theme, split, wrap, compact, diff.baseOid, loadDiffFiles, onPostRender, onLineSelected, onGutterPlus]);
 
   // The file in view: the last file whose top has scrolled past the top edge. After a jump to a
   // file that can't reach the top (the end of the diff), that file stays current until the user
@@ -435,8 +498,12 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
       holdPin.current = false;
     };
     for (const type of ['wheel', 'touchstart', 'pointerdown', 'keydown']) el.addEventListener(type, release, { passive: true });
+    // Whether the click Pierre reports as a line selection had Shift held (it extends from the last clicked line).
+    const noteShift = (e: PointerEvent) => { shiftClick.current = e.shiftKey; };
+    el.addEventListener('pointerdown', noteShift, { capture: true, passive: true });
     return () => {
       for (const type of ['wheel', 'touchstart', 'pointerdown', 'keydown']) el.removeEventListener(type, release);
+      el.removeEventListener('pointerdown', noteShift, { capture: true });
       clearTimeout(settling.current);
     };
   }, [hasFiles]);
@@ -513,18 +580,31 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
   // The composer's lines stay selected, also when it comes back after a reload (Pierre keeps the selection of a file
   // that isn't rendered yet and paints it when it is).
   useEffect(() => {
-    if (!draft || indexOf.get(draft.path) === undefined || (indexOf.get(draft.path) ?? Infinity) >= count) return;
-    const side = pierreSide(draft.side);
+    if (!draft || (indexOf.get(draft.path) ?? Infinity) >= count) return;
     const cur = view.current?.getSelectedLines();
     if (cur?.id === draft.path && Math.min(cur.range.start, cur.range.end) === draft.startLine && Math.max(cur.range.start, cur.range.end) === draft.endLine) return;
-    view.current?.setSelectedLines({ id: draft.path, range: { start: draft.startLine, end: draft.endLine, side } });
+    view.current?.setSelectedLines({ id: draft.path, range: { start: draft.startLine, end: draft.endLine, side: pierreSide(draft.side) } });
   }, [draft, count, indexOf]);
   const closeDraft = useCallback(() => {
     setDraft(null);
     view.current?.clearSelectedLines();
   }, [setDraft]);
+  // Focus moved (or its thread moved): repaint the files on screen; the rest paint as they render.
+  const focusedPlace = focused === null ? undefined : placements.get(focused);
+  const tint = focusedPlace?.kind === 'line' ? `${focusedPlace.path}\0${focusedPlace.side}\0${focusedPlace.startLine}\0${focusedPlace.endLine}` : '';
+  useEffect(() => {
+    const [path, side, start, end] = tint.split('\0');
+    threadLines.current = tint ? { path: path!, side: side as 'old' | 'new', start: Number(start), end: Number(end) } : null;
+    for (const host of scroller.current?.querySelectorAll<HTMLElement>('diffs-container') ?? []) paintThreadLines(host);
+  }, [tint, paintThreadLines]);
   const draftRef = useRef(draft);
   draftRef.current = draft;
+  dropClickRef.current = () => {
+    const d = draftRef.current;
+    if (d) view.current?.setSelectedLines({ id: d.path, range: { start: d.startLine, end: d.endLine, side: pierreSide(d.side) } });
+    else view.current?.clearSelectedLines();
+    for (const host of scroller.current?.querySelectorAll<HTMLElement>('diffs-container') ?? []) paintThreadLines(host);
+  };
   const { actions } = comments;
   const submitDraft = useCallback(async (body: string) => {
     const d = draftRef.current;
@@ -540,10 +620,25 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
     focusThread(t.id);
   }, [actions, diff.headOid, diff.baseOid, focusThread]);
 
+  // r: the focused thread's reply box (brought into view first if its card isn't on screen); e: resolve or reopen it.
+  const [replyRequest, setReplyRequest] = useState<number | null>(null);
+  const takeReply = useCallback(() => setReplyRequest(null), []);
+  const replyToFocused = useCallback((id: number) => {
+    const el = document.querySelector(`.dth[data-thread="${id}"]`);
+    const box = scroller.current?.getBoundingClientRect();
+    const r = el?.getBoundingClientRect();
+    const onScreen = !!r && r.height > 0 && (el!.closest('.dcc') !== null || (!!box && r.bottom > box.top && r.top < box.bottom));
+    if (!onScreen) jumpToThread(id);
+    setReplyRequest(id);
+  }, [jumpToThread]);
+  const toggleResolved = useCallback((t: CommentThread) => {
+    actions.setStatus(t.id, t.status === 'open' ? 'resolved' : 'open').catch((e: unknown) => toast(`Couldn't update: ${(e as Error).message}`, { error: true }));
+  }, [actions, toast]);
+
   const threadsState = useMemo((): ThreadsState => ({
     byId: threadById, placements, actions, me: comments.me, focused, focus: focusThread, expanded, setExpanded,
-    draftScope: comments.key, draft, submitDraft, closeDraft, outdatedOpen, setOutdatedOpen,
-  }), [threadById, placements, actions, comments.me, focused, focusThread, expanded, setExpanded, comments.key, draft, submitDraft, closeDraft, outdatedOpen, setOutdatedOpen]);
+    draftScope: comments.key, draft, submitDraft, closeDraft, outdatedOpen, setOutdatedOpen, replyRequest, takeReply,
+  }), [threadById, placements, actions, comments.me, focused, focusThread, expanded, setExpanded, comments.key, draft, submitDraft, closeDraft, outdatedOpen, setOutdatedOpen, replyRequest, takeReply]);
 
   // Threads render from ThreadsCtx: this stays the same function, so Pierre doesn't re-render every file for them.
   const renderAnnotation = useCallback((a: Annotation, item: Item) => {
@@ -567,10 +662,11 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
     if (!a || a === document.body || (a !== root.current && a.contains(root.current))) scroller.current?.focus({ preventScroll: true });
   }, []);
 
-  // j/k: next/previous file (of those the file list shows); n/p: next/previous unresolved thread; c: comments
-  // column; s: split/unified; w: wrap long lines (desktop only for both). Never while typing (a composer).
-  const keyState = useRef({ navFiles, prefs, compact, ordered, focused, placements, showColumn });
-  keyState.current = { navFiles, prefs, compact, ordered, focused, placements, showColumn };
+  // j/k: next/previous file (of those the file list shows); n/p: next/previous unresolved thread; r/e: reply to /
+  // resolve or reopen the focused thread; c: comments column; s: split/unified; w: wrap long lines (desktop only for
+  // both). Never while typing (a composer).
+  const keyState = useRef({ navFiles, prefs, compact, ordered, focused, placements, showColumn, threadById });
+  keyState.current = { navFiles, prefs, compact, ordered, focused, placements, showColumn, threadById };
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!isActive() || e.metaKey || e.ctrlKey || e.altKey || isTypingTarget(document.activeElement)) return;
@@ -592,6 +688,12 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
         const order = s.ordered.map((t) => ({ id: t.id, open: t.status === 'open' }));
         const next = stepThread(order, s.focused, e.key === 'n' ? 1 : -1, rankOf, indexOf.get(current.get() ?? '') ?? 0);
         if (next !== null) { e.preventDefault(); focusThread(next, { scroll: true }); }
+      } else if (e.key === 'r' || e.key === 'e') {
+        const t = s.focused === null ? undefined : s.threadById.get(s.focused);
+        if (!t) return;
+        e.preventDefault();
+        if (e.key === 'r') replyToFocused(t.id);
+        else toggleResolved(t);
       } else if (e.key === 'c') {
         e.preventDefault();
         setColumn(!s.showColumn);
@@ -605,7 +707,7 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [isActive, indexOf, current, goTo, updatePrefs, focusThread, setColumn]);
+  }, [isActive, indexOf, current, goTo, updatePrefs, focusThread, setColumn, replyToFocused, toggleResolved]);
 
   const renderHeader = useCallback((item: Item) => {
     const vf = byId.get(item.id);
@@ -626,6 +728,8 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
     <div className="dvr-hints">
       <span><kbd>j</kbd> <kbd>k</kbd> files</span>
       <span><kbd>n</kbd> <kbd>p</kbd> threads</span>
+      <span><kbd>r</kbd> reply</span>
+      <span><kbd>e</kbd> resolve</span>
       <span><kbd>c</kbd> comments</span>
       <span><kbd>s</kbd> split</span>
       <span><kbd>w</kbd> wrap</span>
@@ -682,7 +786,7 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
             <div className="dvr-scroll dvr-empty">No changed files.</div>
           )}
           {showColumn && (
-            <CommentsColumn threads={ordered} order={indexOf} title={title} kind={diff.kind}
+            <CommentsColumn threads={ordered} order={indexOf} title={title} kind={diff.kind} error={comments.error} onRetry={comments.retry}
               onJump={(id) => focusThread(id, { scroll: true })} onClose={() => setColumn(false)} onCreateGeneral={createGeneral} />
           )}
           {compact && columnOpen && <div className="dvr-scrim" onClick={() => setColumnOpen(false)} />}

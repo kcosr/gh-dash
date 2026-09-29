@@ -96,7 +96,10 @@ export interface Page<T> {
  * Orders matter: the sync's stop conditions rely on them.
  */
 export interface RoundRequest {
-  /** Default-branch history committed since `since`, newest first. */
+  /**
+   * Default-branch history committed since `since`, newest first. A source that reads the head with the record
+   * (RepoRecord.headOid) walks that commit's history, which is the head the sync records as walked.
+   */
   commits?: { after: string | null; since: string };
   /** Every PR, most recently updated first. */
   prs?: { after: string | null };

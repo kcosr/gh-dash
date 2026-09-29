@@ -114,6 +114,45 @@ describe('a GitLab source', () => {
     expect(db.get('SELECT commits_head FROM sync_state WHERE repo_id = ?', [app])).toEqual({ commits_head: sha('6') });
   });
 
+  it('walks the head the project was read with, so a force-push before the walk can never leave it recorded over another history', async () => {
+    const { db, fake, sync, take } = setup();
+    await sync();
+    take();
+    const app = repoRow(db, `${HOST}/alice/app`)!.id;
+    const oids = () => db.all<{ oid: string }>('SELECT substr(oid, 1, 4) AS oid FROM commits WHERE repo_id = ? ORDER BY oid', [app]).map((c) => c.oid);
+    const COMMITS = '/api/v4/projects/11/repository/commits';
+    // Two histories on top of the synced one: A (5555…) and B (6666…). `branch` is where main is when the walk runs.
+    const on = (id: string) => [{ ...structuredClone(commitsFixture[0]!), id, short_id: id.slice(0, 8) }, ...commitsFixture];
+    const histories: Record<string, typeof commitsFixture> = { [sha('5')]: on(sha('5')), [sha('6')]: on(sha('6')) };
+    let branch = sha('6');
+    fake.routes[COMMITS] = (req) => {
+      const ref = req.url.searchParams.get('ref_name')!;
+      return page(histories[ref === 'main' ? branch : ref] ?? [], null);
+    };
+    const head = fake.owned.projects.nodes[0]!.repository!.tree!.lastCommit!;
+    const walkedFrom = () => take().filter((r) => r.startsWith(`${COMMITS}?`)).map((r) => new URL(r, BASE).searchParams.get('ref_name')!.slice(0, 4));
+
+    // The project is read at A; main is force-pushed to B before the walk. The walk is of A, which is what's recorded.
+    head.sha = sha('5');
+    await sync({}, NOW + HOUR);
+    expect(walkedFrom()).toEqual(['5555']);
+    expect(oids()).toEqual(['3333', '4444', '5555']);
+    expect(db.get('SELECT commits_head FROM sync_state WHERE repo_id = ?', [app])).toEqual({ commits_head: sha('5') });
+
+    // Back to A: nothing to walk, and A's history is there.
+    branch = sha('5');
+    await sync({}, NOW + 2 * HOUR);
+    expect(walkedFrom()).toEqual([]);
+    expect(oids()).toEqual(['3333', '4444', '5555']);
+
+    // To B for real: walked from B, which doesn't reach A, so through the window, and A's commit goes.
+    branch = sha('6');
+    head.sha = sha('6');
+    await sync({}, NOW + 3 * HOUR);
+    expect(walkedFrom()).toEqual(['6666']);
+    expect(oids()).toEqual(['3333', '4444', '6666']);
+  });
+
   it('refreshes the projects added by hand by global id, and sets aside one GitLab no longer shows', async () => {
     const { db, gl, sync, take } = setup();
     addManualRepo(db, 'team/platform/api', { source: gl, nodeId: gid(40), description: 'before' });

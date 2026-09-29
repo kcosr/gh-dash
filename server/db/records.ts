@@ -29,9 +29,10 @@ export interface RepoRecord {
   pushedAt: string | null;
   /**
    * The default branch's head commit, when the source reads it with the record (GitLab): the sync then plans the commit
-   * walk by it, since a push can move the head without moving its commit's time. null = the source reads it but found
-   * none (an empty or unreadable repository); absent = the source doesn't read it (GitHub, whose pushedAt moves with
-   * every push). Not stored with the repo: the sync keeps it as sync_state.commits_head.
+   * walk by it, since a push can move the head without moving its commit's time, and the source walks from this very
+   * commit, so the head recorded is the one walked. null = the source reads it but found none (an empty or unreadable
+   * repository); absent = the source doesn't read it (GitHub, whose pushedAt moves with every push). Not stored with
+   * the repo: the sync keeps it as sync_state.commits_head.
    */
   headOid?: string | null;
 }

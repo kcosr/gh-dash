@@ -456,8 +456,9 @@ describe('GitLabSyncSource: rounds', () => {
     ]);
   });
 
-  it('walks default-branch commits newest first, later pages pinned to the head the first page saw', async () => {
+  it('walks default-branch commits newest first from the head the project was read with, every page pinned to it', async () => {
     const head = commitsFixture[0]!.id;
+    expect(APP.headOid).toBe(head);
     const { source, requests } = setup({
       '/api/v4/projects/11/repository/commits': (req) => {
         const n = req.url.searchParams.get('page');
@@ -474,10 +475,17 @@ describe('GitLabSyncSource: rounds', () => {
     expect(last).toEqual({ items: [], hasMore: false, endCursor: null });
     const q = `since=${encodeURIComponent(since)}&with_stats=true&per_page=100`;
     expect(requests).toEqual([
-      `/api/v4/projects/11/repository/commits?ref_name=main&${q}&page=1`,
+      `/api/v4/projects/11/repository/commits?ref_name=${head}&${q}&page=1`,
       `/api/v4/projects/11/repository/commits?ref_name=${head}&${q}&page=2`,
       `/api/v4/projects/11/repository/commits?ref_name=${head}&${q}&page=3`,
     ]);
+
+    // Without a head read with the project: the branch, then the head its first page listed.
+    requests.length = 0;
+    const branch = (await source.round({ ...APP, headOid: null }, { commits: { after: null, since } })).commits!;
+    expect(branch.endCursor).toBe(`2:${head}`);
+    await source.round(APP, { commits: { after: branch.endCursor, since } });
+    expect(requests).toEqual([`/api/v4/projects/11/repository/commits?ref_name=main&${q}&page=1`, `/api/v4/projects/11/repository/commits?ref_name=${head}&${q}&page=2`]);
   });
 
   it('has no commits for a repository without a default branch', async () => {

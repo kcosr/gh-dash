@@ -486,8 +486,9 @@ async function syncRepo(deps: SyncDeps, t: RepoTarget, run: RunContext): Promise
         advance('commits', page.hasMore && !stopped, page.endCursor, () => {
           // A walk that went through the whole window has seen every commit on the branch since backfillStart.
           if (!stopped) pruneCommits(db, id, run.backfillStart, commitWalk.seen);
-          // The head the plan compared, when the source read one: a walk can come back empty (a head older than the
-          // window) or, if a push landed meanwhile, start above it; the walk's first commit otherwise.
+          // The head the plan compared, when the source read one: the source walked that commit's history, even if
+          // the branch has moved since, and an empty walk (a head older than the window) records it too. Without one,
+          // the walk's first commit.
           updateSyncState(db, id, { commits_pushed_at: r.pushedAt, commits_branch: r.defaultBranch, commits_head: r.headOid ?? commitWalk.head ?? null });
         });
       }

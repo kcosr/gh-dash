@@ -355,18 +355,20 @@ export class GitLabSyncSource implements SyncSource {
   }
 
   /**
-   * Default-branch commits since `since`, newest first, over REST (GraphQL's have no stats). Offset pages of a moving
-   * branch would shift under a push, so later pages list from the head commit the first page saw: the cursor is
-   * "<page>:<head sha>".
+   * Default-branch commits since `since`, newest first, over REST (GraphQL's have no stats). The walk is of the head
+   * the project was read with (`repo.headOid`), not of the branch as it is now: that head is what the sync records as
+   * walked, and a push in between (a force-push, even) would otherwise leave it recorded over another history. Without
+   * one, the branch's head as the first page lists it. Offset pages of a moving branch would shift under a push, so
+   * every page lists from that head commit: the cursor is "<page>:<head sha>".
    */
   private async commits(repo: RepoRecord, after: string | null, since: string): Promise<Page<CommitRecord>> {
     const pinned = after ? commitCursor(after) : null;
-    const ref = pinned?.head ?? repo.defaultBranch;
-    if (!ref) return { items: [], hasMore: false, endCursor: null };
+    if (!pinned && !repo.defaultBranch) return { items: [], hasMore: false, endCursor: null };
+    const start = pinned?.head ?? repo.headOid ?? null;
     const res = await this.rest.page<RestCommit[]>(`/projects/${projectId(repo)}/repository/commits`, {
-      query: { ref_name: ref, since, with_stats: true, per_page: COMMIT_PAGE, page: pinned?.page ?? 1 },
+      query: { ref_name: start ?? repo.defaultBranch!, since, with_stats: true, per_page: COMMIT_PAGE, page: pinned?.page ?? 1 },
     });
-    const head = pinned?.head ?? res.body[0]?.id;
+    const head = start ?? res.body[0]?.id;
     // GitLab offers a next page whenever this one is full, so a next page can be empty: an empty page ends the walk.
     const next = res.body.length > 0 && head ? res.nextPage : null;
     return { items: res.body.map(mapCommit), hasMore: next !== null, endCursor: next === null ? null : `${next}:${head}` };

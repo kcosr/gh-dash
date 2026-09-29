@@ -139,8 +139,11 @@ export class SourceRegistry {
   private readonly githubRuntime: SourceRuntime;
   private readonly runtimes = new Map<number, Built>();
   private readonly listeners = new Set<(runtime: SourceRuntime, token: ResolvedToken) => void>();
-  /** Tokens the desktop app pushed, by host: kept across rebuilds of that source's provider. */
-  private readonly appTokens = new Map<string, string>();
+  /**
+   * Tokens the desktop app pushed, by source id: kept across rebuilds of that source's provider, and forgotten with its
+   * runtime. A host removed and added again is a new source, which may be for another account: it waits for its own.
+   */
+  private readonly appTokens = new Map<number, string>();
   private current: SourcesConfig = { glabPath: null, sources: [] };
 
   constructor(opts: SourceRegistryOptions) {
@@ -237,14 +240,16 @@ export class SourceRegistry {
 
   /**
    * The token the desktop app holds for a GitLab source (pasted, or remembered in the OS keychain); null forgets it.
-   * Kept across rebuilds of the source's provider. github.com's goes through TokenProvider.setAppToken, as before.
+   * Kept across rebuilds of the source's provider, for that source only: a host without a runtime (not in the
+   * database) has no token to keep or forget, and returns null. github.com's goes through TokenProvider.setAppToken,
+   * as before.
    */
   setAppToken(host: string, token: string | null): SourceRuntime | null {
     const runtime = this.byHost(host);
     if (!runtime || runtime.id === GITHUB_SOURCE_ID) return null;
     const value = token?.trim() || null;
-    if (value) this.appTokens.set(runtime.host, value);
-    else this.appTokens.delete(runtime.host);
+    if (value) this.appTokens.set(runtime.id, value);
+    else this.appTokens.delete(runtime.id);
     runtime.tokens.setAppToken(value);
     return runtime;
   }
@@ -290,9 +295,11 @@ export class SourceRegistry {
     return b.runtime;
   }
 
+  /** Forgets a source that left the database, with the app token it held. */
   private drop(id: number): void {
     this.runtimes.get(id)?.unsubscribe();
     this.runtimes.delete(id);
+    this.appTokens.delete(id);
   }
 
   private emit(runtime: SourceRuntime, token: ResolvedToken): void {
@@ -315,7 +322,8 @@ export class SourceRegistry {
           { ...gitlabSpec(row, { tokenEnv: null, glabPath: null }), cli: null, noTokenHint: "it isn't configured on this server" },
           { ...base, choice: null },
         );
-    if (config && this.appTokens.has(row.host)) tokens.setAppToken(this.appTokens.get(row.host)!);
+    const appToken = this.appTokens.get(row.id);
+    if (config && appToken) tokens.setAppToken(appToken);
     const db = this.db;
     const last = { row };
     const baseUrl = row.baseUrl;

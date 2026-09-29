@@ -185,6 +185,30 @@ describe('SourceRegistry', () => {
     expect(registry.setAppToken('nowhere.example.com', PAT)).toBeNull();
   });
 
+  it("forgets a source's app token with the source: the host added again waits for a token of its own", async () => {
+    const { db, registry } = setup();
+    const config = { glabPath: null, sources: [gitlab(HOST, { tokenChoice: 'app' })] };
+    const [gl] = registry.apply(config);
+    registry.setAppToken(HOST, PAT);
+    expect(await gl!.tokens.get()).toMatchObject({ token: PAT, source: 'app' });
+
+    // Taken out of the config and removed with its data (the documented account reset), then added again.
+    registry.apply({ glabPath: null, sources: [] });
+    removeSource(db, gl!.id);
+    registry.apply();
+    const [again] = registry.apply(config);
+    expect(again!.id).not.toBe(gl!.id);
+    expect(await again!.tokens.get()).toMatchObject({ token: null, source: 'none', error: 'No token has been entered in the app' });
+
+    // The same when another instance removes it; and forgetting a host with no source is accepted, and keeps nothing.
+    registry.setAppToken(HOST, PAT);
+    removeSource(db, again!.id);
+    expect(registry.setAppToken(HOST, null)).toBeNull();
+    expect(registry.setAppToken(HOST, PAT)).toBeNull();
+    const [third] = registry.apply(config);
+    expect(await third!.tokens.get()).toMatchObject({ token: null, error: 'No token has been entered in the app' });
+  });
+
   it('checks each configured source, logging who the token is for, an expiry close by, and write scopes', async () => {
     const routes = { ...CHECK_ROUTES, [SELF]: { body: pat({ scopes: ['api'], expires_at: '2026-10-05' }) } };
     const { registry, logs, api } = setup({ env: { GITLAB_TOKEN: PAT, PATH: '/usr/bin' }, routes });

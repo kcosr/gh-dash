@@ -33,11 +33,12 @@ const schemas: Record<string, Schema> = {
     weeklyCommits: { ...arr(int()), description: '12 Mon-start weeks (server tz), oldest first' },
   }),
   Repo: obj({
-    name: str(), nameWithOwner: str(), owner: str(), description: nullable(str()), url: str(),
+    key: str('Identity in URLs, `repos=` lists and every `repo` field (currently the short name)'), name: str(), nameWithOwner: str(), owner: str(), description: nullable(str()), url: str(),
     visibility: enumOf('public', 'private'), isArchived: bool, isFork: bool,
     language: nullable(obj({ name: str(), color: nullable(str()) })), topics: arr(str()), defaultBranch: nullable(str()),
     stars: int(), forks: int(), createdAt: dateTime, pushedAt: nullable(dateTime), lastActivityAt: nullable(dateTime),
     pinned: bool, hidden: bool, setIds: arr(int()), stats: ref('RepoStats'), syncedAt: nullable(dateTime),
+    trackedBy: enumOf('owned', 'manual'),
   }),
   PullRequest: obj({
     id: str('<repo>#<number>'), repo: str(), number: int(), title: str(), body: str('Markdown'),

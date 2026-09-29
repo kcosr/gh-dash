@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { seedDb } from '../test/seed';
 import { listRepos } from './repos';
+import { repoKey } from './repo-key';
 import { upsertRepo, upsertStar } from './write';
 
 describe('listRepos lastActivityAt', () => {
@@ -22,5 +23,17 @@ describe('listRepos lastActivityAt', () => {
     // The list is ordered by it, so the starred-but-idle repo sorts last.
     expect(repos.at(-1)!.name).toBe('dusty');
     expect(byName.get('dusty')!.stats.newStars30d).toBe(1);
+  });
+});
+
+describe('listRepos identity', () => {
+  it('gives every repo its key (what the API and URLs call it) and how it is tracked', () => {
+    const repos = listRepos(seedDb(), 'UTC');
+    expect(repos.length).toBeGreaterThan(1);
+    for (const r of repos) {
+      expect(r.key).toBe(repoKey({ name: r.name, name_with_owner: r.nameWithOwner }));
+      expect(r.trackedBy).toBe('owned');
+    }
+    expect(repos.map((r) => r.key)).toContain('app');
   });
 });

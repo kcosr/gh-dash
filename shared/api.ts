@@ -11,6 +11,8 @@
 
 export type Visibility = 'public' | 'private';
 export type VisibilityFilter = 'all' | Visibility;
+/** How a repository came to be tracked: synced because the viewer owns it, or added by hand. */
+export type TrackedBy = 'owned' | 'manual';
 export type Who = 'me' | 'others' | 'everyone';
 export type PrState = 'open' | 'merged' | 'closed';
 export type PrStateFilter = PrState | 'all';
@@ -52,6 +54,11 @@ export interface RepoStats {
 }
 
 export interface Repo {
+  /**
+   * Identity everywhere in the API and in URLs (`repos=` lists, path params, every `repo` field).
+   * Currently the short name; `name` is what to display.
+   */
+  key: string;
   name: string;
   nameWithOwner: string;
   owner: string;
@@ -78,6 +85,7 @@ export interface Repo {
   setIds: number[];
   stats: RepoStats;
   syncedAt: string | null;
+  trackedBy: TrackedBy;
 }
 
 export interface PullRequest {
@@ -369,7 +377,7 @@ export interface IssueQuery extends ScopeQuery, PageQuery {
 
 /** Repository inventory by default; scope=default uses the dashboard's usual selection. */
 export interface RepoQuery {
-  /** Explicit names override scope; an empty string selects nothing. */
+  /** Explicit repo keys (or an owned repo's short name) override scope; an empty string selects nothing. */
   repos?: string;
   scope?: 'all' | 'default';
   visibility?: VisibilityFilter;

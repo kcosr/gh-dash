@@ -692,10 +692,11 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
     return <FileNotes path={item.id} ids={note.ids} outdated={note.outdated} draft={note.draft} />;
   }, []);
 
-  // Deep link: the shell's URL as of opening; after that the URL only follows the viewer. Its thread wins (once the
-  // threads are in: its line can be anywhere in its file, and its file is in the URL too); the file is the fallback,
-  // for a thread that's gone (it leaves the URL) or threads that couldn't be loaded. One effect, so the two never race
-  // for the scroll. On every mount: in development StrictMode remounts the CodeView, dropping a first scroll.
+  // Deep link: the shell's URL as of opening; after that the URL only follows the viewer. Its thread wins (its line
+  // can be anywhere in its file, and its file is in the URL too); the file is the fallback, for a thread that's gone
+  // (it leaves the URL) or threads that couldn't be loaded. Each is restored once per mount: the file at once when
+  // there's no thread, else when the threads are in, never again after (the reader may have moved on). Per mount: in
+  // development StrictMode remounts the CodeView, dropping a first scroll.
   const [initial] = useState(() => ({
     thread: comments.initialThread,
     file: file != null && byId.has(file) && file !== current.get() ? file : null,
@@ -704,16 +705,16 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
   const restore = useRef({ goTo, jumpToThread, focusThread, threadById, error: comments.error });
   restore.current = { goTo, jumpToThread, focusThread, threadById, error: comments.error };
   useEffect(() => {
+    if (initial.thread === null && initial.file) restore.current.goTo(initial.file);
+  }, [initial]);
+  useEffect(() => {
+    if (initial.thread === null || !threadsSettled) return;
     const l = restore.current;
-    if (initial.thread !== null) {
-      if (!threadsSettled) return;
-      if (l.threadById.has(initial.thread)) {
-        l.jumpToThread(initial.thread);
-        return;
-      }
+    if (l.threadById.has(initial.thread)) l.jumpToThread(initial.thread);
+    else {
       if (!l.error) l.focusThread(null);
+      if (initial.file) l.goTo(initial.file);
     }
-    if (initial.file) l.goTo(initial.file);
   }, [initial, threadsSettled]);
 
   // Keyboard scrolling (arrows, Page Down, Space) needs focus in the scroller, not the shell's body.

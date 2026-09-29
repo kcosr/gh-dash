@@ -132,11 +132,9 @@ export class GitLabSyncSource implements SyncSource {
     }
     for (let i = 0; i < issues.length; i += ISSUE_PAGE) {
       const chunk = issues.slice(i, i + ISSUE_PAGE);
-      const found = new Map(
-        (await this.rest.json<RestIssue[]>(`/projects/${projectId(repo)}/issues`, { query: { ...ISSUE_FILTER, state: 'all', 'iids[]': chunk, per_page: chunk.length } })).map(
-          (i) => [i.iid, i],
-        ),
-      );
+      const query = { ...ISSUE_FILTER, state: 'all', 'iids[]': chunk, per_page: chunk.length };
+      const listed = await this.rest.json<RestIssue[]>(`/projects/${projectId(repo)}/issues`, { query });
+      const found = new Map(listed.map((issue) => [issue.iid, issue]));
       for (const n of chunk) {
         const issue = found.get(n);
         out.issues.set(n, issue ? mapIssue(issue, this.base) : null);

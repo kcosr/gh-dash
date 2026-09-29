@@ -76,6 +76,9 @@ describe('GitLab transport', () => {
     // A resource the user may not see (a Guest and a private repository) is not a token problem.
     const forbidden = setup({ '/api/v4/x': { status: 403, body: { message: '403 Forbidden' } } });
     expect(await fail(forbidden.rest.json('/x'))).toMatchObject({ kind: 'http', status: 403, message: 'GitLab returned 403 for /gitlab/api/v4/x: 403 Forbidden' });
+    // GraphQL has no per-resource 403 (it answers null): there it means a blocked or deactivated account.
+    const blocked = setup({ '/api/graphql': { status: 403, body: { errors: [{ message: 'API not accessible for user' }] } } });
+    expect(await fail(blocked.gql.query('query V { currentUser { id } }'))).toMatchObject({ kind: 'auth', status: 403, message: expect.stringContaining('API not accessible') });
   });
 
   it('maps 404 to not-found and other client errors to http, without retrying', async () => {

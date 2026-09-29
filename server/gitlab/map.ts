@@ -1,5 +1,5 @@
 import type { DiffFile, Label, Visibility } from '../../shared/api';
-import type { ActorRecord, CommitRecord, IssueRecord, PrRecord, ReleaseRecord, RepoProbe, RepoRecord, StarRecord } from '../db/records';
+import type { ActorRecord, CommitRecord, IssueRecord, PrCommitRecord, PrRecord, ReleaseRecord, RepoProbe, RepoRecord, StarRecord } from '../db/records';
 import { isoSec } from '../lib/time';
 import type { ViewerInfo } from '../provider/types';
 import { countLines, hunks } from './patch';
@@ -112,7 +112,7 @@ export function mapProject(p: GqlProject, base: string): RepoRecord {
   };
 }
 
-/** GitLab has no cheap "latest star" (starrers are REST-only, in no set order): latestStarredAt stays null. */
+/** GitLab has no cheap "latest star" (starrers are REST-only, listed oldest first): latestStarredAt stays null. */
 export function mapProbe(p: GqlProbe): RepoProbe {
   return {
     openPrs: p.openMergeRequests?.count ?? 0,
@@ -124,7 +124,7 @@ export function mapProbe(p: GqlProbe): RepoProbe {
   };
 }
 
-function mapMrCommit(c: GqlCommit, base: string) {
+function mapMrCommit(c: GqlCommit, base: string): PrCommitRecord {
   return {
     oid: c.sha,
     headline: c.fullTitle ?? '',

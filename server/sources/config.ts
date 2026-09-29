@@ -6,6 +6,7 @@ import { isAbsolute } from 'node:path';
 import type { ConfigSource, TokenChoice } from '../../shared/api';
 import { DESKTOP_ENV } from '../../shared/desktop';
 import { CONFIG_ENV, type ConfigFile, GITLAB_ENV, type LoadedConfigFile, type SourceConfigEntry, sourceUrl } from '../config-file';
+import { envKey } from '../credentials/cli';
 import { GITLAB_TOKEN_ENV } from '../gitlab/credentials';
 
 /** One GitLab source as this instance runs it: identity, URL, and how its token is found. */
@@ -53,7 +54,7 @@ const ENV_CHOICES: readonly TokenChoice[] = ['glab', 'file'];
  * variables: its sources are what main wrote to config.json. A set but empty variable means the default, as
  * elsewhere. Reads no files.
  */
-export function loadSources(env: NodeJS.ProcessEnv, file: LoadedConfigFile | null): LoadedSources {
+export function loadSources(env: NodeJS.ProcessEnv, file: LoadedConfigFile | null, platform: NodeJS.Platform = process.platform): LoadedSources {
   const desktop = env[DESKTOP_ENV.desktop] === '1';
   const data: ConfigFile = file?.data ?? {};
   const where = (what: string) => (file ? `${what} in ${file.path}` : what);
@@ -134,12 +135,16 @@ export function loadSources(env: NodeJS.ProcessEnv, file: LoadedConfigFile | nul
       from: d.from,
     };
   });
-  const locks = new Map<string, string>();
+  // After the environment's source: GITLAB_TOKEN may now lock one, and on Windows gitlab_token is the same variable.
+  const locks = new Map<string, SourceConfig>();
   for (const s of sources) {
     if (!s.tokenEnv) continue;
-    const other = locks.get(s.tokenEnv);
-    if (other) throw new Error(`${s.tokenEnv} would lock both ${other} and ${s.host}: give one of them its own tokenEnv`);
-    locks.set(s.tokenEnv, s.host);
+    const other = locks.get(envKey(s.tokenEnv, platform));
+    if (other) {
+      const same = other.tokenEnv === s.tokenEnv ? '' : ` (the same variable as ${other.tokenEnv} on Windows)`;
+      throw new Error(`${s.tokenEnv}${same} would lock both ${other.host} and ${s.host}: give one of them its own tokenEnv`);
+    }
+    locks.set(envKey(s.tokenEnv, platform), s);
   }
   for (const s of sources) {
     if (s.tokenChoice === 'file' && !s.tokenFile) warnings.push(`GitLab source ${s.host} uses a token file, but none is set (tokenFile or ${GITLAB_ENV.tokenFile})`);

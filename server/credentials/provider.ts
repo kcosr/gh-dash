@@ -2,7 +2,7 @@ import * as fsp from 'node:fs/promises';
 import { posix, win32 } from 'node:path';
 import type { SourceAccount, TokenChoice, TokenKind } from '../../shared/api';
 import { redact } from '../provider/transport';
-import { defaultExec, findCli } from './cli';
+import { defaultExec, envKey, findCli } from './cli';
 import type { CliInfo, CliIo, CredentialSpec, Exec, ResolvedToken, TokenCheck, TokenFs, TokenSupply, Validation } from './types';
 
 export type { CliInfo, CliSpec, CredentialSpec, Exec, ExecResult, ResolvedToken, TokenCheck, TokenFs, TokenSupply, Validation } from './types';
@@ -388,7 +388,8 @@ export class CredentialProvider implements TokenSupply {
   /** An environment variable, looked up case-insensitively on Windows (a copied env loses that). */
   private envVar(name: string): string | undefined {
     if (!this.win) return this.env[name];
-    return Object.entries(this.env).find(([key]) => key.toUpperCase() === name.toUpperCase())?.[1];
+    const want = envKey(name, 'win32');
+    return Object.entries(this.env).find(([key]) => envKey(key, 'win32') === want)?.[1];
   }
 
   private envToken(): string | null {

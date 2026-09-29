@@ -4,8 +4,9 @@ import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { configFilePath, configJsonPath, findPackageRoot, loadConfig, loadEnvironment, loadServerConfig, rootDir } from './config';
-import { readConfigFile, writeConfigFile, type ConfigFile } from './config-file';
+import { configFileSchemaFor, readConfigFile, writeConfigFile, type ConfigFile } from './config-file';
 import { openDb } from './db/db';
+import { loadSources } from './sources/config';
 import { testTokens } from './test/tokens';
 
 const posix = process.platform !== 'win32';
@@ -321,6 +322,28 @@ describe('GitLab sources', () => {
     expect(bad({ sources: [gitlab('https://gitlab.example.com', { tokenEnv: 'GH_DASH_PASSWORD' })] })).toThrow(/GH_DASH_PASSWORD holds another secret/);
     expect(bad({ sources: [gitlab('https://gitlab.example.com', { tokenEnv: 'NOT-A-NAME' })] })).toThrow(/must be an environment variable name/);
     expect(bad({ sources: [gitlab('https://gitlab.example.com', { tokenEnv: 'T' }), gitlab('https://gitlab2.example.com', { tokenEnv: 'T' })] })).toThrow(/sources\.1\.tokenEnv: T is already sources\[0\]'s tokenEnv/);
+  });
+
+  it("refuses tokenEnv names Windows can't tell apart there, as its credential lookup would give both sources one token", () => {
+    const two = { sources: [gitlab('https://gitlab.example.com', { tokenEnv: 'TEAM_TOKEN' }), gitlab('https://gitlab2.example.com', { tokenEnv: 'team_token' })] };
+    const win = configFileSchemaFor('win32').safeParse(two);
+    expect(win.success).toBe(false);
+    expect(win.error?.issues.map((i) => [i.path.join('.'), i.message])).toEqual([
+      ['sources.1.tokenEnv', "team_token is already sources[0]'s tokenEnv (TEAM_TOKEN: Windows doesn't tell them apart)"],
+    ]);
+    // Elsewhere they are two variables.
+    expect(configFileSchemaFor('linux').safeParse(two).success).toBe(true);
+    expect(configFileSchemaFor('darwin').safeParse(two).success).toBe(true);
+
+    // The final check, after the environment's source takes GITLAB_TOKEN: config.json's gitlab_token is that variable on Windows.
+    const file = { path: '/etc/gh-dash/config.json', exists: true, data: { sources: [{ kind: 'gitlab' as const, url: 'https://gitlab.example.com', tokenEnv: 'gitlab_token' }] }, unknownKeys: [] };
+    const env = { GH_DASH_GITLAB_URL: 'https://gitlab2.example.com' };
+    expect(() => loadSources(env, file, 'win32')).toThrow(
+      'GITLAB_TOKEN (the same variable as gitlab_token on Windows) would lock both gitlab.example.com and gitlab2.example.com: give one of them its own tokenEnv',
+    );
+    expect(loadSources(env, file, 'linux').sources.map((s) => [s.host, s.tokenEnv])).toEqual([['gitlab.example.com', 'gitlab_token'], ['gitlab2.example.com', 'GITLAB_TOKEN']]);
+    // Two config.json entries meet the same check.
+    expect(() => loadSources({}, { ...file, data: two as ConfigFile }, 'win32')).toThrow(/^team_token \(the same variable as TEAM_TOKEN on Windows\) would lock both/);
   });
 
   it('warns about unknown keys inside a source, and keeps sources when the desktop app writes config.json', () => {

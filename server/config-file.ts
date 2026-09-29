@@ -2,6 +2,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute } from 'node:path';
 import { z } from 'zod';
 import { GITHUB_HOST } from '../shared/api';
+import { envKey } from './credentials/cli';
 import { normalizeBaseUrl } from './gitlab/transport';
 
 /** An environment variable's name, as a source's tokenEnv. */
@@ -60,12 +61,12 @@ function checkSourceEntry(entry: SourceConfigEntry, ctx: z.RefinementCtx, i: num
 }
 
 /**
- * config.json: instance settings that must be known before the server starts. Each key mirrors an environment
+ * config.json's keys: instance settings that must be known before the server starts. Each key mirrors an environment
  * variable, which overrides it. Headless servers read $XDG_CONFIG_HOME/gh-dash/config.json (or GH_DASH_CONFIG);
  * the desktop app keeps it in its userData folder and is the only thing that writes it (never over HTTP).
  * UI preferences (sync interval, emails...) stay in the database's settings table.
  */
-export const configFileSchema = z.object({
+const configFileKeys = z.object({
   /** HOST. Listen address for the TCP listener. */
   host: z.string().trim().min(1).optional(),
   /** PORT. */
@@ -101,18 +102,33 @@ export const configFileSchema = z.object({
    * are unique, and so are tokenEnv names.
    */
   sources: z.array(sourceConfigSchema).optional(),
-}).superRefine((data, ctx) => {
-  const hosts = new Map<string, number>();
-  const envs = new Map<string, number>();
-  (data.sources ?? []).forEach((entry, i) => {
-    const host = checkSourceEntry(entry, ctx, i);
-    if (host !== null && hosts.has(host)) ctx.addIssue({ code: 'custom', path: ['sources', i, 'url'], message: `${host} is already sources[${hosts.get(host)}]` });
-    else if (host !== null) hosts.set(host, i);
-    const env = entry.tokenEnv?.trim();
-    if (env && envs.has(env)) ctx.addIssue({ code: 'custom', path: ['sources', i, 'tokenEnv'], message: `${env} is already sources[${envs.get(env)}]'s tokenEnv` });
-    else if (env) envs.set(env, i);
-  });
 });
+
+/**
+ * config.json as validated on `platform`: its keys, and sources whose hosts are unique and whose tokenEnv names are
+ * too, as the platform tells names apart (on Windows, TEAM_TOKEN and team_token are one variable, which credential
+ * resolution would hand both sources).
+ */
+export function configFileSchemaFor(platform: NodeJS.Platform) {
+  return configFileKeys.superRefine((data, ctx) => {
+    const hosts = new Map<string, number>();
+    const envs = new Map<string, { i: number; name: string }>();
+    (data.sources ?? []).forEach((entry, i) => {
+      const host = checkSourceEntry(entry, ctx, i);
+      if (host !== null && hosts.has(host)) ctx.addIssue({ code: 'custom', path: ['sources', i, 'url'], message: `${host} is already sources[${hosts.get(host)}]` });
+      else if (host !== null) hosts.set(host, i);
+      const env = entry.tokenEnv?.trim();
+      const other = env ? envs.get(envKey(env, platform)) : undefined;
+      if (env && other) {
+        const same = other.name === env ? '' : ` (${other.name}: Windows doesn't tell them apart)`;
+        ctx.addIssue({ code: 'custom', path: ['sources', i, 'tokenEnv'], message: `${env} is already sources[${other.i}]'s tokenEnv${same}` });
+      } else if (env) envs.set(envKey(env, platform), { i, name: env });
+    });
+  });
+}
+
+/** config.json, as this platform validates it. */
+export const configFileSchema = configFileSchemaFor(process.platform);
 
 export type ConfigFile = z.infer<typeof configFileSchema>;
 

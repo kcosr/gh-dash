@@ -69,6 +69,15 @@ async function isExecutable(path: string, io: CliIo): Promise<boolean> {
 }
 
 /**
+ * An environment variable's name as the platform tells names apart: on Windows TEAM_TOKEN and team_token are the same
+ * variable. Credential resolution looks variables up by it, and the checks that two sources don't share one compare by
+ * it, so the two agree.
+ */
+export function envKey(name: string, platform: NodeJS.Platform): string {
+  return platform === 'win32' ? name.toUpperCase() : name;
+}
+
+/**
  * The CLI's environment: ours minus `drop` (variables it would just hand back as the token), plus `set`. Keys match
  * case-insensitively on Windows.
  */

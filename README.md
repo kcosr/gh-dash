@@ -55,8 +55,11 @@ signed-in user are synced automatically; add others by hand (see below).
   contribute to, use **Add repository** (the **+** in the sidebar, the Repositories page,
   **Settings → Tracked repositories**, or the command palette). Pick one of the repositories
   the token can read, or paste `owner/name` or a GitHub URL; gh-dash checks the token's access
-  and shows what the first sync will fetch before you add it. **Remove…** in a repository's
-  menu stops syncing it and deletes its data from the dashboard; nothing changes on GitHub.
+  and shows what the first sync will fetch before you add it. With a GitLab source, a small
+  picker chooses where to look (it starts on the current source); paste `group/project`, a
+  project URL or `host/group/project`, and an address of another source switches the picker.
+  **Remove…** in a repository's menu stops syncing it and deletes its data from the
+  dashboard; nothing changes on GitHub or GitLab.
   A fine-grained token reads private repositories of a single owner only; a classic token or
   the GitHub CLI can read every organization you belong to.
 - **Keyboard shortcuts:** `Ctrl/Cmd+K` opens search; `/` focuses the filter. In the PR

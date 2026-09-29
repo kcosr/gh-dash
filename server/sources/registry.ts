@@ -8,8 +8,8 @@
 // - syncSource(token): the neutral runSync (3c) and the multi-source manager (5); tracking's candidates() and
 //   lookup() (6). github.com's is null until GitHubSyncSource exists (3b); until then the manager syncs GitHub with
 //   its own GitHubClient, as before.
-// - diffs (DiffSources): the diff service, routed by the repo's source (7). github.com's is the GitHubDiffSources the
-//   diff service already uses.
+// - diffs (SourceDiffSupply): the diff service, through DiffRouter (sources/diffs.ts), which asks the repo's source's.
+//   github.com's is the GitHubDiffSources startServer builds.
 // - byHost / byId / list / configured: the manager (5), tracking (6), diffs (7), the API (8), the desktop child (11).
 // - setAppToken(host): the desktop app's set-token for a source (11). apply(): startup, reload-sources, and after
 //   removeSource (8).
@@ -19,7 +19,7 @@ import { CredentialProvider, type CredentialOptions } from '../credentials/provi
 import type { ResolvedToken } from '../credentials/types';
 import type { Db } from '../db/db';
 import { ensureSource, GITHUB_SOURCE_ID, getSource, listSources, sourceByHost, type SourceRow } from '../db/sources';
-import type { DiffSources } from '../diff/service';
+import type { SourceDiffSupply } from '../diff/service';
 import { gitlabSpec } from '../gitlab/credentials';
 import { GitLabDiffSources } from '../gitlab/diff-source';
 import { GitLabSyncSource } from '../gitlab/sync-source';
@@ -52,7 +52,7 @@ export interface SourceRuntime {
    */
   readonly syncSource: ((token: string) => SyncSource) | null;
   /** Its diff and file-content client for the current token. */
-  readonly diffs: DiffSources;
+  readonly diffs: SourceDiffSupply;
 }
 
 export interface SourceRegistryOptions {
@@ -60,7 +60,7 @@ export interface SourceRegistryOptions {
   /** The merged environment (token variables, PATH and HOME for glab). */
   env: NodeJS.ProcessEnv;
   /** github.com's parts, which startServer builds: TokenProvider.credentials and the diff service's GitHubDiffSources. */
-  github: { tokens: CredentialProvider; diffs: DiffSources };
+  github: { tokens: CredentialProvider; diffs: SourceDiffSupply };
   log?: (line: string) => void;
   /** Test seams for GitLab sources' credential providers and clients. */
   seams?: Pick<CredentialOptions, 'platform' | 'exec' | 'fs' | 'now'> & { fetchImpl?: typeof fetch; sleep?: (ms: number) => Promise<void> };
@@ -279,7 +279,7 @@ export class SourceRegistry {
           },
           sleep,
         }),
-      diffs: new GitLabDiffSources({ baseUrl, tokens, fetchImpl, sleep }),
+      diffs: new GitLabDiffSources({ baseUrl, tokens, authHint: tokens.spec.authHint, fetchImpl, sleep }),
     };
     const unsubscribe = tokens.onChange((token) => this.emit(runtime, token));
     return { runtime, recipe: want, unsubscribe };

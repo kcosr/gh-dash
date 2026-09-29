@@ -220,9 +220,9 @@ export type DiffTarget =
 /** A PR's diff param is its id ("<repo>#<n>", like `pr`); a commit's is "<repo>@<oid>". */
 export const commitDiffId = (repo: string, oid: string) => `${repo}@${oid}`;
 
-/** Parse a `diff` param; null when malformed. Commit oids may be abbreviated (7–40 hex chars). */
+/** Parse a `diff` param; null when malformed. Commit oids may be abbreviated (7–64 hex chars: a SHA-1 is 40, a SHA-256 is 64). */
 export function parseDiffId(id: string | null): DiffTarget | null {
-  const m = id ? /^([^#@\s]+)(?:#([1-9]\d{0,9})|@([0-9a-f]{7,40}))$/i.exec(id) : null;
+  const m = id ? /^([^#@\s]+)(?:#([1-9]\d{0,9})|@([0-9a-f]{7,64}))$/i.exec(id) : null;
   if (!m) return null;
   return m[2] ? { kind: 'pr', repo: m[1], number: Number(m[2]) } : { kind: 'commit', repo: m[1], oid: m[3] };
 }

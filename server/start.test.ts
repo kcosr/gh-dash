@@ -10,7 +10,11 @@ import { type Config, loadConfig } from './config';
 import { readConfigFile, writeConfigFile } from './config-file';
 import { getSource } from './db/sources';
 import { localApiUrl, type RunningServer, startServer } from './start';
+import { payloadText } from './diff/service';
+import commitsFixture from './test/fixtures/gitlab/commits.json';
 import { BASE, fakeGitLab, graphql } from './test/gitlab';
+import { fakeInstance } from './test/gitlab-instance';
+import { addManualRepo } from './test/seed';
 
 const dirs: string[] = [];
 const running: RunningServer[] = [];
@@ -213,5 +217,35 @@ describe('startServer', () => {
     expect(() => server.reloadSources()).toThrow(/github\.com is built in/);
     expect(server.sources.list()).toHaveLength(3);
     expect(server.config.glabPath).toBe('/opt/glab');
+  });
+
+  it("fetches a repo's diffs from the source it is on", async () => {
+    const dir = temp();
+    const env = { GITLAB_TOKEN: 'glpat-test-alice', GH_DASH_GITLAB_URL: BASE, GH_DASH_DB: join(dir, 'dash.db'), GH_DASH_SYNC: 'off' };
+    const config = { ...loadConfig(env), webDir: '/nonexistent', port: 0 };
+    const api = fakeInstance({}, BASE, {
+      CredentialCheck: () => ({
+        currentUser: { id: 'gid://gitlab/User/2', username: 'alice', name: null, avatarUrl: null, publicEmail: null, commitEmail: null, emails: { nodes: [] } },
+        metadata: { version: '19.3.3-ee', enterprise: true },
+        personal: { count: 3 },
+      }),
+    });
+    const server = await startServer({
+      config,
+      env,
+      log: () => {},
+      tokenOptions: { fs: noFiles, exec: async () => { throw new Error('gh must not run in tests'); }, fetchImpl: async () => { throw new Error('no network in tests'); } },
+      sourceOptions: { fs: noFiles, exec: async () => { throw new Error('glab must not run in tests'); }, fetchImpl: api.fetchImpl, sleep: async () => {} },
+    });
+    running.push(server);
+    addManualRepo(server.db, 'alice/app', { source: server.sources.byHost('gitlab.example.com')!.row });
+    addManualRepo(server.db, 'alice/tool');
+
+    // GitLab's repo is read from GitLab with GitLab's token; GitHub's has no token here, and says so.
+    const head = commitsFixture[0]!.id;
+    const diff = JSON.parse(await payloadText(await server.diffs.commitDiff('gitlab.example.com/alice/app', head))) as { repo: string; headOid: string };
+    expect(diff).toMatchObject({ repo: 'gitlab.example.com/alice/app', headOid: head });
+    expect(api.calls.find((c) => c.url.pathname.endsWith(`/repository/commits/${head}`))?.headers.Authorization).toBe('Bearer glpat-test-alice');
+    expect(await server.diffs.commitDiff('alice/tool', head).catch((e: Error) => e)).toMatchObject({ status: 503, message: expect.stringContaining('No GitHub token') });
   });
 });

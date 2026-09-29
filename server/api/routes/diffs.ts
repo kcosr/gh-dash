@@ -1,6 +1,6 @@
 import { type Context, Hono } from 'hono';
 import { z } from 'zod';
-import { type Payload, payloadText } from '../../diff/service';
+import { isFullSha, type Payload, payloadText } from '../../diff/service';
 import type { AppDeps } from '../app';
 import { noCrossSiteReads } from '../auth';
 import { HttpError, parseWith } from '../http';
@@ -55,7 +55,7 @@ export function diffRoutes({ diffs }: AppDeps): Hono {
     const { ref, path } = parseWith(blobQuery, c.req.query());
     const body = await diffs.blob(c.req.param('repo'), ref, path);
     // Contents at a full SHA never change.
-    const immutable = ref.length === 40 ? { 'Cache-Control': 'private, max-age=31536000, immutable' } : undefined;
+    const immutable = isFullSha(ref) ? { 'Cache-Control': 'private, max-age=31536000, immutable' } : undefined;
     return send(c, body, 'text/plain; charset=utf-8', immutable);
   });
 

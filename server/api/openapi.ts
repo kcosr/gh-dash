@@ -425,13 +425,13 @@ export const ENDPOINTS: EndpointDoc[] = [
   {
     method: 'get', path: '/api/v1/commits/{repo}/{oid}/diff', tag: 'Diffs', summary: "A commit's changes against its first parent",
     description: 'The commit need not be synced (e.g. PR branch commits), but the repo must be. Errors as for PR diffs.',
-    params: [REPO, p('oid', 'Commit SHA, 7-40 hex characters'), q('refresh', "'1' fetches it again instead of using the cache.", enumOf('1'))],
+    params: [REPO, p('oid', 'Commit SHA or an abbreviation of one, 7-64 hex characters (a SHA-1 is 40, a SHA-256 is 64)'), q('refresh', "'1' fetches it again instead of using the cache.", enumOf('1'))],
     response: { status: 200, schema: ref('Diff') },
   },
   {
     method: 'get', path: '/api/v1/blob/{repo}', tag: 'Diffs', summary: 'File contents at a commit (for expanding diff context)',
     description: 'Errors: 400 invalid ref or path, 404 no such file, 413 larger than 5 MB, 415 binary file.',
-    params: [REPO, { ...q('ref', 'Commit SHA, 7-40 hex characters'), required: true }, { ...q('path', 'File path in the repo'), required: true }],
+    params: [REPO, { ...q('ref', 'Commit SHA or an abbreviation of one, 7-64 hex characters (a SHA-1 is 40, a SHA-256 is 64)'), required: true }, { ...q('path', 'File path in the repo'), required: true }],
     response: { status: 200, schema: str(), type: 'text/plain' },
     example: 'ref=0123abc&path=README.md',
   },

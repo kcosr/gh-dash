@@ -244,4 +244,13 @@ describe('GitLabDiffSources', () => {
     token.value = null;
     expect(await fail(sources.get())).toMatchObject({ kind: 'auth', message: "No GitLab token for gitlab.example.com: it isn't configured on this server" });
   });
+
+  it("gives its sources the credentials' hint for a rejected token, or a generic one", async () => {
+    const tokens = Object.assign(supplyOf(() => 'glpat-one'), { noTokenMessage: () => 'none' });
+    const hint = 'check the GitLab token in Settings → Sources, or run `glab auth login --hostname gitlab.example.com`';
+    const hinted = new GitLabDiffSources({ baseUrl: BASE, tokens, authHint: hint, fetchImpl: fakeGitLab().fetchImpl, sleep: async () => {} });
+    expect((await hinted.get()).authHint).toBe(hint);
+    const plain = new GitLabDiffSources({ baseUrl: BASE, tokens, fetchImpl: fakeGitLab().fetchImpl, sleep: async () => {} });
+    expect((await plain.get()).authHint).toContain('read_api');
+  });
 });

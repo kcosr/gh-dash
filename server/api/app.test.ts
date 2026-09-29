@@ -818,6 +818,20 @@ describe('diffs', () => {
     expect(await res.text()).toBe('export {};\n');
   });
 
+  it('marks file contents at a 64-character SHA immutable too, and not those at an abbreviation', async () => {
+    const full = 'd'.repeat(64);
+    const { app } = diffApp({
+      [`/repos/alice/app/contents/src/a.ts?ref=${full}`]: { text: 'export {};\n' },
+      [`/repos/alice/app/contents/src/a.ts?ref=${full.slice(0, 45)}`]: { text: 'export {};\n' },
+    });
+    const at = (ref: string) => app.request(`/api/v1/blob/alice%2Fapp?ref=${ref}&path=src/a.ts`);
+    expect((await at(full)).headers.get('cache-control')).toContain('immutable');
+    const abbreviated = await at(full.slice(0, 45));
+    expect(abbreviated.status).toBe(200);
+    expect(abbreviated.headers.get('cache-control')).toBeNull();
+    expect((await app.request(`/api/v1/commits/app/${full}a/diff`)).status).toBe(400);
+  });
+
   it('reports, clears and caps the cache', async () => {
     const { app, cache } = diffApp(commitRoute);
     const stats = async (init?: RequestInit) => (await (await app.request('/api/v1/diff-cache', init)).json()) as { entries: number; bytes: number; maxBytes: number };

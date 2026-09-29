@@ -534,7 +534,7 @@ describe('commit diffs', () => {
 
   it('rejects bad SHAs and reports unknown commits as 404', async () => {
     const { svc } = setup({ [`/repos/alice/app/commits/${sha('e')}`]: { status: 422, body: { message: `No commit found for SHA: ${sha('e')}` } } });
-    for (const bad of ['xyz1234', '123456', sha('a') + 'a', 'HEAD']) expect(await status(svc.commitDiff('app', bad))).toBe(400);
+    for (const bad of ['xyz1234', '123456', sha('a') + 'a'.repeat(25), 'HEAD']) expect(await status(svc.commitDiff('app', bad))).toBe(400);
     expect(await status(svc.commitDiff('app', sha('e')))).toBe(404);
     expect(await status(svc.commitDiff('nope', sha('e')))).toBe(404);
   });
@@ -572,7 +572,7 @@ describe('file contents', () => {
     expect(await status(svc.blob('nope', REF, 'a.txt'))).toBe(404);
     const bad = await spent(async () => {
       const codes = [];
-      for (const ref of ['main', 'abc', `${REF}0`]) codes.push(await status(svc.blob('app', ref, 'a.txt')));
+      for (const ref of ['main', 'abc', `${REF}${'0'.repeat(25)}`]) codes.push(await status(svc.blob('app', ref, 'a.txt')));
       for (const path of ['', '/etc/passwd', 'a//b', '../x', 'a/./b', 'a/..', 'a\r\n[diff] forged', 'a\tb', 'a\x7f']) {
         codes.push(await status(svc.blob('app', REF, path)));
       }
@@ -598,6 +598,58 @@ describe('file contents', () => {
     expect((await spent(() => svc.blob('app', REF, 'f4.txt'))).requests).toEqual([]);
     expect((await spent(() => svc.blob('app', REF, 'f1.txt'))).requests).toEqual([]);
     expect((await spent(() => svc.blob('app', REF, 'f2.txt'))).requests).toHaveLength(1);
+  });
+});
+
+describe('SHA-256 object ids', () => {
+  const long = (c: string) => c.repeat(64);
+  const commit = (oid: string) => ({
+    sha: oid, html_url: `https://github.com/alice/app/commit/${oid}`, commit: { message: 'Fix' }, parents: [{ sha: long('p') }],
+    stats: { additions: 1, deletions: 1 }, files: [restFile(1)],
+  });
+
+  it('fetches a commit named by its 64-character SHA and keeps it for that SHA and for its abbreviations', async () => {
+    const C = long('c');
+    const { svc, spent } = setup({ [`/repos/alice/app/commits/${C}`]: { body: commit(C) } });
+    const miss = await spent(() => diffOf(svc.commitDiff('app', C.toUpperCase())));
+    expect(miss.requests).toHaveLength(1);
+    expect(miss.out).toMatchObject({ kind: 'commit', headOid: C, baseOid: long('p') });
+    expect((await spent(() => svc.commitDiff('app', C))).requests).toEqual([]);
+    // From the cache: any prefix of a cached full SHA, whatever its length.
+    for (const prefix of [C.slice(0, 7), C.slice(0, 45), C.slice(0, 63)]) expect((await spent(() => svc.commitDiff('app', prefix))).requests, prefix).toEqual([]);
+  });
+
+  it('expands an abbreviation from a synced commit with a 64-character SHA', async () => {
+    const C = `c1${'0'.repeat(62)}`;
+    const { svc, db, spent } = setup({ [`/repos/alice/app/commits/${C}`]: { body: commit(C) } });
+    db.run("UPDATE commits SET oid = ? WHERE oid = ?", [C, 'c1'.padEnd(40, '0')]);
+    // The abbreviation is expanded before asking, so the source is asked for the whole SHA, and the diff lands under it.
+    const miss = await spent(() => diffOf(svc.commitDiff('app', 'c100000')));
+    expect(miss.requests).toEqual([`/repos/alice/app/commits/${C}`]);
+    expect(miss.out.headOid).toBe(C);
+    expect((await spent(() => svc.commitDiff('app', C))).requests).toEqual([]);
+  });
+
+  it('caches file contents at a 64-character SHA, and not at an abbreviation of one', async () => {
+    const REF = long('a');
+    const { svc, spent } = setup({
+      [`/repos/alice/app/contents/a.txt?ref=${REF}`]: { text: 'full' },
+      [`/repos/alice/app/contents/a.txt?ref=${REF.slice(0, 50)}`]: { text: 'abbreviated' },
+    });
+    expect(await payloadText(await svc.blob('app', REF, 'a.txt'))).toBe('full');
+    expect((await spent(() => svc.blob('app', REF, 'a.txt'))).requests).toEqual([]);
+    // 50 characters name nothing fixed (in a SHA-1 repository nothing at all), so each request asks again.
+    expect(await payloadText(await svc.blob('app', REF.slice(0, 50), 'a.txt'))).toBe('abbreviated');
+    expect((await spent(() => svc.blob('app', REF.slice(0, 50), 'a.txt'))).requests).toHaveLength(1);
+    expect(svc.stats().entries).toBe(1);
+  });
+
+  it('accepts 7 to 64 hex characters and nothing else', async () => {
+    const { svc } = setup();
+    for (const bad of ['123456', long('a') + 'a', 'g'.repeat(64)]) {
+      expect(await svc.commitDiff('app', bad).catch((e: HttpError) => e), bad).toMatchObject({ status: 400, message: 'Invalid commit: expected 7-64 hex characters' });
+      expect(await svc.blob('app', bad, 'a.txt').catch((e: HttpError) => e), bad).toMatchObject({ status: 400, message: 'Invalid ref: expected 7-64 hex characters' });
+    }
   });
 });
 
@@ -657,15 +709,18 @@ describe('with another source', () => {
       },
     };
     const failed: DiffSource[] = [];
+    /** Who the service asked for, per fetch: the repo's source (github.com here). */
+    const getCalls: unknown[] = [];
     const sources: DiffSources & { none: string | null } = {
       none: null,
-      async get() {
+      async get(repo) {
+        getCalls.push(repo);
         if (this.none) throw new SourceError('auth', this.none);
         return source;
       },
       authFailed: (s) => failed.push(s),
     };
-    return { source, sources, calls, repos, state, revision, failed };
+    return { source, sources, calls, repos, state, revision, failed, getCalls };
   }
 
   function setupAny() {
@@ -681,7 +736,7 @@ describe('with another source', () => {
   }
 
   it('builds, caches and revalidates PR diffs', async () => {
-    const { svc, asked, synced, state, revision, repos, logs, clock } = setupAny();
+    const { svc, asked, synced, state, revision, repos, logs, clock, getCalls } = setupAny();
     synced(2, { head_oid: A });
     const miss = await asked(() => diffOf(svc.prDiff('app', 2)));
     expect(miss.calls).toEqual(['revision !2', 'files !2']);
@@ -691,6 +746,8 @@ describe('with another source', () => {
       totalFiles: 1, additions: 1, deletions: 0, fetchedAt: new Date(clock.t).toISOString(), url: 'https://gitlab.example/alice/app/-/merge_requests/2/diffs',
     });
     expect(repos[0]).toEqual({ key: 'alice/app', owner: 'alice', name: 'app', path: 'alice/app' });
+    // The service says which source the repo is on; what to do with it is the DiffSources'.
+    expect(getCalls[0]).toEqual({ sourceId: 1 });
     expect(logs.at(-1)).toMatch(/^\[diff\] alice\/app#2: 2 GitLab requests in [\d.]+s$/);
     expect((await asked(() => svc.prDiff('app', 2))).calls).toEqual([]);
 

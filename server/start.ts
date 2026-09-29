@@ -11,6 +11,7 @@ import { type DiffCache, openDiffCache } from './diff/cache';
 import { DiffService } from './diff/service';
 import { GitHubDiffSources } from './github/diff-source';
 import { loadSources } from './sources/config';
+import { DiffRouter } from './sources/diffs';
 import { SourceRegistry, type SourceRegistryOptions, type SourceRuntime } from './sources/registry';
 import { SyncManager } from './sync/manager';
 import { TokenProvider, type TokenProviderOptions } from './token';
@@ -96,9 +97,10 @@ export async function startServer(opts: StartOptions): Promise<RunningServer> {
     });
     const sync = new SyncManager({ db, schedule: config.syncEnabled, tokens, log });
     const githubDiffs = new GitHubDiffSources({ tokens, log });
-    const diffs = new DiffService({ db, cache, sources: githubDiffs, log });
-    diffs.evict();
     const sources = new SourceRegistry({ db, env: opts.env, github: { tokens: tokens.credentials, diffs: githubDiffs }, log, seams: opts.sourceOptions });
+    // Each repo's diffs are fetched from the source it is on.
+    const diffs = new DiffService({ db, cache, sources: new DiffRouter(sources), log });
+    diffs.evict();
     // Checked in the background too; each logs who its token is for, an expiry close by, and write scopes.
     const sourcesReady = sources.check(sources.apply({ glabPath: config.glabPath, sources: config.sourceConfigs }));
     const viewerReady = sync.ensureViewer().catch((err: Error) => log(`[startup] could not fetch GitHub viewer: ${err.message}`));

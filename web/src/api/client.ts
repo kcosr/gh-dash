@@ -150,11 +150,11 @@ export const api = {
   repos: () => get<{ items: Repo[] }>('/api/v1/repos'),
   repo: (key: string) => get<Repo>(`/api/v1/repos/${enc(key)}`),
   patchRepo: (key: string, body: { pinned?: boolean; hidden?: boolean }) => request<Repo>('PATCH', `/api/v1/repos/${enc(key)}`, body),
-  /** Repositories of other owners the token can read, and suggestions (the Add dialog). */
-  repoCandidates: (refresh = false) => get<RepoCandidatesResponse>(apiUrl('repo-candidates', { refresh: refresh ? '1' : undefined })),
-  /** Whether the token can read `repo` (owner/name or a URL), with a preview. */
-  repoLookup: (repo: string) => get<RepoLookup>(apiUrl('repo-lookup', { repo })),
-  addRepo: (body: { repo: string; includeInDefault?: boolean }) => request<AddRepoResponse>('POST', '/api/v1/repos', body),
+  /** Repositories of other owners the token can read, and suggestions (the Add dialog). `source`: a host (default github.com). */
+  repoCandidates: (refresh = false, source?: string) => get<RepoCandidatesResponse>(apiUrl('repo-candidates', { refresh: refresh ? '1' : undefined, source })),
+  /** Whether the token can read `repo` (owner/name, a project path, a key or a URL), with a preview. */
+  repoLookup: (repo: string, source?: string) => get<RepoLookup>(apiUrl('repo-lookup', { repo, source })),
+  addRepo: (body: { repo: string; source?: string; includeInDefault?: boolean }) => request<AddRepoResponse>('POST', '/api/v1/repos', body),
   /** Stop tracking a repository added by hand and delete its data from this dashboard (not on GitHub). */
   removeRepo: (key: string) => request<void>('DELETE', `/api/v1/repos/${enc(key)}`),
 
@@ -177,7 +177,8 @@ export const api = {
   stats: (q: StatsQuery) => get<StatsResponse>(apiUrl('stats', { ...q })),
 
   syncStatus: () => get<SyncStatus>('/api/v1/sync/status'),
-  sync: (body: { repo?: string; full?: boolean } = {}) => request<SyncStatus>('POST', '/api/v1/sync', body),
+  /** `source`: sync that source (a host) alone; without it, every source with a token. */
+  sync: (body: { repo?: string; full?: boolean; source?: string } = {}) => request<SyncStatus>('POST', '/api/v1/sync', body),
 
   /** refresh re-checks GitHub for the PR's current head instead of the last synced one. */
   prDiff: (repo: string, number: number, refresh = false) =>

@@ -10,6 +10,7 @@ import { Icon } from '../components/Icon';
 import { Labels } from '../components/Label';
 import { Markdown } from '../components/Markdown';
 import { RepoChip } from '../components/RepoChip';
+import { useRepoLabel } from '../components/repoMapContext';
 import { Seg, WHO_OPTIONS } from '../components/Seg';
 import { useUI } from '../components/ui';
 import { issueListParams } from '../lib/apiQuery';
@@ -104,8 +105,9 @@ export function IssuesView() {
 const IssueRow = memo(function IssueRow({ issue }: { issue: Issue }) {
   const [expanded, setExpanded] = useState(false);
   const at = issue.state === 'closed' ? issue.closedAt ?? issue.createdAt : issue.createdAt;
+  const label = useRepoLabel()(issue.repo);
   return (
-    <article className="pr issue-row" aria-label={`${issue.repo}#${issue.number}: ${issue.title}`}>
+    <article className="pr issue-row" aria-label={`${label}#${issue.number}: ${issue.title}`}>
       <span className={`pr-ic ${issue.state === 'open' ? 'open' : 'merged'}`}><Icon name={issue.state === 'open' ? 'issue' : 'issueClosed'} /></span>
       <div className="pr-main">
         <div className="pr-title">
@@ -119,7 +121,7 @@ const IssueRow = memo(function IssueRow({ issue }: { issue: Issue }) {
           <span className="author"><Avatar actor={issue.author} /><b>{issue.author.isMe ? 'you' : actorName(issue.author)}</b></span>
         </div>
         {issue.body.trim() && <details className="issue-description" onToggle={(e) => setExpanded(e.currentTarget.open)}>
-          <summary aria-label={`Description of ${issue.repo}#${issue.number}`}><span className="pr-desc">{plainPreview(issue.body)}</span><span className="issue-description-toggle">Description <Icon name="chevron" /></span></summary>
+          <summary aria-label={`Description of ${label}#${issue.number}`}><span className="pr-desc">{plainPreview(issue.body)}</span><span className="issue-description-toggle">Description <Icon name="chevron" /></span></summary>
           {expanded && <Markdown source={issue.body} />}
         </details>}
       </div>

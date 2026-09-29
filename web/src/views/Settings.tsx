@@ -7,6 +7,7 @@ import { ChipsInput } from '../components/ChipsInput';
 import { Icon } from '../components/Icon';
 import type { IconName } from '../components/Icon';
 import { ErrorNote } from '../components/EmptyState';
+import { useRepoLabel } from '../components/repoMapContext';
 import { useToast } from '../components/Toasts';
 import { apiLink } from '../lib/account';
 import { dur, fmtBytes, fmtDateTime, fmtNum, fmtTime, plural, relFuture, relLong } from '../lib/time';
@@ -136,6 +137,7 @@ export function SettingsView() {
   usePinnedHash();
 
   const st = status.data;
+  const repoLabel = useRepoLabel();
   const apiBase = useApiBase();
   const docsUrl = apiLink(apiBase, '/api/docs');
   const openapiUrl = apiLink(apiBase, '/api/v1/openapi.json');
@@ -178,7 +180,7 @@ export function SettingsView() {
               <dt>Status</dt>
               <dd>
                 {!st ? <span className="muted">unknown</span> : st.running
-                  ? <>Syncing{st.progress ? ` ${st.progress.done}/${st.progress.total} repos` : ''}{st.progress?.current ? <> · <code>{st.progress.current}</code></> : null}</>
+                  ? <>Syncing{st.progress ? ` ${st.progress.done}/${st.progress.total} repos` : ''}{st.progress?.current ? <> · <code>{repoLabel(st.progress.current)}</code></> : null}</>
                   : st.lastSyncAt ? <>Last synced {relLong(st.lastSyncAt)} ({fmtDateTime(st.lastSyncAt)}){st.lastSyncDurationMs != null ? ` in ${dur(st.lastSyncDurationMs)}` : ''}</> : 'Never synced'}
               </dd>
               <dt>Next sync</dt>

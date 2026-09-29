@@ -1,5 +1,6 @@
 /** Map StatsResponse into chart component props (web/src/charts). */
-import type { Bucket, StatsResponse, Tile, Who } from '../../../shared/api';
+import type { Bucket, Repo, StatsResponse, Tile, Who } from '../../../shared/api';
+import { repoLabel, repoParts } from '../../../shared/repos';
 import { ACTIVITY_SERIES, YOU_VS_OTHERS } from '../charts';
 import type { ColumnDatum, HBarRow, LinePoint, SeriesDef, StatTileProps } from '../charts';
 import { prevLabel } from './range';
@@ -142,24 +143,29 @@ export function ttmLine(st: StatsResponse): { points: LinePoint[]; table: { colu
   };
 }
 
-export function repoBars(st: StatsResponse, onClick: (repo: string) => void): { rows: HBarRow[]; table: { columns: string[]; rows: (string | number)[][] } } {
+/** Bars of the busiest repos. A repo you own is labelled by its bare name; any other has its muted owner as `labelPrefix`. */
+export function repoBars(st: StatsResponse, repos: ReadonlyMap<string, Repo>, onClick: (repo: string) => void): { rows: HBarRow[]; table: { columns: string[]; rows: (string | number)[][] } } {
   return {
-    rows: st.byRepo.filter((r) => r.total > 0).map((r) => ({
-      key: r.repo,
-      label: r.repo,
-      value: r.total,
-      breakdown: [
-        { label: 'commits', value: r.commits, color: ACTIVITY_SERIES.commits.color },
-        { label: 'PRs merged', value: r.prsMerged, color: ACTIVITY_SERIES.prsMerged.color },
-        { label: 'issues', value: r.issues, color: ACTIVITY_SERIES.issues.color },
-        { label: 'releases', value: r.releases },
-        { label: 'stars', value: r.stars },
-      ].filter((b) => b.value > 0),
-      onClick: () => onClick(r.repo),
-    })),
+    rows: st.byRepo.filter((r) => r.total > 0).map((r) => {
+      const { owner, name } = repoParts(r.repo, repos);
+      return {
+        key: r.repo,
+        label: name,
+        ...(owner === null ? {} : { labelPrefix: `${owner}/` }),
+        value: r.total,
+        breakdown: [
+          { label: 'commits', value: r.commits, color: ACTIVITY_SERIES.commits.color },
+          { label: 'PRs merged', value: r.prsMerged, color: ACTIVITY_SERIES.prsMerged.color },
+          { label: 'issues', value: r.issues, color: ACTIVITY_SERIES.issues.color },
+          { label: 'releases', value: r.releases },
+          { label: 'stars', value: r.stars },
+        ].filter((b) => b.value > 0),
+        onClick: () => onClick(r.repo),
+      };
+    }),
     table: {
       columns: ['Repository', 'Commits', 'PRs merged', 'Issues', 'Releases', 'Stars', 'Total'],
-      rows: st.byRepo.map((r) => [r.repo, r.commits, r.prsMerged, r.issues, r.releases, r.stars, r.total]),
+      rows: st.byRepo.map((r) => [repoLabel(r.repo, repos), r.commits, r.prsMerged, r.issues, r.releases, r.stars, r.total]),
     },
   };
 }

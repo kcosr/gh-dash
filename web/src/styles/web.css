@@ -123,7 +123,7 @@ a.btn { text-decoration: none; }
 .set-item:hover .del, .set-item:focus-within .del { display: grid; }
 .set-item:hover .count { display: none; }
 .set-item .del:hover { background: var(--surface-3); color: var(--text); }
-.repo-item .arch { white-space: nowrap; }
+.repo-item .arch { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
 .repo-item .lk { display: inline-flex; }
 
 /* ---------- PR list additions */
@@ -221,6 +221,10 @@ a.iss-li:hover .iss-t { color: var(--accent-text); text-decoration: underline; t
 .rcard .rc-h { min-width: 0; }
 .rc-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rc-h .vis-badge { flex: none; }
+/* An owner/name title gives way (owner first) before it pushes the badges and buttons onto a second line. */
+.rc-name:has(.rn-o) { max-width: 50%; }
+/* When the buttons wrap under a long title, keep them at the right edge. */
+.rc-h .spacer + .pin-btn { margin-left: auto; }
 .rc-h .pin-btn + .pin-btn { margin-left: -6px; }
 .rc-stats { flex-wrap: wrap; row-gap: 4px; }
 .rc-spark { min-width: 0; }

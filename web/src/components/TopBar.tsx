@@ -11,6 +11,7 @@ import { useNow } from '../lib/util';
 import { MOD_K } from './bits';
 import { Icon } from './Icon';
 import type { IconName } from './Icon';
+import { useRepoLabel } from './repoMapContext';
 import { useToast } from './Toasts';
 import { useUI } from './ui';
 
@@ -126,6 +127,7 @@ function SyncStatus({ label, title, to, children }: { label: string; title?: str
 
 function SyncIndicator() {
   const { data: st, isError } = useSyncStatus();
+  const repoLabel = useRepoLabel();
   const { data: account } = useAccount();
   const now = useNow(20_000);
   if (isError) {
@@ -142,7 +144,7 @@ function SyncIndicator() {
   if (st.running) {
     const p = st.progress;
     return (
-      <SyncStatus label={p && p.total ? `Syncing ${p.done}/${p.total} repos…` : 'Syncing…'} title={[p?.current ? `Syncing ${p.current}` : null, ...tip].filter(Boolean).join(' · ')}>
+      <SyncStatus label={p && p.total ? `Syncing ${p.done}/${p.total} repos…` : 'Syncing…'} title={[p?.current ? `Syncing ${repoLabel(p.current)}` : null, ...tip].filter(Boolean).join(' · ')}>
         <span className="spin"><Icon name="sync" /></span>
       </SyncStatus>
     );

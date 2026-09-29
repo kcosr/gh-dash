@@ -141,6 +141,13 @@ kbd { font: 500 11px/1 var(--font); color: var(--muted); border: 1px solid var(-
 .repo-item:not(.on) .rname { color: var(--text-2); font-weight: 450; }
 .repo-item .lk svg, .repo-chip svg, .ev-repo svg { width: 12px; height: 12px; color: var(--muted); }
 .repo-item .arch { font-size: 10.5px; color: var(--muted); border: 1px solid var(--border-strong); border-radius: 999px; padding: 0 6px; }
+.repo-item .arch svg { width: 10px; height: 10px; }
+/* RepoName (components/RepoName.tsx): a muted "owner/" in front of the name. In a tight space the owner ellipsizes
+   first ("dlv…/gh-dash"); the name stays whole until it alone is wider than the space. */
+.rn { display: inline-flex; min-width: 0; max-width: 100%; }
+.rn-o { display: flex; flex: 0 1 auto; min-width: 0; overflow: hidden; color: var(--muted); font-weight: 400; }
+.rn-ot { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rn-n { flex: none; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .set-item svg { width: 14px; height: 14px; color: var(--muted); }
 .set-item span:first-of-type { flex: 1; color: var(--text-2); }
 .set-item .count { font-size: 12px; color: var(--muted); }
@@ -405,6 +412,7 @@ pre.code .k { color: var(--accent-text); }
 .pal-item.on { background: var(--accent-weak); }
 .pal-item.on svg { color: var(--accent-text); }
 .pal-item mark { background: none; color: var(--accent-text); font-weight: 650; }
+.pal-o { color: var(--muted); }
 .pal-foot { display: flex; gap: 16px; padding: 9px 16px; border-top: 1px solid var(--border); font-size: 12px; color: var(--muted); }
 .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); z-index: 300; background: var(--text); color: var(--surface); border-radius: 10px; padding: 9px 14px; font-size: 13px; font-weight: 500; box-shadow: var(--shadow); }
 .err-banner { position: fixed; bottom: 0; left: 0; right: 0; background: #d03b3b; color: #fff; font: 13px var(--mono); padding: 8px 12px; z-index: 999; }

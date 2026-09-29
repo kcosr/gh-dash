@@ -1,5 +1,5 @@
 import { useCallback, useMemo } from 'react';
-import { defaultScope, useRepos, useSettings, useStats, useSyncStatus } from '../api/hooks';
+import { defaultScope, useRepoMap, useRepos, useSettings, useStats, useSyncStatus } from '../api/hooks';
 import { CalendarHeatmap, ChartCard, HBars, LineChart, StackedColumns, StatTile } from '../charts';
 import { DateRangeButton } from '../components/DateRange';
 import { ErrorNote, ProgressBar } from '../components/EmptyState';
@@ -26,6 +26,7 @@ export function InsightsView() {
   const { s, set, range, navigate, location } = useUrlState();
   const { openExport } = useUI();
   const repos = useRepos();
+  const repoMap = useRepoMap();
   const settings = useSettings();
   const stats = useStats(statsParams(s));
   const st = stats.data;
@@ -59,7 +60,7 @@ export function InsightsView() {
   const merged = useMemo(() => st && mergedColumns(st, s.who), [st, s.who]);
   const stars = useMemo(() => st && starsLine(st), [st]);
   const calTable = useMemo(() => st && calendarTable(st), [st]);
-  const byRepo = useMemo(() => st && repoBars(st, openRepo), [st, openRepo]);
+  const byRepo = useMemo(() => st && repoBars(st, repoMap, openRepo), [st, repoMap, openRepo]);
   const ttm = useMemo(() => st && ttmLine(st), [st]);
   const people = useMemo(() => st && contributorBars(st, viewer), [st, viewer]);
 

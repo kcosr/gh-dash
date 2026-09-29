@@ -1,7 +1,7 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { PullRequest, PullRequestDetail } from '../../../shared/api';
-import { findCachedPr, usePrDetail } from '../api/hooks';
+import { findCachedPr, splitPrId, usePrDetail } from '../api/hooks';
 import { hasBlockingLayer, isTypingTarget, useLayer } from '../lib/layers';
 import { dur, fmtDate, fmtDateTime, plural, rel } from '../lib/time';
 import { commitDiffId, useUrlState } from '../lib/urlState';
@@ -12,6 +12,7 @@ import { Icon } from './Icon';
 import { Labels } from './Label';
 import { Markdown } from './Markdown';
 import { RepoChip } from './RepoChip';
+import { useRepoLabel } from './repoMapContext';
 import { useToast } from './Toasts';
 
 /** PR details: a right column on desktop, the content pane on narrow screens. */
@@ -19,6 +20,7 @@ export function PrDrawer({ id, compact }: { id: string; compact: boolean }) {
   const { set } = useUrlState();
   const qc = useQueryClient();
   const toast = useToast();
+  const label = useRepoLabel();
   const detail = usePrDetail(id);
   const cached = useMemo(() => findCachedPr(qc, id), [qc, id, detail.dataUpdatedAt]);
   const pr: PullRequest | undefined = detail.data ?? cached;
@@ -71,11 +73,13 @@ export function PrDrawer({ id, compact }: { id: string; compact: boolean }) {
   const copy = async (text: string, msg: string) => toast((await copyText(text)) ? msg : 'Copy failed');
 
   if (!pr) {
+    const [idRepo, idNumber] = splitPrId(id);
+    const loadingId = idRepo && idNumber ? `${label(idRepo)}#${idNumber}` : id;
     return (
       <aside className="drawer" ref={scroller} aria-label="Pull request details">
         <div className="dr-head">
           <div className="dr-top">
-            <span className="num">{id}</span>
+            <span className="num">{loadingId}</span>
             <span className="spacer" />
             <button type="button" className="btn icon ghost" onClick={close} title="Close (Esc)" aria-label="Close"><Icon name="x" /></button>
           </div>
@@ -96,7 +100,7 @@ export function PrDrawer({ id, compact }: { id: string; compact: boolean }) {
     : pr.state === 'closed'
       ? <>closed this without merging</>
       : <>wants to merge {n} {plural(n, 'commit')} into {base}</>;
-  const mdCopy = `**${pr.title}** ([${pr.repo}#${pr.number}](${pr.url}))${pr.body.trim() ? `\n\n${pr.body.trim()}` : ''}`;
+  const mdCopy = `**${pr.title}** ([${label(pr.repo)}#${pr.number}](${pr.url}))${pr.body.trim() ? `\n\n${pr.body.trim()}` : ''}`;
 
   return (
     <aside className="drawer" ref={scroller} aria-label="Pull request details">

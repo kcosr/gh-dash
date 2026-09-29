@@ -64,12 +64,22 @@ export function resolveRepoKey<R extends RepoIdent>(input: string, repos: RepoSo
 }
 
 /**
+ * How a repo is displayed, in two parts: `owner` is shown muted before the name, and is null for a repo you own
+ * (its bare name is enough) and for a key without an owner. Anything else, including a key that is no longer in the
+ * list, keeps its owner: the part before the last '/', so nested paths stay whole.
+ */
+export function repoParts<R extends RepoIdent>(key: string, repos: RepoSource<R>): { owner: string | null; name: string } {
+  const r = repos instanceof Map ? repos.get(key) : (repos as readonly R[]).find((x) => x.key === key);
+  return r && r.trackedBy === 'owned' ? { owner: null, name: r.name } : splitKey(key);
+}
+
+/**
  * Plain-text name of a repo for attributes, titles and copied text: the short name for a repo you own, the whole
- * `owner/name` for anything else (and for a key that is no longer in the list).
+ * `owner/name` for anything else (and for a key that is no longer in the list). The text `<RepoName>` shows.
  */
 export function repoLabel<R extends RepoIdent>(key: string, repos: RepoSource<R>): string {
-  const r = repos instanceof Map ? repos.get(key) : (repos as readonly R[]).find((x) => x.key === key);
-  return r && r.trackedBy === 'owned' ? r.name : key;
+  const { owner, name } = repoParts(key, repos);
+  return owner === null ? name : `${owner}/${name}`;
 }
 
 // ---------------------------------------------------------------------------

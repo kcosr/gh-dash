@@ -10,6 +10,8 @@ import { EmptyState, ErrorNote, ProgressBar } from '../components/EmptyState';
 import { Icon } from '../components/Icon';
 import { Labels } from '../components/Label';
 import { Markdown } from '../components/Markdown';
+import { RepoName } from '../components/RepoName';
+import { useRepoLabel } from '../components/repoMapContext';
 import { Seg, WHO_OPTIONS } from '../components/Seg';
 import { useUI } from '../components/ui';
 import { ALL_TIME_FROM, scopeParams, statsParams } from '../lib/apiQuery';
@@ -37,6 +39,7 @@ export function RepoDetailView() {
   const { s, set, range, location } = useUrlState();
   // The route is `repos/*`: the key is the path after it, whichever way its '/' arrives (see repoFromPath).
   const key = repoFromPath(location.pathname) ?? '';
+  const label = useRepoLabel()(key);
   const { openExport } = useUI();
   const repos = useRepos();
   const patch = usePatchRepo();
@@ -62,7 +65,7 @@ export function RepoDetailView() {
     return (
       <main className="main tint">
         <div className="scroll">
-          <EmptyState icon="book" title={`No repository named “${key}”`} action={<Link className="btn" to={`/repos${carrySearch(location.search)}`}>All repositories</Link>}>
+          <EmptyState icon="book" title={`No repository named “${label}”`} action={<Link className="btn" to={`/repos${carrySearch(location.search)}`}>All repositories</Link>}>
             It may have been renamed, deleted, or not synced yet.
           </EmptyState>
         </div>
@@ -98,8 +101,10 @@ export function RepoDetailView() {
         {repo && (
           <div className="repo-head">
             <div className="rh-top">
-              <h1>{repo.name}</h1>
-              <span className="vis-badge">{repo.visibility === 'private' ? <><Icon name="lock" />Private</> : 'Public'}</span>
+              <h1 title={label}><RepoName repo={repo.key} /></h1>
+              <span className="vis-badge">{repo.visibility === 'private' ? <><Icon name="lock" />Private</> : repo.visibility === 'internal' ? <><Icon name="lock" title="Internal" />Internal</> : 'Public'}</span>
+              {repo.unavailable && <span className="vis-badge" title={repo.unavailable.reason}><Icon name="alert" />Unavailable</span>}
+              {!repo.unavailable && repo.syncedAt === null && <span className="vis-badge">Syncing…</span>}
               {repo.isArchived && <span className="vis-badge">Archived</span>}
               {repo.isFork && <span className="vis-badge"><Icon name="fork" />Fork</span>}
               {repo.hidden && <span className="vis-badge">Hidden</span>}
@@ -117,7 +122,7 @@ export function RepoDetailView() {
             {repo.description && <p className="rh-desc">{repo.description}</p>}
             <div className="rc-stats rh-stats">
               {repo.language && <span><i className="lang" style={{ '--lc': repo.language.color ?? 'var(--muted)' } as CSSProperties} />{repo.language.name}</span>}
-              {repo.visibility === 'public' && <span><Icon name="star" />{repo.stars.toLocaleString()} stars{repo.stats.newStars30d > 0 && <em>+{repo.stats.newStars30d}</em>}</span>}
+              {repo.visibility === 'public' && <span><Icon name="star" />{repo.stars.toLocaleString()} stars{repo.stats.newStars30d > 0 && repo.trackedBy === 'owned' && <em>+{repo.stats.newStars30d}</em>}</span>}
               <span><Icon name="fork" />{repo.forks.toLocaleString()} forks</span>
               <span><Icon name="prOpen" />{repo.stats.openPrs} open PRs</span>
               <span><Icon name="issue" />{repo.stats.openIssues} open issues</span>
@@ -140,7 +145,7 @@ export function RepoDetailView() {
             </div>
             <div className="charts">
               <ChartCard id="repo-activity" title="Activity over time" subtitle={`per ${st.range.bucket}, ${range.phrase}${whoSuffix}`} legend={activity.series} table={activity.table} wide loading={stats.isFetching && stats.isPlaceholderData}>
-                <StackedColumns data={activity.data} series={activity.series} ariaLabel={`Activity in ${key}`} height={220} />
+                <StackedColumns data={activity.data} series={activity.series} ariaLabel={`Activity in ${label}`} height={220} />
               </ChartCard>
 
               <section className="card list-card">
@@ -192,7 +197,7 @@ export function RepoDetailView() {
               </section>
 
               <ChartCard id="repo-people" title="Top contributors" subtitle={`commits + PRs merged, ${range.phrase}`} table={people.table}>
-                <HBars rows={people.rows} unit="contributions" ariaLabel={`Top contributors to ${key}`} emptyText="No contributors in this range" />
+                <HBars rows={people.rows} unit="contributions" ariaLabel={`Top contributors to ${label}`} emptyText="No contributors in this range" />
               </ChartCard>
             </div>
           </>

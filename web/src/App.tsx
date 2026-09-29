@@ -18,6 +18,7 @@ import { hasBlockingLayer, isTypingTarget, topLayer } from './lib/layers';
 import { useCanonicalRepoUrl } from './lib/canonicalUrl';
 import { getSidebarHidden, setSidebarHidden } from './lib/storage';
 import { plural } from './lib/time';
+import { repoLabel } from '../../shared/repos';
 import { repoFromPath, useUrlState } from './lib/urlState';
 import { cx, isChunkLoadError } from './lib/util';
 import { preloadMarkdown } from './components/Markdown';
@@ -153,9 +154,10 @@ function Shell() {
   useSyncWatcher();
   usePreloadWhenIdle();
   useCanonicalRepoUrl();
-  const name = repoFromPath(useLocation().pathname);
+  const repoKey = repoFromPath(useLocation().pathname);
+  const name = repoKey && repoLabel(repoKey, repos.data ?? []);
   useEffect(() => {
-    const t = { prs: 'Pull requests', issues: 'Issues', activity: 'Activity', repos: 'Repositories', repo: name ?? 'Repository', insights: 'Insights', settings: 'Settings' }[view];
+    const t = { prs: 'Pull requests', issues: 'Issues', activity: 'Activity', repos: 'Repositories', repo: name || 'Repository', insights: 'Insights', settings: 'Settings' }[view];
     document.title = `${t} · gh-dash`;
   }, [view, name]);
 

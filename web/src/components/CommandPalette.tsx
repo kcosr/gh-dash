@@ -3,7 +3,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent, ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import type { PullRequest } from '../../../shared/api';
-import { matchRepoRef, repoRefKeys } from '../../../shared/repos';
+import { highlightParts } from '../../../shared/repo-display';
+import { matchRepoRef, repoParts, repoRefKeys } from '../../../shared/repos';
 import { api } from '../api/client';
 import { useApiBase, useRepos, useViews } from '../api/hooks';
 import { API_OFF_HINT, apiLink } from '../lib/account';
@@ -15,9 +16,11 @@ import { copyText, useDebounced } from '../lib/util';
 import { prIconClass, prIconName } from './bits';
 import { Icon } from './Icon';
 import type { IconName } from './Icon';
+import { useRepoLabel, useRepoMapCtx } from './repoMapContext';
 import { useToast } from './Toasts';
 
-interface Item { key: string; icon: ReactNode; label: string; right?: ReactNode; run: () => void }
+/** `labelParts` draws a repo name: a muted owner, then the name (`label` is the same text, for matching). */
+interface Item { key: string; icon: ReactNode; label: string; labelParts?: [string, string]; right?: ReactNode; run: () => void }
 interface Section { title: string; items: Item[] }
 
 function Highlight({ text, q }: { text: string; q: string }) {
@@ -25,6 +28,15 @@ function Highlight({ text, q }: { text: string; q: string }) {
   const i = text.toLowerCase().indexOf(q.toLowerCase());
   if (i < 0) return <>{text}</>;
   return <>{text.slice(0, i)}<mark>{text.slice(i, i + q.length)}</mark>{text.slice(i + q.length)}</>;
+}
+
+/** A repo name with the owner muted; a search match is marked in either part, or across the slash. */
+function RepoHighlight({ parts, q }: { parts: [string, string]; q: string }) {
+  return <>{highlightParts(parts, q).map((segs, i) => (
+    <span key={i} className={i === 0 && parts[0] ? 'pal-o' : undefined}>
+      {segs.map((seg, j) => (seg.hit ? <mark key={j}>{seg.text}</mark> : seg.text))}
+    </span>
+  ))}</>;
 }
 
 const ic = (name: IconName) => <Icon name={name} />;
@@ -37,6 +49,8 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggle
   const { s, view, location, navigate, set } = useUrlState();
   const repoParam = repoFromPath(location.pathname);
   const toast = useToast();
+  const repoLabel = useRepoLabel();
+  const { repos: repoMap } = useRepoMapCtx();
   const repos = useRepos();
   const views = useViews();
   const apiBase = useApiBase();
@@ -80,19 +94,25 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggle
     const out: Section[] = [];
     const go = (path: string) => navigate(`${path}${carrySearch(location.search)}`);
 
-    const rs = (repos.data ?? [])
-      .filter((r) => has(r.name))
-      .sort((a, b) => (ql ? Number(!a.name.toLowerCase().startsWith(ql)) - Number(!b.name.toLowerCase().startsWith(ql)) : 0) || (b.lastActivityAt ?? '').localeCompare(a.lastActivityAt ?? ''))
+    // A repo is found by what it shows: its name, and for someone else's repo the owner as well.
+    const shown = (repos.data ?? []).map((r) => {
+      const { owner, name } = repoParts(r.key, repoMap);
+      return { r, label: repoLabel(r.key), parts: [owner === null ? '' : `${owner}/`, name] as [string, string] };
+    });
+    const rs = shown
+      .filter(({ label }) => has(label))
+      .sort((a, b) => (ql ? Number(!a.label.toLowerCase().startsWith(ql)) - Number(!b.label.toLowerCase().startsWith(ql)) : 0) || (b.r.lastActivityAt ?? '').localeCompare(a.r.lastActivityAt ?? ''))
       .slice(0, ql ? 6 : 4);
     if (rs.length) {
       out.push({
         title: 'Repositories',
-        items: rs.flatMap((r) => [
+        items: rs.flatMap(({ r, label, parts }) => [
           {
             key: `repo:${r.key}`,
             icon: ic('book'),
-            label: r.name,
-            right: <>{r.visibility === 'private' && <Icon name="lock" />}<span>Select only this repo</span></>,
+            label,
+            labelParts: parts,
+            right: <>{r.visibility === 'private' && <Icon name="lock" title="Private" />}{r.visibility === 'internal' && <Icon name="lock" title="Internal" />}<span>Select only this repo</span></>,
             run: () => {
               if (view === 'prs' || view === 'issues' || view === 'repos' || view === 'activity' || view === 'insights') set({ repos: [r.key] });
               else navigate(`/prs?${encodeParams([['repos', r.key]])}`);
@@ -119,7 +139,7 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggle
         key: `pr:${p.id}`,
         icon: <span className={`pr-ic ${prIconClass(p)}`}><Icon name={prIconName(p)} /></span>,
         label: p.title,
-        right: <span>{p.repo}#{p.number} · {fmtDate(p.activityAt)}</span>,
+        right: <span>{repoLabel(p.repo)}#{p.number} · {fmtDate(p.activityAt)}</span>,
         run: () => openPr(p),
       });
     }
@@ -152,7 +172,7 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggle
     ].filter((a) => has(a.label));
     if (acts.length) out.push({ title: 'Actions', items: acts });
     return out;
-  }, [q, repos.data, views.data, prSearch.data, view, s, location.search, location.pathname, repoParam, onToggleSidebar, sidebarHidden, apiBase]);
+  }, [q, repos.data, repoMap, repoLabel, views.data, prSearch.data, view, s, location.search, location.pathname, repoParam, onToggleSidebar, sidebarHidden, apiBase]);
 
   const flat = sections.flatMap((sec) => sec.items);
   const cur = Math.min(idx, Math.max(0, flat.length - 1));
@@ -216,7 +236,7 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggle
                     onClick={() => run(it)}
                   >
                     {it.icon}
-                    <span className="pal-l"><Highlight text={it.label} q={q.trim()} /></span>
+                    <span className="pal-l">{it.labelParts ? <RepoHighlight parts={it.labelParts} q={q.trim()} /> : <Highlight text={it.label} q={q.trim()} />}</span>
                     {it.right && <span className="r">{it.right}</span>}
                   </button>
                 );

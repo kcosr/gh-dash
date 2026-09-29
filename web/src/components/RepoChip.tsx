@@ -1,21 +1,14 @@
-import { createContext, useContext, useMemo } from 'react';
+import { useMemo } from 'react';
 import type { ReactNode } from 'react';
 import { useLocation, useNavigate } from 'react-router';
-import type { Repo } from '../../../shared/api';
 import { useRepoMap } from '../api/hooks';
 import { Icon } from './Icon';
+import { RepoName } from './RepoName';
+import { RepoMapCtx, useRepoMapCtx } from './repoMapContext';
+import { repoLabel } from '../../../shared/repos';
 import { OVERLAY_KEYS, patchSearch, viewFromPath } from '../lib/urlState';
 
-/**
- * The repo map, provided once by the app shell. Chips read it from context instead of each
- * subscribing its own react-query observer (a 1,000-row PR list would otherwise create 1,000).
- */
-const RepoMapCtx = createContext<{
-  repos: Map<string, Repo>;
-  hrefFor: (key: string) => string;
-  navigate: ReturnType<typeof useNavigate>;
-} | null>(null);
-
+/** Provides the repo map once for the whole app shell (see RepoMapCtx). */
 export function RepoMapProvider({ children }: { children: ReactNode }) {
   const repos = useRepoMap();
   const location = useLocation();
@@ -47,14 +40,13 @@ export function RepoMapProvider({ children }: { children: ReactNode }) {
 
 /** Filter the current list to this repo (its key); detail pages lead to its activity. */
 export function RepoChip({ repo, className = 'repo-chip' }: { repo: string; className?: string }) {
-  const context = useContext(RepoMapCtx);
-  if (!context) throw new Error('RepoChip outside RepoMapProvider');
-  const { repos, hrefFor, navigate } = context;
-  const priv = repos.get(repo)?.visibility === 'private';
+  const { repos, hrefFor, navigate } = useRepoMapCtx();
+  const vis = repos.get(repo)?.visibility;
+  const label = repoLabel(repo, repos);
   const href = hrefFor(repo);
   return (
     <a className={`${className} repo-filter`} href={href}
-      title={`Filter to ${repo}`} aria-label={`Filter to ${repo}${priv ? ' (private)' : ''}`}
+      title={`Filter to ${label}`} aria-label={`Filter to ${label}${vis === 'private' ? ' (private)' : vis === 'internal' ? ' (internal)' : ''}`}
       onClick={(e) => {
         e.stopPropagation();
         if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
@@ -63,8 +55,9 @@ export function RepoChip({ repo, className = 'repo-chip' }: { repo: string; clas
         // Normalize encoding/defaults while retaining `pr`/`diff`, so a link in the drawer or diff still closes it.
         if (href !== here.pathname + patchSearch(here.search, viewFromPath(here.pathname), {})) navigate(href);
       }}>
-      {priv && <Icon name="lock" title="Private" />}
-      {repo}
+      {vis === 'private' && <Icon name="lock" title="Private" />}
+      {vis === 'internal' && <Icon name="lock" title="Internal" />}
+      <RepoName repo={repo} />
     </a>
   );
 }

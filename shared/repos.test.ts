@@ -5,6 +5,7 @@ import {
   matchRepoRef,
   parseRepoInput,
   repoLabel,
+  repoParts,
   repoPath,
   repoRefKeys,
   repoResolver,
@@ -108,6 +109,29 @@ describe('repoLabel', () => {
   });
   it('is the key itself today, when key and short name are the same', () => {
     expect(repoLabel('sedes', [repo('sedes')])).toBe('sedes');
+  });
+});
+
+describe('repoParts', () => {
+  const map = new Map(many.map((r) => [r.key, r]));
+  it('has no owner for a repo you own, so only the name is shown', () => {
+    for (const source of [many, map]) expect(repoParts('kcosr/gh-dash', source)).toEqual({ owner: null, name: 'gh-dash' });
+  });
+  it('has the owner for anything else, split at the last slash', () => {
+    for (const source of [many, map]) {
+      expect(repoParts('dlvhdr/gh-dash', source)).toEqual({ owner: 'dlvhdr', name: 'gh-dash' });
+      expect(repoParts('org/team/proj', source)).toEqual({ owner: 'org/team', name: 'proj' });
+    }
+  });
+  it('keeps the owner of a key that is no longer in the list', () => {
+    expect(repoParts('gone/repo', many)).toEqual({ owner: 'gone', name: 'repo' });
+    expect(repoParts('gone', new Map())).toEqual({ owner: null, name: 'gone' });
+  });
+  it('agrees with repoLabel: the owner and the name joined by a slash', () => {
+    for (const r of many) {
+      const { owner, name } = repoParts(r.key, map);
+      expect(owner === null ? name : `${owner}/${name}`).toBe(repoLabel(r.key, map));
+    }
   });
 });
 

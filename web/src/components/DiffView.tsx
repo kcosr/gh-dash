@@ -19,6 +19,8 @@ import { Diffstat } from './bits';
 import { EmptyState, ErrorNote, ProgressBar } from './EmptyState';
 import { Icon } from './Icon';
 import { RepoChip } from './RepoChip';
+import { repoLabel } from '../../../shared/repos';
+import { useRepoLabel } from './repoMapContext';
 import { useToast } from './Toasts';
 
 const loadViewer = () => import('../diff/DiffViewer');
@@ -105,6 +107,7 @@ export function DiffView({ id, compact }: { id: string; compact: boolean }) {
   const del = d?.deletions ?? cached?.deletions;
   const files = d?.totalFiles ?? cached?.files;
   const repo = repos.get(t.repo);
+  const repoText = repoLabel(t.repo, repos);
   const ghUrl = d?.url ?? cached?.url ?? (repo && (t.kind === 'pr' ? `${repo.url}/pull/${t.number}/files` : `${repo.url}/commit/${t.oid}`));
 
   useEffect(() => {
@@ -112,8 +115,8 @@ export function DiffView({ id, compact }: { id: string; compact: boolean }) {
     return () => { document.title = prev; };
   }, []);
   useEffect(() => {
-    document.title = `${title ? `${title} · ` : ''}${t.repo}${t.kind === 'pr' ? label : `@${label}`} · gh-dash`;
-  }, [title, t.repo, t.kind, label]);
+    document.title = `${title ? `${title} · ` : ''}${repoText}${t.kind === 'pr' ? label : `@${label}`} · gh-dash`;
+  }, [title, repoText, t.kind, label]);
 
   const doRefresh = () => refresh.mutate(undefined, {
     onSuccess: (next) => toast(d && next.headOid === d.headOid ? 'Already up to date' : 'Diff updated'),
@@ -121,7 +124,7 @@ export function DiffView({ id, compact }: { id: string; compact: boolean }) {
   });
 
   return (
-    <section ref={panel} className="diff-view" aria-label={`Changes in ${t.repo} ${label}`}>
+    <section ref={panel} className="diff-view" aria-label={`Changes in ${repoText} ${label}`}>
       <header className="dv-head">
         <RepoChip repo={t.repo} />
         <span className="num">{label}</span>
@@ -178,13 +181,14 @@ function DiffSkeleton() {
 
 function DiffError({ error, t, ghUrl, onRetry }: { error: unknown; t: DiffTarget; ghUrl: string | undefined; onRetry: () => void }) {
   const status = (error as { status?: number }).status;
+  const repoText = useRepoLabel()(t.repo);
   const retry = <button type="button" className="btn" onClick={onRetry}><Icon name="sync" />Try again</button>;
   const gh = ghUrl && <a className="btn" href={ghUrl} target="_blank" rel="noopener noreferrer"><Icon name="ext" />Open on GitHub</a>;
   if (isUnreachable(error)) return <ErrorNote error={error} onRetry={onRetry} />;
   if (status === 404) {
     return (
       <EmptyState icon="alert" title={t.kind === 'pr' ? 'Pull request not found' : 'Commit not found'} action={gh}>
-        {t.kind === 'pr' ? `${t.repo}#${t.number} isn't in the local database or on GitHub.` : `GitHub has no commit ${t.oid.slice(0, 7)} in ${t.repo}.`}
+        {t.kind === 'pr' ? `${repoText}#${t.number} isn't in the local database or on GitHub.` : `GitHub has no commit ${t.oid.slice(0, 7)} in ${repoText}.`}
       </EmptyState>
     );
   }

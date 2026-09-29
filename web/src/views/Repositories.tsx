@@ -12,6 +12,8 @@ import { EmptyState, ErrorNote, ProgressBar } from '../components/EmptyState';
 import { FilterInput } from '../components/FilterInput';
 import { FilterToolbar } from '../components/FilterToolbar';
 import { Icon } from '../components/Icon';
+import { RepoName } from '../components/RepoName';
+import { useRepoLabel } from '../components/repoMapContext';
 import { Seg } from '../components/Seg';
 import { useToast } from '../components/Toasts';
 import { useUI } from '../components/ui';
@@ -89,13 +91,14 @@ export function RepositoriesView() {
 
 function PinButton({ repo }: { repo: Repo }) {
   const patch = usePatchRepo();
+  const label = useRepoLabel()(repo.key);
   return (
     <button
       type="button"
       className={cx('pin-btn', repo.pinned && 'on')}
       title={repo.pinned ? 'Unpin' : 'Pin to the top of the sidebar'}
       aria-pressed={repo.pinned}
-      aria-label={repo.pinned ? `Unpin ${repo.name}` : `Pin ${repo.name}`}
+      aria-label={repo.pinned ? `Unpin ${label}` : `Pin ${label}`}
       onClick={() => patch.mutate({ key: repo.key, patch: { pinned: !repo.pinned } })}
     >
       <Icon name="pin" />
@@ -109,6 +112,7 @@ function RepoMenu({ repo }: { repo: Repo }) {
   const menu = useRef<HTMLDivElement>(null);
   const patch = usePatchRepo();
   const toast = useToast();
+  const label = useRepoLabel()(repo.key);
   // The menu is portaled to the end of <body>: move focus into it on open (arrow keys move between
   // items) and back to the trigger on close, or keyboard users could never reach its items.
   const close = () => { setOpen(false); btn.current?.focus({ preventScroll: true }); };
@@ -130,19 +134,19 @@ function RepoMenu({ repo }: { repo: Repo }) {
   const toggleHidden = () => {
     // Hiding a default-scope card unmounts this component before the mutation completes.
     void patch.mutateAsync({ key: repo.key, patch: { hidden: !repo.hidden } }).then(() => {
-      toast(repo.hidden ? `${repo.name} is back in the default scope`
-        : `${repo.name} hidden. To unhide, find it with the sidebar search, select it, then open its menu.`, { ms: 6000 });
-    }).catch((error: Error) => toast(`Couldn't update ${repo.name}: ${error.message}`, { error: true }));
+      toast(repo.hidden ? `${label} is back in the default scope`
+        : `${label} hidden. To unhide, find it with the sidebar search, select it, then open its menu.`, { ms: 6000 });
+    }).catch((error: Error) => toast(`Couldn't update ${label}: ${error.message}`, { error: true }));
   };
   return (
     <>
-      <button ref={btn} type="button" className="pin-btn" aria-haspopup="menu" aria-expanded={open} aria-label={`More actions for ${repo.name}`} title="More" onClick={() => setOpen((o) => !o)}>
+      <button ref={btn} type="button" className="pin-btn" aria-haspopup="menu" aria-expanded={open} aria-label={`More actions for ${label}`} title="More" onClick={() => setOpen((o) => !o)}>
         <Icon name="dots" />
       </button>
       {open && r && createPortal(
         <>
           <div className="pop-scrim" onClick={close} />
-          <div ref={menu} className="pop menu" role="menu" aria-label={`Actions for ${repo.name}`} style={{ top: r.bottom + 4, left: Math.max(8, r.right - 220) }} onKeyDown={onMenuKey}>
+          <div ref={menu} className="pop menu" role="menu" aria-label={`Actions for ${label}`} style={{ top: r.bottom + 4, left: Math.max(8, r.right - 220) }} onKeyDown={onMenuKey}>
             <button type="button" role="menuitem" className="opt" onClick={act(() => patch.mutate({ key: repo.key, patch: { pinned: !repo.pinned } }))}>
               <span className="ck"><Icon name="pin" /></span>{repo.pinned ? 'Unpin' : 'Pin'}
             </button>
@@ -166,7 +170,9 @@ function RepoMenu({ repo }: { repo: Repo }) {
 function VisBadge({ repo }: { repo: Repo }) {
   return (
     <>
-      <span className="vis-badge">{repo.visibility === 'private' ? <><Icon name="lock" />Private</> : 'Public'}</span>
+      <span className="vis-badge">{repo.visibility === 'private' ? <><Icon name="lock" />Private</> : repo.visibility === 'internal' ? <><Icon name="lock" title="Internal" />Internal</> : 'Public'}</span>
+      {repo.unavailable && <span className="vis-badge" title={repo.unavailable.reason}><Icon name="alert" />Unavailable</span>}
+      {!repo.unavailable && repo.syncedAt === null && <span className="vis-badge">Syncing…</span>}
       {repo.isArchived && <span className="vis-badge">Archived</span>}
       {repo.isFork && <span className="vis-badge"><Icon name="fork" />Fork</span>}
       {repo.hidden && <span className="vis-badge">Hidden</span>}
@@ -176,10 +182,11 @@ function VisBadge({ repo }: { repo: Repo }) {
 
 function RepoCard({ repo: r, sets, titles, search }: { repo: Repo; sets: RepoSet[]; titles: string[]; search: string }) {
   const st = r.stats;
+  const label = useRepoLabel()(r.key);
   return (
     <div className={cx('rcard', (r.isArchived || r.hidden) && 'archived')}>
       <div className="rc-h">
-        <Link className="rc-name" to={`${repoPath(r.key)}${search}`}>{r.name}</Link>
+        <Link className="rc-name" to={`${repoPath(r.key)}${search}`} title={label}><RepoName repo={r.key} /></Link>
         <VisBadge repo={r} />
         <span className="spacer" />
         <PinButton repo={r} />
@@ -189,13 +196,13 @@ function RepoCard({ repo: r, sets, titles, search }: { repo: Repo; sets: RepoSet
       <div className="rc-stats">
         {r.language && <span><i className="lang" style={{ '--lc': r.language.color ?? 'var(--muted)' } as CSSProperties} />{r.language.name}</span>}
         {r.visibility === 'public' && (
-          <span title="Stars (new in the last 30 days)"><Icon name="star" />{r.stars.toLocaleString()}{st.newStars30d > 0 && <em>+{st.newStars30d}</em>}</span>
+          <span title="Stars (new in the last 30 days)"><Icon name="star" />{r.stars.toLocaleString()}{st.newStars30d > 0 && r.trackedBy === 'owned' && <em>+{st.newStars30d}</em>}</span>
         )}
         <span title="Open pull requests"><Icon name="prOpen" />{st.openPrs} open</span>
         <span title="Merged in the last 30 days"><Icon name="merge" />{st.mergedPrs30d} merged</span>
       </div>
       <div className="rc-spark">
-        <Sparkline values={st.weeklyCommits} titles={titles} unit="commits" width={168} height={28} focusable={false} ariaLabel={`${r.name}: commits per week, last 12 weeks`} />
+        <Sparkline values={st.weeklyCommits} titles={titles} unit="commits" width={168} height={28} focusable={false} ariaLabel={`${label}: commits per week, last 12 weeks`} />
         <span className="l">commits · 12 wk</span>
       </div>
       <div className="rc-foot">
@@ -208,6 +215,7 @@ function RepoCard({ repo: r, sets, titles, search }: { repo: Repo; sets: RepoSet
 }
 
 function RepoTable({ list, titles, search }: { list: Repo[]; titles: string[]; search: string }) {
+  const label = useRepoLabel();
   return (
     <div className="rtable-wrap">
       <table className="rtable">
@@ -220,15 +228,15 @@ function RepoTable({ list, titles, search }: { list: Repo[]; titles: string[]; s
         <tbody>
           {list.map((r) => (
             <tr key={r.key} className={cx((r.isArchived || r.hidden) && 'dim')}>
-              <td><Link to={`${repoPath(r.key)}${search}`}>{r.name}</Link>{r.pinned && <span className="pin-mark" title="Pinned"><Icon name="pin" /></span>}</td>
-              <td>{r.visibility === 'private' ? 'Private' : 'Public'}{r.isArchived ? ' · archived' : ''}{r.isFork ? ' · fork' : ''}{r.hidden ? ' · hidden' : ''}</td>
+              <td><Link to={`${repoPath(r.key)}${search}`} title={label(r.key)}><RepoName repo={r.key} /></Link>{r.pinned && <span className="pin-mark" title="Pinned"><Icon name="pin" /></span>}</td>
+              <td title={r.unavailable?.reason}>{r.visibility === 'private' ? 'Private' : r.visibility === 'internal' ? 'Internal' : 'Public'}{r.unavailable ? ' · unavailable' : r.syncedAt === null ? ' · syncing…' : ''}{r.isArchived ? ' · archived' : ''}{r.isFork ? ' · fork' : ''}{r.hidden ? ' · hidden' : ''}</td>
               <td>{r.language ? <><i className="lang" style={{ '--lc': r.language.color ?? 'var(--muted)' } as CSSProperties} /> {r.language.name}</> : '—'}</td>
-              <td className="r">{r.visibility === 'public' ? <>{r.stars.toLocaleString()}{r.stats.newStars30d > 0 && <em className="plus"> +{r.stats.newStars30d}</em>}</> : '—'}</td>
+              <td className="r">{r.visibility === 'public' ? <>{r.stars.toLocaleString()}{r.stats.newStars30d > 0 && r.trackedBy === 'owned' && <em className="plus"> +{r.stats.newStars30d}</em>}</> : '—'}</td>
               <td className="r">{r.stats.openPrs}</td>
               <td className="r">{r.stats.mergedPrs30d}</td>
               <td className="r">{r.stats.commits30d}</td>
               <td title={last(r)}>{rel(last(r))}</td>
-              <td><Sparkline values={r.stats.weeklyCommits} titles={titles} unit="commits" width={120} height={18} focusable={false} ariaLabel={`${r.name}: commits per week, last 12 weeks`} /></td>
+              <td><Sparkline values={r.stats.weeklyCommits} titles={titles} unit="commits" width={120} height={18} focusable={false} ariaLabel={`${label(r.key)}: commits per week, last 12 weeks`} /></td>
               <td className="acts"><PinButton repo={r} /><RepoMenu repo={r} /></td>
             </tr>
           ))}

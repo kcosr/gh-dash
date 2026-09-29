@@ -15,6 +15,8 @@ import { DAY } from '../lib/time';
 import { OVERLAY_KEYS, canonicalQuery, encodeParams, useUrlState } from '../lib/urlState';
 import { cx } from '../lib/util';
 import { Icon } from './Icon';
+import { RepoName } from './RepoName';
+import { useRepoLabel } from './repoMapContext';
 import { Seg } from './Seg';
 import { useToast } from './Toasts';
 import { useUI } from './ui';
@@ -32,6 +34,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const views = useViews();
   const { openPrompt } = useUI();
   const toast = useToast();
+  const label = useRepoLabel();
   const createSet = useCreateSet();
   const deleteSet = useDeleteSet();
   const createView = useCreateView();
@@ -102,21 +105,24 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
 
   const item = (r: Repo) => {
     const on = selected.has(r.key);
+    const name = label(r.key);
+    const syncing = r.syncedAt === null && !r.unavailable;
     const description = [
-      r.visibility === 'private' ? 'Private' : '', r.isArchived ? 'Archived' : '',
-      r.hidden ? 'Hidden' : '', r.isFork ? 'Fork' : '',
+      r.visibility === 'private' ? 'Private' : r.visibility === 'internal' ? 'Internal' : '',
+      r.unavailable ? `Unavailable: ${r.unavailable.reason}` : '', syncing ? 'Syncing' : '',
+      r.isArchived ? 'Archived' : '', r.hidden ? 'Hidden' : '', r.isFork ? 'Fork' : '',
       r.stats.openPrs > 0 ? `${r.stats.openPrs} open pull requests` : '',
       r.stats.openIssues > 0 ? `${r.stats.openIssues} open issues` : '',
     ].filter(Boolean).join('. ');
     const describedBy = description ? `repo-info-${r.key}` : undefined;
     return (
       <div key={r.key} className={cx('repo-item', on && 'on')}>
-        <label className="repo-check-hit" title={`Include ${r.name} in selection`}>
+        <label className="repo-check-hit" title={`Include ${name} in selection`}>
           <input
             type="checkbox"
             className="repo-check"
             checked={on}
-            aria-label={`Include ${r.name}`}
+            aria-label={`Include ${name}`}
             aria-describedby={describedBy}
             onChange={() => toggle(r.key)}
           />
@@ -124,18 +130,21 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
         <button
           type="button"
           className="repo-select"
-          aria-label={`Filter to ${r.name}`}
+          aria-label={`Filter to ${name}`}
           aria-describedby={describedBy}
-          title={`Filter to ${r.name}${r.description ? ` · ${r.description}` : ''}`}
+          title={`Filter to ${name}${r.description ? ` · ${r.description}` : ''}`}
           onClick={() => { set({ repos: [r.key], ...(onNavigate ? { pr: null, diff: null } : {}) }); onNavigate?.(); }}
         >
           <span className="repo-name">
-            <span className="rname">{r.name}</span>
+            <RepoName repo={r.key} className="rname" />
             {r.visibility === 'private' && <span className="lk" title="Private"><Icon name="lock" /></span>}
+            {r.visibility === 'internal' && <span className="lk" title="Internal"><Icon name="lock" /></span>}
           </span>
-          {r.isArchived && <span className="arch">archived</span>}
-          {!r.isArchived && r.hidden && <span className="arch">hidden</span>}
-          {!r.isArchived && !r.hidden && r.isFork && <span className="arch">fork</span>}
+          {r.unavailable && <span className="arch" title={r.unavailable.reason}><Icon name="alert" />unavailable</span>}
+          {syncing && <span className="arch">syncing…</span>}
+          {!r.unavailable && !syncing && r.isArchived && <span className="arch">archived</span>}
+          {!r.unavailable && !syncing && !r.isArchived && r.hidden && <span className="arch">hidden</span>}
+          {!r.unavailable && !syncing && !r.isArchived && !r.hidden && r.isFork && <span className="arch">fork</span>}
           {(r.stats.openPrs > 0 || r.stats.openIssues > 0) && <span className="repo-counts" aria-hidden="true">
             {r.stats.openPrs > 0 && <span title={`${r.stats.openPrs} open pull requests`}>
               <Icon name="prOpen" />{r.stats.openPrs.toLocaleString()}
@@ -214,7 +223,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
           tabIndex={0}
           onClick={() => select(st.repos)}
           onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); select(st.repos); } }}
-          title={st.repos.join(', ')}
+          title={st.repos.map(label).join(', ')}
         >
           <Icon name="layers" />
           <span>{st.name}</span>

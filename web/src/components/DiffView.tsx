@@ -163,21 +163,18 @@ export function DiffView({ id, compact }: { id: string; compact: boolean }) {
         <div className="dv-body" ref={body} tabIndex={-1}>
           <ProgressBar active={refresh.isPending} />
           {d ? (
-            d.files.length === 0 ? (
-              <EmptyState icon="diff" title="No changed files">GitHub lists no file changes for this {t.kind === 'pr' ? 'pull request' : 'commit'}.</EmptyState>
-            ) : (
-              <ViewerBoundary ghUrl={d.url}>
-                <Suspense fallback={<DiffSkeleton />}>
-                  <DiffViewer
-                    diff={d} loadFile={loadFile} compact={compact} isActive={isActive} file={initialFile} onFileChange={onFileChange}
-                    comments={{
-                      key: threadsId ?? id, threads: threads.data, error: threads.isError, retry: () => void threads.refetch(), actions: threadActions, me: me.data,
-                      initialThread, onThreadFocus, only: s.only, onOnlyChange,
-                    }}
-                  />
-                </Suspense>
-              </ViewerBoundary>
-            )
+            // Also with no files (a push can empty a PR's diff): the viewer says so, and still has the comments.
+            <ViewerBoundary ghUrl={d.url}>
+              <Suspense fallback={<DiffSkeleton />}>
+                <DiffViewer
+                  diff={d} loadFile={loadFile} compact={compact} isActive={isActive} file={initialFile} onFileChange={onFileChange}
+                  comments={{
+                    key: threadsId ?? id, threads: threads.data, error: threads.isError, retry: () => void threads.refetch(), actions: threadActions, me: me.data,
+                    initialThread, onThreadFocus, only: s.only, onOnlyChange,
+                  }}
+                />
+              </Suspense>
+            </ViewerBoundary>
           ) : diff.isError ? (
             <DiffError error={diff.error} t={t} ghUrl={ghUrl} onRetry={() => diff.refetch()} />
           ) : <DiffSkeleton />}

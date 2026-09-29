@@ -115,17 +115,28 @@ function idParam(value: string): number {
   return id;
 }
 
-function prTarget(db: Db, c: Context): ThreadTarget & { kind: 'pr' } {
+function prNumberParam(c: Context): number {
   const number = Number(c.req.param('number'));
   if (!Number.isInteger(number) || number <= 0) throw new HttpError(400, 'Invalid PR number');
-  return { repoId: repoIdForKey(db, c.req.param('repo')!), kind: 'pr', number };
+  return number;
 }
 
-function commitTarget(db: Db, c: Context): ThreadTarget & { kind: 'commit' } {
+function oidParam(c: Context): string {
   const oid = fullOid.safeParse(c.req.param('oid'));
   if (!oid.success) throw new HttpError(400, 'Invalid oid: expected a full 40-character commit SHA');
-  return { repoId: repoIdForKey(db, c.req.param('repo')!), kind: 'commit', oid: oid.data };
+  return oid.data;
 }
+
+const prTarget = (db: Db, c: Context, number: number): ThreadTarget & { kind: 'pr' } => ({
+  repoId: repoIdForKey(db, c.req.param('repo')!),
+  kind: 'pr',
+  number,
+});
+const commitTarget = (db: Db, c: Context, oid: string): ThreadTarget & { kind: 'commit' } => ({
+  repoId: repoIdForKey(db, c.req.param('repo')!),
+  kind: 'commit',
+  oid,
+});
 
 const found = <T>(value: T | null, what: string): T => {
   if (value === null) throw new HttpError(404, `${what} not found`);
@@ -142,82 +153,91 @@ export function commentRoutes({ db }: AppDeps): Hono {
     return c.json({ items });
   };
 
+  // Routes with a body read it first (after checking the URL's own syntax), then find their target and write with no
+  // await in between: a thread, comment or repo may go while a slow body is still arriving.
+
   r.get('/prs/:repo/:number/threads', (c) => {
-    const target = prTarget(db, c);
+    const target = prTarget(db, c, prNumberParam(c));
     return list(c, target, `${c.req.param('repo')}#${target.number}`);
   });
 
   r.post('/prs/:repo/:number/threads', async (c) => {
-    const target = prTarget(db, c);
+    const number = prNumberParam(c);
+    const f = parseWith(prThreadBody, await jsonBody(c));
+    const target = prTarget(db, c, number);
     // Listing works for a PR the sync has since dropped; a new thread needs one the dashboard knows.
-    if (!db.get('SELECT 1 FROM pull_requests WHERE repo_id = ? AND number = ?', [target.repoId, target.number])) {
+    if (!db.get('SELECT 1 FROM pull_requests WHERE repo_id = ? AND number = ?', [target.repoId, number])) {
       throw new HttpError(404, 'Pull request not found');
     }
-    const f = parseWith(prThreadBody, await jsonBody(c));
     const input = { commitOid: f.commitOid, baseOid: f.baseOid ?? null, anchor: toAnchor(f), body: f.body };
     return c.json(createThread(db, target, input, actingPrincipal(db)));
   });
 
   // Commits need not be synced (like their diffs): PR branch commits aren't.
   r.get('/commits/:repo/:oid/threads', (c) => {
-    const target = commitTarget(db, c);
+    const target = commitTarget(db, c, oidParam(c));
     return list(c, target, `${c.req.param('repo')}@${target.oid.slice(0, 7)}`);
   });
 
   r.post('/commits/:repo/:oid/threads', async (c) => {
-    const target = commitTarget(db, c);
+    const oid = oidParam(c);
     const f = parseWith(commitThreadBody, await jsonBody(c));
-    if (f.commitOid !== undefined && f.commitOid !== target.oid) throw new HttpError(400, "commitOid must be the commit's own oid");
-    const input = { commitOid: target.oid, baseOid: f.baseOid ?? null, anchor: toAnchor(f), body: f.body };
+    if (f.commitOid !== undefined && f.commitOid !== oid) throw new HttpError(400, "commitOid must be the commit's own oid");
+    const target = commitTarget(db, c, oid);
+    const input = { commitOid: oid, baseOid: f.baseOid ?? null, anchor: toAnchor(f), body: f.body };
     return c.json(createThread(db, target, input, actingPrincipal(db)));
   });
 
-  // By id: every route first checks the thread's repo, as the list routes do through repoIdForKey.
-  const liveThreadId = (c: Context) => {
-    const id = idParam(c.req.param('id')!);
-    requireLiveThread(db, id);
-    return id;
-  };
-  const liveComment = (c: Context) => {
-    const id = idParam(c.req.param('id')!);
+  // By id: every route checks the thread's repo, as the key-based routes do through repoIdForKey.
+  const liveComment = (id: number) => {
     const ref = found(getCommentRef(db, id), 'Comment');
     requireLiveThread(db, ref.threadId, 'Comment');
-    return { id, ...ref };
+    return ref;
   };
 
-  r.get('/threads/:id', (c) => c.json(getThread(db, liveThreadId(c))));
+  r.get('/threads/:id', (c) => {
+    const id = idParam(c.req.param('id'));
+    requireLiveThread(db, id);
+    return c.json(getThread(db, id));
+  });
 
   r.patch('/threads/:id', async (c) => {
-    const id = liveThreadId(c);
+    const id = idParam(c.req.param('id'));
     const { status } = parseWith(statusBody, await jsonBody(c));
-    return c.json(setThreadStatus(db, id, status));
+    requireLiveThread(db, id);
+    return c.json(found(setThreadStatus(db, id, status), 'Thread'));
   });
 
   r.delete('/threads/:id', (c) => {
-    const thread = getThread(db, liveThreadId(c))!;
+    const id = idParam(c.req.param('id'));
+    requireLiveThread(db, id);
+    const thread = getThread(db, id)!;
     if (!mayDelete(actingPrincipal(db), thread.comments[0]!.author.id)) throw new HttpError(403, 'Only its author can delete this thread');
-    deleteThread(db, thread.id);
+    deleteThread(db, id);
     return c.body(null, 204);
   });
 
   r.post('/threads/:id/comments', async (c) => {
-    const id = liveThreadId(c);
+    const id = idParam(c.req.param('id'));
     const { body } = parseWith(replyBody, await jsonBody(c));
-    return c.json(addComment(db, id, actingPrincipal(db), body));
+    requireLiveThread(db, id);
+    return c.json(found(addComment(db, id, actingPrincipal(db), body), 'Thread'));
   });
 
   r.patch('/comments/:id', async (c) => {
-    const comment = liveComment(c);
+    const id = idParam(c.req.param('id'));
     const { body } = parseWith(replyBody, await jsonBody(c));
+    const comment = liveComment(id);
     if (!mayEdit(actingPrincipal(db), comment.authorId)) throw new HttpError(403, 'You can only edit your own comments');
-    return c.json(editComment(db, comment.id, body));
+    return c.json(found(editComment(db, id, body), 'Comment'));
   });
 
   // The first comment's author is the thread's: deleting it deletes the thread, which mayDelete allows them.
   r.delete('/comments/:id', (c) => {
-    const comment = liveComment(c);
+    const id = idParam(c.req.param('id'));
+    const comment = liveComment(id);
     if (!mayDelete(actingPrincipal(db), comment.authorId)) throw new HttpError(403, 'Only its author can delete this comment');
-    return c.json(deleteComment(db, comment.id));
+    return c.json(found(deleteComment(db, id), 'Comment'));
   });
 
   return r;

@@ -29,7 +29,31 @@ function makeApp(db: Db = seedDb()) {
     const res = await send(method, path, body);
     return { status: res.status, body: (await res.json()) as T };
   };
-  return { app, db, send, json };
+  /**
+   * Sends a request whose JSON body is held back until `meanwhile` has run, the handler being parked on it by then:
+   * whatever `meanwhile` changes happens while the route awaits the body. With a Content-Length, as browsers and curl
+   * send, bodyLimit streams the body through to the route instead of reading it first.
+   */
+  const sendLate = async (method: string, path: string, body: unknown, meanwhile: () => void) => {
+    const bytes = new TextEncoder().encode(JSON.stringify(body));
+    let release!: () => void;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        release = () => {
+          controller.enqueue(bytes);
+          controller.close();
+        };
+      },
+    });
+    const res = app.request(`http://localhost/api/v1${path}`, {
+      method, headers: { 'content-type': 'application/json', 'content-length': String(bytes.length) }, body: stream, duplex: 'half',
+    } as RequestInit);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    meanwhile();
+    release();
+    return res;
+  };
+  return { app, db, send, json, sendLate };
 }
 
 const lineThread = { commitOid: HEAD, baseOid: BASE, path: 'src/a.ts', side: 'new', startLine: 3, endLine: 4, snippet: 'a\nb', body: 'Why?' };
@@ -174,6 +198,47 @@ describe('comment threads API', () => {
     db.run("UPDATE repos SET removed_at = NULL WHERE name = 'app'");
     expect((await json('GET', `/threads/${t.id}`)).body.comments.map((c) => c.body)).toEqual(['Why?', 'Because.']);
     expect((await json('PATCH', `/comments/${reply.id}`, { body: 'Edited' })).status).toBe(200);
+  });
+
+  it('finds its target only once the body is in: a thread or repo that went meanwhile is a 404, and nothing is written', async () => {
+    const { db, json, sendLate } = makeApp();
+    const open = async () => (await json('POST', '/prs/app/2/threads', lineThread)).body;
+    const removeApp = () => db.run("UPDATE repos SET removed_at = '2026-09-29T00:00:00Z' WHERE name = 'app'");
+    const restoreApp = () => db.run("UPDATE repos SET removed_at = NULL WHERE name = 'app'");
+    const expect404 = async (res: Response, error: string) => {
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error });
+    };
+
+    // Reply, while the thread is deleted.
+    const a = await open();
+    await expect404(await sendLate('POST', `/threads/${a.id}/comments`, { body: 'Late' }, () => db.run('DELETE FROM comment_threads WHERE id = ?', [a.id])), 'Thread not found');
+    expect(db.get<{ n: number }>('SELECT count(*) AS n FROM comments WHERE thread_id = ?', [a.id])!.n).toBe(0);
+
+    // Resolve, reply and edit, while the repo is removed.
+    const b = await open();
+    await expect404(await sendLate('PATCH', `/threads/${b.id}`, { status: 'resolved' }, removeApp), 'Thread not found');
+    restoreApp();
+    await expect404(await sendLate('POST', `/threads/${b.id}/comments`, { body: 'Late' }, removeApp), 'Thread not found');
+    restoreApp();
+    await expect404(await sendLate('PATCH', `/comments/${b.comments[0]!.id}`, { body: 'Late' }, removeApp), 'Comment not found');
+    restoreApp();
+    expect((await json('GET', `/threads/${b.id}`)).body).toMatchObject({ status: 'open', comments: [{ body: 'Why?', editedAt: null }] });
+
+    // Edit, while the comment's thread is deleted.
+    const c = await open();
+    await expect404(await sendLate('PATCH', `/comments/${c.comments[0]!.id}`, { body: 'Late' }, () => db.run('DELETE FROM comment_threads WHERE id = ?', [c.id])), 'Comment not found');
+
+    // New threads, while the repo is removed.
+    const before = db.get<{ n: number }>('SELECT count(*) AS n FROM comment_threads')!.n;
+    await expect404(await sendLate('POST', '/prs/app/2/threads', lineThread, removeApp), 'Repository not found');
+    restoreApp();
+    await expect404(await sendLate('POST', `/commits/app/${COMMIT}/threads`, { body: 'Late' }, removeApp), 'Repository not found');
+    restoreApp();
+    expect(db.get<{ n: number }>('SELECT count(*) AS n FROM comment_threads')!.n).toBe(before);
+
+    // Undisturbed, a late body is fine.
+    expect((await sendLate('POST', `/threads/${b.id}/comments`, { body: 'Late' }, () => {})).status).toBe(200);
   });
 
   it("lets the dashboard user delete an agent's comments but not edit them", async () => {

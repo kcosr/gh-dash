@@ -5,6 +5,7 @@ const VISIT_KEY = 'gh-dash:lastVisit';
 const SIDEBAR_KEY = 'gh-dash:sidebarWidth';
 const SIDEBAR_HIDDEN_KEY = 'gh-dash:sidebarHidden';
 const DIFF_KEY = 'gh-dash:diffView';
+const ADD_SOURCE_KEY = 'gh-dash:addSource';
 export const SIDEBAR_MIN = 220;
 export const SIDEBAR_MAX = 480;
 export const SIDEBAR_DEFAULT = 268;
@@ -44,6 +45,15 @@ export function getTheme(): Theme {
 export function setTheme(t: Theme) {
   document.documentElement.dataset.theme = t;
   write(THEME_KEY, t);
+}
+
+/** The source (host) the Add dialog last added to or was set to, offered again where no context decides (All). */
+export function getAddSource(): string | null {
+  return read(ADD_SOURCE_KEY) || null;
+}
+
+export function setAddSource(host: string) {
+  write(ADD_SOURCE_KEY, host);
 }
 
 /** Diff viewer preferences (desktop; the compact layout is always unified with the file list hidden). */

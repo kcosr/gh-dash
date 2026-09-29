@@ -21,9 +21,12 @@ import type {
   StatsQuery,
   SyncStatus,
 } from '../../../shared/api';
+import { GITHUB_HOST } from '../../../shared/api';
 import { ApiError, api, isClientError, isUnreachable } from './client';
 import { resolveApiBase } from '../lib/account';
 import { defaultRepoScope } from '../../../shared/repos';
+import { sourceStatuses, workSources } from '../lib/sources';
+import type { WorkSource } from '../lib/sources';
 import { parseDiffId } from '../lib/urlState';
 
 export const qk = {
@@ -50,7 +53,8 @@ export const qk = {
   diffCache: ['diff-cache'] as const,
   /** The Add dialog's lists and access checks: read from GitHub, never refetched by a sync. */
   repoCandidates: ['repo-candidates'] as const,
-  repoLookup: (key: string) => ['repo-lookup', key] as const,
+  repoCandidatesOf: (source: string) => ['repo-candidates', source] as const,
+  repoLookup: (source: string, key: string) => ['repo-lookup', source, key] as const,
 };
 
 /**
@@ -212,6 +216,17 @@ export function useSyncStatus() {
     refetchIntervalInBackground: false,
     staleTime: 0,
   });
+}
+
+/**
+ * The sources the app works with (see `workSources`): each one's sync status, problem and where it lives. Empty until
+ * the sync status has loaded.
+ */
+export function useWorkSources(): WorkSource[] {
+  const st = useSyncStatus().data;
+  const repos = useRepos().data;
+  const githubMismatch = !!useAccount().data?.mismatch;
+  return useMemo(() => workSources(sourceStatuses(st), repos ?? [], { githubMismatch }), [st, repos, githubMismatch]);
 }
 
 /** The default selection: not archived, not hidden, not a fork (unless includeForks). */
@@ -428,21 +443,22 @@ export function usePatchRepo() {
  * What the Add dialog offers: the token's repositories of other owners and recent contributions. Fetched only while
  * the dialog is open; the server caches the lists for 5 minutes too, and the dialog filters them locally as you type.
  */
-export function useRepoCandidates(enabled: boolean) {
+export function useRepoCandidates(enabled: boolean, source: string = GITHUB_HOST) {
   return useQuery({
-    queryKey: qk.repoCandidates,
-    queryFn: () => api.repoCandidates(),
+    queryKey: qk.repoCandidatesOf(source),
+    // github.com is the API's default source: its requests stay as they were.
+    queryFn: () => api.repoCandidates(false, source === GITHUB_HOST ? undefined : source),
     enabled,
     staleTime: 5 * 60_000,
     retry: (count, err) => count < 1 && !isClientError(err),
   });
 }
 
-/** Whether the token can read the repo `key` (owner/name), with a preview; idle while `key` is null. One GraphQL point. */
-export function useRepoLookup(key: string | null) {
+/** Whether the source's token can read the repo `key` (owner/name, or a GitLab key), with a preview; idle while `key` is null. One GraphQL point. */
+export function useRepoLookup(key: string | null, source: string = GITHUB_HOST) {
   return useQuery({
-    queryKey: qk.repoLookup(key ?? ''),
-    queryFn: () => api.repoLookup(key!),
+    queryKey: qk.repoLookup(source, key ?? ''),
+    queryFn: () => api.repoLookup(key!, source === GITHUB_HOST ? undefined : source),
     enabled: !!key,
     staleTime: 60_000,
     retry: false,

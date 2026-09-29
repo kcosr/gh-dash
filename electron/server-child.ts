@@ -1,10 +1,10 @@
 /**
  * The server child (dist/server/desktop.mjs in a utilityProcess): start, ready/fatal, restart with backoff after
- * crashes, graceful shutdown, and the request/answer round trips (set-token, the GitLab sources' messages). Protocol:
+ * crashes, graceful shutdown, and the request/answer round trips (set-token, the GitLab sources' and the agents'). Protocol:
  * shared/desktop.ts (MainToServer/ServerToMain).
  */
 import { utilityProcess, type UtilityProcess } from 'electron';
-import type { AccountStatus, SourceAccount, SourceCheck, TokenChoice } from '../shared/api';
+import type { AccountStatus, Agent, SourceAccount, SourceCheck, TokenChoice } from '../shared/api';
 import type { MainToServer, ServerToMain, SourceTestDraft } from '../shared/desktop';
 
 export type ChildStatus = 'idle' | 'starting' | 'running' | 'stopping' | 'failed';
@@ -176,6 +176,24 @@ export class ServerChild {
     return expect(await this.request({ type: 'sync-source', source }), 'sync-started').result;
   }
 
+  /** Makes an agent in the child's database; the answer carries its token, once. */
+  async addAgent(name: string): Promise<{ agent: Agent; token: string }> {
+    await this.running();
+    return withToken(expect(await this.request({ type: 'add-agent', name }), 'agent-result'));
+  }
+
+  /** A new token for an agent; the old one stops working. */
+  async regenerateAgentToken(agent: number): Promise<{ agent: Agent; token: string }> {
+    await this.running();
+    return withToken(expect(await this.request({ type: 'regenerate-agent-token', agent }), 'agent-result'));
+  }
+
+  /** Revokes an agent's token. */
+  async revokeAgent(agent: number): Promise<Agent> {
+    await this.running();
+    return expect(await this.request({ type: 'revoke-agent', agent }), 'agent-result').agent;
+  }
+
   private async running(): Promise<void> {
     if ((await this.whenSettled()) !== 'running') throw new Error(this.lastError ?? 'The gh-dash server is not running.');
   }
@@ -340,6 +358,12 @@ export class ServerChild {
       });
     });
   }
+}
+
+/** An agent-result that must carry a token (add, regenerate). */
+function withToken(answer: Extract<Answer, { type: 'agent-result' }>): { agent: Agent; token: string } {
+  if (typeof answer.token !== 'string') throw new Error('The gh-dash server answered without a token.');
+  return { agent: answer.agent, token: answer.token };
 }
 
 /** The answer of the expected type; another one means the two sides disagree on the protocol. */

@@ -2,10 +2,11 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { AccountStatus, SourceAccount, SourceCheck, TokenChoice } from '../shared/api';
+import type { AccountStatus, Agent, SourceAccount, SourceCheck, TokenChoice } from '../shared/api';
 import type { SourceTestDraft } from '../shared/desktop';
 import { readConfigFile } from '../server/config-file';
 import { loadSources } from '../server/sources/config';
+import { ConfigInputError } from './config';
 import { Desktop } from './desktop';
 import type { ServerChild, StartResult } from './server-child';
 import type { TokenStore } from './token-store';
@@ -33,7 +34,13 @@ const fakeChild = () => {
   /** Every set-token the child got, in order (setToken and sendSetToken both send one). */
   const sent: [TokenChoice | null, string | null | undefined][] = [];
   const send = (choice: TokenChoice | null, token?: string | null) => (sent.push([choice, token]), validate(choice, token));
-  return { status: 'running', apiUrl: null as string | null, lastError: null as string | null, sent, setToken: vi.fn(send), sendSetToken: vi.fn(send) };
+  const agent = (id: number, name = 'Claude'): Agent => ({ id, name, tokenPrefix: 'ghd_abcd', createdAt: 'x', lastUsedAt: null, revokedAt: null });
+  return {
+    status: 'running', apiUrl: null as string | null, lastError: null as string | null, sent, setToken: vi.fn(send), sendSetToken: vi.fn(send),
+    addAgent: vi.fn(async (name: string) => ({ agent: agent(2, name), token: 'ghd_secret1' })),
+    regenerateAgentToken: vi.fn(async (id: number) => ({ agent: agent(id), token: 'ghd_secret2' })),
+    revokeAgent: vi.fn(async (id: number) => ({ ...agent(id), tokenPrefix: null, revokedAt: 'y' })),
+  };
 };
 function fakeTokens() {
   let stored: string | null = null;
@@ -168,6 +175,50 @@ describe('tokens', () => {
     await next.restoreToken();
     next.onChildReady();
     expect(child.sendSetToken).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('agents', () => {
+  it("asks the child and hands the token back once, logging only the agent's name", async () => {
+    const lines: string[] = [];
+    desktop = new Desktop({ child: child as unknown as ServerChild, tokens: tokens as unknown as TokenStore, configPath, dataDir: join(dir, 'data'), version: '1', restart, log: (l) => lines.push(l) });
+    expect(await desktop.addAgent('Claude')).toEqual({ agent: expect.objectContaining({ id: 2, name: 'Claude' }), token: 'ghd_secret1' });
+    expect(await desktop.regenerateAgentToken(2)).toMatchObject({ agent: { id: 2 }, token: 'ghd_secret2' });
+    expect(await desktop.revokeAgent(2)).toMatchObject({ id: 2, tokenPrefix: null, revokedAt: 'y' });
+    expect(child.addAgent).toHaveBeenCalledWith('Claude');
+    expect(child.regenerateAgentToken).toHaveBeenCalledWith(2);
+    expect(child.revokeAgent).toHaveBeenCalledWith(2);
+    expect(lines).toEqual(['[agents] added Claude (id 2)', '[agents] new token for Claude (id 2)', '[agents] revoked Claude (id 2)']);
+    expect(lines.join('\n')).not.toContain('ghd_secret');
+    // Nothing touches config.json or restarts the server.
+    expect(existsSync(configPath)).toBe(false);
+    expect(restart).not.toHaveBeenCalled();
+  });
+
+  it("refuses what isn't a name or an id before asking the child, and passes its refusals on as the user's to read", async () => {
+    for (const bad of [undefined, 3, '', '   ', 'x'.repeat(201)]) expect(() => desktop.addAgent(bad), String(bad)).toThrow('Give the agent a name.');
+    for (const bad of ['2', 0, -1, 1.5, null]) {
+      expect(() => desktop.regenerateAgentToken(bad), String(bad)).toThrow('That is not an agent.');
+      expect(() => desktop.revokeAgent(bad), String(bad)).toThrow('That is not an agent.');
+    }
+    expect(child.addAgent).not.toHaveBeenCalled();
+    child.addAgent.mockRejectedValueOnce(new Error('There is already an agent called Claude (id 2); regenerate its token instead'));
+    const refused = await desktop.addAgent('claude').catch((e: Error) => e);
+    expect(refused).toBeInstanceOf(ConfigInputError);
+    expect((refused as Error).message).toBe('There is already an agent called Claude (id 2); regenerate its token instead');
+  });
+
+  it('waits for a restart in progress instead of racing it', async () => {
+    let finish!: () => void;
+    restart.mockImplementationOnce(() => new Promise((resolve) => (finish = () => resolve({ ok: true, apiUrl: null }))));
+    const updating = desktop.updateConfig({ listen: true });
+    const adding = desktop.addAgent('Claude');
+    await new Promise((r) => setTimeout(r, 10));
+    expect(child.addAgent).not.toHaveBeenCalled();
+    finish();
+    await updating;
+    await adding;
+    expect(child.addAgent).toHaveBeenCalledOnce();
   });
 });
 

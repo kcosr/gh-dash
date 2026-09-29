@@ -9,8 +9,17 @@ import { accessSync, constants, mkdirSync, rmSync, statSync } from 'node:fs';
 import { basename, isAbsolute } from 'node:path';
 import { isDeepStrictEqual, promisify } from 'node:util';
 import { type ConfigFile, type LoadedConfigFile, readConfigFile, sourceUrl, writeConfigFile } from '../server/config-file';
-import type { AccountStatus, SourceAccount, SourceCheck, TokenChoice } from '../shared/api';
-import type { CredentialDraft, DesktopConfigPatch, DesktopSourceResult, DesktopState, DesktopTokenResult, SourceMethod, SourceTestDraft } from '../shared/desktop';
+import type { AccountStatus, Agent, SourceAccount, SourceCheck, TokenChoice } from '../shared/api';
+import type {
+  CredentialDraft,
+  DesktopAgentToken,
+  DesktopConfigPatch,
+  DesktopSourceResult,
+  DesktopState,
+  DesktopTokenResult,
+  SourceMethod,
+  SourceTestDraft,
+} from '../shared/desktop';
 import { applyDesktopPatch, ConfigInputError, parseDesktopPatch, toDesktopConfig } from './config';
 import type { ServerChild, StartResult } from './server-child';
 import {
@@ -491,6 +500,47 @@ export class Desktop {
   }
 
   // -------------------------------------------------------------------------
+  // Agents (MCP). The child keeps them (its database) and says so to open windows; the token of a new or regenerated
+  // one comes back here once, goes to the renderer to be shown, and is never logged or kept.
+  // -------------------------------------------------------------------------
+
+  addAgent(input: unknown): Promise<DesktopAgentToken> {
+    if (typeof input !== 'string' || !input.trim() || input.length > 200) throw new ConfigInputError('Give the agent a name.');
+    return this.exclusive(async () => {
+      const made = await this.agentRequest(() => this.d.child.addAgent(input));
+      this.d.log(`[agents] added ${made.agent.name} (id ${made.agent.id})`);
+      return made;
+    });
+  }
+
+  regenerateAgentToken(input: unknown): Promise<DesktopAgentToken> {
+    const id = agentId(input);
+    return this.exclusive(async () => {
+      const made = await this.agentRequest(() => this.d.child.regenerateAgentToken(id));
+      this.d.log(`[agents] new token for ${made.agent.name} (id ${id})`);
+      return made;
+    });
+  }
+
+  revokeAgent(input: unknown): Promise<Agent> {
+    const id = agentId(input);
+    return this.exclusive(async () => {
+      const agent = await this.agentRequest(() => this.d.child.revokeAgent(id));
+      this.d.log(`[agents] revoked ${agent.name} (id ${id})`);
+      return agent;
+    });
+  }
+
+  /** The child's refusals (a name taken, no such agent) are the user's to read, not stack traces for the log. */
+  private async agentRequest<T>(fn: () => Promise<T>): Promise<T> {
+    try {
+      return await fn();
+    } catch (error) {
+      throw new ConfigInputError((error as Error).message);
+    }
+  }
+
+  // -------------------------------------------------------------------------
   // config.json
   // -------------------------------------------------------------------------
 
@@ -568,6 +618,12 @@ export class Desktop {
 }
 
 const execFileAsync = promisify(execFile);
+
+/** An agent's id from the renderer: a positive integer. */
+function agentId(input: unknown): number {
+  if (typeof input !== 'number' || !Number.isInteger(input) || input <= 0) throw new ConfigInputError('That is not an agent.');
+  return input;
+}
 
 function ensureWritableDir(dir: string) {
   try {

@@ -6,7 +6,7 @@
  *
  * The web app must work without the bridge (headless server in a browser); desktop-only UI checks for it.
  */
-import type { AccountStatus, SourceAccount, SourceCheck, TokenChoice } from './api';
+import type { AccountStatus, Agent, SourceAccount, SourceCheck, TokenChoice } from './api';
 
 /** The window loads app://gh-dash/...; main forwards every request to the server child. */
 export const DESKTOP_SCHEME = 'app';
@@ -79,6 +79,12 @@ export type MainToServer =
   | { type: 'delete-source'; id: number; source: string }
   /** Start the source's sync now, or after the one running (a source just added). Answered with `sync-started`. */
   | { type: 'sync-source'; id: number; source: string }
+  /** Make an agent (MCP) called `name`, with its first token. Answered with `agent-result` (the token). */
+  | { type: 'add-agent'; id: number; name: string }
+  /** A new token for the agent with principal id `agent`; the old one stops working. Answered with `agent-result` (the token). */
+  | { type: 'regenerate-agent-token'; id: number; agent: number }
+  /** Revoke the agent's token; its comments stay. Answered with `agent-result` (no token). */
+  | { type: 'revoke-agent'; id: number; agent: number }
   /** Close the listeners and databases, then exit 0. */
   | { type: 'shutdown' };
 
@@ -102,6 +108,11 @@ export type ServerToMain =
   | { type: 'source-deleted'; id: number; repos: number }
   /** Result of sync-source. */
   | { type: 'sync-started'; id: number; result: 'started' | 'queued' }
+  /**
+   * Result of add-agent, regenerate-agent-token and revoke-agent: the agent as it is now, and its new token (null for
+   * revoke-agent). The token goes to the renderer once, to be shown to the user; nobody logs it.
+   */
+  | { type: 'agent-result'; id: number; agent: Agent; token: string | null }
   /** A request with an `id` failed (an unknown source, one still configured...): `message` says why, for the user. */
   | { type: 'request-failed'; id: number; message: string }
   /** Startup failed (bad config, database locked, port in use...). The child exits after sending it. */
@@ -201,6 +212,12 @@ export interface DesktopSourceResult {
   remembered: boolean;
 }
 
+/** An agent and its new token (addAgent, regenerateAgentToken): show the token now, it can't be read back. */
+export interface DesktopAgentToken {
+  agent: Agent;
+  token: string;
+}
+
 export interface DesktopTokenResult {
   ok: boolean;
   account: AccountStatus;
@@ -250,6 +267,15 @@ export interface DesktopBridge {
    * that host's next `file` credential only; it's returned for display. null when cancelled.
    */
   chooseTokenFile(url: string): Promise<string | null>;
+  /**
+   * Makes an agent (MCP; Settings → Agents) and its token. The token is in the answer once and never again: show it with
+   * the MCP URL (the Local API's, `<apiUrl>/mcp`) and the agent's config. A name another agent has is refused.
+   */
+  addAgent(name: string): Promise<DesktopAgentToken>;
+  /** A new token for an agent (by its id), revoked or not; the old token stops working at once. Shown once, like addAgent's. */
+  regenerateAgentToken(id: number): Promise<DesktopAgentToken>;
+  /** Revokes an agent's token at once; the agent and its comments stay (GET /agents lists it as revoked). */
+  revokeAgent(id: number): Promise<Agent>;
 }
 
 /** IPC channel names used by the preload script (ipcRenderer.invoke) and main (ipcMain.handle). */
@@ -269,6 +295,9 @@ export const DESKTOP_IPC = {
   removeSource: 'gh-dash:remove-source',
   chooseGlabPath: 'gh-dash:choose-glab-path',
   chooseTokenFile: 'gh-dash:choose-token-file',
+  addAgent: 'gh-dash:add-agent',
+  regenerateAgentToken: 'gh-dash:regenerate-agent-token',
+  revokeAgent: 'gh-dash:revoke-agent',
 } as const;
 
 declare global {

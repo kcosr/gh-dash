@@ -103,7 +103,7 @@ describe('computeStats', () => {
     expect(s.stars.map((b) => b.total)).toEqual([3, 3, 3, 3, 3, 4, 4]);
     expect(s.tiles.newStars.value).toBe(3);
     const internal = computeStats(d, loadQueryCtx(d), scope('2026-09-20', '2026-09-26', { visibility: 'internal' }));
-    expect(internal.byRepo.map((r) => [r.repo, r.stars])).toEqual([['corp', 1]]);
+    expect(internal.byRepo.map((r) => [r.repo, r.stars])).toEqual([['alice/corp', 1]]);
     expect(internal.stars.every((b) => b.total === 0)).toBe(true);
   });
 
@@ -118,8 +118,8 @@ describe('computeStats', () => {
   it('ranks repos and contributors, merging all of the viewer identities', () => {
     const s = computeStats(db, ctx, scope('2026-09-20', '2026-09-26'));
     expect(s.byRepo).toEqual([
-      { repo: 'app', commits: 3, prsMerged: 1, issues: 2, releases: 1, stars: 2, total: 9 },
-      { repo: 'secret', commits: 1, prsMerged: 1, issues: 0, releases: 0, stars: 0, total: 2 },
+      { repo: 'alice/app', commits: 3, prsMerged: 1, issues: 2, releases: 1, stars: 2, total: 9 },
+      { repo: 'alice/secret', commits: 1, prsMerged: 1, issues: 0, releases: 0, stars: 0, total: 2 },
     ]);
     expect(s.contributors).toEqual([
       { actor: { login: 'Alice', name: 'Alice A', avatarUrl: 'https://avatars.example/alice', isMe: true }, commits: 3, prsMerged: 2, total: 5 },

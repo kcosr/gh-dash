@@ -2,8 +2,10 @@
  * API contract shared by the server (server/) and the web app (web/).
  *
  * All endpoints live under /api/v1. All timestamps are ISO-8601 UTC strings.
- * Repos are identified by their short name (e.g. "gh-dash"): the dashboard only
- * tracks repositories owned by the authenticated user, so names are unique.
+ * Repos are identified by their key, "owner/name" (e.g. "kcosr/gh-dash"): every `repo` field and id carries it,
+ * and path params take it URL-encoded as one segment (`kcosr%2Fgh-dash`). Inputs (path params, `repos=` lists,
+ * set members, POST /sync `repo`) also accept the short name of a repository the authenticated user owns
+ * ("gh-dash"), which is how repos were identified before keys had owners.
  *
  * Change policy: this file is the coordination point between agents. Additive,
  * optional fields are fine; renames/removals are not.
@@ -56,8 +58,8 @@ export interface RepoStats {
 
 export interface Repo {
   /**
-   * Identity everywhere in the API and in URLs (`repos=` lists, path params, every `repo` field).
-   * Currently the short name; `name` is what to display.
+   * Identity everywhere in the API and in URLs (`repos=` lists, path params, every `repo` field): "owner/name"
+   * (GitLab later: "group/sub/project"). `name` is the short name.
    */
   key: string;
   name: string;
@@ -86,11 +88,16 @@ export interface Repo {
   setIds: number[];
   stats: RepoStats;
   syncedAt: string | null;
+  /** 'owned': one of the authenticated user's repositories, tracked automatically; 'manual': added by hand. */
   trackedBy: TrackedBy;
+  /** Manual repos: when they were added. */
+  addedAt: string | null;
+  /** Manual repos the token can no longer read: data kept, sync skips it until readable again. */
+  unavailable: { since: string; reason: string } | null;
 }
 
 export interface PullRequest {
-  /** "<repo>#<number>", e.g. "gh-dash#24" */
+  /** "<repo>#<number>", e.g. "kcosr/gh-dash#24" */
   id: string;
   repo: string;
   number: number;
@@ -330,8 +337,8 @@ export interface SyncStatus {
 
 /**
  * Scope shared by every list/stats endpoint.
- *  - repos: comma-separated repo names. Omitted => the default scope: all repos
- *    that are not archived, not hidden, and (unless settings.includeForks) not forks.
+ *  - repos: comma-separated repo keys ("owner/name"; an owned repo's short name also works). Omitted => the
+ *    default scope: all repos that are not archived, not hidden, and (unless settings.includeForks) not forks.
  *    An explicitly empty value (`repos=`) means "no repos" and returns nothing.
  *  - visibility: default 'all'.
  *  - who: default 'everyone'. 'me' matches Actor.isMe. Stars are always by others.
@@ -536,14 +543,14 @@ export interface DiffCacheStats {
 // GET    /api/health                           -> { ok: true, version: string }
 // GET    /api/v1/me                            -> Me
 // GET    /api/v1/repos          RepoQuery      -> { items: Repo[] }          (unfiltered: all repos incl. archived/hidden/forks)
-// GET    /api/v1/repos/:name                   -> Repo
-// PATCH  /api/v1/repos/:name   {pinned?, hidden?} -> Repo
+// GET    /api/v1/repos/:repo                   -> Repo      (:repo = key, URL-encoded: kcosr%2Fgh-dash; or an owned repo's short name)
+// PATCH  /api/v1/repos/:repo   {pinned?, hidden?} -> Repo
 // GET    /api/v1/sets                          -> { items: RepoSet[] }
 // POST   /api/v1/sets          {name, repos}   -> RepoSet
 // PATCH  /api/v1/sets/:id      {name?, repos?} -> RepoSet
 // DELETE /api/v1/sets/:id                      -> 204
 // GET    /api/v1/views                         -> { items: SavedView[] }
-// POST   /api/v1/views         {name, path, query} -> SavedView
+// POST   /api/v1/views         {name, path, query} -> SavedView  (repo references in path and query are stored as keys)
 // DELETE /api/v1/views/:id                     -> 204
 // GET    /api/v1/prs            PrQuery        -> PrListResponse | text/markdown | text/csv
 // GET    /api/v1/prs/:repo/:number             -> PullRequestDetail

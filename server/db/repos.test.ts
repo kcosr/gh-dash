@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { seedDb } from '../test/seed';
+import { addManualRepo, seedDb } from '../test/seed';
 import { listRepos } from './repos';
 import { repoKey } from './repo-key';
 import { upsertOwned, upsertStar } from './write';
@@ -28,12 +28,15 @@ describe('listRepos lastActivityAt', () => {
 
 describe('listRepos identity', () => {
   it('gives every repo its key (what the API and URLs call it) and how it is tracked', () => {
-    const repos = listRepos(seedDb(), 'UTC');
-    expect(repos.length).toBeGreaterThan(1);
-    for (const r of repos) {
-      expect(r.key).toBe(repoKey({ name: r.name, name_with_owner: r.nameWithOwner }));
-      expect(r.trackedBy).toBe('owned');
-    }
-    expect(repos.map((r) => r.key)).toContain('app');
+    const db = seedDb();
+    addManualRepo(db, 'bob/app', { addedAt: '2026-09-28T00:00:00Z' });
+    const unavailable = addManualRepo(db, 'carol/tool');
+    db.run(`UPDATE repos SET unavailable_at = '2026-09-29T00:00:00Z', unavailable_reason = 'Not found' WHERE id = ?`, [unavailable]);
+    const repos = listRepos(db, 'UTC');
+    for (const r of repos) expect(r.key).toBe(repoKey({ name: r.name, name_with_owner: r.nameWithOwner }));
+    const byKey = new Map(repos.map((r) => [r.key, r]));
+    expect(byKey.get('alice/app')).toMatchObject({ name: 'app', trackedBy: 'owned', addedAt: null, unavailable: null });
+    expect(byKey.get('bob/app')).toMatchObject({ name: 'app', owner: 'bob', trackedBy: 'manual', addedAt: '2026-09-28T00:00:00Z', unavailable: null });
+    expect(byKey.get('carol/tool')).toMatchObject({ trackedBy: 'manual', unavailable: { since: '2026-09-29T00:00:00Z', reason: 'Not found' } });
   });
 });

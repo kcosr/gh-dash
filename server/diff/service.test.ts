@@ -113,7 +113,7 @@ describe('PR diffs', () => {
     const miss = await spent(() => diffOf(svc.prDiff('app', 2)));
     expect(miss.requests).toEqual(FULL(A));
     expect(miss.out).toEqual({
-      kind: 'pr', repo: 'app', number: 2, title: 'Add parser', baseOid: MERGE_BASE, headOid: A,
+      kind: 'pr', repo: 'alice/app', number: 2, title: 'Add parser', baseOid: MERGE_BASE, headOid: A,
       files: [
         { path: 'src/f1.ts', previousPath: null, status: 'modified', additions: 1, deletions: 1, patch: '@@ -1 +1 @@\n-a1\n+b1' },
         { path: 'src/f2.ts', previousPath: null, status: 'added', additions: 1, deletions: 1, patch: null },
@@ -397,7 +397,7 @@ describe('PR diffs', () => {
     // GitHub failing, or rate limited; a PR GitHub no longer has is an answer, not a failure.
     gh.routes[PULL] = { status: 500 };
     expect(await diffOf(svc.prDiff('app', 2))).toEqual({ ...fresh, stale: true });
-    expect(logs.at(-1)).toBe('[diff] app#2: serving the cached copy (GitHub returned 500 for /repos/alice/app/pulls/2)');
+    expect(logs.at(-1)).toBe('[diff] alice/app#2: serving the cached copy (GitHub returned 500 for /repos/alice/app/pulls/2)');
     gh.routes[PULL] = { status: 404, body: { message: 'Not Found' } };
     expect(await status(svc.prDiff('app', 2))).toBe(404);
     gh.routes[PULL] = { status: 403, body: { message: 'API rate limit exceeded' }, headers: { 'x-ratelimit-remaining': '0' } };
@@ -465,7 +465,7 @@ describe('commit diffs', () => {
     const miss = await spent(() => diffOf(svc.commitDiff('app', C.toUpperCase())));
     expect(miss.requests).toHaveLength(2);
     expect(miss.out).toMatchObject({
-      kind: 'commit', repo: 'app', number: null, title: 'Initial import', baseOid: null, headOid: C, totalFiles: 302,
+      kind: 'commit', repo: 'alice/app', number: null, title: 'Initial import', baseOid: null, headOid: C, totalFiles: 302,
       additions: 700, deletions: 5, url: `https://github.com/alice/app/commit/${C}`,
     });
     expect(miss.out.files).toHaveLength(302);
@@ -529,7 +529,7 @@ describe('commit diffs', () => {
     const diff = await Promise.race([diffOf(svc.commitDiff('app', C)), new Promise<never>((_, reject) => setTimeout(() => reject(new Error('still waiting')), 2000))]);
     expect(diff.totalFiles).toBe(3000);
     expect(graphql).toBe(1);
-    expect(logs.some((l) => l.startsWith('[diff] could not count the files of app@ccccccc: Gave up waiting for GitHub'))).toBe(true);
+    expect(logs.some((l) => l.startsWith('[diff] could not count the files of alice/app@ccccccc: Gave up waiting for GitHub'))).toBe(true);
   });
 
   it('rejects bad SHAs and reports unknown commits as 404', async () => {
@@ -686,12 +686,12 @@ describe('with another source', () => {
     const miss = await asked(() => diffOf(svc.prDiff('app', 2)));
     expect(miss.calls).toEqual(['revision !2', 'files !2']);
     expect(miss.out).toEqual({
-      kind: 'pr', repo: 'app', number: 2, title: 'Add parser', baseOid: MERGE_BASE, headOid: A,
+      kind: 'pr', repo: 'alice/app', number: 2, title: 'Add parser', baseOid: MERGE_BASE, headOid: A,
       files: [{ path: 'a.ts', previousPath: null, status: 'added', additions: 1, deletions: 0, patch: '@@ -0,0 +1 @@\n+x' }],
       totalFiles: 1, additions: 1, deletions: 0, fetchedAt: new Date(clock.t).toISOString(), url: 'https://gitlab.example/alice/app/-/merge_requests/2/diffs',
     });
-    expect(repos[0]).toEqual({ key: 'app', owner: 'alice', name: 'app', path: 'alice/app' });
-    expect(logs.at(-1)).toMatch(/^\[diff\] app#2: 2 GitLab requests in [\d.]+s$/);
+    expect(repos[0]).toEqual({ key: 'alice/app', owner: 'alice', name: 'app', path: 'alice/app' });
+    expect(logs.at(-1)).toMatch(/^\[diff\] alice\/app#2: 2 GitLab requests in [\d.]+s$/);
     expect((await asked(() => svc.prDiff('app', 2))).calls).toEqual([]);
 
     // A head the sync hasn't recorded, which this source can't check cheaply: the revision is read, the files kept.
@@ -713,7 +713,7 @@ describe('with another source', () => {
     const { svc, asked } = setupAny();
     const commit = await asked(() => diffOf(svc.commitDiff('app', C)));
     expect(commit.calls).toEqual(['commit ccccccc']);
-    expect(commit.out).toMatchObject({ kind: 'commit', repo: 'app', number: null, title: 'Fix', baseOid: sha('p'), headOid: C, url: 'https://gitlab.example/c' });
+    expect(commit.out).toMatchObject({ kind: 'commit', repo: 'alice/app', number: null, title: 'Fix', baseOid: sha('p'), headOid: C, url: 'https://gitlab.example/c' });
     expect((await asked(() => svc.commitDiff('app', C.slice(0, 7)))).calls).toEqual([]);
 
     const text = await asked(async () => payloadText(await svc.blob('app', A, 'a.txt')));
@@ -742,7 +742,7 @@ describe('with another source', () => {
     expect(await status(svc.prDiff('app', 2, true))).toBe(502);
     // A source that can't answer still leaves the cached copy, when the sync agrees with it.
     expect(await diffOf(svc.prDiff('app', 2))).toMatchObject({ headOid: A, stale: true });
-    expect(logs.at(-1)).toBe('[diff] app#2: serving the cached copy (Bad gateway)');
+    expect(logs.at(-1)).toBe('[diff] alice/app#2: serving the cached copy (Bad gateway)');
 
     // No source to ask at all (say, no token): 503 with the reason as given.
     sources.none = 'No GitLab token';

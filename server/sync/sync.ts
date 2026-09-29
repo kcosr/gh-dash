@@ -2,7 +2,7 @@ import type { Settings } from '../../shared/api';
 import type { Db } from '../db/db';
 import { getMeta, setMeta, type ViewerMeta } from '../db/meta';
 import type { RepoProbe, RepoRecord } from '../db/records';
-import { repoKey } from '../db/repo-key';
+import { repoKey, resolveRepo } from '../db/repo-key';
 import {
   applyProbe,
   deleteItem,
@@ -211,11 +211,17 @@ function claimViewer(db: Db, v: GqlViewer): void {
   saveViewer(db, v);
 }
 
-async function fetchOneRepo(deps: SyncDeps, name: string, nowIso: string): Promise<RepoTarget[]> {
+/** `repo`: a key or an owned repo's short name; a bare name not tracked yet may name a repo the viewer just created. */
+async function fetchOneRepo(deps: SyncDeps, repo: string, nowIso: string): Promise<RepoTarget[]> {
+  // The viewer's repository(name:) only sees repos the viewer owns (syncing others by node id comes with adding them).
+  const ref = resolveRepo(deps.db, repo);
+  if (ref && ref.trackedBy !== 'owned') throw new Error(`Only repositories you own can be synced on their own for now: ${ref.key}`);
+  if (!ref && repo.includes('/')) throw new Error(`Repository isn't tracked: ${repo}`);
+  const name = ref?.name ?? repo;
   const data = await deps.client.query<ViewerRepoData>(VIEWER_REPO, { name });
   claimViewer(deps.db, data.viewer);
   const node = data.viewer.repository;
-  if (!node) throw new Error(`Repository not found on GitHub: ${name}`);
+  if (!node) throw new Error(`Repository not found on GitHub: ${ref?.key ?? name}`);
   const record = mapRepo(node);
   const probe = mapProbe(node);
   const id = deps.db.tx(() => {

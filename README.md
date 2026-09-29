@@ -123,6 +123,9 @@ dropped first. The cache can be deleted at any time and left out of backups.
 For a persistent installation, adapt the [systemd unit](deploy/gh-dash.service).
 For remote access, use HTTPS through a reverse proxy such as the supplied
 [nginx example](deploy/nginx.conf.example) and set `GH_DASH_PASSWORD` or proxy authentication.
+The proxy must pass encoded slashes (`%2F`) in paths through unchanged, since API paths carry
+repository keys that way. nginx does this when `proxy_pass` has no URI part, as in the example;
+Apache needs `AllowEncodedSlashes NoDecode`.
 
 The server only answers requests addressed to `localhost`, a `*.localhost` name or an IP
 address, on any port; any other `Host` gets `421 Misdirected Request`. This blocks DNS
@@ -142,6 +145,11 @@ API key. `/api/health`, `/api/docs` and `/api/v1/openapi.json` never need creden
 The **API** button shows the current view's URL. Lists can be exported as Markdown
 or CSV. Explore the endpoint reference at `/api/docs` and the OpenAPI document at
 `/api/v1/openapi.json` on your running instance.
+
+Repositories are identified by their key, `owner/name`: every `repo` field and id carries it
+(`kcosr/gh-dash#24`), and path parameters take it URL-encoded as one segment
+(`/api/v1/repos/kcosr%2Fgh-dash`). Inputs also accept the short name of a repository you own,
+which is what earlier versions used everywhere.
 
 ## Desktop app
 

@@ -1,4 +1,5 @@
 import type { Repo, RepoSet, SavedView } from '../../shared/api';
+import { type RepoResolver, rewriteRepoParams, rewriteRepoPath } from '../../shared/query';
 import { bucketIndex, DAY_MS, isoSec, localDayNum, makeBuckets, weekdayMon0, zonedMidnight } from '../lib/time';
 import type { Db } from './db';
 import { repoKey, repoKeySql, resolveRepo, resolveRepoIds } from './repo-key';
@@ -25,6 +26,10 @@ interface RepoRow {
   pushed_at: string | null;
   pinned: number;
   hidden: number;
+  tracked_by: string;
+  added_at: string | null;
+  unavailable_at: string | null;
+  unavailable_reason: string | null;
   synced_at: string | null;
   last_activity_at: string | null;
 }
@@ -113,7 +118,9 @@ export function listRepos(db: Db, tz: string, now = Date.now(), onlyKey?: string
       weeklyCommits: (weekly.get(r.id) ?? new Array<number>(weeks.starts.length).fill(0)).slice(-WEEKS),
     },
     syncedAt: r.synced_at,
-    trackedBy: 'owned' as const,
+    trackedBy: r.tracked_by === 'manual' ? ('manual' as const) : ('owned' as const),
+    addedAt: r.added_at,
+    unavailable: r.unavailable_at ? { since: r.unavailable_at, reason: r.unavailable_reason ?? '' } : null,
   }));
 }
 
@@ -199,14 +206,17 @@ export function listViews(db: Db): SavedView[] {
   return db.all<SavedView>('SELECT id, name, path, query FROM saved_views ORDER BY name COLLATE NOCASE, id');
 }
 
+/** Stores a view with its repo references (`repos`, `pr`, `diff`, a `/repos/...` path) canonicalized to keys. */
 export function createView(db: Db, v: Omit<SavedView, 'id'>): SavedView {
+  const resolve: RepoResolver = (input) => resolveRepo(db, input)?.key ?? null;
+  const view = { name: v.name, path: rewriteRepoPath(v.path, resolve), query: rewriteRepoParams(v.query, resolve) };
   const id = db.run('INSERT INTO saved_views (name, path, query, created_at) VALUES (?, ?, ?, ?)', [
-    v.name,
-    v.path,
-    v.query,
+    view.name,
+    view.path,
+    view.query,
     new Date().toISOString(),
   ]).lastInsertRowid;
-  return { id, ...v };
+  return { id, ...view };
 }
 
 export function deleteView(db: Db, id: number): boolean {

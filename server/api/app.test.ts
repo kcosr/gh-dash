@@ -11,7 +11,7 @@ import { DiffService } from '../diff/service';
 import { GitHubDiffSources } from '../github/diff-source';
 import { SyncManager } from '../sync/manager';
 import { fakeGitHub, type Reply, restFile, sha } from '../test/github';
-import { seedDb } from '../test/seed';
+import { addManualRepo, seedDb } from '../test/seed';
 import { DESKTOP_SECRET_HEADER } from '../../shared/desktop';
 import { testTokens } from '../test/tokens';
 import { type AppDeps, type AppTransport, createApp } from './app';
@@ -32,13 +32,13 @@ describe('HTTP API', () => {
   it('serves lists as JSON, Markdown and CSV', async () => {
     const json = await app.request(`/api/v1/prs?${range}&state=merged&limit=1`);
     const body = (await json.json()) as { items: { id: string }[]; total: number; nextCursor: string | null; facets: object };
-    expect(body).toMatchObject({ total: 2, items: [{ id: 'secret#1' }], facets: { byRepo: { app: 1, secret: 1 } } });
+    expect(body).toMatchObject({ total: 2, items: [{ id: 'alice/secret#1' }], facets: { byRepo: { 'alice/app': 1, 'alice/secret': 1 } } });
     const next = await app.request(`/api/v1/prs?${range}&state=merged&limit=1&cursor=${body.nextCursor}`);
-    expect(((await next.json()) as { items: { id: string }[] }).items.map((p) => p.id)).toEqual(['app#1']);
+    expect(((await next.json()) as { items: { id: string }[] }).items.map((p) => p.id)).toEqual(['alice/app#1']);
 
     const md = await app.request(`/api/v1/prs?${range}&state=merged&who=me&format=md`);
     expect(md.headers.get('content-type')).toBe('text/markdown; charset=utf-8');
-    expect(await md.text()).toContain('- **Fix login flow** ([app#1](https://github.com/alice/x/pull/1)) — Fixes the login flow for SSO users.');
+    expect(await md.text()).toContain('- **Fix login flow** ([alice/app#1](https://github.com/alice/x/pull/1)) — Fixes the login flow for SSO users.');
     const csv = await app.request(`/api/v1/activity?${range}&format=csv`);
     expect(csv.headers.get('content-type')).toBe('text/csv; charset=utf-8');
   });
@@ -54,17 +54,17 @@ describe('HTTP API', () => {
 
   it('filters issues by creator, state, repository and date and paginates without losing items', async () => {
     const read = async (query: string) => (await (await app.request(`/api/v1/issues?${range}&${query}`)).json()) as { total: number; nextCursor: string | null; items: { id: string }[] };
-    expect((await read('state=open&who=me')).items.map((i) => i.id)).toEqual(['app#11']);
+    expect((await read('state=open&who=me')).items.map((i) => i.id)).toEqual(['alice/app#11']);
     // Alice closed issue 10, but Bob created it: author filtering uses Bob.
-    expect((await read('state=closed&who=others&repos=app&q=10')).items.map((i) => i.id)).toEqual(['app#10']);
+    expect((await read('state=closed&who=others&repos=app&q=10')).items.map((i) => i.id)).toEqual(['alice/app#10']);
     expect((await read('state=closed&who=me')).total).toBe(0);
     expect((await read('repos=secret')).total).toBe(0);
     expect((await read('repos=')).total).toBe(0);
     const first = await read('state=all&limit=1');
     expect(first.total).toBe(2);
-    expect(first.items.map((i) => i.id)).toEqual(['app#11']);
+    expect(first.items.map((i) => i.id)).toEqual(['alice/app#11']);
     const second = await read(`state=all&limit=1&cursor=${encodeURIComponent(first.nextCursor!)}`);
-    expect(second.items.map((i) => i.id)).toEqual(['app#10']);
+    expect(second.items.map((i) => i.id)).toEqual(['alice/app#10']);
     expect(second.nextCursor).toBeNull();
     const md = await (await app.request(`/api/v1/issues?${range}&state=closed&format=md`)).text();
     expect(md).toContain('Issue 10');
@@ -298,6 +298,64 @@ describe('auth', () => {
   });
 });
 
+describe('repo keys', () => {
+  function keyApp() {
+    const db = seedDb();
+    addManualRepo(db, 'bob/app');
+    return makeApp({}, db);
+  }
+  const json = async (res: Response) => ({ status: res.status, body: (await res.json()) as Record<string, unknown> });
+  const send = (method: string, body: unknown) => ({ method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+
+  it('take a key URL-encoded as one path segment, or the short name of a repo you own', async () => {
+    const app = keyApp();
+    for (const path of ['alice%2Fapp', 'ALICE%2FApp', 'app', 'App']) {
+      expect(await json(await app.request(`/api/v1/repos/${path}`)), path).toMatchObject({ status: 200, body: { key: 'alice/app', trackedBy: 'owned' } });
+    }
+    expect(await json(await app.request('/api/v1/repos/bob%2Fapp'))).toMatchObject({ status: 200, body: { key: 'bob/app', trackedBy: 'manual' } });
+    expect((await app.request('/api/v1/repos/alice/app')).status).toBe(404);
+    expect((await app.request('/api/v1/repos/nope%2Fapp')).status).toBe(404);
+
+    const patched = await json(await app.request('/api/v1/repos/bob%2Fapp', send('PATCH', { pinned: true })));
+    expect(patched).toMatchObject({ status: 200, body: { key: 'bob/app', pinned: true } });
+    expect(await json(await app.request('/api/v1/repos/app'))).toMatchObject({ body: { pinned: false } });
+
+    for (const path of ['alice%2Fapp', 'app']) {
+      expect(await json(await app.request(`/api/v1/prs/${path}/1`)), path).toMatchObject({ status: 200, body: { id: 'alice/app#1', repo: 'alice/app' } });
+    }
+    expect((await app.request('/api/v1/prs/alice/app/1')).status).toBe(404);
+    expect((await app.request('/api/v1/prs/bob%2Fapp/1')).status).toBe(404);
+  });
+
+  it('select repos by key or alias in repos= lists', async () => {
+    const app = keyApp();
+    const keys = async (query: string) => ((await (await app.request(`/api/v1/repos?${query}`)).json()) as { items: { key: string }[] }).items.map((r) => r.key);
+    expect(await keys('repos=app')).toEqual(['alice/app']);
+    expect(await keys('repos=alice%2Fapp')).toEqual(['alice/app']);
+    expect(await keys('repos=alice/app,bob/app&sort=name')).toEqual(['alice/app', 'bob/app']);
+    expect(await keys('q=bob')).toEqual(['bob/app']);
+    const range = 'from=2026-09-01&to=2026-09-27&tz=UTC&state=all';
+    const prs = async (repos: string) => ((await (await app.request(`/api/v1/prs?${range}&repos=${repos}`)).json()) as { items: { id: string }[] }).items.map((p) => p.id);
+    expect(await prs('app')).toEqual(['alice/app#3', 'alice/app#2', 'alice/app#1']);
+    expect(await prs('alice%2Fapp')).toEqual(await prs('app'));
+    expect(await prs('bob/app')).toEqual([]);
+  });
+
+  it('store set members and saved views by key', async () => {
+    const app = keyApp();
+    const set = await json(await app.request('/api/v1/sets', send('POST', { name: 'Mix', repos: ['app', 'bob/app', 'ALICE/SECRET', 'nope'] })));
+    expect(set.body).toMatchObject({ repos: ['alice/app', 'bob/app', 'alice/secret'] });
+
+    const view = async (path: string, query: string) => (await json(await app.request('/api/v1/views', send('POST', { name: 'v', path, query })))).body;
+    expect(await view('/prs', 'repos=app,bob/app,nope&who=me&pr=app%231&q=a%20b+c')).toMatchObject({
+      path: '/prs', query: 'repos=alice/app,bob/app,nope&who=me&pr=alice/app%231&q=a%20b+c',
+    });
+    expect(await view('/repos/app', '?diff=secret@abc1234')).toMatchObject({ path: '/repos/alice/app', query: 'diff=alice/secret@abc1234' });
+    expect(await view('/repos/BOB/APP', '')).toMatchObject({ path: '/repos/bob/app', query: '' });
+    expect(await view('/insights', 'range=90d')).toMatchObject({ path: '/insights', query: 'range=90d' });
+  });
+});
+
 describe('GH_DASH_MY_EMAILS', () => {
   it('is parsed as a trimmed, lower-cased, de-duplicated list', () => {
     expect(loadConfig({ GH_DASH_MY_EMAILS: ' Me@Home.example, ,other@x.example,me@home.example ,' }).myEmails).toEqual(['me@home.example', 'other@x.example']);
@@ -374,6 +432,10 @@ describe('diffs', () => {
     expect(await code(`/api/v1/blob/app?ref=${C}&path=../a`)).toBe(400);
     expect(await code('/api/v1/prs/nope/1/diff')).toBe(404);
     expect(await code('/api/v1/prs/app/999/diff')).toBe(404);
+    expect(await code('/api/v1/prs/bob%2Fapp/1/diff')).toBe(404);
+    // A key's slash must be encoded: raw, it is two path segments.
+    expect(await code('/api/v1/prs/alice/app/1/diff')).toBe(404);
+    expect(await code(`/api/v1/commits/alice/app/${C}/diff`)).toBe(404);
     const noToken = await app.request('/api/v1/prs/app/1/diff');
     expect(noToken.status).toBe(503);
     expect(await noToken.json()).toEqual({ error: 'No GitHub token: connect a GitHub account in Settings' });
@@ -386,12 +448,12 @@ describe('diffs', () => {
 
   it('serves diffs as JSON, gzip-encoded when the client accepts it', async () => {
     const { app } = diffApp(commitRoute);
-    const plain = await app.request(`/api/v1/commits/app/${C}/diff`);
+    const plain = await app.request(`/api/v1/commits/alice%2Fapp/${C}/diff`);
     expect(plain.headers.get('content-type')).toBe('application/json; charset=utf-8');
     expect(plain.headers.get('content-encoding')).toBeNull();
     const diff = await plain.json();
-    expect(diff).toMatchObject({ kind: 'commit', headOid: C, files: [{ path: 'src/f1.ts' }] });
-    const gz = await app.request(`/api/v1/commits/app/${C}/diff`, { headers: { 'accept-encoding': 'gzip, deflate, br' } });
+    expect(diff).toMatchObject({ kind: 'commit', repo: 'alice/app', headOid: C, files: [{ path: 'src/f1.ts' }] });
+    const gz = await app.request(`/api/v1/commits/alice%2Fapp/${C}/diff`, { headers: { 'accept-encoding': 'gzip, deflate, br' } });
     expect(gz.headers.get('content-encoding')).toBe('gzip');
     expect(JSON.parse(gunzipSync(Buffer.from(await gz.arrayBuffer())).toString())).toEqual(diff);
     const refused = await app.request(`/api/v1/commits/app/${C}/diff`, { headers: { 'accept-encoding': 'gzip;q=0, br' } });
@@ -414,7 +476,7 @@ describe('diffs', () => {
 
   it("refuses cross-site requests that would spend the owner's GitHub quota", async () => {
     const { app, gh } = diffApp({ ...commitRoute, [`/repos/alice/app/contents/a.txt?ref=${C}`]: { text: 'a' } });
-    const paths = [`/api/v1/commits/app/${C}/diff`, `/api/v1/blob/app?ref=${C}&path=a.txt`, '/api/v1/prs/app/1/diff'];
+    const paths = [`/api/v1/commits/alice%2Fapp/${C}/diff`, `/api/v1/blob/alice%2Fapp?ref=${C}&path=a.txt`, '/api/v1/prs/alice%2Fapp/1/diff'];
     for (const path of paths) {
       const res = await app.request(path, { headers: { 'sec-fetch-site': 'cross-site' } });
       expect(res.status, path).toBe(403);
@@ -432,7 +494,7 @@ describe('diffs', () => {
 
   it('serves file contents as text, immutable at a full SHA', async () => {
     const { app } = diffApp({ [`/repos/alice/app/contents/src/a.ts?ref=${C}`]: { text: 'export {};\n' } });
-    const res = await app.request(`/api/v1/blob/app?ref=${C}&path=src/a.ts`);
+    const res = await app.request(`/api/v1/blob/alice%2Fapp?ref=${C}&path=src/a.ts`);
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toBe('text/plain; charset=utf-8');
     expect(res.headers.get('cache-control')).toContain('immutable');
@@ -449,7 +511,7 @@ describe('diffs', () => {
     expect(await stats({ method: 'DELETE' })).toEqual({ entries: 0, bytes: 0, maxBytes: 200 * 1024 * 1024 });
 
     // Lowering the cap evicts right away.
-    for (const k of ['a', 'b', 'c']) cache.put({ key: k, kind: 'blob', repo: 'app', oid: C, fetchedAt: 1, data: Buffer.alloc(6 * 1024 * 1024) });
+    for (const k of ['a', 'b', 'c']) cache.put({ key: k, kind: 'blob', repo: 'alice/app', oid: C, fetchedAt: 1, data: Buffer.alloc(6 * 1024 * 1024) });
     const patch = await app.request('/api/v1/settings', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: '{"diffCacheMb":10}' });
     expect(await patch.json()).toMatchObject({ diffCacheMb: 10 });
     expect(await stats()).toEqual({ entries: 1, bytes: 6 * 1024 * 1024, maxBytes: 10 * 1024 * 1024 });

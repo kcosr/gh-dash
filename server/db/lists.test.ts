@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it } from 'vitest';
-import { seedDb } from '../test/seed';
+import { addManualRepo, seedDb } from '../test/seed';
 import type { Db } from './db';
 import { ftsQuery, loadQueryCtx, type QueryCtx, type Scope } from './filters';
 import { type CursorKey, getPrDetail, listActivity, listCommits, listIssues, listPrs, listStars } from './lists';
@@ -26,44 +26,44 @@ const prIds = (s: Scope, f: Parameters<typeof listPrs>[3] = all) => listPrs(db, 
 
 describe('PR filters', () => {
   it('default scope excludes archived, forked and hidden repos; sorts by activityAt desc', () => {
-    expect(prIds(scope())).toEqual(['secret#1', 'app#3', 'app#2', 'app#1']);
+    expect(prIds(scope())).toEqual(['alice/secret#1', 'alice/app#3', 'alice/app#2', 'alice/app#1']);
   });
 
   it('includes forks when settings.includeForks is on', () => {
-    expect(listPrs(db, { ...ctx, includeForks: true }, scope(), all, null).items.map((p) => p.id)).toContain('fork#1');
+    expect(listPrs(db, { ...ctx, includeForks: true }, scope(), all, null).items.map((p) => p.id)).toContain('alice/fork#1');
   });
 
   it('filters by visibility, who and state', () => {
-    expect(prIds(scope({ visibility: 'private' }))).toEqual(['secret#1']);
-    expect(prIds(scope({ visibility: 'public' }))).toEqual(['app#3', 'app#2', 'app#1']);
-    expect(prIds(scope({ who: 'me' }))).toEqual(['secret#1', 'app#1']);
-    expect(prIds(scope({ who: 'others' }))).toEqual(['app#3', 'app#2']);
-    expect(prIds(scope(), { state: 'merged', labels: null })).toEqual(['secret#1', 'app#1']);
-    expect(prIds(scope(), { state: 'all', labels: ['BUG', 'nope'] })).toEqual(['app#1']);
+    expect(prIds(scope({ visibility: 'private' }))).toEqual(['alice/secret#1']);
+    expect(prIds(scope({ visibility: 'public' }))).toEqual(['alice/app#3', 'alice/app#2', 'alice/app#1']);
+    expect(prIds(scope({ who: 'me' }))).toEqual(['alice/secret#1', 'alice/app#1']);
+    expect(prIds(scope({ who: 'others' }))).toEqual(['alice/app#3', 'alice/app#2']);
+    expect(prIds(scope(), { state: 'merged', labels: null })).toEqual(['alice/secret#1', 'alice/app#1']);
+    expect(prIds(scope(), { state: 'all', labels: ['BUG', 'nope'] })).toEqual(['alice/app#1']);
   });
 
   it('explicit repos may include archived/hidden repos; empty means none; unknown names are ignored', () => {
-    expect(prIds(scope({ repos: ['old', 'hidden'] }))).toEqual(['hidden#1', 'old#1']);
+    expect(prIds(scope({ repos: ['old', 'hidden'] }))).toEqual(['alice/hidden#1', 'alice/old#1']);
     expect(prIds(scope({ repos: [] }))).toEqual([]);
-    expect(prIds(scope({ repos: ['app', 'does-not-exist'] }))).toEqual(['app#3', 'app#2', 'app#1']);
+    expect(prIds(scope({ repos: ['app', 'does-not-exist'] }))).toEqual(['alice/app#3', 'alice/app#2', 'alice/app#1']);
   });
 
   it('applies the date range to activityAt', () => {
-    expect(prIds(scope({ from: Date.parse('2026-09-22T00:00:00Z'), to: Date.parse('2026-09-24T00:00:00Z') }))).toEqual(['app#3', 'app#2']);
+    expect(prIds(scope({ from: Date.parse('2026-09-22T00:00:00Z'), to: Date.parse('2026-09-24T00:00:00Z') }))).toEqual(['alice/app#3', 'alice/app#2']);
   });
 
   it('facets.byRepo ignores the repos filter but keeps every other filter', () => {
     const res = listPrs(db, ctx, scope({ repos: ['app'], who: 'me' }), all, null);
-    expect(res.items.map((p) => p.id)).toEqual(['app#1']);
-    expect(res.facets.byRepo).toEqual({ app: 1, secret: 1, old: 1, hidden: 1 });
-    expect(listPrs(db, ctx, scope({ visibility: 'private' }), all, null).facets.byRepo).toEqual({ secret: 1 });
+    expect(res.items.map((p) => p.id)).toEqual(['alice/app#1']);
+    expect(res.facets.byRepo).toEqual({ 'alice/app': 1, 'alice/secret': 1, 'alice/old': 1, 'alice/hidden': 1 });
+    expect(listPrs(db, ctx, scope({ visibility: 'private' }), all, null).facets.byRepo).toEqual({ 'alice/secret': 1 });
   });
 
   it('searches with FTS (prefix on the last word) and falls back to LIKE without searchable words', () => {
-    expect(prIds(scope({ q: 'logi' }))).toEqual(['app#1']);
-    expect(prIds(scope({ q: 'sso users' }))).toEqual(['app#1']);
-    expect(prIds(scope({ q: 'parser' }))).toEqual(['app#2']);
-    expect(prIds(scope({ q: '##' }))).toEqual(['app#1']);
+    expect(prIds(scope({ q: 'logi' }))).toEqual(['alice/app#1']);
+    expect(prIds(scope({ q: 'sso users' }))).toEqual(['alice/app#1']);
+    expect(prIds(scope({ q: 'parser' }))).toEqual(['alice/app#2']);
+    expect(prIds(scope({ q: '##' }))).toEqual(['alice/app#1']);
     expect(prIds(scope({ q: 'nothing-matches-this' }))).toEqual([]);
   });
 
@@ -91,8 +91,8 @@ describe('cursor pagination', () => {
   });
 
   it('breaks activityAt ties by repo then number', () => {
-    const tie = listPrs(db, ctx, scope({ repos: ['app', 'secret'] }), all, { limit: 1, after: ['2026-09-24T02:00:00Z', 'app', 0] });
-    expect(tie.items[0]!.id).toBe('secret#1');
+    const tie = listPrs(db, ctx, scope({ repos: ['app', 'secret'] }), all, { limit: 1, after: ['2026-09-24T02:00:00Z', 'alice/app', 0] });
+    expect(tie.items[0]!.id).toBe('alice/secret#1');
   });
 });
 
@@ -107,6 +107,25 @@ describe('PR detail', () => {
   });
 });
 
+describe('repo keys', () => {
+  it('name repos by key; a bare name selects the owned repo, never a namesake added by hand', () => {
+    const d = seedDb();
+    const bob = addManualRepo(d, 'bob/app');
+    d.run(`INSERT INTO pull_requests (repo_id, number, title, state, created_at, updated_at, activity_at, url)
+      VALUES (?, 7, 'Namesake', 'open', '2026-09-26T00:00:00Z', '2026-09-26T00:00:00Z', '2026-09-26T00:00:00Z', 'u')`, [bob]);
+    const c = loadQueryCtx(d);
+    const ids = (repos: string[] | null) => listPrs(d, c, scope({ repos }), all, null).items.map((p) => p.id);
+    expect(ids(['app'])).toEqual(['alice/app#3', 'alice/app#2', 'alice/app#1']);
+    expect(ids(['alice/app'])).toEqual(ids(['app']));
+    expect(ids(['ALICE/App'])).toEqual(ids(['app']));
+    expect(ids(['bob/app'])).toEqual(['bob/app#7']);
+    expect(ids(['app', 'bob/app'])).toEqual(['bob/app#7', 'alice/app#3', 'alice/app#2', 'alice/app#1']);
+    expect(ids(null)).toContain('bob/app#7');
+    expect(listPrs(d, c, scope(), all, null).facets.byRepo).toMatchObject({ 'alice/app': 3, 'bob/app': 1 });
+    expect(getPrDetail(d, c, 'bob/app', 7)).toMatchObject({ id: 'bob/app#7', repo: 'bob/app' });
+  });
+});
+
 describe('commits, issues, stars', () => {
   it('who=me matches the viewer login or a configured email', () => {
     const mine = listCommits(db, ctx, scope({ who: 'me' }), null).items;
@@ -117,7 +136,7 @@ describe('commits, issues, stars', () => {
 
   it('issues are dated by close time when closed', () => {
     const res = listIssues(db, ctx, scope({ from: Date.parse('2026-09-20T00:00:00Z') }), 'all', null);
-    expect(res.items.map((i) => i.id)).toEqual(['app#11', 'app#10']);
+    expect(res.items.map((i) => i.id)).toEqual(['alice/app#11', 'alice/app#10']);
     expect(res.items[1]!.closedBy?.isMe).toBe(true);
     expect(listIssues(db, ctx, scope(), 'open', null).total).toBe(1);
   });
@@ -136,18 +155,18 @@ describe('activity', () => {
 
   it('unions events newest first; commit events exclude commits that came from PRs', () => {
     expect(kinds(scope({ repos: ['app'], from: Date.parse('2026-09-20T00:00:00Z') }))).toEqual([
-      'star:app', // erin 09-27
-      'issue:opened:app', // #11 09-26
-      'commit:app', // c3 09-25
-      'star:app', // dave 09-25
-      'release:app', // 09-23 15:00
-      'pr:closed:app', // #3 09-23 08:00
-      'commit:app', // c2 09-22 23:30
-      'issue:closed:app', // #10 09-22 12:00
-      'pr:opened:app', // #2 09-22 09:00
-      'pr:merged:app', // #1 09-21
-      'pr:opened:app', // #1 09-20 10:00
-      'star:app', // carol 09-20 00:00
+      'star:alice/app', // erin 09-27
+      'issue:opened:alice/app', // #11 09-26
+      'commit:alice/app', // c3 09-25
+      'star:alice/app', // dave 09-25
+      'release:alice/app', // 09-23 15:00
+      'pr:closed:alice/app', // #3 09-23 08:00
+      'commit:alice/app', // c2 09-22 23:30
+      'issue:closed:alice/app', // #10 09-22 12:00
+      'pr:opened:alice/app', // #2 09-22 09:00
+      'pr:merged:alice/app', // #1 09-21
+      'pr:opened:alice/app', // #1 09-20 10:00
+      'star:alice/app', // carol 09-20 00:00
     ]);
   });
 
@@ -166,7 +185,7 @@ describe('activity', () => {
     // app#3 was opened exactly at `from` (inclusive), so app has 5 PR events.
     const byType = listActivity(db, ctx, scope({ repos: ['app'] }), ['pr'], null).facets.byType;
     expect(byType).toEqual({ commit: 2, pr: 5, issue: 3, release: 1, star: 3 });
-    expect(res.facets.byRepo).toEqual({ app: 5, secret: 2, old: 2, fork: 2, hidden: 2 });
+    expect(res.facets.byRepo).toEqual({ 'alice/app': 5, 'alice/secret': 2, 'alice/old': 2, 'alice/fork': 2, 'alice/hidden': 2 });
   });
 
   it('facets.byDay counts the listed events per local day in the request tz, with every filter applied', () => {

@@ -41,16 +41,16 @@ export function repoRoutes({ db, config }: AppDeps): Hono {
     return c.json({ items: selectRepos(listRepos(db, config.defaultTz), query, getSettings(db).includeForks) });
   });
 
-  r.get('/repos/:name', (c) => {
-    const repo = getRepo(db, c.req.param('name'), config.defaultTz);
+  r.get('/repos/:repo', (c) => {
+    const repo = getRepo(db, c.req.param('repo'), config.defaultTz);
     if (!repo) throw new HttpError(404, 'Repository not found');
     return c.json(repo);
   });
 
-  r.patch('/repos/:name', async (c) => {
+  r.patch('/repos/:repo', async (c) => {
     const prefs = parseWith(repoPatch, await jsonBody(c));
-    if (!setRepoPrefs(db, c.req.param('name'), prefs)) throw new HttpError(404, 'Repository not found');
-    return c.json(getRepo(db, c.req.param('name'), config.defaultTz));
+    if (!setRepoPrefs(db, c.req.param('repo'), prefs)) throw new HttpError(404, 'Repository not found');
+    return c.json(getRepo(db, c.req.param('repo'), config.defaultTz));
   });
 
   r.get('/sets', (c) => c.json({ items: listSets(db) }));

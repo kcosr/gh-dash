@@ -4,7 +4,7 @@ import type { Diff } from './api';
 import { qk, refreshDiff } from '../web/src/api/hooks';
 
 const diff = (headOid: string): Diff => ({
-  kind: 'pr', repo: 'gh-dash', number: 2, title: 'T', baseOid: 'b'.repeat(40), headOid, files: [],
+  kind: 'pr', repo: 'kcosr/gh-dash', number: 2, title: 'T', baseOid: 'b'.repeat(40), headOid, files: [],
   totalFiles: 0, additions: 0, deletions: 0, fetchedAt: '2026-09-28T00:00:00Z', url: 'https://github.com/o/gh-dash/pull/2/files',
 });
 
@@ -17,7 +17,7 @@ function deferred<T>() {
 describe('refreshDiff', () => {
   it("keeps a forced refresh when the reopening revalidation answers later with the older head", async () => {
     const qc = new QueryClient();
-    const id = 'gh-dash#2';
+    const id = 'kcosr/gh-dash#2';
     qc.setQueryData(qk.diff(id), diff('a'.repeat(40)));
     // Reopening revalidates in the background; its (older) answer is still on its way.
     const old = deferred<Diff>();

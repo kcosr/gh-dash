@@ -11,6 +11,7 @@ import detailFixture from '../test/fixtures/repo-detail.json';
 import probesFixture from '../test/fixtures/repo-probes.json';
 import reposFixture from '../test/fixtures/viewer-repos.json';
 import { planRepo, runSync, viewerMismatch } from './sync';
+import { addManualRepo } from '../test/seed';
 
 const NOW = Date.parse('2026-09-27T12:00:00Z');
 const HOUR = 3_600_000;
@@ -125,6 +126,26 @@ describe('runSync', () => {
     expect(db.get('SELECT prs_hwm, issues_hwm, commits_pushed_at FROM sync_state JOIN repos r ON r.id = repo_id WHERE r.name = ?', ['app'])).toEqual({
       prs_hwm: '2026-09-22T09:00:00Z', issues_hwm: '2026-09-26T00:00:00Z', commits_pushed_at: '2026-09-25T12:00:00Z',
     });
+  });
+
+  it('syncs one repo named by key, or by the short name of a repo you own', async () => {
+    for (const repo of ['alice/app', 'app', 'ALICE/App']) {
+      gh.calls.length = 0;
+      expect(await sync(NOW + HOUR, { repo }), repo).toMatchObject({ repos: 1, errors: [] });
+      expect(gh.calls.filter((c) => c.op === 'ViewerRepo').map((c) => c.vars.name), repo).toEqual(['app']);
+    }
+    addManualRepo(db, 'bob/app');
+    gh.calls.length = 0;
+    await expect(sync(NOW + HOUR, { repo: 'bob/app' })).rejects.toThrow('Only repositories you own can be synced on their own for now: bob/app');
+    await expect(sync(NOW + HOUR, { repo: 'bob/nope' })).rejects.toThrow("Repository isn't tracked: bob/nope");
+    expect(gh.calls).toEqual([]);
+  });
+
+  it('keeps repos added by hand when the owned list no longer has them', async () => {
+    const bob = addManualRepo(db, 'bob/app');
+    expect(await sync(NOW + HOUR, { full: true })).toMatchObject({ repos: 2, errors: [] });
+    expect(db.get('SELECT tracked_by, removed_at FROM repos WHERE id = ?', [bob])).toEqual({ tracked_by: 'manual', removed_at: null });
+    expect(db.all(`SELECT DISTINCT tracked_by FROM repos WHERE id <> ?`, [bob])).toEqual([{ tracked_by: 'owned' }]);
   });
 
   it('an immediate second sync only lists and probes', async () => {
@@ -244,7 +265,7 @@ describe('runSync', () => {
         p3: { nodes: base().slice(1), hasNextPage: false, endCursor: null },
       };
       gh.fx.failHistory.add('p2');
-      expect((await sync(NOW + HOUR)).errors).toEqual(['app: history page failed']);
+      expect((await sync(NOW + HOUR)).errors).toEqual(['alice/app: history page failed']);
       expect(oids()).toEqual(['11', '22', '33', '44', '55']);
 
       gh.fx.failHistory.clear();
@@ -291,7 +312,7 @@ describe('runSync', () => {
     gh.fx.probes.nodes[0]!.latestIssue.nodes[0]!.updatedAt = '2026-09-27T10:00:00Z';
     (gh.fx.detail as { repository: unknown }).repository = null;
     const res = await sync(NOW + HOUR);
-    expect(res.errors).toEqual(['app: repository not found']);
+    expect(res.errors).toEqual(['alice/app: repository not found']);
     expect(db.get('SELECT last_error FROM sync_state JOIN repos r ON r.id = repo_id WHERE r.name = ?', ['app'])).toEqual({ last_error: 'repository not found' });
   });
 });

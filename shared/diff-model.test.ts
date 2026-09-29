@@ -15,7 +15,7 @@ const file = (path: string, patch: string | null, more: Partial<DiffFile> = {}):
 });
 
 const diff = (files: DiffFile[], more: Partial<Diff> = {}): Diff => ({
-  kind: 'pr', repo: 'gh-dash', number: 2, title: 'T', baseOid: 'b'.repeat(40), headOid: 'h'.repeat(40), files,
+  kind: 'pr', repo: 'kcosr/gh-dash', number: 2, title: 'T', baseOid: 'b'.repeat(40), headOid: 'h'.repeat(40), files,
   totalFiles: files.length, additions: 0, deletions: 0, fetchedAt: '2026-09-28T00:00:00Z', url: 'https://github.com/o/gh-dash/pull/2/files', ...more,
 });
 

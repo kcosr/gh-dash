@@ -33,12 +33,17 @@ const schemas: Record<string, Schema> = {
     weeklyCommits: { ...arr(int()), description: '12 Mon-start weeks (server tz), oldest first' },
   }),
   Repo: obj({
-    key: str('Identity in URLs, `repos=` lists and every `repo` field (currently the short name)'), name: str(), nameWithOwner: str(), owner: str(), description: nullable(str()), url: str(),
+    key: str('Identity in URLs, `repos=` lists and every `repo` field: owner/name'), name: str('Short name'), nameWithOwner: str(), owner: str(), description: nullable(str()), url: str(),
     visibility: enumOf('public', 'private', 'internal'), isArchived: bool, isFork: bool,
     language: nullable(obj({ name: str(), color: nullable(str()) })), topics: arr(str()), defaultBranch: nullable(str()),
     stars: int(), forks: int(), createdAt: dateTime, pushedAt: nullable(dateTime), lastActivityAt: nullable(dateTime),
     pinned: bool, hidden: bool, setIds: arr(int()), stats: ref('RepoStats'), syncedAt: nullable(dateTime),
-    trackedBy: enumOf('owned', 'manual'),
+    trackedBy: { ...enumOf('owned', 'manual'), description: 'owned: one of your repositories, tracked automatically; manual: added by hand' },
+    addedAt: { ...nullable(dateTime), description: 'Manual repos: when they were added' },
+    unavailable: {
+      ...nullable(obj({ since: dateTime, reason: str() })),
+      description: 'Manual repos the token can no longer read: data kept, sync skips it until readable again',
+    },
   }),
   PullRequest: obj({
     id: str('<repo>#<number>'), repo: str(), number: int(), title: str(), body: str('Markdown'),
@@ -219,9 +224,10 @@ const q = (name: string, description: string, schema: Schema = str(), example?: 
   name, in: 'query', description, schema, ...(example ? { example } : {}),
 });
 const p = (name: string, description: string, schema: Schema = str()): ParamDoc => ({ name, in: 'path', description, schema, required: true });
+const REPO = { ...p('repo', 'Repo key `owner/name`, URL-encoded as one segment (`owner%2Fname`); a bare name selects the repository of that name you own.'), example: 'kcosr%2Fgh-dash' };
 
 const SCOPE: ParamDoc[] = [
-  q('repos', 'Comma-separated repo names. Omitted: default scope (non-archived, non-hidden, non-fork unless includeForks). Empty (`repos=`): no repos.', str(), 'app,tools'),
+  q('repos', 'Comma-separated repo keys (owner/name; the short name of a repo you own also works). Omitted: default scope (non-archived, non-hidden, non-fork unless includeForks). Empty (`repos=`): no repos.', str(), 'kcosr/gh-dash,kcosr/tools'),
   q('visibility', 'Repo visibility filter (internal: GitHub Enterprise).', { ...enumOf('all', 'public', 'private', 'internal'), default: 'all' }),
   q('who', "'me' = the authenticated user (login, settings.myEmails or GH_DASH_MY_EMAILS); stars are always by others.", { ...enumOf('me', 'others', 'everyone'), default: 'everyone' }, 'me'),
   q('from', 'Start: YYYY-MM-DD (in tz), ISO datetime, or relative offset like -7d / -12w / -3m. Default: 29 days before today.', str(), '-30d'),
@@ -281,7 +287,7 @@ export const ENDPOINTS: EndpointDoc[] = [
   },
   {
     method: 'get', path: '/api/v1/prs/{repo}/{number}', tag: 'Lists', summary: 'One pull request with commits and linked issues',
-    params: [p('repo', 'Repo name'), p('number', 'PR number', int())], response: { status: 200, schema: ref('PullRequestDetail') },
+    params: [REPO, p('number', 'PR number', int())], response: { status: 200, schema: ref('PullRequestDetail') },
   },
   {
     method: 'get', path: '/api/v1/activity', tag: 'Lists', summary: 'Activity feed (commits without a PR, PR/issue events, releases, stars)',
@@ -303,22 +309,22 @@ export const ENDPOINTS: EndpointDoc[] = [
     response: { status: 200, schema: ref('StatsResponse') }, example: 'from=-90d&tz=UTC',
   },
   { method: 'get', path: '/api/v1/repos', tag: 'Repos', summary: 'Repository inventory or a filtered selection', params: [
-    q('repos', 'Comma-separated names; explicit empty selects nothing. Overrides scope.'),
+    q('repos', 'Comma-separated repo keys (or short names of repos you own); explicit empty selects nothing. Overrides scope.'),
     q('scope', 'all (default) returns the inventory; default excludes archived/hidden and forks unless enabled in settings.', enumOf('all', 'default')),
     q('visibility', 'Repository visibility (internal: GitHub Enterprise)', enumOf('all', 'public', 'private', 'internal')),
-    q('q', 'Case-insensitive substring in name, description, topics or language'),
+    q('q', 'Case-insensitive substring in owner/name, description, topics or language'),
     q('sort', 'Sort within pinned/hidden groups; default activity', enumOf('activity', 'stars', 'open', 'name')),
   ], response: { status: 200, schema: obj({ items: arr(ref('Repo')) }) } },
-  { method: 'get', path: '/api/v1/repos/{name}', tag: 'Repos', summary: 'One repo', params: [p('name', 'Repo name')], response: { status: 200, schema: ref('Repo') } },
+  { method: 'get', path: '/api/v1/repos/{repo}', tag: 'Repos', summary: 'One repo', params: [REPO], response: { status: 200, schema: ref('Repo') } },
   {
     method: 'patch', path: '/api/v1/repos/{name}', tag: 'Repos', summary: 'Pin/unpin or hide/unhide a repo (local preference)',
-    params: [p('name', 'Repo name')], body: { schema: obj({ pinned: bool, hidden: bool }, ['pinned', 'hidden']), example: { pinned: true } },
+    params: [REPO], body: { schema: obj({ pinned: bool, hidden: bool }, ['pinned', 'hidden']), example: { pinned: true } },
     response: { status: 200, schema: ref('Repo') },
   },
   { method: 'get', path: '/api/v1/sets', tag: 'Sets & views', summary: 'Repo sets', response: { status: 200, schema: obj({ items: arr(ref('RepoSet')) }) } },
   {
     method: 'post', path: '/api/v1/sets', tag: 'Sets & views', summary: 'Create a repo set (unknown repos are ignored)',
-    body: { schema: obj({ name: str(), repos: arr(str()) }), example: { name: 'Tools', repos: ['app', 'tools'] } },
+    body: { schema: obj({ name: str(), repos: arr(str('Repo key, or the short name of a repo you own')) }), example: { name: 'Tools', repos: ['kcosr/app', 'kcosr/tools'] } },
     response: { status: 200, schema: ref('RepoSet') },
   },
   {
@@ -330,6 +336,7 @@ export const ENDPOINTS: EndpointDoc[] = [
   { method: 'get', path: '/api/v1/views', tag: 'Sets & views', summary: 'Saved views', response: { status: 200, schema: obj({ items: arr(ref('SavedView')) }) } },
   {
     method: 'post', path: '/api/v1/views', tag: 'Sets & views', summary: 'Save a view (app path + query)',
+    description: 'Repo references (`repos`, `pr`, `diff` and a `/repos/...` path) are stored as keys; other params are kept as sent.',
     body: { schema: obj({ name: str(), path: str(), query: str() }), example: { name: 'My merged PRs', path: '/prs', query: 'state=merged&who=me&range=30d' } },
     response: { status: 200, schema: ref('SavedView') },
   },
@@ -344,7 +351,7 @@ export const ENDPOINTS: EndpointDoc[] = [
       'Errors: 404 unknown repo or PR, 503 no GitHub token, 429 GitHub rate limit (details.resetAt), 502 other GitHub failures, ' +
       '403 for cross-site browser requests.',
     params: [
-      p('repo', 'Repo name'), p('number', 'PR number', int()),
+      REPO, p('number', 'PR number', int()),
       q('refresh', "'1' re-checks the PR on GitHub (head, merge base, title) instead of trusting the last sync; files are fetched again only if the head or merge base changed.", enumOf('1')),
     ],
     response: { status: 200, schema: ref('Diff') },
@@ -352,13 +359,13 @@ export const ENDPOINTS: EndpointDoc[] = [
   {
     method: 'get', path: '/api/v1/commits/{repo}/{oid}/diff', tag: 'Diffs', summary: "A commit's changes against its first parent",
     description: 'The commit need not be synced (e.g. PR branch commits), but the repo must be. Errors as for PR diffs.',
-    params: [p('repo', 'Repo name'), p('oid', 'Commit SHA, 7-40 hex characters'), q('refresh', "'1' fetches it again instead of using the cache.", enumOf('1'))],
+    params: [REPO, p('oid', 'Commit SHA, 7-40 hex characters'), q('refresh', "'1' fetches it again instead of using the cache.", enumOf('1'))],
     response: { status: 200, schema: ref('Diff') },
   },
   {
     method: 'get', path: '/api/v1/blob/{repo}', tag: 'Diffs', summary: 'File contents at a commit (for expanding diff context)',
     description: 'Errors: 400 invalid ref or path, 404 no such file, 413 larger than 5 MB, 415 binary file.',
-    params: [p('repo', 'Repo name'), { ...q('ref', 'Commit SHA, 7-40 hex characters'), required: true }, { ...q('path', 'File path in the repo'), required: true }],
+    params: [REPO, { ...q('ref', 'Commit SHA, 7-40 hex characters'), required: true }, { ...q('path', 'File path in the repo'), required: true }],
     response: { status: 200, schema: str(), type: 'text/plain' },
     example: 'ref=0123abc&path=README.md',
   },
@@ -368,7 +375,7 @@ export const ENDPOINTS: EndpointDoc[] = [
   {
     method: 'post', path: '/api/v1/sync', tag: 'Sync', summary: 'Start a sync now (409 if one is running)',
     description:
-      '`repo` limits the sync to one repo; `full` ignores high-water marks, re-fetches the backfill window and re-diffs stars. ' +
+      '`repo` (a key, or the short name of a repo you own) limits the sync to one repo; `full` ignores high-water marks, re-fetches the backfill window and re-diffs stars. ' +
       'The token is resolved afresh; without one the answer is 503 with the reason.',
     body: { schema: obj({ repo: str(), full: bool }, ['repo', 'full']), example: { full: true }, optional: true },
     response: { status: 202, schema: ref('SyncStatus') },

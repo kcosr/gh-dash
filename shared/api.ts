@@ -735,8 +735,10 @@ export interface DiffCacheStats {
 // GET    /api/v1/stars          ScopeQuery&PageQuery -> ListResponse<Star>
 // GET    /api/v1/stats          StatsQuery     -> StatsResponse
 // GET    /api/v1/sync/status                   -> SyncStatus
-// POST   /api/v1/sync           {repo?: string, full?: boolean} -> 202 SyncStatus (409 if already running, 503 no token,
-//          404 when `repo` is a key nothing tracks)
+// POST   /api/v1/sync           {repo?: string, full?: boolean, source?: string} -> 202 SyncStatus (409 if already
+//          running, 503 no token, 404 when `repo` is a key nothing tracks or `source` a host that isn't a source here,
+//          400 when that source isn't configured on this server). `source` (a host) syncs that source alone; with
+//          `repo`, the repo may be given by its path there. Without either, every source with a token.
 // GET    /api/v1/prs/:repo/:number/diff  {refresh?: '1'} -> Diff
 // GET    /api/v1/commits/:repo/:oid/diff {refresh?: '1'} -> Diff     (oid: 7-64 hex chars; need not be synced)
 //          Diff errors: 404 unknown repo/PR/commit, 503 no GitHub token, 429 GitHub rate limit, 502 other GitHub failure.

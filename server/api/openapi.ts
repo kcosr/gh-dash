@@ -474,9 +474,11 @@ export const ENDPOINTS: EndpointDoc[] = [
   {
     method: 'post', path: '/api/v1/sync', tag: 'Sync', summary: 'Start a sync now (409 if one is running)',
     description:
-      '`repo` (a key, or the short name of a repo you own) limits the sync to one repo (404 when a key names no tracked repository: add it first); `full` ignores high-water marks, re-fetches the backfill window and re-diffs stars. ' +
-      'The token is resolved afresh; without one the answer is 503 with the reason.',
-    body: { schema: obj({ repo: str(), full: bool }, ['repo', 'full']), example: { full: true }, optional: true },
+      'Without `repo` or `source`, every source that has a token, each on its own. ' +
+      '`source` (a host, e.g. github.com or gitlab.example.com) syncs that source alone: 404 when it isn\'t a source here, 400 when it isn\'t configured on this server. ' +
+      '`repo` (a key, or the short name of a repo you own on github.com; with `source`, its path there) limits the sync to one repo (404 when a key names no tracked repository: add it first); `full` ignores high-water marks, re-fetches the backfill window and re-diffs stars. ' +
+      'The tokens are resolved afresh; when none of the sources has one the answer is 503 with the reasons.',
+    body: { schema: obj({ repo: str(), full: bool, source: str('A source\'s host') }, ['repo', 'full', 'source']), example: { full: true }, optional: true },
     response: { status: 202, schema: ref('SyncStatus') },
   },
   { method: 'get', path: '/api/v1/settings', tag: 'Settings', summary: 'Settings', response: { status: 200, schema: ref('Settings') } },

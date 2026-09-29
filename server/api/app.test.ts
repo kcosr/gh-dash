@@ -791,6 +791,54 @@ describe('adding and removing repositories', () => {
       expect(t.glAsked()).toContain('graphql ProjectByNode');
     });
 
+    it('syncs one source on POST /sync with its host, and one of its projects by key or by path', async () => {
+      const t = onGitLab();
+      await t.call('POST', '/repos', { repo: 'team/platform/api', source: GL });
+      await t.idle();
+      const before = t.gh.requests.length;
+      expect(await t.call('POST', '/sync', { source: 'GitLab.example.com' })).toMatchObject({ status: 202, body: { running: true, repo: null } });
+      await t.idle();
+      expect(t.gh.requests.length).toBe(before);
+      expect(getMeta(t.db, 'lastSync')).toMatchObject({ errors: [] });
+      expect(getMeta(t.db, 'lastSync')!.repo).toBeUndefined();
+      expect(await t.call('POST', '/sync', { repo: 'team/platform/api', source: GL })).toMatchObject({ status: 202, body: { running: true, repo: `${GL}/team/platform/api` } });
+      await t.idle();
+      expect(await t.call('POST', '/sync', { repo: `${GL}/team/platform/api` })).toMatchObject({ status: 202, body: { repo: `${GL}/team/platform/api` } });
+      await t.idle();
+      expect(t.gh.requests.length).toBe(before);
+      const status = (await t.call('GET', '/sync/status')).body!;
+      expect(status.sources.map((s: { source: string; problem: string | null }) => [s.source, s.problem])).toEqual([['github.com', null], [GL, null]]);
+      expect(status.sources[1]).toMatchObject({ running: false, lastResult: { errors: [] }, tokenSource: 'env', viewer: 'alice' });
+
+      // What it can't sync.
+      expect(await t.call('POST', '/sync', { source: 'nowhere.example.com' })).toEqual({ status: 404, body: { error: "nowhere.example.com isn't a source here." } });
+      expect((await t.call('POST', '/sync', { source: 'not a host' })).status).toBe(400);
+      expect(await t.call('POST', '/sync', { repo: 'team/platform/api', source: 'github.com' })).toEqual({
+        status: 404, body: { error: "team/platform/api isn't tracked on GitHub. Add it first (POST /api/v1/repos)." },
+      });
+      expect(await t.call('POST', '/sync', { repo: 'app', source: GL })).toEqual({
+        status: 404, body: { error: `app isn't tracked on GitLab (${GL}). Add it first (POST /api/v1/repos).` },
+      });
+      ensureSource(t.db, { kind: 'gitlab', host: 'gitlab2.example.com', baseUrl: 'https://gitlab2.example.com' });
+      t.sources!.apply();
+      addManualRepo(t.db, 'team/app', { source: getSource(t.db, 3)!, nodeId: 'gid://gitlab/Project/1' });
+      const unconfigured = { status: 400, body: { error: "GitLab (gitlab2.example.com) isn't configured on this server." } };
+      expect(await t.call('POST', '/sync', { source: 'gitlab2.example.com' })).toEqual(unconfigured);
+      expect(await t.call('POST', '/sync', { repo: 'gitlab2.example.com/team/app' })).toEqual(unconfigured);
+      expect(t.sync.status().running).toBe(false);
+    });
+
+    it("answers POST /sync for a source without a token with that source's reason", async () => {
+      const t = trackApp('ghp_classic', undefined, { token: null });
+      expect(await t.call('POST', '/sync', { source: GL })).toEqual({ status: 503, body: { error: t.sources!.byHost(GL)!.tokens.noTokenMessage() } });
+      expect((await t.call('POST', '/sync', { source: GL })).body!.error).toMatch(/^No GitLab token for gitlab\.example\.com: /);
+      // Every source: GitHub's has a token, so it syncs alone; the status says why GitLab doesn't.
+      expect(await t.call('POST', '/sync', {})).toMatchObject({ status: 202 });
+      await t.idle();
+      expect(t.glAsked()).toEqual([]);
+      expect(t.sync.status().sources[1]).toMatchObject({ source: GL, tokenSource: 'none', problem: t.sources!.byHost(GL)!.tokens.noTokenMessage() });
+    });
+
     it('removes a project added by hand, by its key or by its path with the source; owned ones are hidden instead', async () => {
       const t = onGitLab();
       await t.call('POST', '/repos', { repo: 'team/platform/api', source: GL });

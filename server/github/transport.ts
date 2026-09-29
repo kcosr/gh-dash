@@ -1,20 +1,15 @@
 // Shared by the GraphQL client (sync) and the REST client (diffs): errors, token checks, rate-limit
 // classification and retries with backoff.
 
-export type GitHubErrorKind = 'auth' | 'rate-limit' | 'transient' | 'graphql' | 'http' | 'not-found';
+import { SourceError, type SourceErrorKind } from '../provider/errors';
 
-export class GitHubError extends Error {
-  readonly kind: GitHubErrorKind;
-  /** HTTP status GitHub answered with, when the error came from a response. */
-  readonly status: number | null;
-  /** For 'rate-limit': when requests may resume (ISO), if known. */
-  readonly resetAt: string | null;
+export type GitHubErrorKind = SourceErrorKind;
+
+/** A failed GitHub request: a SourceError, so provider-neutral code handles it by kind. */
+export class GitHubError extends SourceError {
   constructor(kind: GitHubErrorKind, message: string, opts: { status?: number | null; resetAt?: string | null } = {}) {
-    super(message);
+    super(kind, message, opts);
     this.name = 'GitHubError';
-    this.kind = kind;
-    this.status = opts.status ?? null;
-    this.resetAt = opts.resetAt ?? null;
   }
 }
 

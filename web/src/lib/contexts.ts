@@ -1,12 +1,14 @@
 /**
  * The context switcher's state (design §7.1). A context is one source (its host) or All. It lives in the URL as
  * `source=<host>` (absent = All), carried across tabs like `repos`; this module keeps each context's last place (path +
- * query, the drawer and diff included) in localStorage, so switching back returns to exactly where you were.
+ * query, the drawer and diff included) in localStorage, so switching back returns to exactly where you were. It also
+ * keeps, per context, each list view's last settings (the query less the drawer and diff), so a tab leads back to the
+ * view as you left it.
  */
-import { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useSyncExternalStore } from 'react';
 import { useLocation, useNavigate } from 'react-router';
 import { GITHUB_HOST, type ProviderKind, type Repo, type Source } from '../../../shared/api';
-import { viewFromPath } from './urlState';
+import { OVERLAY_KEYS, SCOPE_KEYS, carrySearch, orderedSearch, paramsExcept, viewFromPath } from './urlState';
 
 /** A source as the switcher shows it. */
 export interface SourceInfo {
@@ -54,45 +56,75 @@ export function ctxOf(search: string): Ctx {
 
 export const PLACES_KEY = 'gh-dash:places';
 
-/** localStorage `gh-dash:places`: the last context, and each context's last place ("/path?query"). */
+/** The views with a tab in the top bar. Settings and a repo's page are not: they aren't remembered as views. */
+export type TabView = 'prs' | 'comments' | 'issues' | 'activity' | 'repos' | 'insights';
+const TAB_VIEWS: readonly TabView[] = ['prs', 'comments', 'issues', 'activity', 'repos', 'insights'];
+
+/** The tab a path is (`/prs`, `/prs/`), else undefined: a repo's page (`/repos/<key>`), Settings, and unknown paths. */
+const tabOf = (pathname: string) => TAB_VIEWS.find((t) => pathname.replace(/\/+$/, '').toLowerCase() === `/${t}`);
+
+/** localStorage `gh-dash:places`: the last context, each context's last place ("/path?query"), and its views' last. */
 export interface Places {
   v: 1;
   last: Ctx;
   places: Record<Ctx, string>;
+  /** Each context's tab views' last places, less the overlay params (added later: a stored value may lack it). */
+  views: Record<Ctx, Partial<Record<TabView, string>>>;
 }
 
-const EMPTY: Places = { v: 1, last: ALL, places: {} };
+const EMPTY: Places = { v: 1, last: ALL, places: {}, views: {} };
 
 /** Parse the stored value; anything unexpected reads as no memory. */
 export function parsePlaces(raw: string | null): Places {
   try {
-    const v = JSON.parse(raw ?? '') as Partial<Places> | null;
+    const v = JSON.parse(raw ?? '') as { v?: unknown; last?: unknown; places?: unknown; views?: unknown } | null;
     if (!v || v.v !== 1 || typeof v.last !== 'string' || !v.places || typeof v.places !== 'object') return EMPTY;
     const places: Record<Ctx, string> = {};
     // `/` is where the app starts, not a place: it redirects to one (see recordPlace).
     for (const [k, p] of Object.entries(v.places)) if (typeof p === 'string' && p.startsWith('/') && !isRoot(p)) places[k] = p;
-    return { v: 1, last: v.last, places };
+    return { v: 1, last: v.last, places, views: parseViews(v.views) };
   } catch {
     return EMPTY;
   }
+}
+
+/** The views stored: what isn't a tab's own place ("/prs", "/prs?query") reads as nothing, not as an error. */
+function parseViews(raw: unknown): Places['views'] {
+  const views: Places['views'] = {};
+  if (!raw || typeof raw !== 'object') return views;
+  for (const [ctx, byView] of Object.entries(raw)) {
+    if (!byView || typeof byView !== 'object') continue;
+    const mine: Partial<Record<TabView, string>> = {};
+    for (const t of TAB_VIEWS) {
+      const place: unknown = (byView as Record<string, unknown>)[t];
+      if (typeof place === 'string' && (place === `/${t}` || place.startsWith(`/${t}?`))) mine[t] = place;
+    }
+    if (Object.keys(mine).length) views[ctx] = mine;
+  }
+  return views;
 }
 
 /**
  * The memory after visiting `pathname` + `search`: that becomes its context's place, and the context the last one.
  * Settings is context-free and never recorded. Nor is `/`: it only redirects to the last place, and a render can still
  * be at `/` for a moment while that navigation is pending; recorded, switching to its context would land on `/` and be
- * sent to another context (or back to `/`). `keep`: the contexts to keep (the sources present, and All); others are
- * dropped, so a removed source doesn't linger.
+ * sent to another context (or back to `/`). A tab's list view is also that context's last place of the view, without
+ * the drawer and diff; a repo's page is not (it's no tab). `keep`: the contexts to keep (the sources present, and All);
+ * others are dropped, so a removed source doesn't linger.
  */
 export function recordPlace(p: Places, pathname: string, search: string, keep?: readonly Ctx[]): Places {
   if (viewFromPath(pathname) === 'settings' || isRoot(pathname)) return p;
   const ctx = ctxOf(search);
   const place = pathname + search;
-  const stale = keep ? Object.keys(p.places).filter((k) => k !== ALL && k !== ctx && !keep.includes(k)) : [];
-  if (p.last === ctx && p.places[ctx] === place && !stale.length) return p;
+  const tab = tabOf(pathname);
+  const seen = tab && `/${tab}${orderedSearch(paramsExcept(search, OVERLAY_KEYS))}`;
+  const stale = keep ? [...new Set([...Object.keys(p.places), ...Object.keys(p.views)])].filter((k) => k !== ALL && k !== ctx && !keep.includes(k)) : [];
+  if (p.last === ctx && p.places[ctx] === place && (!tab || p.views[ctx]?.[tab] === seen) && !stale.length) return p;
   const places: Record<Ctx, string> = { ...p.places, [ctx]: place };
-  for (const k of stale) delete places[k];
-  return { v: 1, last: ctx, places };
+  const views: Places['views'] = { ...p.views };
+  if (tab && seen) views[ctx] = { ...views[ctx], [tab]: seen };
+  for (const k of stale) { delete places[k]; delete views[k]; }
+  return { v: 1, last: ctx, places, views };
 }
 
 /**
@@ -107,6 +139,26 @@ export function placeFor(p: Places, ctx: Ctx, pathname: string): string {
   return ctx === ALL ? path : `${path}?source=${encodeURIComponent(ctx)}`;
 }
 
+/**
+ * Where a link to a top-level view goes (`path`: '/prs', '/issues', …) from the page at `pathname` + `search`: the view
+ * as `ctx` last left it (its own settings: state, grouping, density …) under the scope of the page you're on. The
+ * page's scope wins, so a param dropped here stays dropped. Settings has no scope: the remembered place goes as stored.
+ * With nothing remembered (or no tab, like Settings) the view with the scope alone: the page's, or from Settings the
+ * context's. `ctx`: the page's context, or on Settings the last one.
+ */
+export function viewHref(p: Places, ctx: Ctx, path: string, pathname: string, search: string): string {
+  const tab = tabOf(path);
+  const fromSettings = viewFromPath(pathname) === 'settings';
+  const remembered = tab && p.views[ctx]?.[tab];
+  if (tab && remembered) {
+    const own = paramsExcept(remembered.replace(/^[^?]*/, ''), fromSettings ? OVERLAY_KEYS : [...OVERLAY_KEYS, ...SCOPE_KEYS]);
+    const scope = fromSettings ? [] : [...new URLSearchParams(carrySearch(search))];
+    return `/${tab}${orderedSearch([...scope, ...own])}`;
+  }
+  if (tab && fromSettings) return path + (ctx === ALL ? '' : `?source=${encodeURIComponent(ctx)}`);
+  return path + carrySearch(search);
+}
+
 /** Where `/` goes: the last context's last place, else the PR list. */
 export function homePlace(p: Places): string {
   return p.places[p.last] ?? '/prs';
@@ -115,6 +167,9 @@ export function homePlace(p: Places): string {
 // ---------------------------------------------------------------------------- storage
 
 let cache: Places | null = null;
+/** Counts writes, for `usePlaces`. */
+let version = 0;
+const listeners = new Set<() => void>();
 
 /**
  * The memory. `fresh` reads storage again: before writing, and when switching, so another tab's places (it shares the
@@ -132,6 +187,8 @@ export function readPlaces(opts: { fresh?: boolean } = {}): Places {
 function writePlaces(p: Places) {
   cache = p;
   try { localStorage.setItem(PLACES_KEY, JSON.stringify(p)); } catch { /* private mode */ }
+  version++;
+  for (const l of listeners) l();
 }
 
 /** Forget the in-memory copy (tests). */
@@ -140,6 +197,14 @@ export function resetPlacesCache() {
 }
 
 // ---------------------------------------------------------------------------- hooks
+
+const subscribe = (onChange: () => void) => { listeners.add(onChange); return () => { listeners.delete(onChange); }; };
+
+/** The memory for rendering, which follows it: links built from it (the tabs) are redrawn when a place is recorded. */
+export function usePlaces(): Places {
+  useSyncExternalStore(subscribe, () => version);
+  return readPlaces();
+}
 
 /**
  * Mount once in the shell: record every place as it's visited. `settled` is false while the URL is about to be

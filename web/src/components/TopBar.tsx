@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Link, useLocation } from 'react-router';
 import { isUnreachable } from '../api/client';
@@ -8,11 +8,11 @@ import type { PrWords } from '../../../shared/provider';
 import { getTheme, setTheme } from '../lib/storage';
 import type { Theme } from '../lib/storage';
 import { fmtNum, fmtTime, relFuture, relLong } from '../lib/time';
-import { ALL, useSwitchContext } from '../lib/contexts';
+import { ALL, ctxOf, usePlaces, useSwitchContext, viewHref } from '../lib/contexts';
 import { GITHUB_HOST } from '../../../shared/api';
 import { firstTrouble, hostNames, sourceSettingsLink, troubleLabel } from '../lib/sources';
 import { threadCountParams } from '../lib/apiQuery';
-import { carrySearch, parseUrlState, viewFromPath } from '../lib/urlState';
+import { parseUrlState, viewFromPath } from '../lib/urlState';
 import type { UrlState } from '../lib/urlState';
 import { useNow } from '../lib/util';
 import { MOD_K } from './bits';
@@ -67,6 +67,19 @@ export function useSyncNow() {
   };
 }
 
+/**
+ * `(path) => href` for a link to a top-level view (a tab, the brand, the palette's "Go to"): the view as you left it in
+ * this context, under the current scope (see viewHref).
+ */
+export function useViewHref(): (path: string) => string {
+  const { pathname, search } = useLocation();
+  const { current } = useSourceCtx();
+  const places = usePlaces();
+  // Settings is context-free (its URL has none): its tabs lead back to the context you came from.
+  const ctx = viewFromPath(pathname) === 'settings' ? current?.host ?? ALL : ctxOf(search);
+  return useCallback((path: string) => viewHref(places, ctx, path, pathname, search), [places, ctx, pathname, search]);
+}
+
 export function TopBar({ theme, onToggleTheme, onOpenSidebar, sidebarOpen = false, onToggleSidebar, sidebarHidden = false }: {
   theme: Theme; onToggleTheme: () => void; onOpenSidebar?: () => void; sidebarOpen?: boolean;
   /** Desktop: show or hide the sidebar pane. */
@@ -77,8 +90,7 @@ export function TopBar({ theme, onToggleTheme, onOpenSidebar, sidebarOpen = fals
   const { openPalette } = useUI();
   const w = useWords().pr;
   const { current, multi } = useSourceCtx();
-  // Settings is context-free (its URL has none): its tabs lead back to the context you came from.
-  const carry = view === 'settings' ? (current ? `?source=${encodeURIComponent(current.host)}` : '') : carrySearch(location.search);
+  const hrefTo = useViewHref();
   // The repos the tabs lead to: the Comments tab counts what its list would show (Settings: the context's default).
   const scope = view === 'settings' ? { source: current?.host ?? null, repos: null, vis: 'all' as const, own: 'all' as const } : parseUrlState(location.search, view);
   const navRef = useRef<HTMLElement>(null);
@@ -106,7 +118,7 @@ export function TopBar({ theme, onToggleTheme, onOpenSidebar, sidebarOpen = fals
         aria-controls={sidebarHidden ? undefined : 'sidebar'} aria-expanded={!sidebarHidden}>
         <Icon name="list" />
       </button>}
-      <Link to={`/prs${carry}`} className="brand" aria-label="gh-dash home">
+      <Link to={hrefTo('/prs')} className="brand" aria-label="gh-dash home">
         <span className="mark"><Icon name="pulse" /></span><span className="brand-name">gh-dash</span>
       </Link>
       <ContextSwitcher />
@@ -114,7 +126,7 @@ export function TopBar({ theme, onToggleTheme, onOpenSidebar, sidebarOpen = fals
         {NAV.map((n) => {
           const on = n.views.includes(view);
           return (
-            <Link key={n.path} to={`${n.path}${carry}`} className={on ? 'on' : undefined} aria-current={on ? 'page' : undefined}>
+            <Link key={n.path} to={hrefTo(n.path)} className={on ? 'on' : undefined} aria-current={on ? 'page' : undefined}>
               <Icon name={n.icon} />
               {n.label(w)}
               {n.path === '/comments' && <UnresolvedCount scope={scope} />}

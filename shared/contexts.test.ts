@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Repo, Source, SourceAccount } from './api';
 import { canonicalRepoUrl, contextPending, contextRewrite } from '../web/src/lib/canonicalUrl';
-import { ALL, ctxOf, homePlace, parsePlaces, placeFor, presentSources, recordPlace } from '../web/src/lib/contexts';
+import { ALL, ctxOf, homePlace, parsePlaces, placeFor, presentSources, recordPlace, viewHref } from '../web/src/lib/contexts';
 import type { Places } from '../web/src/lib/contexts';
 import { activityParams, exportTarget, repoListParams, scopeParams } from '../web/src/lib/apiQuery';
 import {
@@ -161,9 +161,9 @@ describe('places', () => {
   const empty = parsePlaces(null);
 
   it('reads nothing unexpected from storage', () => {
-    expect(empty).toEqual({ v: 1, last: ALL, places: {} });
+    expect(empty).toEqual({ v: 1, last: ALL, places: {}, views: {} });
     for (const raw of ['', 'nope', '[]', '{"v":2,"last":"all","places":{}}', '{"v":1,"places":{}}']) expect(parsePlaces(raw), raw).toEqual(empty);
-    expect(parsePlaces('{"v":1,"last":"x","places":{"all":"/prs","x":42,"y":"javascript:1"}}')).toEqual({ v: 1, last: 'x', places: { all: '/prs' } });
+    expect(parsePlaces('{"v":1,"last":"x","places":{"all":"/prs","x":42,"y":"javascript:1"}}')).toEqual({ v: 1, last: 'x', places: { all: '/prs' }, views: {} });
   });
 
   it('remembers each context\'s last place, overlays included, and the last context', () => {
@@ -175,6 +175,7 @@ describe('places', () => {
       v: 1,
       last: ALL,
       places: { [GL]: `/prs?source=${GL}&who=everyone&pr=${GL}/a/b%233&diff=${GL}/a/b%233&file=src/x.ts`, 'github.com': '/insights?source=github.com&range=ytd', all: '/activity' },
+      views: { [GL]: { prs: `/prs?source=${GL}&who=everyone` }, 'github.com': { insights: '/insights?source=github.com&range=ytd' }, all: { activity: '/activity' } },
     });
     expect(recordPlace(p, '/activity', '')).toBe(p); // nothing new: no write
   });
@@ -184,7 +185,7 @@ describe('places', () => {
     expect(recordPlace(p, '/', '')).toBe(p);
     expect(recordPlace(p, '/', `?source=${GL}`)).toBe(p);
     expect(parsePlaces(JSON.stringify({ v: 1, last: ALL, places: { all: '/', [GL]: '/?who=me', 'github.com': '/prs' } })))
-      .toEqual({ v: 1, last: ALL, places: { 'github.com': '/prs' } });
+      .toEqual({ v: 1, last: ALL, places: { 'github.com': '/prs' }, views: {} });
     // So `/` never redirects to itself.
     expect(homePlace(parsePlaces(JSON.stringify({ v: 1, last: ALL, places: { all: '/' } })))).toBe('/prs');
   });
@@ -193,6 +194,157 @@ describe('places', () => {
     const p = recordPlace(recordPlace(empty, '/prs', `?source=${GL}`), '/prs', '?source=old.example.com');
     expect(recordPlace(p, '/settings', '')).toBe(p);
     expect(recordPlace(p, '/issues', '', ['github.com', GL]).places).toEqual({ [GL]: `/prs?source=${GL}`, all: '/issues' });
+  });
+
+  describe('each view\'s last settings', () => {
+    const at = (p: Places, ...visits: [string, string][]) => visits.reduce((q, [path, search]) => recordPlace(q, path, search), p);
+
+    it('are kept per context and view, the latest visit winning', () => {
+      const p = at(empty, ['/prs', '?state=open'], ['/issues', '?state=closed'], ['/prs', `?source=${GL}&group=repo`], ['/prs', '?state=all']);
+      expect(p.views).toEqual({ all: { prs: '/prs?state=all', issues: '/issues?state=closed' }, [GL]: { prs: `/prs?source=${GL}&group=repo` } });
+      // Each visit also makes the place, as before.
+      expect(p.places).toEqual({ all: '/prs?state=all', [GL]: `/prs?source=${GL}&group=repo` });
+    });
+
+    it('leave out the drawer and the diff, which are not settings', () => {
+      const p = at(empty, ['/prs', `?state=open&pr=a/b%231&diff=a/b%231&file=x.ts&thread=3&only=unresolved&group=repo`]);
+      expect(p.views).toEqual({ all: { prs: '/prs?state=open&group=repo' } });
+      expect(p.places.all).toContain('pr=a/b%231');
+      // Another drawer, or none, changes the place but not the view's settings.
+      expect(recordPlace(p, '/prs', '?state=open&group=repo&pr=c/d%232').views).toEqual(p.views);
+      expect(recordPlace(p, '/prs', '?state=open&group=repo').views).toEqual(p.views);
+    });
+
+    it('are written in the canonical order, one place whichever the order visited', () => {
+      const p = at(empty, ['/activity', '?types=push&range=7d&source=github.com&x=1&density=full']);
+      expect(p.views['github.com']).toEqual({ activity: '/activity?source=github.com&range=7d&density=full&types=push&x=1' });
+      expect(recordPlace(p, '/activity', '?source=github.com&types=push&density=full&range=7d&x=1').views).toEqual(p.views);
+    });
+
+    it('cover the top-level lists, and not Settings, the root or a repository\'s page', () => {
+      const p = at(empty, ['/prs', ''], ['/issues', ''], ['/activity', ''], ['/repos', '?sort=stars'], ['/insights', '?range=ytd']);
+      expect(Object.keys(p.views.all!)).toEqual(['prs', 'issues', 'activity', 'repos', 'insights']);
+      const q = at(p, ['/settings', '?source=github.com'], ['/', ''], ['/', `?source=${GL}`], ['/repos/alice/app', `?source=${GL}&repos=alice/app`], [`/repos/${GL}/team/svc`, '']);
+      expect(q.views).toEqual(p.views);
+      // A repo's page is still a place of its context, as before; the others are not places at all.
+      expect(q.places[GL]).toBe(`/repos/alice/app?source=${GL}&repos=alice/app`);
+      expect(q.places['github.com']).toBeUndefined();
+      // The list keeps its own memory across a visit to a repo's page.
+      expect(q.views.all!.repos).toBe('/repos?sort=stars');
+    });
+
+    it('take a path however it is written, and nothing that is not a tab', () => {
+      expect(at(empty, ['/prs/', '?state=open']).views).toEqual({ all: { prs: '/prs?state=open' } });
+      expect(at(empty, ['/Activity', '']).views).toEqual({ all: { activity: '/activity' } });
+      expect(at(empty, ['/nowhere', '?state=open']).views).toEqual({});
+      expect(at(empty, ['/repos/', '?sort=name']).views).toEqual({ all: { repos: '/repos?sort=name' } });
+    });
+
+    it('go with the contexts no longer present', () => {
+      const p = at(empty, ['/prs', `?source=${GL}`], ['/prs', '?source=old.example.com&state=open'], ['/issues', '?source=github.com']);
+      expect(Object.keys(p.views).sort()).toEqual(['github.com', GL, 'old.example.com'].sort());
+      const kept = recordPlace(p, '/activity', '', ['github.com', GL]);
+      expect(kept.views).toEqual({ [GL]: { prs: `/prs?source=${GL}` }, 'github.com': { issues: '/issues?source=github.com' }, all: { activity: '/activity' } });
+      // Also when only the views mention it (a stored value from before it was dropped from the places).
+      const odd = parsePlaces(JSON.stringify({ v: 1, last: ALL, places: {}, views: { 'old.example.com': { prs: '/prs' } } }));
+      expect(recordPlace(odd, '/prs', '', ['github.com']).views).toEqual({ all: { prs: '/prs' } });
+      // The current context stays even when it isn't in the list (it is about to be rewritten).
+      expect(recordPlace(p, '/prs', '?source=old.example.com&state=open', ['github.com']).views['old.example.com']).toEqual({ prs: '/prs?source=old.example.com&state=open' });
+    });
+
+    it('read back from storage, and from a value stored before they were kept', () => {
+      const p = at(empty, ['/prs', `?source=${GL}&state=open`], ['/insights', '?range=ytd']);
+      expect(parsePlaces(JSON.stringify(p))).toEqual(p);
+      const old = { v: 1, last: GL, places: { [GL]: `/prs?source=${GL}&pr=a/b%231`, all: '/insights' } };
+      expect(parsePlaces(JSON.stringify(old))).toEqual({ ...old, views: {} });
+      expect(homePlace(parsePlaces(JSON.stringify(old)))).toBe(`/prs?source=${GL}&pr=a/b%231`);
+    });
+
+    it('read as nothing where malformed, without losing the places', () => {
+      const good = { all: { prs: '/prs?state=open' } };
+      const parse = (views: unknown) => parsePlaces(JSON.stringify({ v: 1, last: ALL, places: { all: '/prs' }, views }));
+      for (const views of [null, 'x', 7, [], [1], { all: 'x' }, { all: null }, { all: [] }, { all: { prs: 42 } }]) {
+        expect(parse(views), JSON.stringify(views)).toEqual({ v: 1, last: ALL, places: { all: '/prs' }, views: {} });
+      }
+      expect(parse(good).views).toEqual(good);
+      // Entries are judged one by one, and must be the view's own place.
+      const mixed = { all: { prs: '/prs?state=open', issues: '/prs', activity: 'https://x.test/activity', repos: '/repos/a/b', insights: '/insightsx', settings: '/settings', prs2: '/prs' }, [GL]: 'nope' };
+      expect(parse(mixed).views).toEqual(good);
+    });
+  });
+
+  describe('a link to a view', () => {
+    const at = (...visits: [string, string][]) => visits.reduce((q, [path, search]) => recordPlace(q, path, search), empty);
+    const remembered = at(
+      ['/prs', '?state=open&group=repo&density=full&pr=a/b%231'],
+      ['/activity', '?range=7d&types=push&who=me'],
+      ['/issues', `?source=${GL}&state=closed`],
+      ['/repos', '?sort=stars&layout=list&repos=a/b'],
+    );
+
+    it('goes to the view as it was left, under the scope of the page', () => {
+      expect(viewHref(remembered, ALL, '/prs', '/activity', '?range=30d')).toBe('/prs?range=30d&state=open&group=repo&density=full');
+      expect(viewHref(remembered, ALL, '/activity', '/prs', '?repos=a/b,c/d&vis=public&own=mine&state=all')).toBe('/activity?repos=a/b,c/d&vis=public&own=mine&types=push');
+      expect(viewHref(remembered, GL, '/issues', '/prs', `?source=${GL}&who=everyone`)).toBe(`/issues?source=${GL}&who=everyone&state=closed`);
+    });
+
+    it('remembers the Comments view too, its thread settings and the diff apart', () => {
+      const seen = at(['/comments', '?status=all&kind=commit&group=none&sort=file&diff=a/b%401234567&thread=3']);
+      expect(viewHref(seen, ALL, '/comments', '/prs', '?range=30d')).toBe('/comments?range=30d&status=all&kind=commit&group=none&sort=file');
+    });
+
+    it('lets the page\'s scope win, a param it lacks included', () => {
+      // Remembered: range=7d and who=me. The page has neither, so the view doesn't either.
+      expect(viewHref(remembered, ALL, '/activity', '/prs', '?state=all')).toBe('/activity?types=push');
+      // And the remembered repos= is dropped where the page has no selection.
+      expect(viewHref(remembered, ALL, '/repos', '/prs', '?state=all')).toBe('/repos?sort=stars&layout=list');
+      expect(viewHref(remembered, ALL, '/repos', '/prs', '?repos=')).toBe('/repos?repos=&sort=stars&layout=list');
+      expect(viewHref(remembered, ALL, '/repos', '/prs', '?repos=c/d')).toBe('/repos?repos=c/d&sort=stars&layout=list');
+    });
+
+    it('never brings the drawer or the diff back, whatever is stored', () => {
+      const stored = parsePlaces(JSON.stringify({ v: 1, last: ALL, places: {}, views: { all: { prs: '/prs?pr=a/b%231&state=open&diff=a/b%231&file=x&thread=2&only=commented' } } }));
+      expect(viewHref(stored, ALL, '/prs', '/issues', '')).toBe('/prs?state=open');
+      expect(viewHref(stored, ALL, '/prs', '/settings', '')).toBe('/prs?state=open');
+      // Nor does the page's own drawer come along, as before.
+      expect(viewHref(remembered, ALL, '/prs', '/prs', '?pr=a/b%231&diff=a/b%231&range=7d')).toBe('/prs?range=7d&state=open&group=repo&density=full');
+    });
+
+    it('reads the context\'s own memory, and is today\'s link where it has none', () => {
+      expect(viewHref(remembered, GL, '/prs', '/issues', `?source=${GL}&range=7d`)).toBe(`/prs?source=${GL}&range=7d`);
+      expect(viewHref(remembered, ALL, '/issues', '/prs', '?range=7d&state=open&pr=a/b%231')).toBe('/issues?range=7d');
+      expect(viewHref(empty, ALL, '/insights', '/prs', `?who=me&state=open&range=7d&repos=a/b&from=2024-01-01`)).toBe('/insights?repos=a/b&who=me&range=7d&from=2024-01-01');
+    });
+
+    it('from Settings goes to the remembered place as stored, else to the context', () => {
+      expect(viewHref(remembered, ALL, '/prs', '/settings', '')).toBe('/prs?state=open&group=repo&density=full');
+      expect(viewHref(remembered, ALL, '/activity', '/settings', '')).toBe('/activity?who=me&range=7d&types=push');
+      expect(viewHref(remembered, ALL, '/repos', '/settings', '')).toBe('/repos?repos=a/b&sort=stars&layout=list');
+      expect(viewHref(remembered, GL, '/issues', '/settings', '')).toBe(`/issues?source=${GL}&state=closed`);
+      // Nothing remembered there: the view in the context, as the tabs led back before.
+      expect(viewHref(remembered, GL, '/prs', '/settings', '')).toBe(`/prs?source=${GL}`);
+      expect(viewHref(remembered, 'github.com', '/prs', '/settings', '')).toBe('/prs?source=github.com');
+      expect(viewHref(empty, ALL, '/prs', '/settings', '')).toBe('/prs');
+      // What Settings' own URL carries doesn't matter: it has no scope.
+      expect(viewHref(remembered, ALL, '/prs', '/settings', '?source=github.com&range=1d')).toBe('/prs?state=open&group=repo&density=full');
+    });
+
+    it('is the link of a repository\'s page like any other page, with its own scope', () => {
+      expect(viewHref(remembered, ALL, '/repos', '/repos/a/b', '?range=90d')).toBe('/repos?range=90d&sort=stars&layout=list');
+      expect(viewHref(remembered, ALL, '/prs', '/repos/a/b', '?repos=a/b')).toBe('/prs?repos=a/b&state=open&group=repo&density=full');
+    });
+
+    it('stays today\'s link for what is not a tab, Settings included', () => {
+      expect(viewHref(remembered, ALL, '/settings', '/prs', '?state=open&range=7d')).toBe('/settings?range=7d');
+      expect(viewHref(remembered, GL, '/settings', '/settings', '')).toBe('/settings');
+      expect(viewHref(remembered, ALL, '/repos/a/b', '/prs', '?range=7d')).toBe('/repos/a/b?range=7d');
+    });
+
+    it('follows the memory as it changes', () => {
+      const before = viewHref(empty, ALL, '/prs', '/activity', '?range=7d');
+      const after = viewHref(recordPlace(empty, '/prs', '?state=open'), ALL, '/prs', '/activity', '?range=7d');
+      expect([before, after]).toEqual(['/prs?range=7d', '/prs?range=7d&state=open']);
+    });
   });
 
   it('switches to a context\'s place, else to this view in it', () => {

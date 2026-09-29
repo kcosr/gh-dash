@@ -278,6 +278,18 @@ export function repoLinkSearch(key: string, source: string | null): string {
 /** Params for what's open on top of a view (details, diff): never part of a saved view. */
 export const OVERLAY_KEYS = ['pr', 'diff', 'file', 'thread', 'only'];
 
+/** The params of a query string, less those named in `drop`. */
+export function paramsExcept(search: string, drop: readonly string[]): [string, string][] {
+  return [...new URLSearchParams(search)].filter(([k]) => !drop.includes(k));
+}
+
+/** Params as a query string in the written order (ORDER; params we don't know keep theirs, at the end): "?..." or "". */
+export function orderedSearch(pairs: [string, string][]): string {
+  const rank = (k: string) => { const i = ORDER.indexOf(k); return i < 0 ? ORDER.length : i; };
+  const qs = encodeParams([...pairs].sort(([a], [b]) => rank(a) - rank(b)));
+  return qs ? `?${qs}` : '';
+}
+
 /** Canonical query string (sorted, without the overlay params) for comparing saved views. */
 export function canonicalQuery(query: string): string {
   const p = new URLSearchParams(query.replace(/^\?/, ''));

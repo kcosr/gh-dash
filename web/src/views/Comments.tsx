@@ -4,7 +4,7 @@
  * Replying stays in the diff.
  */
 import { useQueryClient } from '@tanstack/react-query';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import type { Me, ThreadKindFilter, ThreadListItem, ThreadStatusFilter } from '../../../shared/api';
 import { PROVIDERS, capitalize, refText } from '../../../shared/provider';
@@ -121,6 +121,12 @@ export function CommentsView() {
     }
   }, [qc, filterKey, toast]);
 
+  /** A row's button took focus (Tab, a click, back from the diff): the cursor follows. */
+  const onRowFocus = useCallback((id: number) => {
+    const i = rows.findIndex((r) => r.id === id);
+    if (i >= 0) setCursor({ id, index: i });
+  }, [rows]);
+
   const move = useCallback((i: number, focus: boolean) => {
     const t = rows[i]!;
     setCursor({ id: t.id, index: i });
@@ -159,7 +165,7 @@ export function CommentsView() {
         e.preventDefault();
         void toggleStatus(cur);
       } else if (e.key === 'o') {
-        if (!cur?.targetUrl) return;
+        if (!cur) return;
         e.preventDefault();
         window.open(cur.targetUrl, '_blank', 'noopener');
       }
@@ -239,9 +245,9 @@ export function CommentsView() {
           ) : s.repos?.length === 0 ? (
             <NoReposSelected onSelectAll={() => set({ repos: null })} />
           ) : !rows.length && counts && counts.open + counts.resolved === 0 && !s.q && s.kind === 'all' ? (
-            <EmptyState icon="comment" title={s.repos === null ? 'No comments yet' : 'No comments in the selected repositories'}>
-              Comments you add in a diff show up here. Open a {w.one}'s changes or a commit, then use the + beside a line, or
-              the comments column for one on the whole {w.short} or commit.
+            <EmptyState icon="comment" title={s.repos === null && s.vis === 'all' && s.own === 'all' ? 'No comments yet' : 'No comments in these repositories'}>
+              Comments you add in a diff show up here. Open the changes of a {changeWord} or a commit, and use the + beside a
+              line, or the comments column for one on the whole of it.
             </EmptyState>
           ) : !rows.length ? (
             <EmptyState
@@ -275,8 +281,7 @@ export function CommentsView() {
                   {g.items.map((t) => (
                     <Row key={t.id} t={t} on={s.threadGroup === 'none' ? 'repo' : s.threadGroup === 'repo' ? 'ref' : null}
                       cursor={cursorId === t.id} open={expanded.has(t.id)} me={me}
-                      onOpen={openDiff} onToggle={setOpen} onStatus={toggleStatus}
-                      onFocus={() => { const i = rows.findIndex((r) => r.id === t.id); if (i >= 0) setCursor({ id: t.id, index: i }); }} />
+                      onOpen={openDiff} onToggle={setOpen} onStatus={toggleStatus} onFocus={onRowFocus} />
                   ))}
                 </section>
               ))}
@@ -335,12 +340,12 @@ function TargetHeader({ g, status, onDiff, onDetails }: { g: ThreadGroupOf<Threa
           <span className={cx('cv-title', !t.targetTitle && 'muted')}>{title}</span>
         </button>
       </span>
-      <span className="rule" />
-      <span className="gc">{groupCount(g, status)}<span className="cv-when"> · <time dateTime={g.lastAt} title={fmtDateTime(g.lastAt)}>{rel(g.lastAt)}</time></span></span>
       <span className="cv-acts">
         {pr && <button type="button" className="gh" onClick={onDetails} title={`${capitalize(p.pr.one)} details`} aria-label={`${capitalize(p.pr.one)} details`}><Icon name="doc" /></button>}
-        {t.targetUrl && <a className="gh" href={t.targetUrl} target="_blank" rel="noopener noreferrer" title={`Open on ${p.name}`} aria-label={`Open on ${p.name}`}><Icon name="ext" /></a>}
+        <a className="gh" href={t.targetUrl} target="_blank" rel="noopener noreferrer" title={`Open on ${p.name}`} aria-label={`Open on ${p.name}`}><Icon name="ext" /></a>
       </span>
+      <span className="rule" />
+      <span className="gc">{groupCount(g, status)}<span className="cv-when"> · <time dateTime={g.lastAt} title={fmtDateTime(g.lastAt)}>{rel(g.lastAt)}</time></span></span>
     </div>
   );
 }
@@ -348,7 +353,8 @@ function TargetHeader({ g, status, onDiff, onDetails }: { g: ThreadGroupOf<Threa
 /** Space activates a button on keyup: the row's own button leaves Space to the list (it expands the row). */
 const keepSpace = (e: ReactKeyboardEvent) => { if (e.key === ' ') e.preventDefault(); };
 
-function Row({ t, on, cursor, open, me, onOpen, onToggle, onStatus, onFocus }: {
+/** One thread. Memoized: keep every prop stable, so moving the cursor re-renders two rows, not the list. */
+const Row = memo(function Row({ t, on, cursor, open, me, onOpen, onToggle, onStatus, onFocus }: {
   t: ThreadListItem;
   /** Name what the thread is on: its ref (grouped per repo), with the repo (ungrouped), or not (grouped per target). */
   on: 'ref' | 'repo' | null;
@@ -358,7 +364,7 @@ function Row({ t, on, cursor, open, me, onOpen, onToggle, onStatus, onFocus }: {
   onOpen: (t: ThreadListItem) => void;
   onToggle: (id: number, open: boolean) => void;
   onStatus: (t: ThreadListItem) => Promise<void>;
-  onFocus: () => void;
+  onFocus: (id: number) => void;
 }) {
   const providerOf = useProviderOf();
   const label = useRepoLabel();
@@ -381,8 +387,8 @@ function Row({ t, on, cursor, open, me, onOpen, onToggle, onStatus, onFocus }: {
         onClick={() => onToggle(t.id, !open)}>
         <Icon name={open ? 'chevron' : 'chevronRight'} />
       </button>
-      <ThreadRow thread={t} onOpen={() => onOpen(t)} data-diff={threadTarget(t)} aria-label={aria} onFocus={onFocus} onKeyDown={keepSpace} onKeyUp={keepSpace}
-        before={on && <span className="cv-on" title={t.targetTitle ?? undefined}>{target}</span>}
+      <ThreadRow thread={t} onOpen={() => onOpen(t)} data-diff={threadTarget(t)} aria-label={aria} onFocus={() => onFocus(t.id)} onKeyDown={keepSpace} onKeyUp={keepSpace}
+        before={on && <span className="cv-on" title={t.targetTitle ?? undefined}>{on === 'repo' && <span className="r">{label(t.repo)}</span>}{refOf(t, providerOf)}</span>}
         after={<>
           {t.earlierPush && <span className="cv-tag" title={`Made on an earlier push (${t.commitOid.slice(0, 7)}); the ${providerOf(t.repo).pr.short} has changed since`}>earlier push</span>}
           <time className="cv-time" dateTime={t.updatedAt} title={fmtDateTime(t.updatedAt)}>{rel(t.updatedAt)}</time>
@@ -390,7 +396,7 @@ function Row({ t, on, cursor, open, me, onOpen, onToggle, onStatus, onFocus }: {
       {open && <Conversation id={convId} t={t} me={me} onOpen={onOpen} onStatus={onStatus} />}
     </div>
   );
-}
+});
 
 /** The whole conversation, read-only: authors, times, the Markdown. Resolve or reopen here; reply in the diff. */
 function Conversation({ id, t, me, onOpen, onStatus }: { id: string; t: ThreadListItem; me: Me | undefined; onOpen: (t: ThreadListItem) => void; onStatus: (t: ThreadListItem) => Promise<void> }) {

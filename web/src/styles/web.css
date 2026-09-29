@@ -683,7 +683,10 @@ a.sync:hover .sync-text { color: var(--text); text-decoration: underline; text-u
 .seg .n { color: var(--muted); font-variant-numeric: tabular-nums; }
 .btn.sm { height: 26px; padding: 0 9px; font-size: 12.5px; }
 .btn.sm svg { width: 13px; height: 13px; }
+/* Sections skip layout off screen (content-visibility, which clips their paint): room for the rows' outset. */
+.cv-list > section { margin: 0 -12px; padding: 0 12px; }
 .cv-list.flat { padding-top: 12px; }
+.cv-list .empty p { max-width: 560px; margin-inline: auto; }
 .cv-gh { align-items: center; }
 .cv-gh .gt { display: flex; flex: 0 1 auto; align-items: center; gap: 7px; min-width: 0; }
 .cv-gh .pr-ic { display: inline-flex; padding-top: 0; }
@@ -696,7 +699,7 @@ a.sync:hover .sync-text { color: var(--text); text-decoration: underline; text-u
 .cv-target:hover .cv-title { color: var(--accent-text); text-decoration: underline; text-underline-offset: 2px; }
 .cv-gh .rule { min-width: 16px; }
 .cv-gh .gc { flex: none; white-space: nowrap; }
-.cv-acts { display: flex; flex: none; gap: 2px; margin-right: -3px; }
+.cv-acts { display: flex; flex: none; gap: 2px; margin-left: -4px; }
 .cv-acts .gh { display: grid; opacity: 0; }
 .cv-gh:hover .gh, .cv-gh:focus-within .gh { opacity: 1; }
 @media (hover: none) { .cv-acts .gh { opacity: 1; } }
@@ -708,15 +711,17 @@ a.sync:hover .sync-text { color: var(--text); text-decoration: underline; text-u
 .cv-disc { display: grid; place-items: center; height: 36px; padding-left: 4px; border-radius: 8px 0 0 8px; color: var(--muted); }
 .cv-disc svg { width: 12px; height: 12px; }
 .cv-disc:hover { color: var(--text); }
-.cv-row > .th-li { align-items: center; min-height: 36px; margin: 0; padding: 7px 10px 7px 2px; border-radius: 0 8px 8px 0; font-size: 13.5px; }
+.cv-row > .th-li { align-items: center; min-height: 36px; margin: 0; padding: 7px 12px 7px 2px; border-radius: 0 8px 8px 0; font-size: 13.5px; }
 .cv-row > .th-li:hover { background: none; }
 .cv-row > .th-li:focus-visible { outline: none; }
 .cv-row .th-where { max-width: 40%; font-size: 12px; }
 .cv-row.resolved .th-where, .cv-row.resolved .cv-on { color: var(--muted); }
-.cv-on { flex: none; max-width: 32%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 12px var(--mono); color: var(--text-2); }
+/* What the thread is on ("#17", "app!7"): the repo gives way first, the ref stays whole. */
+.cv-on { display: inline-flex; flex: none; max-width: 32%; min-width: 0; white-space: nowrap; font: 12px var(--mono); color: var(--muted); }
+.cv-on .r { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .cv-tag { flex: none; padding: 0 6px; border: 1px solid var(--border-strong); border-radius: 999px; font-size: 11px; font-weight: 500; line-height: 16px; color: var(--muted); white-space: nowrap; }
 .cv-time { flex: none; min-width: 52px; text-align: right; font-size: 12px; color: var(--muted); white-space: nowrap; }
-.cv-conv { grid-column: 2; margin: 0 10px 12px 2px; padding: 2px 0 2px 14px; border-left: 2px solid var(--accent); }
+.cv-conv { grid-column: 2; max-width: 860px; margin: 0 10px 12px 2px; padding: 2px 0 2px 14px; border-left: 2px solid var(--accent); }
 .cv-row.resolved .cv-conv { border-left-color: var(--border-strong); }
 .cv-snip { margin: 0 0 10px; padding: 6px 10px; max-height: 9em; overflow: auto; border-radius: 6px; background: var(--surface-2); font: 11.5px/1.5 var(--mono); color: var(--text-2); white-space: pre; }
 .cv-c + .cv-c { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
@@ -729,11 +734,18 @@ a.sync:hover .sync-text { color: var(--text); text-decoration: underline; text-u
 .cv-foot { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 /* The same count on Activity's commit lines (PrRow's CommentBadge). */
 .c-li .pr-comments { flex: none; margin-left: 0; }
+/* Narrow: a row's words go under its place, and a group's counts under its title. */
 @container main (max-width: 640px) {
   .cv-row > .th-li { flex-wrap: wrap; row-gap: 2px; }
   .cv-row .th-where { max-width: none; margin-right: auto; }
   .cv-row .th-text { order: 1; flex: 1 1 100%; padding-left: 21px; white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
-  .cv-gh .cv-when { display: none; }
+  .cv-disc { place-items: start center; padding-top: 11px; }
+  .cv-gh { flex-wrap: wrap; row-gap: 0; }
+  .cv-gh .gt { flex: 1 1 100%; }
+  .cv-gh .repo-chip { max-width: 45%; min-width: 0; }
+  .cv-gh .rule { display: none; }
+  .cv-gh .gc { order: 1; padding-left: 21px; }
+  .cv-acts { order: 2; margin-left: auto; }
 }
 @media (max-width: 900px) {
   .cv-disc, .cv-row > .th-li { min-height: 44px; }

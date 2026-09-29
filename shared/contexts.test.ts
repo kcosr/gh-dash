@@ -179,6 +179,16 @@ describe('places', () => {
     expect(recordPlace(p, '/activity', '')).toBe(p); // nothing new: no write
   });
 
+  it('never records the root, which only redirects to a place, and forgets one stored before', () => {
+    const p = recordPlace(parsePlaces(null), '/insights', '?range=ytd');
+    expect(recordPlace(p, '/', '')).toBe(p);
+    expect(recordPlace(p, '/', `?source=${GL}`)).toBe(p);
+    expect(parsePlaces(JSON.stringify({ v: 1, last: ALL, places: { all: '/', [GL]: '/?who=me', 'github.com': '/prs' } })))
+      .toEqual({ v: 1, last: ALL, places: { 'github.com': '/prs' } });
+    // So `/` never redirects to itself.
+    expect(homePlace(parsePlaces(JSON.stringify({ v: 1, last: ALL, places: { all: '/' } })))).toBe('/prs');
+  });
+
   it('never records Settings, and forgets contexts no longer present', () => {
     const p = recordPlace(recordPlace(empty, '/prs', `?source=${GL}`), '/prs', '?source=old.example.com');
     expect(recordPlace(p, '/settings', '')).toBe(p);

@@ -40,6 +40,9 @@ export function presentSources(
   });
 }
 
+/** The app's root (`/`, `/?query`): the redirect to a place, never a place itself. */
+const isRoot = (place: string) => /^\/+(?:[?#]|$)/.test(place);
+
 /** A context: a source's host, or 'all'. */
 export type Ctx = string;
 export const ALL: Ctx = 'all';
@@ -66,7 +69,8 @@ export function parsePlaces(raw: string | null): Places {
     const v = JSON.parse(raw ?? '') as Partial<Places> | null;
     if (!v || v.v !== 1 || typeof v.last !== 'string' || !v.places || typeof v.places !== 'object') return EMPTY;
     const places: Record<Ctx, string> = {};
-    for (const [k, p] of Object.entries(v.places)) if (typeof p === 'string' && p.startsWith('/')) places[k] = p;
+    // `/` is where the app starts, not a place: it redirects to one (see recordPlace).
+    for (const [k, p] of Object.entries(v.places)) if (typeof p === 'string' && p.startsWith('/') && !isRoot(p)) places[k] = p;
     return { v: 1, last: v.last, places };
   } catch {
     return EMPTY;
@@ -75,11 +79,13 @@ export function parsePlaces(raw: string | null): Places {
 
 /**
  * The memory after visiting `pathname` + `search`: that becomes its context's place, and the context the last one.
- * Settings is context-free and never recorded. `keep`: the contexts to keep (the sources present, and All); others are
+ * Settings is context-free and never recorded. Nor is `/`: it only redirects to the last place, and a render can still
+ * be at `/` for a moment while that navigation is pending; recorded, switching to its context would land on `/` and be
+ * sent to another context (or back to `/`). `keep`: the contexts to keep (the sources present, and All); others are
  * dropped, so a removed source doesn't linger.
  */
 export function recordPlace(p: Places, pathname: string, search: string, keep?: readonly Ctx[]): Places {
-  if (viewFromPath(pathname) === 'settings') return p;
+  if (viewFromPath(pathname) === 'settings' || isRoot(pathname)) return p;
   const ctx = ctxOf(search);
   const place = pathname + search;
   const stale = keep ? Object.keys(p.places).filter((k) => k !== ALL && k !== ctx && !keep.includes(k)) : [];

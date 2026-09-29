@@ -381,6 +381,19 @@ describe('comment threads API', () => {
     expect(await (await makeApp().app.request('/api/docs')).text()).toContain('/api/v1/threads');
   });
 
+  it('documents the comment counts on PRs and commits, required, wherever those are listed', async () => {
+    const doc = await openApi();
+    const schemas = doc.components.schemas as unknown as Record<string, { required: string[]; properties: Record<string, unknown> }>;
+    for (const name of ['PullRequest', 'Commit']) {
+      expect(schemas[name]!.properties.comments, name).toMatchObject({ $ref: '#/components/schemas/CommentCounts' });
+      expect(schemas[name]!.required, name).toContain('comments');
+    }
+    // The activity event schema points at those two.
+    const events = JSON.stringify(doc.components.schemas.ActivityEvent);
+    expect(events).toContain('#/components/schemas/PullRequest');
+    expect(events).toContain('#/components/schemas/Commit');
+  });
+
   it('documents Markdown besides JSON for the thread lists, and no CSV', async () => {
     const doc = await openApi();
     const types = (path: string) => Object.keys(doc.paths[path]!.get!.responses['200']!.content!);
@@ -686,5 +699,53 @@ describe('GET /threads', () => {
       expect(text).toContain('## alice/app#2 · Fix \\*all\\* \\[the\\] things\n');
       expect(text).toContain('\n## alice/app#99\n');
     });
+  });
+});
+
+describe('comment counts on PRs and commits', () => {
+  const range = 'from=2026-09-01&to=2026-09-27';
+  const C3 = 'c3'.padEnd(40, '0'); // the seed's direct push to alice/app
+  type Counts = { threads: number; unresolved: number };
+
+  it('carry through GET /commits, /prs, the PR detail and the activity feed, and follow resolving and deleting', async () => {
+    const app = makeApp();
+    const { json, send } = app;
+    const read = async <T>(path: string) => (await json<T>('GET', path)).body;
+    const activity = async () => (await read<{ items: { type: string; commit?: { oid: string; comments: Counts }; pr?: { id: string; comments: Counts } }[] }>(`/activity?${range}&repos=app`)).items;
+    const commitCounts = async () => Object.fromEntries((await read<{ items: { oid: string; comments: Counts }[] }>(`/commits?${range}&repos=app`)).items.map((c) => [c.oid.slice(0, 2), c.comments]));
+
+    // Nothing yet: zero counts, not absent ones.
+    expect(await commitCounts()).toEqual({ c1: { threads: 0, unresolved: 0 }, c2: { threads: 0, unresolved: 0 }, c3: { threads: 0, unresolved: 0 } });
+    expect((await activity()).filter((e) => e.type === 'pr' || e.type === 'commit').every((e) => (e.pr ?? e.commit)!.comments.threads === 0)).toBe(true);
+
+    const first = (await json('POST', `/commits/app/${C3}/threads`, { body: 'Nit' })).body;
+    await json('POST', `/commits/app/${C3}/threads`, { path: 'src/a.ts', body: 'Another' });
+    await json('POST', '/prs/app/2/threads', lineThread);
+    expect(await commitCounts()).toMatchObject({ c3: { threads: 2, unresolved: 2 }, c2: { threads: 0, unresolved: 0 } });
+    // The PR's thread was made on a revision that happens to be c3's oid: still the PR's, not the commit's.
+    await json('POST', '/prs/app/2/threads', { ...lineThread, commitOid: C3 });
+    expect((await commitCounts()).c3).toEqual({ threads: 2, unresolved: 2 });
+
+    await json('PATCH', `/threads/${first.id}`, { status: 'resolved' });
+    const events = await activity();
+    expect(events.find((e) => e.commit?.oid === C3)!.commit!.comments).toEqual({ threads: 2, unresolved: 1 });
+    expect(events.filter((e) => e.pr?.id === 'alice/app#2').map((e) => e.pr!.comments)).toEqual([{ threads: 2, unresolved: 2 }]);
+    expect((await read<{ items: { id: string; comments: Counts }[] }>(`/prs?${range}&repos=app`)).items.find((p) => p.id === 'alice/app#2')!.comments).toEqual({ threads: 2, unresolved: 2 });
+    expect((await read<{ comments: Counts }>('/prs/app/2')).comments).toEqual({ threads: 2, unresolved: 2 });
+
+    await send('DELETE', `/threads/${first.id}`);
+    expect((await activity()).find((e) => e.commit?.oid === C3)!.commit!.comments).toEqual({ threads: 1, unresolved: 1 });
+  });
+
+  it('leave the activity exports as they were', async () => {
+    const { json, send } = makeApp();
+    const md = async () => (await (await send('GET', `/activity?${range}&repos=app&format=md`)).text());
+    const csv = async () => (await (await send('GET', `/activity?${range}&repos=app&format=csv`)).text());
+    const [mdBefore, csvBefore] = [await md(), await csv()];
+    await json('POST', `/commits/app/${C3}/threads`, { body: 'Nit' });
+    await json('POST', '/prs/app/2/threads', lineThread);
+    expect(await md()).toBe(mdBefore);
+    expect(await csv()).toBe(csvBefore);
+    expect(csvBefore).toContain('alice/app');
   });
 });

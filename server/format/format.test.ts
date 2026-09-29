@@ -16,7 +16,7 @@ function pr(number: number, activityAt: string, over: Partial<PullRequest> = {})
     id: `app#${number}`, repo: 'app', number, title: `PR ${number}`, body: '', state: 'merged', isDraft: false, author: me,
     mergedBy: 'alice', createdAt: activityAt, updatedAt: activityAt, mergedAt: activityAt, closedAt: activityAt, activityAt,
     additions: 1, deletions: 1, changedFiles: 1, commitCount: 1, headRef: 'x', baseRef: 'main', labels: [],
-    url: `https://github.com/alice/app/pull/${number}`, ...over,
+    url: `https://github.com/alice/app/pull/${number}`, comments: { threads: 0, unresolved: 0 }, ...over,
   };
 }
 

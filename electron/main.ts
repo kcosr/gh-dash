@@ -115,7 +115,8 @@ function run() {
     for (const [key, value] of Object.entries(process.env)) if (value !== undefined) env[key] = value;
     delete env.ELECTRON_RUN_AS_NODE;
     // Instance settings live in config.json and are edited in Settings; a launching shell's HOST, PORT, GH_DASH_DB...
-    // would silently override them. GITHUB_TOKEN stays (it deliberately locks the token, and Settings says so), as does TZ.
+    // would silently override them. GITHUB_TOKEN and GITLAB_TOKEN stay (they deliberately lock the token, and Settings
+    // says so), as does TZ. The child ignores the rest of the GitLab env declaration (GITLAB_TOKEN_FILE...) itself.
     for (const [key, name] of Object.entries(CONFIG_ENV)) if (key !== 'timezone') delete env[name];
     // A child that crashed can leave its socket file behind; listen() would fail with EADDRINUSE.
     if (socket.dir) rmSync(socket.path, { force: true });

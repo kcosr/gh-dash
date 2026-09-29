@@ -693,7 +693,7 @@ export interface DiffCacheStats {
 // POST   /api/v1/sync           {repo?: string, full?: boolean} -> 202 SyncStatus (409 if already running, 503 no token,
 //          404 when `repo` is a key nothing tracks)
 // GET    /api/v1/prs/:repo/:number/diff  {refresh?: '1'} -> Diff
-// GET    /api/v1/commits/:repo/:oid/diff {refresh?: '1'} -> Diff     (oid: 7-40 hex chars; need not be synced)
+// GET    /api/v1/commits/:repo/:oid/diff {refresh?: '1'} -> Diff     (oid: 7-64 hex chars; need not be synced)
 //          Diff errors: 404 unknown repo/PR/commit, 503 no GitHub token, 429 GitHub rate limit, 502 other GitHub failure.
 //          refresh=1 re-checks GitHub for a PR's current head instead of using the last synced one.
 // GET    /api/v1/blob/:repo     {ref, path}    -> text/plain file contents at a commit (for expanding diff context);

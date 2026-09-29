@@ -62,9 +62,19 @@ export interface DiffServiceOptions {
 
 type Fetcher = (source: DiffSource, signal: AbortSignal) => Promise<Payload>;
 
+/**
+ * A commit SHA or an abbreviation of one, lower-cased: 7-40 hex characters in a SHA-1 repository, up to 64 in a SHA-256
+ * one. The length alone can't tell the two apart (a 45-character abbreviation is valid only in SHA-256), so the range
+ * is the wider one; a SHA the repository doesn't have is the source's not-found.
+ */
 function hexOid(value: string, what: string): string {
-  if (!/^[0-9a-f]{7,40}$/i.test(value)) throw new HttpError(400, `Invalid ${what}: expected 7-40 hex characters`);
+  if (!/^[0-9a-f]{7,64}$/i.test(value)) throw new HttpError(400, `Invalid ${what}: expected 7-64 hex characters`);
   return value.toLowerCase();
+}
+
+/** Whether `value` (already checked by hexOid, or any string) is a whole SHA: 40 hex characters (SHA-1) or 64 (SHA-256). */
+export function isFullSha(value: string): boolean {
+  return /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(value);
 }
 
 /** A repository-relative path: no empty, "." or ".." segments, and no control characters (they'd end up in logs). */
@@ -163,7 +173,7 @@ export class DiffService {
 
   /** Full SHA for an abbreviated one, from synced commits or cached commit diffs, when unambiguous. */
   private expandOid(id: number, repo: DiffRepo, oid: string): string | null {
-    if (oid.length === 40) return oid;
+    if (isFullSha(oid)) return oid;
     const rows = this.db.all<{ oid: string }>('SELECT oid FROM commits WHERE repo_id = ? AND oid >= ? AND oid < ? LIMIT 2', [
       id,
       oid,
@@ -356,7 +366,7 @@ export class DiffService {
     const { id, repo } = this.repo(repoName);
     const sha = this.expandOid(id, repo, short) ?? short;
     const key = `blob/${repo.key}/${sha}/${path}`;
-    const hit = sha.length === 40 ? this.cached(key) : null;
+    const hit = isFullSha(sha) ? this.cached(key) : null;
     if (hit) return hit;
 
     return this.once(key, () =>
@@ -370,7 +380,7 @@ export class DiffService {
         // Git's own heuristic: a NUL byte in the first 8000 bytes means binary.
         if (file.bytes.subarray(0, 8000).includes(0)) throw new HttpError(415, `${path} is a binary file`);
         // What a short ref names isn't fixed (it can become ambiguous, or name another commit later): don't keep it.
-        const entry = sha.length === 40 ? { key, kind: 'blob' as const, repo: repo.key, oid: sha, fetchedAt: this.now() } : null;
+        const entry = isFullSha(sha) ? { key, kind: 'blob' as const, repo: repo.key, oid: sha, fetchedAt: this.now() } : null;
         return this.store(entry, new TextDecoder('utf-8', { ignoreBOM: true }).decode(file.bytes));
       }),
     );

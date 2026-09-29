@@ -20,6 +20,7 @@ const bridge: DesktopBridge = {
   updateConfig: (patch) => call(DESKTOP_IPC.updateConfig, patch),
   chooseDataDir: () => call(DESKTOP_IPC.chooseDataDir),
   generateApiKey: () => call(DESKTOP_IPC.generateApiKey),
+  chooseGhPath: () => call(DESKTOP_IPC.chooseGhPath),
 };
 
 contextBridge.exposeInMainWorld('ghDashDesktop', bridge);

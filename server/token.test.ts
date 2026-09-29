@@ -147,7 +147,7 @@ describe('TokenProvider resolution', () => {
     expect(configured.gh.calls[0]!.file).toBe('/opt/gh/bin/gh');
 
     const missing = setup({ ghPath: '/nope/gh' });
-    expect(await missing.tokens.get()).toMatchObject({ source: 'none', error: 'gh not found at /nope/gh (GH_DASH_GH_PATH)' });
+    expect(await missing.tokens.get()).toMatchObject({ source: 'none', error: 'gh not found at /nope/gh (ghPath)' });
 
     const onPath = setup({ env: { HOME, PATH: '/tools/bin:relative:/usr/bin' }, files: { '/tools/bin/gh': { exec: true }, 'relative/gh': { exec: true } } });
     expect((await onPath.tokens.account()).gh.path).toBe('/tools/bin/gh');
@@ -158,6 +158,10 @@ describe('TokenProvider resolution', () => {
     const mac = setup({ platform: 'darwin', env: { HOME, PATH: '/usr/bin:/bin' }, files: { [GH]: {}, '/opt/homebrew/bin/gh': { exec: true } } });
     expect((await mac.tokens.account()).gh.path).toBe('/opt/homebrew/bin/gh');
 
+    // A hand-installed gh in ~/bin, with a GUI app's launchd PATH that doesn't list it.
+    const homeBin = setup({ platform: 'darwin', env: { HOME, PATH: '/usr/bin:/bin:/usr/sbin:/sbin' }, files: { [GH]: {}, [`${HOME}/bin/gh`]: { exec: true } } });
+    expect((await homeBin.tokens.account()).gh.path).toBe(`${HOME}/bin/gh`);
+
     const win = setup({
       platform: 'win32',
       env: { Path: 'C:\\Windows\\system32', ProgramFiles: 'C:\\Program Files', USERPROFILE: 'C:\\Users\\u', LOCALAPPDATA: 'C:\\Users\\u\\AppData\\Local' },
@@ -167,7 +171,7 @@ describe('TokenProvider resolution', () => {
 
     const none = setup({ files: { [GH]: { exec: false } }, env: { HOME, PATH: '' } });
     const account = await none.tokens.account();
-    expect(account).toMatchObject({ source: 'none', gh: { available: false, path: null, login: null }, error: 'GitHub CLI (gh) not found: install it, or set GH_DASH_GH_PATH' });
+    expect(account).toMatchObject({ source: 'none', gh: { available: false, path: null, login: null }, error: 'GitHub CLI (gh) not found: install it, or set its location (ghPath)' });
   });
 
   it("explains gh's failures", async () => {

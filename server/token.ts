@@ -506,7 +506,7 @@ export class TokenProvider implements TokenSupply {
 
   private async fromGh(gh: GhInfo): Promise<ResolvedToken> {
     if (!gh.path) {
-      return none(this.ghPath ? `gh not found at ${this.ghPath} (GH_DASH_GH_PATH)` : 'GitHub CLI (gh) not found: install it, or set GH_DASH_GH_PATH');
+      return none(this.ghPath ? `gh not found at ${this.ghPath} (ghPath)` : 'GitHub CLI (gh) not found: install it, or set its location (ghPath)');
     }
     try {
       // --hostname: GH_HOST may point gh at an Enterprise server; gh-dash only talks to github.com.
@@ -562,9 +562,9 @@ export class TokenProvider implements TokenSupply {
     }
     const nix = [j(home, '.nix-profile/bin'), '/run/current-system/sw/bin'];
     if (this.platform === 'darwin') {
-      return ['/opt/homebrew/bin', '/usr/local/bin', '/opt/local/bin', ...nix, j(home, '.local/bin')];
+      return ['/opt/homebrew/bin', '/usr/local/bin', '/opt/local/bin', ...nix, j(home, '.local/bin'), j(home, 'bin')];
     }
-    return ['/usr/bin', '/usr/local/bin', j(home, '.local/bin'), '/home/linuxbrew/.linuxbrew/bin', j(home, '.linuxbrew/bin'), ...nix, '/snap/bin'];
+    return ['/usr/bin', '/usr/local/bin', j(home, '.local/bin'), j(home, 'bin'), '/home/linuxbrew/.linuxbrew/bin', j(home, '.linuxbrew/bin'), ...nix, '/snap/bin'];
   }
 
   private async isExecutable(path: string): Promise<boolean> {

@@ -394,6 +394,10 @@ img.acct-av { width: 20px; height: 20px; border-radius: 50%; flex: none; backgro
 .acct-choice { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; }
 .acct-choice small { font-size: 12px; }
 .acct-choice .form-err { flex-basis: 100%; margin-top: 0; }
+/* An inline action that reads like the links around it (e.g. "Locate gh…"). */
+.link-btn { color: var(--accent-text); }
+.link-btn:hover:not(:disabled) { text-decoration: underline; }
+.link-btn:disabled { color: inherit; cursor: default; }
 .acct-token { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; width: 100%; max-width: 460px; }
 .acct-token-row { display: flex; gap: 8px; width: 100%; }
 .acct-token-row .input { flex: 1; min-width: 0; }

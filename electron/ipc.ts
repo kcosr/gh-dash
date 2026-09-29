@@ -1,5 +1,6 @@
 /** ipcMain handlers behind window.ghDashDesktop (electron/preload.ts). */
 import { type BrowserWindow, dialog, type IpcMainInvokeEvent, ipcMain } from 'electron';
+import { homedir } from 'node:os';
 import { DESKTOP_IPC } from '../shared/desktop';
 import { ConfigInputError, parseTokenInput } from './config';
 import type { Desktop } from './desktop';
@@ -46,4 +47,17 @@ export function registerIpc(desktop: Desktop, window: () => BrowserWindow | null
     return result.canceled ? null : (result.filePaths[0] ?? null);
   });
   handle(DESKTOP_IPC.generateApiKey, () => desktop.generateApiKey());
+  handle(DESKTOP_IPC.chooseGhPath, async () => {
+    const win = window();
+    const options: Electron.OpenDialogOptions = {
+      title: 'Locate the GitHub CLI (gh)',
+      buttonLabel: 'Use this gh',
+      defaultPath: homedir(),
+      properties: ['openFile', 'showHiddenFiles', 'dontAddToRecent'],
+      ...(process.platform === 'win32' ? { filters: [{ name: 'gh.exe', extensions: ['exe'] }] } : {}),
+    };
+    const result = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+    const file = result.canceled ? null : (result.filePaths[0] ?? null);
+    return file ? desktop.setGhPath(file) : null;
+  });
 }

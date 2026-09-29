@@ -75,17 +75,25 @@ export function useDesktopActions() {
     mutationFn: () => need(bridge).signOut(),
     onSuccess: (a) => tokenChanged(qc, a),
   });
+  // After a server restart everything may have changed; with a new data folder it's another database.
+  const others = { predicate: (q: { queryKey: readonly unknown[] }) => q.queryKey[0] !== qk.desktop[0] };
   const updateConfig = useMutation({
     mutationFn: (patch: DesktopConfigPatch) => need(bridge).updateConfig(patch),
     onSuccess: (state, patch) => {
       qc.setQueryData(qk.desktop, state);
-      // The server restarted: everything may have changed, and with a new data folder it's another database.
-      const others = { predicate: (q: { queryKey: readonly unknown[] }) => q.queryKey[0] !== qk.desktop[0] };
       if (patch.dataDir !== undefined) void qc.resetQueries(others);
       else void qc.invalidateQueries(others);
     },
   });
+  const locateGh = useMutation({
+    mutationFn: () => need(bridge).chooseGhPath(),
+    onSuccess: (state) => {
+      if (!state) return; // cancelled
+      qc.setQueryData(qk.desktop, state);
+      void qc.invalidateQueries(others);
+    },
+  });
   const chooseDataDir = useMutation({ mutationFn: () => need(bridge).chooseDataDir() });
   const generateApiKey = useMutation({ mutationFn: () => need(bridge).generateApiKey() });
-  return { ghCli, setToken, signOut, updateConfig, chooseDataDir, generateApiKey };
+  return { ghCli, setToken, signOut, updateConfig, chooseDataDir, generateApiKey, locateGh };
 }

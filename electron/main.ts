@@ -5,7 +5,7 @@
 import { app, BrowserWindow, protocol, screen, session, shell } from 'electron';
 import { randomBytes } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, statfsSync } from 'node:fs';
-import { isAbsolute, join } from 'node:path';
+import { delimiter, isAbsolute, join } from 'node:path';
 import { CONFIG_ENV } from '../server/config-file';
 import { DESKTOP_ENV, DESKTOP_ORIGIN, DESKTOP_SCHEME } from '../shared/desktop';
 import { toDesktopConfig } from './config';
@@ -17,6 +17,7 @@ import { installMenu } from './menu';
 import { decideLink, isAppUrl, type LinkDecision } from './navigation';
 import { createProxy } from './proxy';
 import { ServerChild } from './server-child';
+import { mergePath, resolveShellPath } from './shell-path';
 import { cleanupStaleSocketDirs, createSocketLocation } from './socket';
 import { TokenStore } from './token-store';
 import { loadWindowState, MIN_HEIGHT, MIN_WIDTH, saveWindowState } from './window-state';
@@ -58,6 +59,14 @@ function run() {
       /* logging must never take the app down */
     }
   };
+
+  // Started now so it overlaps Electron's own startup. Everything spawned later (the server child, gh, the
+  // "Locate gh" check) inherits the merged PATH from process.env.
+  const shellPath = resolveShellPath().then((resolved) => {
+    const before = process.env.PATH;
+    if (resolved) process.env.PATH = mergePath(resolved, before);
+    log(resolved ? `[env] PATH from the login shell (${process.env.PATH!.split(delimiter).length} entries)` : '[env] login shell PATH not available; using the inherited PATH');
+  });
   log(`[app] gh-dash ${app.getVersion()} · electron ${process.versions.electron} · ${process.platform}-${process.arch}${app.isPackaged ? '' : ' · unpackaged'}`);
 
   // Chromium keeps renderer/compositor shared memory in /dev/shm; containers and some distros make it tiny (64 MB),
@@ -134,6 +143,12 @@ function run() {
     },
   });
   desktop = new Desktop({ child, tokens, configPath, dataDir, version: app.getVersion(), restart: () => child.restart(), log });
+  // The first start waits for the app to be ready and for the login shell's PATH (the child, and gh, need it);
+  // requests that arrive before then wait for it too, rather than finding the child not started.
+  let appReady!: () => void;
+  const firstStart = Promise.all([shellPath, new Promise<void>((resolve) => (appReady = resolve))]).then(() => {
+    void child.start();
+  });
   const apiUrl = () => (child.status === 'running' ? child.apiUrl : null);
 
   const onAction = async (action: ErrorPageAction) => {
@@ -156,7 +171,7 @@ function run() {
     socketPath: socket.path,
     secret,
     csp,
-    whenSettled: () => child.whenSettled(),
+    whenSettled: () => firstStart.then(() => child.whenSettled()),
     failure: () => child.lastError ?? 'the server is not running',
     errorPage: () => errorPageHtml({ message: child.lastError ?? 'The server is not running.', configPath, localApiOn: localApiOn() }),
     onAction,
@@ -309,7 +324,7 @@ function run() {
     });
     protocol.handle(DESKTOP_SCHEME, (request) => proxy.handle(request));
     registerIpc(desktop, () => mainWindow, log);
-    void child.start();
+    appReady();
     void desktop.restoreToken().catch((error: Error) => log(`[token] ${error.message}`));
     createWindow();
   });

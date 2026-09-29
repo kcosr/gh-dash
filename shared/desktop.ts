@@ -123,6 +123,11 @@ export interface DesktopBridge {
   chooseDataDir(): Promise<string | null>;
   /** A new random API key (not saved until passed to updateConfig). */
   generateApiKey(): Promise<string>;
+  /**
+   * Native file picker for the gh executable when it isn't found (a GUI app doesn't get the shell's PATH). The file
+   * must answer `--version` like gh; it's saved as config.json `ghPath` and the server restarts. null when cancelled.
+   */
+  chooseGhPath(): Promise<DesktopState | null>;
 }
 
 /** IPC channel names used by the preload script (ipcRenderer.invoke) and main (ipcMain.handle). */
@@ -134,6 +139,7 @@ export const DESKTOP_IPC = {
   updateConfig: 'gh-dash:update-config',
   chooseDataDir: 'gh-dash:choose-data-dir',
   generateApiKey: 'gh-dash:generate-api-key',
+  chooseGhPath: 'gh-dash:choose-gh-path',
 } as const;
 
 declare global {

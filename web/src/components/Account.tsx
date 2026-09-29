@@ -18,7 +18,7 @@ const connected = (a: AccountStatus) => (a.login ? `Connected as ${a.login}` : '
  * the account shown elsewhere stays the one still in use.
  */
 export function GhCliChoice({ account, idPrefix = 'gh-cli' }: { account: AccountStatus; idPrefix?: string }) {
-  const { ghCli } = useDesktopActions();
+  const { ghCli, locateGh } = useDesktopActions();
   const toast = useToast();
   const [error, setError] = useState<string | null>(null);
   const reason = ghUnavailable(account);
@@ -27,6 +27,14 @@ export function GhCliChoice({ account, idPrefix = 'gh-cli' }: { account: Account
     setError(null);
     ghCli.mutate(undefined, {
       onSuccess: (r) => (r.ok ? toast(connected(r.account)) : setError(r.account.error ?? "The GitHub CLI didn't return a usable token.")),
+      onError: (e) => setError(bridgeError(e)),
+    });
+  };
+  // A GUI app doesn't get the shell's PATH: let the user point at gh when it isn't found anywhere we look.
+  const locate = () => {
+    setError(null);
+    locateGh.mutate(undefined, {
+      onSuccess: (state) => state && toast('Found the GitHub CLI'),
       onError: (e) => setError(bridgeError(e)),
     });
   };
@@ -39,7 +47,11 @@ export function GhCliChoice({ account, idPrefix = 'gh-cli' }: { account: Account
       </button>
       <small id={`${idPrefix}-note`} className="muted">
         {account.locked ? null
-          : !account.gh.available ? <>Not found: get it from <a href="https://cli.github.com" target="_blank" rel="noopener noreferrer">cli.github.com</a></>
+          : !account.gh.available ? <>
+            Not found.{' '}
+            <button type="button" className="link-btn" onClick={locate} disabled={locateGh.isPending}>{locateGh.isPending ? 'Checking…' : 'Locate gh…'}</button>
+            {' '}or get it from <a href="https://cli.github.com" target="_blank" rel="noopener noreferrer">cli.github.com</a>
+          </>
             : account.gh.login ? <>Signed in as <b>{account.gh.login}</b></>
               : <>Run <code>gh auth login</code> first.</>}
       </small>

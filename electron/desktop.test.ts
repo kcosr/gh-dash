@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -231,5 +231,34 @@ describe('generateApiKey', () => {
     expect(a).not.toBe(desktop.generateApiKey());
     await desktop.updateConfig({ apiKey: a });
     expect(readConfig().apiKey).toBe(a);
+  });
+});
+
+describe.skipIf(process.platform === 'win32')('Locate gh', () => {
+  const script = (name: string, output: string) => {
+    const path = join(dir, name);
+    writeFileSync(path, `#!/bin/sh\necho "${output}"\n`);
+    chmodSync(path, 0o755);
+    return path;
+  };
+
+  it('saves a gh that answers --version and restarts the server, keeping the token choice', async () => {
+    writeFileSync(configPath, JSON.stringify({ tokenSource: 'gh', port: 4999 }));
+    const gh = script('gh', 'gh version 2.100.0 (2026-09-01)');
+    await desktop.setGhPath(gh);
+    expect(readConfig()).toEqual({ tokenSource: 'gh', port: 4999, ghPath: gh });
+    expect(restart).toHaveBeenCalledTimes(1);
+    // Picking the same one again is a no-op.
+    await desktop.setGhPath(gh);
+    expect(restart).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses anything that is not gh, and relative paths', async () => {
+    const other = script('git', 'git version 2.50.0');
+    await expect(desktop.setGhPath(other)).rejects.toThrow(/isn't the GitHub CLI/);
+    await expect(desktop.setGhPath(join(dir, 'missing'))).rejects.toThrow(/isn't the GitHub CLI/);
+    await expect(desktop.setGhPath('bin/gh')).rejects.toThrow(/gh executable/);
+    expect(existsSync(configPath)).toBe(false);
+    expect(restart).not.toHaveBeenCalled();
   });
 });

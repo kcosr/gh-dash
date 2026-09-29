@@ -180,7 +180,9 @@ from its environment, so Settings always shows what's in effect; `GITHUB_TOKEN` 
 Logs, including the server's, are in `logs/main.log`.
 
 **GitHub account.** In **Settings → GitHub account**, either use the GitHub CLI (`gh auth token`;
-run `gh auth login` first) or paste a token. **Remember on this device** stores a pasted token
+run `gh auth login` first) or paste a token. Apps opened from Finder, the Dock or a desktop launcher
+don't get your shell's `PATH`, so at startup the app asks your login shell for it (macOS and Linux)
+and also looks in the usual install folders. If `gh` still isn't found, use **Locate gh…** to pick it. **Remember on this device** stores a pasted token
 encrypted with the system keychain (macOS Keychain, Windows DPAPI, or GNOME Keyring/KWallet
 on Linux). Without a keychain, as on Linux desktops that have neither, the token is kept only
 until you quit. On macOS, an unsigned build may ask for keychain access after each update; if

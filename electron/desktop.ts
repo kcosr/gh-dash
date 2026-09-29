@@ -2,9 +2,11 @@
  * What the bridge methods do: token choices (persisted as config.json `tokenSource`), the keychain, and config.json
  * edits that restart the server child. Mutations run one at a time.
  */
+import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { accessSync, constants, mkdirSync, rmSync } from 'node:fs';
-import { isDeepStrictEqual } from 'node:util';
+import { basename, isAbsolute } from 'node:path';
+import { isDeepStrictEqual, promisify } from 'node:util';
 import { type ConfigFile, readConfigFile, writeConfigFile } from '../server/config-file';
 import type { AccountStatus, TokenChoice } from '../shared/api';
 import type { DesktopConfigPatch, DesktopState, DesktopTokenResult } from '../shared/desktop';
@@ -205,10 +207,35 @@ export class Desktop {
     return `ghd_${randomBytes(24).toString('base64url')}`;
   }
 
+  /**
+   * "Locate gh": the chosen file must be the GitHub CLI (`--version` prints "gh version ..."), then it becomes
+   * config.json `ghPath` and the server restarts to pick it up. The token choice isn't touched.
+   */
+  async setGhPath(path: string): Promise<DesktopState> {
+    if (!isAbsolute(path)) throw new ConfigInputError('Choose the gh executable.');
+    let version = '';
+    try {
+      version = (await execFileAsync(path, ['--version'], { timeout: 10_000, windowsHide: true, encoding: 'utf8' })).stdout;
+    } catch {
+      /* not runnable: reported below */
+    }
+    if (!/^gh version \d/m.test(version)) throw new ConfigInputError(`${basename(path)} isn't the GitHub CLI: it didn't answer --version like gh does.`);
+    return this.exclusive(async () => {
+      const config = this.readConfig();
+      if (config.ghPath === path && this.d.child.status === 'running') return this.state();
+      writeConfigFile(this.d.configPath, { ...config, ghPath: path });
+      this.d.log(`[config] ghPath set to ${path}; restarting the server`);
+      await this.d.restart();
+      return this.state();
+    });
+  }
+
   currentDataDir(): string {
     return toDesktopConfig(this.configOrEmpty(), this.d.dataDir).dataDir;
   }
 }
+
+const execFileAsync = promisify(execFile);
 
 function ensureWritableDir(dir: string) {
   try {

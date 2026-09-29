@@ -598,13 +598,19 @@ export interface CommentThread extends ThreadAnchor {
   comments: ThreadComment[];
 }
 
-/** POST /prs/:repo/:number/threads and /commits/:repo/:oid/threads. Anchor fields omitted = null. */
+/** POST /commits/:repo/:oid/threads (and the base of NewPrThread). Anchor fields omitted = null. */
 export interface NewThread extends Partial<ThreadAnchor> {
-  /** PR threads only (a commit thread's is the commit): the headOid of the diff the thread is made on. */
+  /** A commit thread is on its commit: optional, and if sent it must be the commit's own oid. */
   commitOid?: string;
   baseOid?: string | null;
   /** The first comment. */
   body: string;
+}
+
+/** POST /prs/:repo/:number/threads. */
+export interface NewPrThread extends NewThread {
+  /** The headOid of the diff the thread is made on. */
+  commitOid: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -642,7 +648,7 @@ export interface NewThread extends Partial<ThreadAnchor> {
 // GET    /api/v1/diff-cache                    -> DiffCacheStats
 // DELETE /api/v1/diff-cache                    -> DiffCacheStats (after clearing)
 // GET    /api/v1/prs/:repo/:number/threads {format?: 'md'} -> { items: CommentThread[] } | text/markdown
-// POST   /api/v1/prs/:repo/:number/threads NewThread -> CommentThread   (404 unless the PR is synced)
+// POST   /api/v1/prs/:repo/:number/threads NewPrThread -> CommentThread   (404 unless the PR is synced)
 // GET    /api/v1/commits/:repo/:oid/threads {format?: 'md'} -> { items: CommentThread[] } | text/markdown  (oid: full SHA)
 // POST   /api/v1/commits/:repo/:oid/threads NewThread -> CommentThread
 // GET    /api/v1/threads/:id                   -> CommentThread

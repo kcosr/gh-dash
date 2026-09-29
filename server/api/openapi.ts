@@ -24,6 +24,26 @@ const TOKEN_SOURCE = enumOf('env', 'file', 'gh-cli', 'app', 'none');
 /** An instance setting with where it came from. */
 const setting = (value: Schema): Schema => obj({ value, source: enumOf('default', 'file', 'env') });
 
+/** A new thread's request body. A PR thread must name the head it was made on; a commit thread is on the commit. */
+function newThread(kind: 'pr' | 'commit'): Schema {
+  const anchor = ['baseOid', 'path', 'side', 'startLine', 'endLine', 'snippet'];
+  return {
+    ...obj({
+      commitOid: str(kind === 'pr' ? 'headOid of the diff shown (full SHA)' : "Optional; if sent, the commit's own full SHA"),
+      baseOid: nullable(str("The diff's baseOid")),
+      path: nullable(str()),
+      side: nullable(enumOf('old', 'new')),
+      startLine: nullable(int()),
+      endLine: nullable(int()),
+      snippet: nullable(str()),
+      body: str('Markdown, at most 65536 characters'),
+    }, kind === 'pr' ? anchor : ['commitOid', ...anchor]),
+    description:
+      'Anchor levels: no path (the whole PR or commit); path only (a file); or path, side, startLine, endLine and snippet ' +
+      '(lines, at most 1000, snippet holding exactly those lines).',
+  };
+}
+
 const schemas: Record<string, Schema> = {
   Error: obj({ error: str(), details: {} }, ['details']),
   Actor: obj({ login: nullable(str()), name: nullable(str()), avatarUrl: nullable(str()), isMe: bool }),
@@ -228,21 +248,8 @@ const schemas: Record<string, Schema> = {
     updatedAt: { ...dateTime, description: 'Last comment added, edited or deleted, or status change' },
     comments: { ...arr(ref('ThreadComment')), description: 'Oldest first; never empty' },
   }),
-  NewThread: {
-    ...obj({
-      commitOid: str('PR threads: headOid of the diff shown (full SHA). Commit threads: optional, must be the commit'),
-      baseOid: nullable(str("The diff's baseOid")),
-      path: nullable(str()),
-      side: nullable(enumOf('old', 'new')),
-      startLine: nullable(int()),
-      endLine: nullable(int()),
-      snippet: nullable(str()),
-      body: str('Markdown, at most 65536 characters'),
-    }, ['commitOid', 'baseOid', 'path', 'side', 'startLine', 'endLine', 'snippet']),
-    description:
-      'Anchor levels: no path (the whole PR or commit); path only (a file); or path, side, startLine, endLine and snippet ' +
-      '(lines, at most 1000, snippet holding exactly those lines).',
-  },
+  NewPrThread: newThread('pr'),
+  NewThread: newThread('commit'),
 };
 
 const list = (item: Schema, withFacets = false): Schema =>
@@ -308,7 +315,7 @@ function commentEndpoints(): EndpointDoc[] {
     {
       method: 'post', path: '/api/v1/prs/{repo}/{number}/threads', tag, summary: 'Start a thread on a pull request with its first comment',
       description: 'The PR must be synced (404 otherwise). Rejected from other origins (403).',
-      params: [repo, p('number', 'PR number', int())], body: { schema: ref('NewThread'), example }, response: { status: 200, schema: ref('CommentThread') },
+      params: [repo, p('number', 'PR number', int())], body: { schema: ref('NewPrThread'), example }, response: { status: 200, schema: ref('CommentThread') },
     },
     {
       method: 'get', path: '/api/v1/commits/{repo}/{oid}/threads', tag, summary: "A commit's comment threads, with their comments",

@@ -234,4 +234,20 @@ describe('comment threads API', () => {
     expect(Object.keys(doc.paths['/api/v1/comments/{id}']!)).toEqual(['patch', 'delete']);
     expect(Object.keys(doc.components.schemas)).toEqual(expect.arrayContaining(['CommentThread', 'ThreadComment', 'Principal', 'NewThread', 'CommentCounts']));
   });
+
+  type Op = { requestBody?: { content: Record<string, { schema: unknown }> }; responses: Record<string, { content?: Record<string, unknown> }> };
+  const openApi = async () =>
+    (await (await makeApp().app.request('/api/v1/openapi.json')).json()) as {
+      paths: Record<string, Record<string, Op>>;
+      components: { schemas: Record<string, { required: string[] }> };
+    };
+
+  it('documents that a PR thread must name its head and a commit thread needn\'t', async () => {
+    const doc = await openApi();
+    const bodyRef = (path: string) => doc.paths[path]!.post!.requestBody!.content['application/json']!.schema;
+    expect(bodyRef('/api/v1/prs/{repo}/{number}/threads')).toEqual({ $ref: '#/components/schemas/NewPrThread' });
+    expect(bodyRef('/api/v1/commits/{repo}/{oid}/threads')).toEqual({ $ref: '#/components/schemas/NewThread' });
+    expect(doc.components.schemas.NewPrThread!.required).toEqual(['commitOid', 'body']);
+    expect(doc.components.schemas.NewThread!.required).toEqual(['body']);
+  });
 });

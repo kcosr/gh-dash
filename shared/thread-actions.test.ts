@@ -1,7 +1,7 @@
 import { QueryClient } from '@tanstack/react-query';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CommentThread } from './api';
-import { qk, threadActions } from '../web/src/api/hooks';
+import { followsDefaultSelection, qk, refetchAfterSync, threadActions } from '../web/src/api/hooks';
 
 const thread = (id: number, status: CommentThread['status'] = 'open'): CommentThread => ({
   id, kind: 'pr', repo: 'app', number: 2, commitOid: 'a'.repeat(40), baseOid: null, path: null, side: null, startLine: null, endLine: null,
@@ -73,5 +73,50 @@ describe('thread actions', () => {
     await threadActions(qc, commit).setStatus(1, 'resolved');
     await threadActions(qc, 'app#2').edit(5, 'y');
     expect(repos()).toBe(false);
+  });
+
+  it('refetches the Comments list and the tab count after any change, from the diff or the list', async () => {
+    const qc = new QueryClient();
+    const list = qk.threadList({ status: 'open', limit: 1000 });
+    const count = qk.threadList({ source: 'github.com', status: 'open', limit: 1 });
+    const stale = () => [list, count].map((k) => qc.getQueryState(k)?.isInvalidated);
+    const fresh = () => { for (const k of [list, count]) qc.setQueryData(k, { items: [], total: 0, nextCursor: null, counts: { open: 0, resolved: 0 } }); };
+    const commit = `app@${'a'.repeat(40)}`;
+    const cases: [string, (a: ReturnType<typeof threadActions>) => Promise<unknown>, unknown, number?][] = [
+      ['app#2', (a) => a.setStatus(1, 'resolved'), thread(1, 'resolved')],
+      [commit, (a) => a.setStatus(1, 'open'), { ...thread(1), kind: 'commit' }],
+      [commit, (a) => a.create({ body: 'x' } as never), { ...thread(1), kind: 'commit' }],
+      ['app#2', (a) => a.reply(1, 'x'), thread(1)],
+      ['app#2', (a) => a.edit(5, 'y'), thread(1)],
+      [commit, (a) => a.deleteThread(1), null, 204],
+    ];
+    for (const [id, act, body, status] of cases) {
+      fresh();
+      vi.stubGlobal('fetch', reply(body, status));
+      await act(threadActions(qc, id));
+      expect(stale(), id).toEqual([true, true]);
+    }
+  });
+
+  it("gives a target whose threads aren't loaded no partial list (a change from the Comments list)", async () => {
+    const qc = new QueryClient();
+    vi.stubGlobal('fetch', reply(thread(1, 'resolved')));
+    await threadActions(qc, 'app#2').setStatus(1, 'resolved');
+    expect(qc.getQueryData(key)).toBeUndefined();
+    vi.stubGlobal('fetch', reply(null, 204));
+    await threadActions(qc, 'app#2').deleteThread(1);
+    expect(qc.getQueryData(key)).toBeUndefined();
+    // A loaded one is updated in place.
+    qc.setQueryData(key, [thread(1), thread(2)]);
+    vi.stubGlobal('fetch', reply(thread(2, 'resolved')));
+    await threadActions(qc, 'app#2').setStatus(2, 'resolved');
+    expect(qc.getQueryData<CommentThread[]>(key)?.map((t) => t.status)).toEqual(['open', 'resolved']);
+  });
+
+  it('refetches the Comments list after a sync, and when the default selection changes', () => {
+    const q = (queryKey: readonly unknown[]) => ({ queryKey }) as never;
+    expect(refetchAfterSync(q(qk.threadList({ status: 'open' })))).toBe(true);
+    expect(followsDefaultSelection(q(qk.threadList({ status: 'open' })))).toBe(true);
+    expect(refetchAfterSync(q(qk.threads('app#2')))).toBe(false);
   });
 });

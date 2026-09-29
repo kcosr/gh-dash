@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Link, useLocation } from 'react-router';
 import { isUnreachable } from '../api/client';
-import { useAccount, useStartSync, useSyncStatus, useWorkSources } from '../api/hooks';
+import { useAccount, useStartSync, useSyncStatus, useUnresolvedCount, useWorkSources } from '../api/hooks';
 import { PROVIDERS } from '../../../shared/provider';
 import type { PrWords } from '../../../shared/provider';
 import { getTheme, setTheme } from '../lib/storage';
@@ -11,7 +11,9 @@ import { fmtNum, fmtTime, relFuture, relLong } from '../lib/time';
 import { ALL, useSwitchContext } from '../lib/contexts';
 import { GITHUB_HOST } from '../../../shared/api';
 import { firstTrouble, hostNames, sourceSettingsLink, troubleLabel } from '../lib/sources';
-import { carrySearch, viewFromPath } from '../lib/urlState';
+import { threadCountParams } from '../lib/apiQuery';
+import { carrySearch, parseUrlState, viewFromPath } from '../lib/urlState';
+import type { UrlState } from '../lib/urlState';
 import { useNow } from '../lib/util';
 import { MOD_K } from './bits';
 import { Icon, ProviderIcon } from './Icon';
@@ -23,6 +25,7 @@ import { useUI } from './ui';
 
 const NAV: { path: string; label: (w: PrWords) => string; icon: IconName; views: string[] }[] = [
   { path: '/prs', label: (w) => w.nav, icon: 'merge', views: ['prs'] },
+  { path: '/comments', label: () => 'Comments', icon: 'comment', views: ['comments'] },
   { path: '/issues', label: () => 'Issues', icon: 'issue', views: ['issues'] },
   { path: '/activity', label: () => 'Activity', icon: 'pulse', views: ['activity'] },
   { path: '/repos', label: () => 'Repositories', icon: 'book', views: ['repos', 'repo'] },
@@ -76,6 +79,8 @@ export function TopBar({ theme, onToggleTheme, onOpenSidebar, sidebarOpen = fals
   const { current, multi } = useSourceCtx();
   // Settings is context-free (its URL has none): its tabs lead back to the context you came from.
   const carry = view === 'settings' ? (current ? `?source=${encodeURIComponent(current.host)}` : '') : carrySearch(location.search);
+  // The repos the tabs lead to: the Comments tab counts what its list would show (Settings: the context's default).
+  const scope = view === 'settings' ? { source: current?.host ?? null, repos: null, vis: 'all' as const, own: 'all' as const } : parseUrlState(location.search, view);
   const navRef = useRef<HTMLElement>(null);
   useEffect(() => {
     const nav = navRef.current;
@@ -112,6 +117,7 @@ export function TopBar({ theme, onToggleTheme, onOpenSidebar, sidebarOpen = fals
             <Link key={n.path} to={`${n.path}${carry}`} className={on ? 'on' : undefined} aria-current={on ? 'page' : undefined}>
               <Icon name={n.icon} />
               {n.label(w)}
+              {n.path === '/comments' && <UnresolvedCount scope={scope} />}
             </Link>
           );
         })}
@@ -132,6 +138,13 @@ export function TopBar({ theme, onToggleTheme, onOpenSidebar, sidebarOpen = fals
       </Link>
     </header>
   );
+}
+
+/** The Comments tab's quiet count: unresolved threads in the tabs' scope (the context, the repo selection); none at 0. */
+function UnresolvedCount({ scope }: { scope: Pick<UrlState, 'source' | 'repos' | 'vis' | 'own'> }) {
+  const { data: n } = useUnresolvedCount(threadCountParams(scope));
+  if (!n) return null;
+  return <span className="n" title={`${n.toLocaleString()} unresolved`}>{n.toLocaleString()}<span className="sr-only"> unresolved</span></span>;
 }
 
 /**

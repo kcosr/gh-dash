@@ -1,20 +1,50 @@
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import { Link, useLocation } from 'react-router';
 import type { Settings } from '../../../shared/api';
-import { useApiBase, useClearDiffCache, useDiffCacheStats, usePatchSettings, useSettings, useSyncStatus } from '../api/hooks';
+import { useApiBase, useClearDiffCache, useDiffCacheStats, usePatchSettings, useSettings, useSyncStatus, useWorkSources } from '../api/hooks';
 import { useSyncNow } from '../components/TopBar';
 import { ChipsInput } from '../components/ChipsInput';
-import { Icon } from '../components/Icon';
+import { Icon, ProviderIcon } from '../components/Icon';
 import type { IconName } from '../components/Icon';
 import { ErrorNote } from '../components/EmptyState';
 import { useRepoLabel } from '../components/repoMapContext';
+import { sourceTitle } from '../components/SourceBadge';
 import { useToast } from '../components/Toasts';
 import { apiLink } from '../lib/account';
+import { hostNames, troubleLabel } from '../lib/sources';
 import { dur, fmtBytes, fmtDateTime, fmtNum, fmtTime, plural, relFuture, relLong } from '../lib/time';
 import { cx } from '../lib/util';
 import { AccountSection } from './SettingsAccount';
 import { InstanceSection } from './SettingsInstance';
 import { TrackedSection } from './SettingsTracked';
+
+/**
+ * Each source's part of the sync, once there are several (design §7.9): when it last synced, or why it can't. The
+ * run-level rows above cover them together; Settings → Sources will carry the detail.
+ */
+function SourceRows() {
+  const sources = useWorkSources();
+  if (sources.length < 2) return null;
+  return (
+    <>
+      {sources.map((w) => {
+        const p = w.status;
+        const errors = p.lastResult?.errors.length ?? 0;
+        return (
+          <Fragment key={w.host}>
+            <dt title={sourceTitle(w)}><span className="ss-name"><ProviderIcon kind={w.kind} />{w.name}</span></dt>
+            <dd className="ss-sync">
+              {p.running ? <>Syncing{p.progress?.total ? ` ${p.progress.done}/${p.progress.total} repos` : ''}</>
+                : w.trouble ? <span className="ss-prob"><Icon name="alert" />{p.problem ?? troubleLabel(w, false)}</span>
+                  : p.lastSyncAt ? <>Last synced {relLong(p.lastSyncAt)} · {(p.lastResult?.newItems ?? 0).toLocaleString()} new items{errors ? `, ${errors} errors` : ''}</>
+                    : 'Never synced'}
+            </dd>
+          </Fragment>
+        );
+      })}
+    </>
+  );
+}
 
 /** A link to this API from outside the app; disabled with a hint while the Local API is off. */
 function ApiButton({ href, icon, children }: { href: string | null; icon: IconName; children: string }) {
@@ -77,7 +107,7 @@ function DiffCacheSection() {
   return (
     <section className="card set-sec">
       <h2>Diff cache</h2>
-      <p>Diffs and the file contents they show are fetched from GitHub when you open a diff, then kept on the server.</p>
+      <p>Diffs and the file contents they show are fetched from {hostNames(useWorkSources()) || 'GitHub'} when you open a diff, then kept on the server.</p>
       <form className="set-form" onSubmit={(e) => { e.preventDefault(); submit(); }}>
         <div className="set-row">
           <span className="set-l">In use<small>Cached diffs and files.</small></span>
@@ -193,6 +223,7 @@ export function SettingsView() {
                 <dt>Last result</dt>
                 <dd>{st.lastResult.newItems.toLocaleString()} new items{st.lastResult.errors.length ? `, ${st.lastResult.errors.length} errors` : ''}</dd>
               </>}
+              <SourceRows />
             </dl>
             {!!st?.lastResult?.errors.length && <pre className="code err">{st.lastResult.errors.slice(0, 10).join('\n')}</pre>}
             <div className="set-actions">

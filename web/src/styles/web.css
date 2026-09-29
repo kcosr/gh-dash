@@ -409,6 +409,15 @@ img.acct-av { width: 20px; height: 20px; border-radius: 50%; flex: none; backgro
 .set-c.stack > small { font-size: 12px; line-height: 1.45; }
 .setup-card .acct-choice { margin-bottom: 4px; }
 .setup-card .acct-token { margin-bottom: 8px; }
+.ss-name { display: inline-flex; align-items: center; gap: 6px; }
+.ss-name .pv { width: 13px; height: 13px; color: var(--muted); }
+.ss-prob { display: inline-flex; align-items: flex-start; gap: 6px; min-width: 0; overflow-wrap: anywhere; }
+.ss-prob svg { flex: none; width: 14px; height: 14px; margin-top: 2px; color: var(--star); }
+.setup-alt { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border); font-size: 13px; }
+.setup-alt p { margin: 0 0 8px; }
+.setup-alt details > summary { cursor: pointer; color: var(--accent-text); list-style: none; }
+.setup-alt details > summary::-webkit-details-marker { display: none; }
+.setup-alt details[open] > summary { margin-bottom: 8px; }
 .setup-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; margin-top: 16px; }
 a.sync { border-radius: 6px; }
 a.sync:hover .sync-text { color: var(--text); text-decoration: underline; text-underline-offset: 3px; }

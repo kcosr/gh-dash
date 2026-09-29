@@ -14,11 +14,12 @@ import { Sidebar } from './components/Sidebar';
 import { useSidebarResize } from './components/SidebarResize';
 import { MobileSidebar, useCompactSidebar } from './components/MobileSidebar';
 import { ToastProvider, useToast } from './components/Toasts';
-import { TopBar, useSyncNow, useTheme } from './components/TopBar';
+import { TopBar, useContextSync, useSyncNow, useTheme } from './components/TopBar';
 import { UIProvider, useUI } from './components/ui';
 import { hasBlockingLayer, isTypingTarget, topLayer } from './lib/layers';
 import { useCanonicalRepoUrl } from './lib/canonicalUrl';
 import { homePlace, presentSources, readPlaces, useContextMemory } from './lib/contexts';
+import { sourceStatuses } from './lib/sources';
 import { getSidebarHidden, setSidebarHidden } from './lib/storage';
 import { plural } from './lib/time';
 import { capitalize } from '../../shared/provider';
@@ -156,6 +157,7 @@ function Shell() {
   const ui = useUI();
   const [theme, toggleTheme] = useTheme();
   const sync = useSyncNow();
+  const contextSync = useContextSync();
   const status = useSyncStatus();
   const repos = useRepos();
   useSyncWatcher();
@@ -173,8 +175,9 @@ function Shell() {
   }, [view, name, prsTitle]);
 
   const noData = repos.isSuccess && repos.data.length === 0;
+  // No repos yet: ask for a token only when no source has one (a GitLab-only setup has no GitHub token to ask for).
   const setup = noData && view !== 'settings'
-    ? status.data?.tokenSource === 'none' ? 'token' : 'first'
+    ? sourceStatuses(status.data).every((x) => x.tokenSource === 'none') && status.data ? 'token' : 'first'
     : null;
   const hasSide = !setup && view !== 'repo' && view !== 'settings';
   const drawer = !setup && s.pr ? s.pr : null;
@@ -246,7 +249,7 @@ function Shell() {
         {diff && <DiffView key={`diff:${diff}`} id={diff} compact={compact} />}
       </div>
       {mobileOpen && <MobileSidebar focusSearch={sidebarSearch} onClose={() => setSidebarOpen(false)} />}
-      {ui.paletteOpen && <CommandPalette onClose={ui.closePalette} onRun={() => setSidebarOpen(false)} onSync={() => sync.run()} onToggleTheme={toggleTheme}
+      {ui.paletteOpen && <CommandPalette onClose={ui.closePalette} onRun={() => setSidebarOpen(false)} onSync={contextSync.run} onToggleTheme={toggleTheme}
         onToggleSidebar={canHideSide ? toggleSide : undefined} sidebarHidden={sideHidden} />}
       {ui.exportTab && <ExportModal initialTab={ui.exportTab} onClose={ui.closeExport} />}
       {ui.prompt && <PromptDialog req={ui.prompt} onClose={ui.closePrompt} />}

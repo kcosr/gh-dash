@@ -244,14 +244,14 @@ export class GitLabSyncSource implements SyncSource {
         items.push(...res.body);
         steady &&= res.total === total;
       }
-      if (steady) return { items: newestFirst(items.map((s) => mapStar(s, this.base))), hasMore: false, endCursor: null, totalCount: total ?? items.length };
+      if (steady) return { items: newestFirst(items).map((s) => mapStar(s, this.base)), hasMore: false, endCursor: null, totalCount: total ?? items.length };
       if (listing >= STAR_LISTINGS) throw new GitLabError('transient', `The starrers of ${repo.nameWithOwner} kept changing while being listed`);
     }
   }
 
   /** Page `n` of the starrers, newest first; the next round reads page n - 1. */
   private starPage(repo: RepoRecord, n: number, res: RestPage<RestStarrer[]>): StarsPage {
-    const items = newestFirst(res.body.map((s) => mapStar(s, this.base)));
+    const items = newestFirst(res.body).map((s) => mapStar(s, this.base));
     return { items, hasMore: n > 1, endCursor: n > 1 ? String(n - 1) : null, totalCount: res.total ?? repo.stars };
   }
 
@@ -271,7 +271,11 @@ export class GitLabSyncSource implements SyncSource {
   }
 }
 
-const newestFirst = (stars: StarRecord[]) => stars.sort((a, b) => (a.starredAt < b.starredAt ? 1 : a.starredAt > b.starredAt ? -1 : 0));
+/**
+ * Starrers newest first: by their full star time (mapped stars keep whole seconds, which would tie), and on a tie in
+ * the reverse of GitLab's order (it lists them oldest first). Sorted before mapping for that reason.
+ */
+const newestFirst = (starrers: RestStarrer[]) => [...starrers].reverse().sort((a, b) => Date.parse(b.starred_since) - Date.parse(a.starred_since));
 
 /** Issues proper (not incidents, tasks or test cases), with label colors; the same set the probe counts. */
 const ISSUE_FILTER = { issue_type: 'issue', with_labels_details: true } as const;

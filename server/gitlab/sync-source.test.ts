@@ -232,6 +232,19 @@ describe('GitLabSyncSource: rounds', () => {
     expect(requests).toEqual(['/api/v4/projects/11/starrers?per_page=100&page=1', '/api/v4/projects/11/starrers?per_page=100&page=2']);
   });
 
+  it('orders stars within the same second by their full time, then newest listed first', async () => {
+    const star = (login: string, at: string) => ({ starred_since: at, user: { username: login, name: null, avatar_url: null } });
+    const { source } = setup({
+      '/api/v4/projects/11/starrers': page(
+        [star('known', '2026-09-20T10:00:00.100Z'), star('new', '2026-09-20T10:00:00.900Z'), star('tie-a', '2026-09-20T09:00:00.500Z'), star('tie-b', '2026-09-20T09:00:00.500Z')],
+        null,
+        { 'x-total': '4' },
+      ),
+    });
+    // Whole seconds would tie "new" with "known" and keep GitLab's oldest-first order: the sync would stop at "known".
+    expect((await source.round(APP, { stars: { after: null } })).stars!.items.map((s) => s.login)).toEqual(['new', 'known', 'tie-b', 'tie-a']);
+  });
+
   it('lists the starrers again when their count moved mid-listing (a shifted page could skip one), once', async () => {
     const star = (login: string, day: number) => ({ starred_since: `2026-09-${String(day).padStart(2, '0')}T00:00:00.000Z`, user: { username: login, name: null, avatar_url: null } });
     // a, b, c, d (two a page here). Between the pages of the first listing b unstars, c moves up to page 1, and the

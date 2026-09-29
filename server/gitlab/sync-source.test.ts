@@ -312,17 +312,17 @@ describe('GitLabSyncSource: rounds', () => {
   });
 
   it('finds the newest starrers beyond 10,000, where GitLab stops counting, from the project star count', async () => {
-    // 10,050 visible starrers; the star count also has 200 private profiles, so its estimate overshoots by two pages.
-    const stargazers = fakeStarrers(10_050, { counted: false });
-    const { source, requests } = setup({ '/api/v4/projects/11/starrers': stargazers.handler });
-    const stars = (await source.round({ ...APP, stars: 10_250 }, { stars: { after: null } })).stars!;
-    expect(stars.items.map((s) => s.login)).toEqual(stargazers.logins(10_050, 10_001));
-    expect(stars).toMatchObject({ hasMore: true, endCursor: expect.stringMatching(/^100:\d+:u10001$/), totalCount: 10_250 });
-    expect(requests).toEqual([1, 103, 102, 101].map((p) => `/api/v4/projects/11/starrers?per_page=100&page=${p}`));
-    // A star count that lags behind: on along X-Next-Page.
-    requests.length = 0;
-    expect((await source.round({ ...APP, stars: 10_000 }, { stars: { after: null } })).stars!.items[0]!.login).toBe('u10050');
-    expect(requests).toEqual([1, 100, 101].map((p) => `/api/v4/projects/11/starrers?per_page=100&page=${p}`));
+    // 10,050 visible starrers (101 pages). The star count also counts private profiles, so it can overshoot by far
+    // (11,050: ten pages too many; 50,000), or lag a little behind (10,000).
+    for (const starCount of [10_250, 11_050, 50_000, 10_000]) {
+      const stargazers = fakeStarrers(10_050, { counted: false });
+      const { source, requests } = setup({ '/api/v4/projects/11/starrers': stargazers.handler });
+      const stars = (await source.round({ ...APP, stars: starCount }, { stars: { after: null } })).stars!;
+      expect(stars.items.map((s) => s.login)).toEqual(stargazers.logins(10_050, 10_001));
+      expect(stars).toMatchObject({ hasMore: true, endCursor: expect.stringMatching(/^100:\d+:u10001$/), totalCount: starCount });
+      // A binary search: a handful of pages, whatever the estimate.
+      expect(requests.length).toBeLessThanOrEqual(12);
+    }
   });
 
   it('uses the URL-encoded full path for REST when the node id is not a project id', async () => {

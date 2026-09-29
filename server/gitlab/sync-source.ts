@@ -35,8 +35,8 @@ const STAR_PAGE = 100;
 const MAX_STARS = 3000;
 /** Listings of a project's starrers tried before giving up on one whose count keeps moving. */
 const STAR_LISTINGS = 2;
-/** Pages tried to find the last page of starrers when GitLab doesn't count them (over 10,000). */
-const STAR_SEEK_PAGES = 10;
+/** Pages read to find the last page of starrers when GitLab doesn't count them (over 10,000): a binary search's worth. */
+const STAR_SEEK_PAGES = 30;
 
 type Order = 'updated' | 'created';
 type StarsPage = Page<StarRecord> & { totalCount: number };
@@ -234,7 +234,7 @@ export class GitLabSyncSource implements SyncSource {
       const first = await read(1);
       const total = first.total;
       if (first.nextPage !== null && (total === null || total > MAX_STARS)) {
-        const last = total === null ? await this.lastStarPage(repo, read) : { n: Math.ceil(total / STAR_PAGE), res: null };
+        const last = total === null ? await this.lastStarPage(repo, first, read) : { n: Math.ceil(total / STAR_PAGE), res: null };
         return this.starPage(repo, last.n, last.res ?? (await read(last.n)), null);
       }
       const items = [...first.body];
@@ -260,16 +260,22 @@ export class GitLabSyncSource implements SyncSource {
   }
 
   /**
-   * The last page of starrers when GitLab doesn't count them (over 10,000): estimated from the project's star count,
-   * which also counts hidden profiles and so tends to overshoot, then found by stepping back over empty pages (or on,
-   * should the count be behind).
+   * The last page of starrers when GitLab doesn't count them (over 10,000). The project's star count gives a first
+   * guess, but it also counts hidden profiles and can be pages too high (or lag behind), so the last page with
+   * starrers is then found by binary search between one known to have starrers (page 1 to start with) and one known to
+   * be empty, doubling while there is none.
    */
-  private async lastStarPage(repo: RepoRecord, read: (page: number) => Promise<RestPage<RestStarrer[]>>) {
-    let n = Math.max(1, Math.ceil(repo.stars / STAR_PAGE));
-    for (let tries = 0; tries < STAR_SEEK_PAGES && n >= 1; tries++) {
+  private async lastStarPage(repo: RepoRecord, first: RestPage<RestStarrer[]>, read: (page: number) => Promise<RestPage<RestStarrer[]>>) {
+    let full = { n: 1, res: first };
+    let empty: number | null = null;
+    let n = Math.max(2, Math.ceil(repo.stars / STAR_PAGE));
+    for (let reads = 0; reads < STAR_SEEK_PAGES; reads++) {
       const res = await read(n);
-      if (res.body.length > 0 && res.nextPage === null) return { n, res };
-      n = res.body.length > 0 && res.nextPage! > n ? res.nextPage! : n - 1;
+      if (res.body.length === 0) empty = n;
+      else if (res.nextPage === null) return { n, res };
+      else full = { n, res };
+      if (empty !== null && empty - full.n <= 1) return full;
+      n = empty === null ? full.n * 2 : Math.floor((full.n + empty) / 2);
     }
     throw new GitLabError('transient', `Could not find the newest starrers of ${repo.nameWithOwner}`);
   }

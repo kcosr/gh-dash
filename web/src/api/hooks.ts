@@ -477,11 +477,12 @@ export function useThreads(id: string | null) {
 
 /**
  * Everything that changes a target's threads. Each answer updates the list in place, and the Comments list (with the
- * tab's count) and PR counts are refetched (and repos' comment counts, which the Remove confirmation quotes, when
- * comments come or go). A list fetch still in flight may have read the threads before the change and would answer with
- * them after it, undoing it on screen: it is cancelled before the answer goes in, and the list is fetched again
- * afterwards to settle. A target whose threads aren't loaded (a change made from the Comments list) gets no partial
- * list: they are fetched whole when it opens.
+ * tab's count) and PR counts are refetched; so are repos' comment counts (the Remove confirmation quotes them) when
+ * comments come or go, and the Activity feed's per-PR and per-commit counts when a thread comes or goes or changes
+ * status. A list fetch still in flight may have read the threads before the change and would answer with them after
+ * it, undoing it on screen: it is cancelled before the answer goes in, and the list is fetched again afterwards to
+ * settle. A target whose threads aren't loaded (a change made from the Comments list) gets no partial list: they are
+ * fetched whole when it opens.
  */
 export function threadActions(qc: QueryClient, id: string) {
   const t = parseDiffId(id);
@@ -497,24 +498,28 @@ export function threadActions(qc: QueryClient, id: string) {
     void qc.invalidateQueries({ queryKey: ['prs'] });
     void qc.invalidateQueries({ queryKey: qk.pr(t.repo, t.number) });
   };
-  const done = async <T,>(p: Promise<T>, apply: (v: T) => void, commentsChanged = false) => {
+  /** `comments`: comments came or went. `threads`: a thread came or went, or its status changed (by the answer). */
+  const done = async <T,>(p: Promise<T>, apply: (v: T) => void, change: { comments?: boolean; threads?: (v: T) => boolean } = {}) => {
     const v = await p;
     await qc.cancelQueries({ queryKey: key });
     apply(v);
     void qc.invalidateQueries({ queryKey: key });
     counts();
-    if (commentsChanged) void qc.invalidateQueries({ queryKey: qk.repos });
+    if (change.comments) void qc.invalidateQueries({ queryKey: qk.repos });
+    if (change.threads?.(v)) void qc.invalidateQueries({ queryKey: ['activity'] });
     return v;
   };
+  const always = () => true;
   return {
     create: (body: NewPrThread) =>
-      done(t?.kind === 'pr' ? api.createPrThread(t.repo, t.number, body) : api.createCommitThread(t!.repo, (t as { oid: string }).oid, body), put, true),
-    reply: (threadId: number, body: string) => done(api.reply(threadId, body), put, true),
-    setStatus: (threadId: number, status: 'open' | 'resolved') => done(api.setThreadStatus(threadId, status), put),
+      done(t?.kind === 'pr' ? api.createPrThread(t.repo, t.number, body) : api.createCommitThread(t!.repo, (t as { oid: string }).oid, body), put, { comments: true, threads: always }),
+    reply: (threadId: number, body: string) => done(api.reply(threadId, body), put, { comments: true }),
+    setStatus: (threadId: number, status: 'open' | 'resolved') => done(api.setThreadStatus(threadId, status), put, { threads: always }),
     edit: (commentId: number, body: string) => done(api.editComment(commentId, body), put),
+    // Deleting a thread's first comment deletes the thread.
     deleteComment: (threadId: number, commentId: number) =>
-      done(api.deleteComment(commentId), (r) => (r.thread ? put(r.thread) : drop(threadId)), true),
-    deleteThread: (threadId: number) => done(api.deleteThread(threadId), () => drop(threadId), true),
+      done(api.deleteComment(commentId), (r) => (r.thread ? put(r.thread) : drop(threadId)), { comments: true, threads: (r) => !r.thread }),
+    deleteThread: (threadId: number) => done(api.deleteThread(threadId), () => drop(threadId), { comments: true, threads: always }),
   };
 }
 

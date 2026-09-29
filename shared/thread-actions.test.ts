@@ -119,4 +119,38 @@ describe('thread actions', () => {
     expect(followsDefaultSelection(q(qk.threadList({ status: 'open' })))).toBe(true);
     expect(refetchAfterSync(q(qk.threads('app#2')))).toBe(false);
   });
+
+  it("refetches the Activity feed's PR and commit counts when a thread comes or goes or changes status", async () => {
+    const qc = new QueryClient();
+    const feed = qk.activity({ who: 'everyone', limit: 200 });
+    const stale = () => qc.getQueryState(feed)?.isInvalidated;
+    const fresh = () => qc.setQueryData(feed, { pages: [], pageParams: [] });
+    const commit = `app@${'a'.repeat(40)}`;
+    const counted: [string, (a: ReturnType<typeof threadActions>) => Promise<unknown>, unknown, number?][] = [
+      ['app#2', (a) => a.create({ body: 'x' } as never), thread(1)],
+      [commit, (a) => a.create({ body: 'x' } as never), { ...thread(1), kind: 'commit' }],
+      ['app#2', (a) => a.setStatus(1, 'resolved'), thread(1, 'resolved')],
+      [commit, (a) => a.setStatus(1, 'open'), { ...thread(1), kind: 'commit' }],
+      [commit, (a) => a.deleteThread(1), null, 204],
+      ['app#2', (a) => a.deleteComment(1, 5), { thread: null }],
+    ];
+    for (const [id, act, body, status] of counted) {
+      fresh();
+      vi.stubGlobal('fetch', reply(body, status));
+      await act(threadActions(qc, id));
+      expect(stale(), id).toBe(true);
+    }
+    // A reply, an edit, or deleting a reply leaves the counts (threads, unresolved) as they were.
+    const same: [string, (a: ReturnType<typeof threadActions>) => Promise<unknown>, unknown][] = [
+      ['app#2', (a) => a.reply(1, 'x'), thread(1)],
+      [commit, (a) => a.edit(5, 'y'), thread(1)],
+      [commit, (a) => a.deleteComment(1, 6), { thread: thread(1) }],
+    ];
+    for (const [id, act, body] of same) {
+      fresh();
+      vi.stubGlobal('fetch', reply(body));
+      await act(threadActions(qc, id));
+      expect(stale(), id).toBe(false);
+    }
+  });
 });

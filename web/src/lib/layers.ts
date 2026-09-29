@@ -3,30 +3,51 @@
  * global Escape handler closes the top-most one. Blocking layers also disable
  * list shortcuts (j/k/Enter/o) while they're open.
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import type { RefObject } from 'react';
 
-interface Layer { id: number; close: () => void; blocking: boolean }
+interface Layer { id: number; close: () => void; blocking: boolean; parent: number | null }
 const stack: Layer[] = [];
 let seq = 0;
 
-/** Returns a stable `isTop()` check, for layers with their own shortcuts (true only while nothing is open above). */
-export function useLayer(active: boolean, close: () => void, blocking = true): () => boolean {
+/**
+ * The layer a subtree belongs to (e.g. the compact comments column). Layers opened inside it (its composers) stay
+ * above it whatever order they register in: a panel and a composer mounting in the same render register child
+ * first (effects run child to parent), which would otherwise leave the panel on top.
+ */
+export const LayerParent = createContext<number | null>(null);
+
+/**
+ * A layer while `active`: its `id` (for a LayerParent around what opens inside it) and a stable `isTop()` check, for
+ * layers with their own shortcuts (true only while nothing is open above).
+ */
+export function useLayerHandle(active: boolean, close: () => void, blocking = true): { id: number; isTop: () => boolean } {
   const ref = useRef(close);
   ref.current = close;
-  const idRef = useRef(0);
+  const [id] = useState(() => ++seq);
+  const parent = useContext(LayerParent);
+  const on = useRef(false);
   useEffect(() => {
     if (!active) return;
-    const layer: Layer = { id: ++seq, close: () => ref.current(), blocking };
-    stack.push(layer);
-    idRef.current = layer.id;
+    const layer: Layer = { id, close: () => ref.current(), blocking, parent };
+    // Below the layers already open inside it, else on top.
+    const firstChild = stack.findIndex((l) => l.parent === id);
+    if (firstChild >= 0) stack.splice(firstChild, 0, layer);
+    else stack.push(layer);
+    on.current = true;
     return () => {
-      const i = stack.findIndex((l) => l.id === layer.id);
+      const i = stack.findIndex((l) => l.id === id);
       if (i >= 0) stack.splice(i, 1);
-      idRef.current = 0;
+      on.current = false;
     };
-  }, [active, blocking]);
-  return useCallback(() => idRef.current !== 0 && topLayer()?.id === idRef.current, []);
+  }, [active, blocking, id, parent]);
+  const isTop = useCallback(() => on.current && topLayer()?.id === id, [id]);
+  return { id, isTop };
+}
+
+/** Returns a stable `isTop()` check, for layers with their own shortcuts (true only while nothing is open above). */
+export function useLayer(active: boolean, close: () => void, blocking = true): () => boolean {
+  return useLayerHandle(active, close, blocking).isTop;
 }
 
 export const topLayer = (): Layer | undefined => stack[stack.length - 1];

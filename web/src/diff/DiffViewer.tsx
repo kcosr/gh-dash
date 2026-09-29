@@ -15,7 +15,7 @@ import type { useThreadActions } from '../api/hooks';
 import { Icon } from '../components/Icon';
 import { Seg } from '../components/Seg';
 import { useToast } from '../components/Toasts';
-import { isTypingTarget, useLayer } from '../lib/layers';
+import { isTypingTarget, LayerParent, useLayer, useLayerHandle } from '../lib/layers';
 import { getDiffPrefs, setDiffPrefs, type DiffPrefs } from '../lib/storage';
 import type { FileFilter } from '../lib/urlState';
 import { cx } from '../lib/util';
@@ -290,7 +290,9 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
   const [columnOpen, setColumnOpen] = useState(false);
   const showColumn = compact ? columnOpen : prefs.comments;
   // The compact column is a layer of its own (Esc closes it first); the comment keys still work while it's on top.
-  const columnIsTop = useLayer(compact && columnOpen, () => setColumnOpen(false));
+  // Composers inside it are layers above it (LayerParent below).
+  const columnLayer = useLayerHandle(compact && columnOpen, () => setColumnOpen(false));
+  const columnIsTop = columnLayer.isTop;
   const setColumn = useCallback((open: boolean) => (compact ? setColumnOpen(open) : updatePrefs({ comments: open })), [compact, updatePrefs]);
 
   // Collapsing: some files start folded (model.ts); each click flips a file and bumps its item version.
@@ -851,8 +853,10 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
             <div className="dvr-scroll dvr-empty">No changed files.</div>
           )}
           {showColumn && (
-            <CommentsColumn threads={ordered} order={indexOf} title={title} kind={diff.kind} error={comments.error} onRetry={comments.retry}
-              onJump={(id) => focusThread(id, { scroll: true })} onClose={() => setColumn(false)} onCreateGeneral={createGeneral} />
+            <LayerParent.Provider value={columnLayer.id}>
+              <CommentsColumn threads={ordered} order={indexOf} title={title} kind={diff.kind} error={comments.error} onRetry={comments.retry}
+                onJump={(id) => focusThread(id, { scroll: true })} onClose={() => setColumn(false)} onCreateGeneral={createGeneral} />
+            </LayerParent.Provider>
           )}
           {compact && columnOpen && <div className="dvr-scrim" onClick={() => setColumnOpen(false)} />}
         </div>

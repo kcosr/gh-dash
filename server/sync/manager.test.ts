@@ -4,7 +4,7 @@ import { deleteMeta, getMeta, setMeta } from '../db/meta';
 import { fakeGitHub } from '../test/github';
 import { fakeGraphQL, prNode, repoNode } from '../test/graphql';
 import { addManualRepo, GITHUB, setViewer } from '../test/seed';
-import { GITHUB_SOURCE_ID, getSource } from '../db/sources';
+import { ensureSource, GITHUB_SOURCE_ID, getSource } from '../db/sources';
 import { addManual } from '../db/write';
 import { mapRepo } from '../github/map';
 import { supplyOf, testTokens } from '../test/tokens';
@@ -278,6 +278,31 @@ describe('syncing repos added by hand', () => {
     t.m.reschedule();
     await t.idle();
     expect(t.gql.state.ops.filter((o) => o.startsWith('RepoNode'))).toEqual(['RepoNode:R_bob/tool']);
+  });
+
+  it('leaves the first sync of a repo on another source to the multi-source manager (step 5)', async () => {
+    const t = setup(true);
+    const gl = ensureSource(t.db, { kind: 'gitlab', host: 'gitlab.example.com', baseUrl: 'https://gitlab.example.com' });
+    addManualRepo(t.db, 'platform/team/app', { source: gl, nodeId: 'gid://gitlab/Project/40' });
+    expect([t.m.syncsSource('GitHub.com'), t.m.syncsSource('gitlab.example.com')]).toEqual([true, false]);
+    expect(await t.m.startOrQueue({ repo: 'gitlab.example.com/platform/team/app', source: 'gitlab.example.com' })).toBe('queued');
+    expect(t.m.status().running).toBe(false);
+    // Nor does the scheduler start it: a GitHub run would refuse it, every few minutes.
+    setMeta(t.db, 'lastFullSyncAt', new Date().toISOString());
+    t.m.startScheduler();
+    await new Promise((r) => setTimeout(r, 20));
+    await t.idle();
+    expect(getMeta(t.db, 'lastSync')).toBeNull();
+    // A GitHub repo waiting beside it still gets its first sync.
+    t.add('bob/tool');
+    t.m.reschedule();
+    await vi.waitFor(() => expect(t.synced('bob/tool')).toBe(true));
+    await t.idle();
+    expect(t.gql.state.ops.filter((o) => o.startsWith('RepoNode'))).toEqual(['RepoNode:R_bob/tool']);
+    expect(getMeta(t.db, 'lastSync')).toMatchObject({ repo: 'bob/tool', errors: [] });
+    t.add('carol/lib');
+    expect(await t.m.startOrQueue({ repo: 'carol/lib', source: 'github.com' })).toBe('started');
+    await t.idle();
   });
 
   it('single-repo runs never postpone the first full sync', async () => {

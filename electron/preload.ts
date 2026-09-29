@@ -28,6 +28,9 @@ const bridge: DesktopBridge = {
   removeSource: (host) => call(DESKTOP_IPC.removeSource, host),
   chooseGlabPath: () => call(DESKTOP_IPC.chooseGlabPath),
   chooseTokenFile: (url) => call(DESKTOP_IPC.chooseTokenFile, url),
+  addAgent: (name) => call(DESKTOP_IPC.addAgent, name),
+  regenerateAgentToken: (id) => call(DESKTOP_IPC.regenerateAgentToken, id),
+  revokeAgent: (id) => call(DESKTOP_IPC.revokeAgent, id),
 };
 
 contextBridge.exposeInMainWorld('ghDashDesktop', bridge);

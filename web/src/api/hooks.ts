@@ -23,6 +23,7 @@ import type {
   StatsQuery,
   SyncStatus,
   ThreadListQuery,
+  ThreadListResponse,
 } from '../../../shared/api';
 import { GITHUB_HOST } from '../../../shared/api';
 import { ApiError, api, isClientError, isUnreachable } from './client';
@@ -489,6 +490,18 @@ export function useThreads(id: string | null) {
  * settle. A target whose threads aren't loaded (a change made from the Comments list) gets no partial list: they are
  * fetched whole when it opens.
  */
+/**
+ * A thread's new status, at once, in every cached Comments list that has it (the row changes before the refetch lands).
+ * Writing marks a list fresh, and a list not on screen (another status filter) would then be shown as it was, without
+ * the thread it has gained or lost, until it went stale again: every list is marked stale again after, without a fetch
+ * (threadActions has already refetched those on screen).
+ */
+export function patchThreadLists(qc: QueryClient, thread: CommentThread): void {
+  qc.setQueriesData<ThreadListResponse>({ queryKey: ['thread-list'] }, (d) =>
+    d && { ...d, items: d.items.map((x) => (x.id === thread.id ? { ...x, ...thread } : x)) });
+  void qc.invalidateQueries({ queryKey: ['thread-list'], refetchType: 'none' });
+}
+
 export function threadActions(qc: QueryClient, id: string) {
   const t = parseDiffId(id);
   const key = qk.threads(id);

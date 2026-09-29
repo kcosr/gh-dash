@@ -6,9 +6,9 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
-import type { Me, ThreadKindFilter, ThreadListItem, ThreadListResponse, ThreadStatusFilter } from '../../../shared/api';
+import type { Me, ThreadKindFilter, ThreadListItem, ThreadStatusFilter } from '../../../shared/api';
 import { PROVIDERS, capitalize, refText } from '../../../shared/provider';
-import { threadActions, threadListQuery, useMe, useThreadList } from '../api/hooks';
+import { patchThreadLists, threadActions, threadListQuery, useMe, useThreadList } from '../api/hooks';
 import { threadListParams } from '../lib/apiQuery';
 import { hasBlockingLayer, isTypingTarget } from '../lib/layers';
 import { plainPreview } from '../lib/markdown';
@@ -127,8 +127,7 @@ export function CommentsView() {
       }
       const next = await threadActions(qc, threadTarget(t)).setStatus(t.id, status);
       // The new status at once, in every list that has the thread; their refetch (threadActions) settles them.
-      qc.setQueriesData<ThreadListResponse>({ queryKey: ['thread-list'] }, (d) =>
-        d && { ...d, items: d.items.map((x) => (x.id === next.id ? { ...x, ...next } : x)) });
+      patchThreadLists(qc, next);
       toast(status === 'resolved' ? 'Resolved' : 'Reopened');
     } catch (e) {
       toast(`Couldn't update: ${(e as Error).message}`, { error: true });

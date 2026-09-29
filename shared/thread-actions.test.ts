@@ -1,7 +1,7 @@
 import { QueryClient } from '@tanstack/react-query';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { CommentThread } from './api';
-import { followsDefaultSelection, qk, refetchAfterSync, threadActions } from '../web/src/api/hooks';
+import type { CommentThread, ThreadListResponse } from './api';
+import { followsDefaultSelection, patchThreadLists, qk, refetchAfterSync, threadActions } from '../web/src/api/hooks';
 
 const thread = (id: number, status: CommentThread['status'] = 'open'): CommentThread => ({
   id, kind: 'pr', repo: 'app', number: 2, commitOid: 'a'.repeat(40), baseOid: null, path: null, side: null, startLine: null, endLine: null,
@@ -152,5 +152,20 @@ describe('thread actions', () => {
       await act(threadActions(qc, id));
       expect(stale(), id).toBe(false);
     }
+  });
+
+  it('patches a status into every cached Comments list at once, and leaves each stale, so another filter refetches', () => {
+    const qc = new QueryClient();
+    const unresolved = qk.threadList({ status: 'open' });
+    const resolved = qk.threadList({ status: 'resolved' });
+    const item = { ...thread(1), targetTitle: null, prState: null, targetUrl: 'u', earlierPush: false };
+    // Resolved was visited first (empty), then Unresolved; both answers are fresh.
+    qc.setQueryData<ThreadListResponse>(resolved, { items: [], total: 0, nextCursor: null, counts: { open: 1, resolved: 0 } });
+    qc.setQueryData<ThreadListResponse>(unresolved, { items: [item], total: 1, nextCursor: null, counts: { open: 1, resolved: 0 } });
+    patchThreadLists(qc, thread(1, 'resolved'));
+    expect(qc.getQueryData<ThreadListResponse>(unresolved)!.items[0]!.status).toBe('resolved');
+    // Selecting Resolved again must fetch it: it lacks the thread it has gained.
+    expect(qc.getQueryState(resolved)!.isInvalidated).toBe(true);
+    expect(qc.getQueryState(unresolved)!.isInvalidated).toBe(true);
   });
 });

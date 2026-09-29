@@ -1,9 +1,14 @@
-// Adding repositories of other owners: the candidates the token can read, a lookup that checks access and sizes the
-// first sync, and the add itself. The requests are the source's (SyncSource.candidates and lookup), made for the person
-// waiting on them: few retries, no long waits. Nothing here syncs; an add hands the repo to the sync manager.
+// Adding repositories of other owners, on any source: the candidates the token can read, a lookup that checks access
+// and sizes the first sync, and the add itself. The requests are the source's (SyncSource.candidates and lookup), made
+// for the person waiting on them: few retries, no long waits. Nothing here syncs; an add hands the repo to the sync
+// manager.
+//
+// Which source: the `source` parameter (a host; github.com when absent), unless the input is an address or key on
+// another source's host, which wins (a GitLab URL pasted while GitHub is selected). A host that isn't a source here, or
+// isn't configured on this server, is a 400 that names it.
 
 import { GITHUB_HOST, type AddRepoResponse, type RepoCandidate, type RepoCandidatesResponse, type RepoLookup, type RepoPreview, type TrackedBy } from '../../shared/api';
-import { parseGitHubInput } from '../../shared/repos';
+import { inputHost, parseGitHubInput, parseGitLabInput } from '../../shared/repos';
 import { HttpError } from '../api/http';
 import type { Db } from '../db/db';
 import { getRepo } from '../db/repos';
@@ -15,6 +20,7 @@ import { DAY_MS, isoSec } from '../lib/time';
 import { SourceError } from '../provider/errors';
 import { defaultSleep, type RetryLimits } from '../provider/transport';
 import type { LookupRecord, RepoCandidateRecord, SyncSource, ViewerInfo } from '../provider/types';
+import type { SourceRegistry } from '../sources/registry';
 import { noTokenMessage, tokenKind, type ResolvedToken, type TokenSupply } from '../token';
 
 /** How long the candidate lists are reused (the Add dialog filters them locally as you type). */
@@ -22,15 +28,24 @@ const CANDIDATES_TTL_MS = 5 * 60_000;
 /** A person is waiting on every request here: few retries, no long waits. */
 const INTERACTIVE: RetryLimits = { maxAttempts: 2, maxRetryWaitMs: 10_000 };
 
+/** The 400 for a host that names no source in this database. */
+export const notASource = (host: string) => `${host} isn't a source here.`;
+
 /** The Sync manager's part: start a just-added repo's first sync, or queue it. */
 export interface FirstSync {
-  startOrQueue(req: { repo: string }): Promise<'started' | 'queued'>;
+  /**
+   * `source` is the repo's source (a host). Until the multi-source manager (step 5), SyncManager syncs github.com only
+   * and answers 'queued' for any other (SyncManager.syncsSource is the hook).
+   */
+  startOrQueue(req: { repo: string; source: string }): Promise<'started' | 'queued'>;
 }
 
 export interface TrackingOptions {
   db: Db;
   /** github.com's token, shared with the sync and the diffs. */
   tokens: TokenSupply;
+  /** The other sources (GitLab), by host, with their tokens and clients; without it, github.com is the only one. */
+  sources?: SourceRegistry;
   sync: FirstSync;
   /** Timezone of the returned Repo's weekly stats (the server's default). */
   tz: string;
@@ -92,10 +107,33 @@ export class Tracking {
     return this.opts.now?.() ?? Date.now();
   }
 
-  /** The source named by `host` (default github.com); 400 when there is none. */
+  /** The source named by `host` (default github.com); 400 when there is none, or it isn't configured on this server. */
   private reach(host: string = GITHUB_HOST): Reach {
-    if (host.toLowerCase() === GITHUB_HOST) return this.github();
-    throw new HttpError(400, `${host} isn't a source here.`);
+    const h = host.trim().toLowerCase();
+    if (h === GITHUB_HOST) return this.github();
+    const runtime = this.opts.sources?.byHost(h) ?? null;
+    if (!runtime) throw new HttpError(400, notASource(h));
+    const open = runtime.syncSource;
+    if (!runtime.configured || !open) throw new HttpError(400, `${runtime.label} isn't configured on this server.`);
+    // Every source but github.com is a GitLab instance in this wave.
+    const baseUrl = runtime.row.baseUrl;
+    return {
+      id: runtime.id,
+      host: runtime.host,
+      label: runtime.label,
+      tokens: runtime.tokens,
+      noToken: (resolved) => runtime.tokens.noTokenMessage(resolved),
+      authHint: runtime.tokens.spec.authHint,
+      parse: (input) => parseGitLabInput(input, { host: runtime.host, baseUrl })?.path ?? null,
+      refuse: (input) => `Not a GitLab project: "${input.slice(0, 200)}". Enter group/project or a ${runtime.host} URL.`,
+      // The registry's client (its 401 invalidates the token), with few retries and no long waits.
+      open: (token) => open(token, INTERACTIVE),
+    };
+  }
+
+  /** Every source's host (configured here or not): a key's first segment that is one of them names that source. */
+  private hosts(): string[] {
+    return this.opts.sources?.list().map((r) => r.host) ?? [GITHUB_HOST];
   }
 
   private github(): Reach {
@@ -195,12 +233,21 @@ export class Tracking {
     };
   }
 
-  /** The source and provider path `input` names (400 when it names none). */
+  /**
+   * The source and provider path `input` names: on `source`, unless the input is an address or key on another host,
+   * which wins. 400 when that host isn't a source here (or isn't configured), or the input names no repository.
+   */
   private target(input: string, source?: string): { reach: Reach; path: string } {
-    const reach = this.reach(source);
+    const asked = this.reach(source);
+    const named = inputHost(input, this.hosts());
+    const reach = named !== null && named !== asked.host ? this.reach(named) : asked;
     const path = reach.parse(input);
-    if (path === null) throw new HttpError(400, reach.refuse(input));
-    return { reach, path };
+    if (path !== null) return { reach, path };
+    // Not a GitHub repository, but a key on some host ("gitlab.example.com/group/project"): say the host isn't a source.
+    // (On GitLab such an input is a path: groups may have dots.)
+    const guessed = reach.host === GITHUB_HOST && named === null ? inputHost(input, [], { guess: true }) : null;
+    if (guessed !== null) throw new HttpError(400, notASource(guessed));
+    throw new HttpError(400, reach.refuse(input));
   }
 
   private async look(input: string, source?: string): Promise<Looked> {
@@ -226,6 +273,7 @@ export class Tracking {
       owned: result.owned,
       hidden: tracked ? tracked.hidden : null,
       backfill: { since, commits: counts.commits, prs: counts.prs, issues: counts.issues, releases: counts.releases, requests },
+      ...(result.unavailable?.length ? { unavailable: result.unavailable } : {}),
     };
   }
 
@@ -266,7 +314,7 @@ export class Tracking {
       const why = res.trackedBy === 'owned' ? `You own ${p.key}, so it's tracked automatically.` : `${p.key} is already tracked.`;
       throw new HttpError(409, why, { key: p.key, trackedBy: res.trackedBy, hidden: res.hidden });
     }
-    const sync = await this.opts.sync.startOrQueue({ repo: p.key });
+    const sync = await this.opts.sync.startOrQueue({ repo: p.key, source: reach.host });
     return { repo: getRepo(db, p.key, this.opts.tz)!, sync };
   }
 }

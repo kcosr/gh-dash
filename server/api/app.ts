@@ -28,8 +28,8 @@ export interface AppDeps {
   /** The GitHub token, shared with sync and diffs: account routes, and the reason in "no token" errors. */
   tokens: TokenProvider;
   /**
-   * Every source's runtime (github.com's tokens are `tokens.credentials`). startServer always passes it; the routes
-   * that need it arrive with the /sources API (step 8), so tests that don't use it may leave it out.
+   * Every source's runtime (github.com's tokens are `tokens.credentials`). startServer always passes it; without it
+   * (tests that don't need it) github.com is the only source the tracking API knows.
    */
   sources?: SourceRegistry;
   /**
@@ -40,7 +40,7 @@ export interface AppDeps {
   transport?: AppTransport;
   /** Desktop transport: the Local API's URL while its TCP listener runs, else null (GET /instance apiUrl). */
   localApiUrl?: () => string | null;
-  /** Adding repositories (lookups and candidates on GitHub); by default over `tokens` and `sync`. */
+  /** Adding repositories (lookups and candidates on any source); by default over `tokens`, `sources` and `sync`. */
   tracking?: Tracking;
 }
 
@@ -49,7 +49,7 @@ export type AppTransport = { kind: 'tcp' } | { kind: 'desktop'; secret: string }
 export function createApp(input: AppDeps): Hono {
   const deps: AppDeps = {
     ...input,
-    tracking: input.tracking ?? new Tracking({ db: input.db, tokens: input.tokens, sync: input.sync, tz: input.config.defaultTz }),
+    tracking: input.tracking ?? new Tracking({ db: input.db, tokens: input.tokens, sources: input.sources, sync: input.sync, tz: input.config.defaultTz }),
   };
   const { config } = deps;
   const transport: AppTransport = deps.transport ?? { kind: 'tcp' };

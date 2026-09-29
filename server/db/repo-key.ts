@@ -1,6 +1,6 @@
 import type { TrackedBy } from '../../shared/api';
 import type { Db } from './db';
-import { GITHUB_SOURCE_ID } from './sources';
+import { GITHUB_SOURCE_ID, sourceKey, type SourceRef } from './sources';
 
 // A repository's key is what the API and the web app call it: in URLs, `repos=` lists, sets, cursors and every
 // `repo` field. It is stored in `repos.key`, written by the upserts through `sourceKey` (db/sources.ts): the provider
@@ -72,6 +72,19 @@ export function resolveRepo(db: Db, key: string): RepoRef | null {
         nodeId: row.node_id, trackedBy: row.tracked_by === 'manual' ? 'manual' : 'owned',
       }
     : null;
+}
+
+/**
+ * The live repo `input` names on the source `src`: its key, or its path there (`platform/app` for
+ * `gitlab.example.com/platform/app`; on github.com the key, or an owned repo's short name). null when that names no repo
+ * on `src`, including one on another source.
+ */
+export function resolveRepoOn(db: Db, input: string, src: SourceRef): RepoRef | null {
+  for (const key of new Set([sourceKey(src, input), input])) {
+    const ref = resolveRepo(db, key);
+    if (ref?.sourceId === src.id) return ref;
+  }
+  return null;
 }
 
 /** Input key → repo id for each input that names a live repo, in input order (inputs that name none are absent). */

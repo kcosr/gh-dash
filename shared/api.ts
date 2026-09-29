@@ -115,6 +115,8 @@ export interface Repo {
   addedAt: string | null;
   /** Manual repos the token can no longer read: data kept, sync skips it until readable again. */
   unavailable: { since: string; reason: string } | null;
+  /** Local comments on its PRs and commits (every author, never on the code host): removing the repo deletes them. */
+  commentCount: number;
 }
 
 export interface PullRequest {

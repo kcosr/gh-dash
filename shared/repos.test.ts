@@ -26,7 +26,7 @@ function repo(key: string, over: Partial<Repo> = {}, trackedBy: TrackedBy = 'own
     key, source: 'github.com', provider: 'github', name, nameWithOwner: i < 0 ? `alice/${key}` : key, owner: i < 0 ? 'alice' : key.slice(0, i), description: null,
     url: `https://github.com/${key}`, visibility: 'public', isArchived: false, isFork: false, language: null, topics: [],
     defaultBranch: 'main', stars: 0, forks: 0, createdAt: '2026-01-01T00:00:00Z', pushedAt: null, lastActivityAt: null,
-    pinned: false, hidden: false, setIds: [], syncedAt: null, trackedBy, addedAt: null, unavailable: null,
+    pinned: false, hidden: false, setIds: [], syncedAt: null, trackedBy, addedAt: null, unavailable: null, commentCount: 0,
     stats: { openPrs: 0, openIssues: 0, mergedPrs30d: 0, commits30d: 0, newStars30d: 0, weeklyCommits: [] },
     ...over,
   };

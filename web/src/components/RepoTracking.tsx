@@ -28,8 +28,7 @@ export function useConfirmRemoveRepo(): (repo: Repo) => void {
     const name = label(repo.key);
     openConfirm({
       title: `Remove ${name}?`,
-      // The diff-comments track adds Repo.commentCount; until then there are no comments to count.
-      body: removeRepoBody((repo as Repo & { commentCount?: number }).commentCount, repoProvider(repo)),
+      body: removeRepoBody(repo.commentCount, repoProvider(repo)),
       confirmLabel: 'Remove',
       danger: true,
       onConfirm: async () => {

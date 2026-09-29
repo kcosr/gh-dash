@@ -69,6 +69,7 @@ const schemas: Record<string, Schema> = {
       ...nullable(obj({ since: dateTime, reason: str() })),
       description: 'Manual repos the token can no longer read: data kept, sync skips it until readable again',
     },
+    commentCount: { ...int(), description: 'Local comments on its pull requests and commits (every author): removing the repo deletes them too' },
   }),
   PullRequest: obj({
     id: str('<repo>#<number>'), repo: str(), number: int(), title: str(), body: str('Markdown'),

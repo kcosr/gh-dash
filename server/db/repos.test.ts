@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { addManualRepo, GITHUB, seedDb } from '../test/seed';
+import { addComment, createThread, getPrincipal, SELF_PRINCIPAL_ID } from './comments';
 import { listRepos } from './repos';
 import { upsertOwned, upsertStar } from './write';
 
@@ -49,5 +50,27 @@ describe('listRepos new stars', () => {
     upsertStar(db, kept, { login: 'zed', name: null, avatarUrl: null, starredAt: '2026-09-24T22:11:34Z' });
     const repos = listRepos(db, 'UTC', Date.parse('2026-09-27T12:00:00Z'));
     expect(repos.find((r) => r.key === 'bob/kept')!.stats.newStars30d).toBe(0);
+  });
+});
+
+describe('listRepos comment counts', () => {
+  it("counts each repo's local comments, every thread and author, for the Remove confirmation", () => {
+    const db = seedDb();
+    const you = getPrincipal(db, SELF_PRINCIPAL_ID)!;
+    const bob = addManualRepo(db, 'bob/app');
+    const general = { path: null, side: null, startLine: null, endLine: null, snippet: null };
+    const open = (repoId: number, target: { kind: 'pr'; number: number } | { kind: 'commit'; oid: string }, body: string) =>
+      createThread(db, { repoId, ...target }, { commitOid: 'a'.repeat(40), baseOid: null, anchor: general, body }, you);
+    const app = db.get<{ id: number }>(`SELECT id FROM repos WHERE key = 'alice/app'`)!.id;
+    const t = open(app, { kind: 'pr', number: 2 }, 'Why?');
+    addComment(db, t.id, you, 'Never mind.');
+    open(app, { kind: 'commit', oid: 'b'.repeat(40) }, 'Commit note');
+    open(bob, { kind: 'pr', number: 1 }, 'Namesake');
+    const counts = () => Object.fromEntries(listRepos(db, 'UTC').map((r) => [r.key, r.commentCount]));
+    expect(counts()).toMatchObject({ 'alice/app': 3, 'bob/app': 1, 'alice/secret': 0 });
+    // Removing a repo takes its comments along; the other repo keeps its own.
+    db.run('DELETE FROM repos WHERE id = ?', [bob]);
+    expect(counts()).toMatchObject({ 'alice/app': 3 });
+    expect(db.get<{ n: number }>('SELECT count(*) AS n FROM comments')!.n).toBe(3);
   });
 });

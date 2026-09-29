@@ -74,9 +74,8 @@ export function backfillLine(b: RepoPreview['backfill'], p: Provider = PROVIDERS
 }
 
 /**
- * The Remove confirmation's text. `commentCount` is where the diff-comments track plugs in (its branch isn't merged
- * here): once `Repo.commentCount` exists, pass it, and the text names the user's own comments that go with the repo.
- * `p` is the repo's host.
+ * The Remove confirmation's text. `commentCount` (`Repo.commentCount`): the local comments that go with the repo, which
+ * the text names when there are any. `p` is the repo's host.
  */
 export function removeRepoBody(commentCount?: number, p: Provider = PROVIDERS.github): string {
   const comments = commentCount ? `, and your ${commentCount.toLocaleString()} ${plural(commentCount, 'comment')}` : '';

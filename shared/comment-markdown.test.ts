@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { CommentThread, Principal } from './api';
-import { threadsMarkdown } from './comment-markdown';
+import { commentExcerpt, threadsMarkdown } from './comment-markdown';
 import { PROVIDERS } from './provider';
 
 const you: Principal = { id: 1, kind: 'self', name: 'You' };
@@ -64,5 +64,26 @@ describe('threadsMarkdown', () => {
     expect(threadsMarkdown([thread({})], { provider: PROVIDERS.gitlab })).toBe('### Merge request\n\n- **You**: Why?\n');
     expect(threadsMarkdown([thread({ kind: 'commit', number: null })])).toMatch(/^### Commit\n/);
     expect(threadsMarkdown([])).toBe('');
+  });
+});
+
+describe('commentExcerpt', () => {
+  it("keeps a comment's words as one line of plain text", () => {
+    expect(commentExcerpt('Why **two** `consts`?\n\nSee [the docs](https://x.example) and ~~this~~.')).toBe('Why two consts? See the docs and this.');
+    expect(commentExcerpt('## Heading\n> quoted\n- [ ] task\n1. step\n<details><summary>More</summary>hidden</details><!-- note -->')).toBe(
+      'Heading quoted task step Morehidden',
+    );
+    expect(commentExcerpt('```ts\nconst a = 1;\n```')).toBe('const a = 1;');
+    expect(commentExcerpt('a < b and c > d, ![alt](img.png)')).toBe('a < b and c > d, alt');
+    expect(commentExcerpt('  \r\n  ')).toBe('');
+  });
+
+  it('cuts at 280 characters with an ellipsis, never inside a character', () => {
+    expect(commentExcerpt('x'.repeat(280))).toBe('x'.repeat(280));
+    expect(commentExcerpt('x'.repeat(281))).toBe(`${'x'.repeat(279)}…`);
+    const emoji = commentExcerpt('😀'.repeat(300));
+    expect(Array.from(emoji)).toHaveLength(280);
+    expect(emoji.endsWith('😀…')).toBe(true);
+    expect(commentExcerpt('one two three', 8)).toBe('one two…');
   });
 });

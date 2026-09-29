@@ -39,14 +39,17 @@ const THREADS = 'comment_threads t JOIN repos r ON r.id = t.repo_id';
 const THREADS_WITH_TARGETS =
   `${THREADS} JOIN sources s ON s.id = r.source_id LEFT JOIN pull_requests p ON p.repo_id = t.repo_id AND p.number = t.pr_number ` +
   'LEFT JOIN commits c ON c.repo_id = t.repo_id AND t.pr_number IS NULL AND c.oid = t.commit_oid';
-// A commit the sync doesn't hold (default branches only) may be one of a synced PR's: its headline is then the newest
-// such PR's (highest number; the same commit reads the same in each). A PR thread never takes a commit's headline.
-const PR_COMMIT_HEADLINE =
+/**
+ * A commit the sync doesn't hold (default branches only) may be one of a synced PR's: its headline is then the newest
+ * such PR's (highest number; the same commit reads the same in each). A PR thread never takes a commit's headline.
+ * `alias`: a row with a thread's repo_id, pr_number and commit_oid (a thread, or a comment event).
+ */
+export const prCommitHeadlineSql = (alias: string) =>
   `(SELECT pc.headline FROM pr_commits pc JOIN pull_requests q ON q.id = pc.pr_id
-     WHERE t.pr_number IS NULL AND q.repo_id = t.repo_id AND pc.oid = t.commit_oid ORDER BY q.number DESC LIMIT 1)`;
+     WHERE ${alias}.pr_number IS NULL AND q.repo_id = ${alias}.repo_id AND pc.oid = ${alias}.commit_oid ORDER BY q.number DESC LIMIT 1)`;
 const SELECT =
   `t.*, ${repoKeySql('r')} AS repo, r.url AS repo_url, s.kind AS source_kind, ` +
-  `COALESCE(p.title, c.headline, ${PR_COMMIT_HEADLINE}) AS target_title, COALESCE(NULLIF(p.url, ''), NULLIF(c.url, '')) AS target_url, ` +
+  `COALESCE(p.title, c.headline, ${prCommitHeadlineSql('t')}) AS target_title, COALESCE(NULLIF(p.url, ''), NULLIF(c.url, '')) AS target_url, ` +
   'p.state AS pr_state, p.head_oid AS pr_head_oid';
 
 /** The scope (as /prs applies it) and the filters; `status` 'all' leaves the status out (for `counts`). */

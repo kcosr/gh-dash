@@ -112,6 +112,11 @@ const schemas: Record<string, Schema> = {
       obj({ type: enumOf('issue'), kind: enumOf('opened', 'closed'), at: dateTime, repo: str(), actor: ref('Actor'), issue: ref('Issue') }),
       obj({ type: enumOf('release'), at: dateTime, repo: str(), actor: nullable(ref('Actor')), release: ref('Release') }),
       obj({ type: enumOf('star'), at: dateTime, repo: str(), actor: ref('Actor') }),
+      obj({
+        type: enumOf('comment'), kind: ref('CommentEventKind'), at: dateTime, repo: str(),
+        actor: { ...ref('Actor'), description: 'The principal: login and avatarUrl null, isMe for the dashboard user, an agent otherwise' },
+        comment: ref('CommentActivity'),
+      }),
     ],
   },
   Facets: obj(
@@ -354,6 +359,7 @@ const schemas: Record<string, Schema> = {
     snippet: nullable(str('The anchored lines as they were, joined with \\n (endLine - startLine + 1 lines)')),
     status: enumOf('open', 'resolved'),
     resolvedAt: nullable(dateTime),
+    resolvedBy: { ...nullable(ref('Principal')), description: 'Who resolved it; null while open, and for threads resolved before gh-dash recorded it' },
     createdAt: dateTime,
     updatedAt: { ...dateTime, description: 'Last comment added, edited or deleted, or status change' },
     comments: { ...arr(ref('ThreadComment')), description: 'Oldest first; never empty' },
@@ -368,6 +374,33 @@ const schemas: Record<string, Schema> = {
   },
   NewPrThread: newThread('pr'),
   NewThread: newThread('commit'),
+  CommentEventKind: enumOf('thread_opened', 'replied', 'edited', 'comment_deleted', 'resolved', 'reopened', 'thread_deleted'),
+  CommentActivity: obj({
+    eventId: int(),
+    threadId: int(),
+    live: { ...bool, description: 'False once the thread is deleted' },
+    by: ref('Principal'),
+    target: {
+      oneOf: [
+        obj({ kind: enumOf('pr'), number: int(), title: nullable(str("The PR's title; null when not synced")) }),
+        obj({ kind: enumOf('commit'), oid: str(), title: nullable(str("The commit's headline (or a synced PR's listing of it); null when not synced")) }),
+      ],
+    },
+    commitOid: str('The revision the thread was made on'),
+    path: nullable(str()),
+    side: nullable(enumOf('old', 'new')),
+    startLine: nullable(int()),
+    endLine: nullable(int()),
+    excerpt: nullable(str("Plain text, at most 280 characters: the comment's (for comment events) or the thread's first comment's (thread events)")),
+  }),
+  Agent: obj({
+    id: int("The agent's principal id (comments' author.id)"),
+    name: str(),
+    tokenPrefix: nullable(str("The token's first 8 characters, to tell tokens apart; null once revoked")),
+    createdAt: dateTime,
+    lastUsedAt: { ...nullable(dateTime), description: 'Last MCP request with the token (updated at most once a minute)' },
+    revokedAt: nullable(dateTime),
+  }),
 };
 
 const list = (item: Schema, withFacets = false): Schema =>
@@ -568,7 +601,14 @@ export const ENDPOINTS: EndpointDoc[] = [
   {
     method: 'get', path: '/api/v1/activity', tag: 'Lists', summary: 'Activity feed (commits without a PR, PR/issue events, releases, stars)',
     description: 'Sorted by at desc. facets.byRepo ignores repos; facets.byType ignores types. format=md groups one bullet per event by day.',
-    params: [...SCOPE, q('types', 'Comma-separated event types: commit, pr, issue, release, star. Default: all.', str(), 'pr,release'), ...PAGE],
+    params: [
+      ...SCOPE.map((param) =>
+        param.name === 'q' ? { ...param, description: `${param.description} Comment events: a substring (ASCII case-insensitive) of the excerpt or the file path.` }
+        : param.name === 'who' ? { ...param, description: `${param.description} Comment events: me is the dashboard user, others the agents.` }
+        : param),
+      q('types', 'Comma-separated event types: commit, pr, issue, release, star, comment (local review comments). Default: all.', str(), 'pr,release'),
+      ...PAGE,
+    ],
     response: { status: 200, schema: list(ref('ActivityEvent'), true) }, textFormats: true, example: 'from=-7d&types=pr,release',
   },
   { method: 'get', path: '/api/v1/commits', tag: 'Lists', summary: 'Commits to default branches (including PR merges)', params: [...SCOPE, ...PAGE], response: { status: 200, schema: list(ref('Commit')) }, textFormats: true, example: 'who=me&from=-7d' },
@@ -687,6 +727,22 @@ export const ENDPOINTS: EndpointDoc[] = [
   { method: 'get', path: '/api/v1/diff-cache', tag: 'Diffs', summary: 'Diff cache size', response: { status: 200, schema: ref('DiffCacheStats') } },
   { method: 'delete', path: '/api/v1/diff-cache', tag: 'Diffs', summary: 'Empty the diff cache and release its disk space', response: { status: 200, schema: ref('DiffCacheStats') } },
   ...commentEndpoints(),
+  {
+    method: 'get', path: '/api/v1/agents', tag: 'Comments', summary: 'The agents that may comment through MCP (never their tokens)',
+    description:
+      'Oldest first, revoked ones included. Agents are made, given a new token and revoked in the desktop app (Settings → Agents) or with the ' +
+      "headless server's `agents` command: never over HTTP. An agent connects to POST /mcp with `Authorization: Bearer <its token>`.",
+    response: { status: 200, schema: obj({ items: arr(ref('Agent')) }) },
+  },
+  {
+    method: 'get', path: '/api/v1/stream', tag: 'Comments', summary: 'What changes, as it happens (server-sent events)',
+    description:
+      'text/event-stream: one `data: <json>` event per StreamMessage, nothing replayed. `comments`: a thread changed (repo, kind, number, commitOid, threadId, ' +
+      'event, by); `show`: an agent asks the app to show something (id, agent, target {repo, pr?, commit?, threadId?, path?}, message, at); `agents`: an agent ' +
+      'was added, given a new token or revoked. A comment line (`: ping`) every 25 s keeps proxies from closing an idle stream; behind nginx, turn ' +
+      'proxy_buffering off for it (deploy/nginx.conf.example).',
+    response: { status: 200, schema: str(), type: 'text/event-stream' },
+  },
   { method: 'get', path: '/api/v1/sync/status', tag: 'Sync', summary: 'Sync progress, last result, next run and rate limit', response: { status: 200, schema: ref('SyncStatus') } },
   {
     method: 'post', path: '/api/v1/sync', tag: 'Sync', summary: 'Start a sync now (409 if one is running)',

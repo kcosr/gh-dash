@@ -244,6 +244,54 @@ describe('startServer', () => {
     await vi.waitFor(() => expect(logs.some((line) => line.startsWith('[token gitlab.example.com] no token'))).toBe(true));
   });
 
+  it("tells every listener's open streams of a comment, and ends them at once on shutdown", async () => {
+    const socket = socketPath();
+    const secret = 'e'.repeat(64);
+    const { server } = await start({}, { tcp: true, socket: { path: socket, secret } });
+    addManualRepo(server.db, 'alice/app');
+    // One window on the Local API, one on the desktop socket: one bus.
+    const tcp = await fetch(`${server.apiUrl}/api/v1/stream`);
+    expect(tcp.headers.get('content-type')).toBe('text/event-stream; charset=utf-8');
+    const reader = tcp.body!.getReader();
+    const decoder = new TextDecoder();
+    let tcpText = '';
+    const readUntil = async (text: string) => {
+      while (!tcpText.includes(text)) {
+        const { value, done } = await reader.read();
+        if (done) return false;
+        tcpText += decoder.decode(value);
+      }
+      return true;
+    };
+    let socketText = '';
+    const socketEnded = new Promise<void>((resolve, reject) => {
+      const req = request({ socketPath: socket, path: '/api/v1/stream', headers: { host: 'gh-dash', [DESKTOP_SECRET_HEADER]: secret } }, (res) => {
+        res.setEncoding('utf8');
+        res.on('data', (chunk: string) => (socketText += chunk));
+        res.on('end', resolve);
+      });
+      req.on('error', reject);
+      req.end();
+    });
+    expect(await readUntil(': connected')).toBe(true);
+    await vi.waitFor(() => expect(server.bus.windows).toBe(2));
+
+    const oid = 'c'.repeat(40);
+    const res = await fetch(`${server.apiUrl}/api/v1/commits/alice%2Fapp/${oid}/threads`, { method: 'POST', body: JSON.stringify({ body: 'Nit' }) });
+    const thread = (await res.json()) as { id: number };
+    const message = { type: 'comments', repo: 'alice/app', kind: 'commit', number: null, commitOid: oid, threadId: thread.id, event: 'thread_opened', by: { id: 1, kind: 'self', name: 'You' } };
+    expect(await readUntil('}\n\n')).toBe(true);
+    expect(tcpText).toContain(`data: ${JSON.stringify(message)}\n\n`);
+    await vi.waitFor(() => expect(socketText).toContain(`data: ${JSON.stringify(message)}\n\n`));
+
+    // Shutdown doesn't wait out the 2 s grace period for the open streams: they end first.
+    const t0 = Date.now();
+    await server.close();
+    expect(Date.now() - t0).toBeLessThan(1000);
+    await socketEnded;
+    expect(await readUntil('never')).toBe(false);
+  });
+
   it("fetches a repo's diffs from the source it is on", async () => {
     const dir = temp();
     const env = { GITLAB_TOKEN: 'glpat-test-alice', GH_DASH_GITLAB_URL: BASE, GH_DASH_DB: join(dir, 'dash.db'), GH_DASH_SYNC: 'off' };

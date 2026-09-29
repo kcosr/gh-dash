@@ -40,6 +40,8 @@ export interface ThreadsState {
   draftSpot: DraftSpot | null;
   /** Cancel: the draft goes (Esc, closeDraft, only sets it aside). */
   discardDraft: () => void;
+  /** The open draft is being sent (its composer may have been reopened meanwhile). */
+  draftSending: boolean;
   submitDraft: (body: string) => Promise<unknown>;
   closeDraft: () => void;
   /** Files whose Outdated block is open. */
@@ -90,7 +92,9 @@ const keyStore = (key: string): TextStore => ({ load: () => getDraft(key), save:
  * scrolling the composer away (the viewer is virtualized) or reloading loses nothing. Mod+Enter sends; Esc closes
  * it and keeps the draft, Cancel discards it (`onDiscard`, when discarding is more than forgetting the text).
  */
-export function Composer({ draftKey, store: given, initial = '', placeholder, submitLabel, onSubmit, onClose, onDiscard, autoFocus = true, focusKey = 0 }: {
+export function Composer({
+  draftKey, store: given, initial = '', placeholder, submitLabel, onSubmit, onClose, onDiscard, onSent, sending = false, autoFocus = true, focusKey = 0,
+}: {
   draftKey?: string;
   store?: TextStore;
   initial?: string;
@@ -99,13 +103,18 @@ export function Composer({ draftKey, store: given, initial = '', placeholder, su
   onSubmit: (body: string) => Promise<unknown>;
   onClose: () => void;
   onDiscard?: () => void;
+  /** After a successful send (default: onClose). */
+  onSent?: () => void;
+  /** Its text is being sent (by another instance, before it unmounted): read-only until that's done. */
+  sending?: boolean;
   autoFocus?: boolean;
   /** A change focuses the textarea again (`r` on a thread whose reply box is already open). */
   focusKey?: number;
 }) {
   const [store] = useState(() => given ?? keyStore(draftKey!));
   const [text, setText] = useState(() => store.load() || initial);
-  const [busy, setBusy] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const busy = submitting || sending;
   const area = useRef<HTMLTextAreaElement>(null);
   const toast = useToast();
   useLayer(true, onClose);
@@ -138,14 +147,14 @@ export function Composer({ draftKey, store: given, initial = '', placeholder, su
   };
   const submit = async () => {
     if (!text.trim() || busy) return;
-    setBusy(true);
+    setSubmitting(true);
     try {
       await onSubmit(text);
       store.save('');
-      onClose();
+      (onSent ?? onClose)();
     } catch (e) {
       toast(`Couldn't save: ${(e as Error).message}`, { error: true });
-      setBusy(false);
+      setSubmitting(false);
     }
   };
   const onKeyDown = (e: ReactKeyboardEvent) => {
@@ -170,7 +179,7 @@ export function Composer({ draftKey, store: given, initial = '', placeholder, su
         <span className="dth-hint">Markdown · <kbd>{/Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl'}</kbd> <kbd>Enter</kbd></span>
         <span className="spacer" />
         <button type="button" className="dth-btn" onClick={() => { if (onDiscard) onDiscard(); else { store.save(''); onClose(); } }} disabled={busy}>Cancel</button>
-        <button type="button" className="dth-btn primary" onClick={() => void submit()} disabled={busy || !text.trim()}>{submitLabel}</button>
+        <button type="button" className="dth-btn primary" onClick={() => void submit()} disabled={busy || !text.trim()}>{busy ? 'Sending…' : submitLabel}</button>
       </div>
     </div>
   );
@@ -293,6 +302,9 @@ const copyLink = (id: number) => {
   return copyText(url.toString());
 };
 
+/** The viewer closes a sent draft's composer itself (only if it still shows that draft). */
+const noop = () => {};
+
 const lineRange = (a: number, b: number) => (a === b ? `line ${a}` : `lines ${a}–${b}`);
 
 /** "moved from line 12 · made on abc1234" for a thread found again in a later push. */
@@ -388,6 +400,8 @@ export function DraftComposer() {
         onSubmit={s.submitDraft}
         onClose={s.closeDraft}
         onDiscard={s.discardDraft}
+        onSent={noop}
+        sending={s.draftSending}
       />
     </div>
   );

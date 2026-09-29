@@ -39,7 +39,7 @@ function ThreadLink({ t, p, onJump }: { t: CommentThread; p: ThreadPlacement | u
 }
 
 export const CommentsColumn = memo(function CommentsColumn({
-  threads, order, title, kind, error, onRetry, onJump, onClose, onCreateGeneral, unsent, headOid, onResume, onDiscardDraft,
+  threads, order, title, kind, error, onRetry, onJump, onClose, onCreateGeneral, unsent, sending, headOid, onResume, onDiscardDraft,
 }: {
   /** In n/p order: general, then by file (file-list order) and line. */
   threads: CommentThread[];
@@ -56,6 +56,8 @@ export const CommentsColumn = memo(function CommentsColumn({
   onCreateGeneral: (body: string) => Promise<unknown>;
   /** New-thread drafts set aside (not the open one), to resume or discard. */
   unsent: NewThreadDraft[];
+  /** Keys of drafts being sent: shown as such, not discarded. */
+  sending: ReadonlySet<string>;
   /** The diff's head, to tell drafts started on an earlier push. */
   headOid: string;
   onResume: (key: string) => void;
@@ -122,7 +124,9 @@ export const CommentsColumn = memo(function CommentsColumn({
                   <span className="dcc-where"><span className="name">{baseName(a.path)}</span><span className="ln">:{lines}</span></span>
                   <span className="dcc-text">{plainPreview(d.body, 120)}</span>
                   <button type="button" className="dth-btn" onClick={() => onResume(d.key)}>Resume</button>
-                  <button type="button" className="dth-btn" onClick={() => onDiscardDraft(d.key)}>Discard</button>
+                  {sending.has(d.key)
+                    ? <span className="dth-hint">Sending…</span>
+                    : <button type="button" className="dth-btn" onClick={() => onDiscardDraft(d.key)}>Discard</button>}
                 </div>
               );
             })}

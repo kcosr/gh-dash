@@ -218,13 +218,10 @@ a.iss-li:hover .iss-t { color: var(--accent-text); text-decoration: underline; t
 .day-sec { scroll-margin-top: 0; }
 
 /* ---------- repositories */
-.rcard .rc-h { min-width: 0; }
-.rc-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rc-h .vis-badge { flex: none; }
-/* An owner/name title gives way (owner first) before it pushes the badges and buttons onto a second line. */
-.rc-name:has(.rn-o) { max-width: 50%; }
-/* When the buttons wrap under a long title, keep them at the right edge. */
-.rc-h .spacer + .pin-btn { margin-left: auto; }
+/* One header row: a long name gives way (the owner first, then the name) so the badges, pin and menu stay on it. */
+.rcard .rc-h { min-width: 0; flex-wrap: nowrap; }
+.rc-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rc-h .vis-badge, .rc-h .pin-btn { flex: none; }
 .rc-h .pin-btn + .pin-btn { margin-left: -6px; }
 .rc-stats { flex-wrap: wrap; row-gap: 4px; }
 .rc-spark { min-width: 0; }
@@ -421,7 +418,7 @@ a.sync:hover .sync-text { color: var(--text); text-decoration: underline; text-u
 /* Real repo names are long; 3 cards across at 1440 px keeps names and stats on one line. */
 .repo-grid { grid-template-columns: repeat(auto-fill, minmax(min(100%, 360px), 1fr)); }
 .rcard { min-width: 0; }
-.rc-h, .rc-stats { flex-wrap: wrap; }
+.rc-stats { flex-wrap: wrap; }
 .rcard .rc-foot { margin-top: auto; }
 .btn-group { display: inline-flex; gap: 8px; margin-left: auto; }
 

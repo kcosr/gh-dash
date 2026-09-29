@@ -12,7 +12,7 @@ import { getRepo } from '../db/repos';
 import { getSettings } from '../db/settings';
 import { addManual, applyProbe } from '../db/write';
 import { DAY_MS, isoSec } from '../lib/time';
-import { saveViewer, viewerMismatch } from '../sync/sync';
+import { tryClaimViewer, viewerMismatch } from '../sync/sync';
 import { noTokenMessage, tokenKind, type TokenSupply } from '../token';
 import { type AccessFailure, accessFailure, notFound } from './access';
 import { GitHubClient } from './client';
@@ -238,9 +238,9 @@ export class Tracking {
     const r = l.data.repository!;
     const now = isoSec(this.now());
     const res = db.tx(() => {
-      // Again under the write lock: another add may have claimed the database for another account since the lookup.
-      this.checkViewer(l.viewer);
-      saveViewer(db, l.viewer);
+      // Again under the write lock: another add, or a sync, may have claimed the database since the lookup.
+      const mismatch = tryClaimViewer(db, l.viewer);
+      if (mismatch) throw new HttpError(409, mismatch);
       const added = addManual(db, mapRepo(r), { hidden: !includeInDefault }, now);
       if (added.added) applyProbe(db, added.id, mapProbe(r));
       return added;

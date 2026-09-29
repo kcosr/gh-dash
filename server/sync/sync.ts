@@ -274,11 +274,22 @@ export function saveViewer(db: Db, v: GqlViewer): void {
   setMeta(db, 'viewer', { id: v.id, login: v.login, name: v.name, avatarUrl: v.avatarUrl });
 }
 
+/**
+ * Claims the database for the account `v`, or finds it belongs to another one (returned: why not). The read, check
+ * and write are one write transaction, so another process can't claim the database in between.
+ */
+export function tryClaimViewer(db: Db, v: GqlViewer): string | null {
+  return db.tx(() => {
+    const mismatch = viewerMismatch(getMeta(db, 'viewer'), v);
+    if (!mismatch) saveViewer(db, v);
+    return mismatch;
+  });
+}
+
 /** Runs before anything is written: a token for another account fails the sync and leaves the database as it was. */
 function claimViewer(db: Db, v: GqlViewer): void {
-  const mismatch = viewerMismatch(getMeta(db, 'viewer'), v);
+  const mismatch = tryClaimViewer(db, v);
   if (mismatch) throw new Error(mismatch);
-  saveViewer(db, v);
 }
 
 /**

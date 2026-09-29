@@ -8,7 +8,7 @@ import { GitHubClient } from '../github/client';
 import { VIEWER } from '../github/queries';
 import type { ViewerData } from '../github/types';
 import { tokenKind, type TokenSupply } from '../token';
-import { runSync, saveViewer, type SyncProgress, type SyncRequest, viewerMismatch } from './sync';
+import { runSync, type SyncProgress, type SyncRequest, tryClaimViewer } from './sync';
 
 /** A lock whose heartbeat is older than this belongs to a dead process. */
 const LOCK_STALE_MS = 90_000;
@@ -112,9 +112,8 @@ export class SyncManager {
     if (!token) return;
     const client = this.client(token);
     const { viewer } = await client.query<ViewerData>(VIEWER);
-    const mismatch = viewerMismatch(getMeta(this.db, 'viewer'), viewer);
+    const mismatch = tryClaimViewer(this.db, viewer);
     if (mismatch) this.log(`[sync] warning: ${mismatch}`);
-    else saveViewer(this.db, viewer);
   }
 
   private client(token: string): GitHubClient {

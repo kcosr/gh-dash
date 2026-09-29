@@ -60,13 +60,14 @@ ${PROBE_FIELDS}`;
 
 /**
  * `commits` lists the MR's newest commits first; `workItemRelations` (issues the MR closes) is null while GitLab's
- * explicit_mr_work_item_relations flag is off.
+ * explicit_mr_work_item_relations flag is off. `mergeCommitSha` / `squashCommitSha` are what link the commits on the
+ * target branch back to the MR (the commits themselves don't say).
  */
 const MR_FIELDS = `
 fragment MrFields on MergeRequest {
   iid title description state draft webUrl
   createdAt updatedAt mergedAt closedAt
-  sourceBranch targetBranch diffHeadSha commitCount
+  sourceBranch targetBranch diffHeadSha mergeCommitSha squashCommitSha commitCount
   author { ${USER} }
   mergeUser { username }
   diffStatsSummary { additions deletions fileCount }

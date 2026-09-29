@@ -52,10 +52,10 @@ describe('GitLab → rows: helpers', () => {
     expect(utc('2026-09-26T00:00:00Z')).toBe('2026-09-26T00:00:00Z');
   });
 
-  it('maps internal visibility to private until the app has its own value for it', () => {
+  it('keeps internal visibility, and treats a visibility GitLab did not give as private', () => {
     expect([mapVisibility('public'), mapVisibility('internal'), mapVisibility('private'), mapVisibility(null)]).toEqual([
       'public',
-      'private',
+      'internal',
       'private',
       'private',
     ]);
@@ -91,7 +91,7 @@ describe('GitLab → rows: viewer and projects', () => {
     });
     // Internal, archived fork with an empty repository: no default branch, and pushedAt falls back to the last activity.
     expect(tools).toMatchObject({
-      name: 'corp.tools', visibility: 'private', isArchived: true, isFork: true, languageName: null, languageColor: null,
+      name: 'corp.tools', visibility: 'internal', isArchived: true, isFork: true, languageName: null, languageColor: null,
       defaultBranch: null, pushedAt: '2025-06-01T09:30:00Z',
     });
   });
@@ -137,6 +137,17 @@ describe('GitLab → rows: merge requests', () => {
       labels: [{ name: 'bug', color: 'd9534f' }, { name: 'priority::high', color: 'ff0000' }],
       closingIssues: [{ number: 3, title: 'Login broken', state: 'closed', url: 'https://gitlab.example.com/gitlab/alice/app/-/issues/3' }],
     });
+  });
+
+  it('reads the commits a merged MR landed as, and none for one that has not merged', () => {
+    expect([merged!.mergeCommitOid, merged!.squashCommitOid]).toEqual(['3333333333333333333333333333333333333333', null]);
+    // Squash merged: a squash commit as well (and a fast-forward merge would have no merge commit). Case is normalized.
+    const squashed = mapMergeRequest({ ...mrs[1]!, mergeCommitSha: null, squashCommitSha: 'ABCDEF0000000000000000000000000000000000' }, BASE);
+    expect([squashed.mergeCommitOid, squashed.squashCommitOid]).toEqual([null, 'abcdef0000000000000000000000000000000000']);
+    // Only a merged MR has landed commits, whatever GitLab holds for the others.
+    const open = mapMergeRequest({ ...mrs[0]!, mergeCommitSha: 'a'.repeat(40), squashCommitSha: 'b'.repeat(40) }, BASE);
+    expect([open.mergeCommitOid, open.squashCommitOid]).toEqual([null, null]);
+    expect([draft, closed, locked].map((p) => [p!.mergeCommitOid, p!.squashCommitOid])).toEqual([[null, null], [null, null], [null, null]]);
   });
 
   it('maps a closed MR with missing optional data', () => {

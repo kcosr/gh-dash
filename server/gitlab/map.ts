@@ -35,12 +35,9 @@ const utcOrNull = (value: string | null | undefined) => (value ? utc(value) : nu
 /** For times GitLab's schema has as nullable but always sets (a project's creation, a commit's date). */
 const EPOCH = '1970-01-01T00:00:00Z';
 
-/**
- * GitLab's `internal` (visible to any signed-in user of the instance) has no counterpart in the app's Visibility yet;
- * it is closest to private. A later change adds 'internal'.
- */
+/** `internal` (visible to any signed-in user of the instance) is the app's 'internal', as GitHub Enterprise's. Unknown is private. */
 export function mapVisibility(visibility: GqlProject['visibility']): Visibility {
-  return visibility === 'public' ? 'public' : 'private';
+  return visibility === 'public' ? 'public' : visibility === 'internal' ? 'internal' : 'private';
 }
 
 /** "#RRGGBB" (or "#RGB") as the app stores label colors, GitHub-style: lower-case hex without '#'. */
@@ -139,6 +136,9 @@ function mapMrCommit(c: GqlCommit, base: string): PrCommitRecord {
   };
 }
 
+/** A commit id as stored: lower case; null when GitLab has none (a fast-forward merge makes no merge commit). */
+const landed = (sha: string | null | undefined) => sha?.trim().toLowerCase() || null;
+
 /**
  * `locked` (mid-merge) counts as open. Like GitHub's, closedAt is the merge time for a merged MR (GitLab keeps the
  * last close there, which a reopened-then-merged MR has too) and null for an open one.
@@ -179,9 +179,9 @@ export function mapMergeRequest(m: GqlMergeRequest, base: string): PrRecord {
     ),
     url: m.webUrl ?? '',
     commits,
-    // Not read yet (MrFields has no mergeCommitSha / squashCommitSha).
-    mergeCommitOid: null,
-    squashCommitOid: null,
+    // Only a merged MR has landed commits; the sync links the target branch's commits to it through them.
+    mergeCommitOid: state === 'merged' ? landed(m.mergeCommitSha) : null,
+    squashCommitOid: state === 'merged' ? landed(m.squashCommitSha) : null,
   };
 }
 

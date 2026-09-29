@@ -500,11 +500,89 @@ describe('migration to sources', () => {
   });
 });
 
+describe('comment threads across the sources rebuild', () => {
+  const SOURCES = versionOf('sources');
+  const HEAD = 'a'.repeat(40);
+
+  /** Threads on two repos (one PR, one commit), replies, an agent's comment, and the highest thread deleted. */
+  function withThreads(from: 'v3' | 'v4'): Db {
+    const sqlite = new DatabaseSync(':memory:');
+    sqlite.exec('PRAGMA foreign_keys = ON');
+    const db = new Db(sqlite);
+    if (from === 'v3') {
+      migrate(db, true, { upTo: 3 });
+      seedV4Rows(db);
+    } else {
+      sqlite.exec(V4_SQL);
+      sqlite.exec('PRAGMA user_version = 4');
+      seedV4(db);
+    }
+    migrate(db, true, { upTo: SOURCES - 1 });
+    db.run(`INSERT INTO principals (id, kind, name, created_at) VALUES (2, 'agent', 'Reviewer', 'x')`);
+    const thread = (repoId: number, pr: number | null, path: string | null) =>
+      Number(db.run(`INSERT INTO comment_threads (repo_id, pr_number, commit_oid, path, side, start_line, end_line, snippet, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'x', 'x')`, [repoId, pr, HEAD, path, path ? 'new' : null, path ? 3 : null, path ? 4 : null, path ? 'a\nb' : null]).lastInsertRowid);
+    const t1 = thread(1, 1, 'src/a.ts');
+    const t2 = thread(1, null, null);
+    const t3 = thread(2, 1, 'README.md');
+    const gone = thread(2, 1, null);
+    for (const [t, author, body] of [[t1, 1, 'Why?'], [t1, 2, 'Because.'], [t2, 1, 'Commit note'], [t3, 1, 'Typo']] as const) {
+      db.run(`INSERT INTO comments (thread_id, author_id, body, created_at) VALUES (?, ?, ?, 'x')`, [t, author, body]);
+    }
+    db.run('DELETE FROM comment_threads WHERE id = ?', [gone]);
+    return db;
+  }
+
+  /** seedV4's rows on a v3 database (v4 only added pull_requests.head_oid, which the rows leave NULL there). */
+  function seedV4Rows(db: Db): void {
+    db.run(`INSERT INTO meta (key, value) VALUES ('viewer', '{"login":"alice"}')`);
+    repo(db, 1, 'a');
+    repo(db, 2, 'b');
+    for (const id of [1, 2]) {
+      db.run(`INSERT INTO pull_requests (id, repo_id, number, title, state, created_at, updated_at, activity_at, url)
+        VALUES (?, ?, 1, 'PR', 'open', 'x', 'x', 'x', 'u')`, [id * 10, id]);
+    }
+  }
+
+  const rows = (db: Db) => ({
+    threads: db.all('SELECT * FROM comment_threads ORDER BY id'),
+    comments: db.all('SELECT * FROM comments ORDER BY id'),
+    principals: db.all('SELECT id, kind, name FROM principals ORDER BY id'),
+  });
+  const threadSeq = (db: Db) => db.get<{ seq: number }>(`SELECT seq FROM sqlite_sequence WHERE name = 'comment_threads'`)?.seq;
+
+  for (const from of ['v3', 'v4'] as const) {
+    it(`keeps every thread and comment, their links to repos and the id sequences (from ${from})`, () => {
+      const db = withThreads(from);
+      const before = rows(db);
+      const seqBefore = threadSeq(db);
+      expect(before.threads).toHaveLength(3);
+      expect(before.comments).toHaveLength(4);
+      migrate(db, true);
+
+      expect(version(db)).toBe(SCHEMA_VERSION);
+      expect(rows(db)).toEqual(before);
+      expect(db.all('PRAGMA foreign_key_check')).toEqual([]);
+      expect(foreignKeys(db)).toBe(1);
+      expect(db.all<{ table: string; from: string; on_delete: string }>('PRAGMA foreign_key_list(comment_threads)').map((f) => [f.table, f.from, f.on_delete]))
+        .toEqual([['repos', 'repo_id', 'CASCADE']]);
+      // A deleted thread's id never comes back.
+      expect(threadSeq(db)).toBe(seqBefore);
+      const next = db.run(`INSERT INTO comment_threads (repo_id, pr_number, commit_oid, created_at, updated_at) VALUES (1, 1, ?, 'x', 'x')`, [HEAD]).lastInsertRowid;
+      expect(next).toBe(seqBefore! + 1);
+      // Removing a repo (tracking, or a source) still takes its threads and their comments along.
+      db.run('DELETE FROM repos WHERE id = 1');
+      expect(db.all('SELECT repo_id, count(*) AS n FROM comment_threads GROUP BY repo_id')).toEqual([{ repo_id: 2, n: 1 }]);
+      expect(db.all<{ body: string }>('SELECT body FROM comments').map((c) => c.body)).toEqual(['Typo']);
+    });
+  }
+});
+
 describe('migration names', () => {
   it('number migrations by name, and stop where asked', () => {
-    expect(versionOf('repos-v5')).toBe(5);
-    expect(versionOf('sources')).toBeGreaterThan(versionOf('repos-v5'));
-    expect(versionOf('sources')).toBeLessThanOrEqual(SCHEMA_VERSION);
+    // The final order: T2's repos rebuild, then local comments (diff-comments), then sources (the GitLab wave).
+    expect(['repos-v5', 'comments', 'sources'].map(versionOf)).toEqual([5, 6, 7]);
+    expect(SCHEMA_VERSION).toBe(versionOf('sources'));
     expect(() => versionOf('nope')).toThrow('No migration is called nope');
     const db = new Db(new DatabaseSync(':memory:'));
     migrate(db, true, { upTo: versionOf('repos-v5') });

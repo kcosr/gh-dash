@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { DESKTOP_SECRET_HEADER } from '../../shared/desktop';
-import { AGENT_TOKEN, mcpHarness } from '../test/mcp';
+import { mcpHarness } from '../test/mcp';
 
 const INIT = { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 't', version: '1' } } };
 const PING = { jsonrpc: '2.0', id: 2, method: 'ping' };
@@ -21,18 +21,18 @@ describe('POST /mcp', () => {
   });
 
   it('needs a known agent token, and says how to get one', async () => {
-    const { post } = mcpHarness();
+    const { post, token } = mcpHarness();
     const none = await post(PING, { authorization: '' });
     expect(none.status).toBe(401);
     expect(none.headers.get('www-authenticate')).toBe('Bearer realm="gh-dash"');
     expect(await none.json()).toMatchObject({ jsonrpc: '2.0', id: null, error: { message: expect.stringContaining('Authorization: Bearer <agent token>') } });
-    for (const authorization of ['Bearer ghd_revoked', `Basic ${AGENT_TOKEN}`, AGENT_TOKEN, `Bearer ${AGENT_TOKEN} x`]) {
+    for (const authorization of ['Bearer ghd_revoked', `Basic ${token}`, token, `Bearer ${token} x`, `Bearer ${token.slice(0, -1)}x`]) {
       const res = await post(PING, { authorization });
       expect(res.status, authorization).toBe(401);
     }
     const bad = await post(PING, { authorization: 'Bearer ghd_revoked' });
     expect(bad.headers.get('www-authenticate')).toBe('Bearer realm="gh-dash", error="invalid_token"');
-    expect((await post(PING, { authorization: `bearer  ${AGENT_TOKEN}` })).status).toBe(200);
+    expect((await post(PING, { authorization: `bearer  ${token}` })).status).toBe(200);
   });
 
   it("refuses a browser page of any other origin, before looking at the token", async () => {
@@ -67,9 +67,9 @@ describe('POST /mcp', () => {
   });
 
   it('has no stream and no sessions: GET and DELETE are 405 with Allow', async () => {
-    const { app } = mcpHarness();
+    const { app, token } = mcpHarness();
     for (const method of ['GET', 'DELETE', 'PUT']) {
-      const res = await app.request('http://localhost/mcp', { method, headers: { authorization: `Bearer ${AGENT_TOKEN}` } });
+      const res = await app.request('http://localhost/mcp', { method, headers: { authorization: `Bearer ${token}` } });
       expect(res.status, method).toBe(405);
       expect(res.headers.get('allow')).toBe('POST');
     }
@@ -83,19 +83,19 @@ describe('POST /mcp', () => {
 describe('/mcp and the password or API key', () => {
   for (const over of [{ password: 'pw' }, { apiKey: 'k3y' }, { password: 'pw', apiKey: 'k3y' }]) {
     it(`lets an agent token through /mcp and nowhere else (${Object.keys(over).join(' + ')})`, async () => {
-      const { app, post } = mcpHarness({ config: over });
+      const { app, post, token } = mcpHarness({ config: over });
       const res = await post(PING);
       expect(res.status).toBe(200);
       expect(res.headers.get('set-cookie')).toBeNull();
       expect((await app.request('http://localhost/mcp')).status).toBe(405);
       // The agent's token is no API key, and the API key is no agent token.
-      expect((await app.request('http://localhost/api/v1/me', { headers: { authorization: `Bearer ${AGENT_TOKEN}` } })).status).toBe(401);
+      expect((await app.request('http://localhost/api/v1/me', { headers: { authorization: `Bearer ${token}` } })).status).toBe(401);
       if ('apiKey' in over) {
         expect((await post(PING, { authorization: 'Bearer k3y' })).status).toBe(401);
         expect((await app.request('http://localhost/api/v1/me', { headers: { authorization: 'Bearer k3y' } })).status).toBe(200);
       }
       // A path next to it is still the UI's.
-      const ui = await app.request('http://localhost/mcp/x', { headers: { authorization: `Bearer ${AGENT_TOKEN}` } });
+      const ui = await app.request('http://localhost/mcp/x', { headers: { authorization: `Bearer ${token}` } });
       expect(ui.status).toBe('password' in over ? 303 : 200);
     });
   }
@@ -104,11 +104,11 @@ describe('/mcp and the password or API key', () => {
 describe('/mcp on the desktop socket', () => {
   it("isn't served there: the secret still guards the path, and with it the answer is where to go", async () => {
     const secret = 's'.repeat(64);
-    const { app } = mcpHarness({ transport: { kind: 'desktop', secret } });
+    const { app, token } = mcpHarness({ transport: { kind: 'desktop', secret } });
     const send = (headers: Record<string, string>) =>
       app.request('http://gh-dash/mcp', { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(PING) });
-    expect((await send({ authorization: `Bearer ${AGENT_TOKEN}` })).status).toBe(403);
-    const inside = await send({ authorization: `Bearer ${AGENT_TOKEN}`, [DESKTOP_SECRET_HEADER]: secret });
+    expect((await send({ authorization: `Bearer ${token}` })).status).toBe(403);
+    const inside = await send({ authorization: `Bearer ${token}`, [DESKTOP_SECRET_HEADER]: secret });
     expect(inside.status).toBe(404);
     expect(await inside.json()).toEqual({ error: expect.stringContaining('Local API') });
   });

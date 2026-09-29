@@ -3,6 +3,7 @@
 
 import { z } from 'zod';
 import type { Principal } from '../../shared/api';
+import type { CommentBus } from '../comments/bus';
 import type { Config } from '../config';
 import type { Db } from '../db/db';
 import type { DiffService } from '../diff/service';
@@ -12,6 +13,8 @@ export interface McpDeps {
   db: Db;
   config: Pick<Config, 'version' | 'defaultTz' | 'myEmails'>;
   diffs: DiffService;
+  /** Comment writes are announced here (the comment service emits); wait_for_reply listens, show emits. */
+  bus: CommentBus;
 }
 
 /** One call: who is asking, and a signal that aborts when the request is cancelled or its connection closes. */

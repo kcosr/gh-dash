@@ -148,7 +148,7 @@ describe('thread list filters', () => {
     // A resolved and an open thread on each of a PR and a commit, at distinct times.
     for (const [i, target] of [pr('alice/app', 2), commit('alice/app', C1)].entries()) {
       const done = add(target, `done ${i}`, 1 + i * 2);
-      setThreadStatus(db, done.id, 'resolved', at(2 + i * 2));
+      setThreadStatus(db, done.id, 'resolved', me, at(2 + i * 2));
       add(target, `todo ${i}`, 10 + i);
     }
   });
@@ -176,7 +176,7 @@ describe('thread list filters', () => {
 
   it('a resolved thread that is reopened moves back, and its activity bumps its place', () => {
     const resolved = list({ status: 'resolved' }).items[0]!;
-    setThreadStatus(db, resolved.id, 'open', at(30));
+    setThreadStatus(db, resolved.id, 'open', me, at(30));
     expect(bodies(list())[0]).toBe(resolved.comments[0]!.body);
     expect(list().counts).toEqual({ open: 3, resolved: 1 });
   });
@@ -261,7 +261,7 @@ describe('thread list order and paging', () => {
 
   it('pages within a status and a kind', () => {
     const ts = seed();
-    setThreadStatus(db, ts[0]!.id, 'resolved', at(40));
+    setThreadStatus(db, ts[0]!.id, 'resolved', me, at(40));
     add(commit('alice/app', C1), 'c', 50);
     expect(walk({ sort: 'oldest', kind: 'pr' }, 3)).toEqual([[ts[1]!.id, ts[2]!.id, ts[3]!.id], [ts[4]!.id]]);
     expect(walk({ status: 'resolved' }, 3)).toEqual([[ts[0]!.id]]);

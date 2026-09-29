@@ -1,7 +1,8 @@
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
-import type { Principal } from '../../shared/api';
+import { CommentBus } from '../comments/bus';
 import type { Config } from '../config';
+import { principalForToken } from '../db/agents';
 import type { Db } from '../db/db';
 import type { DiffService } from '../diff/service';
 import { GitHubDiffSources } from '../github/diff-source';
@@ -15,6 +16,7 @@ import { docsPage } from './docs';
 import { HttpError, origin } from './http';
 import { openApiDocument } from './openapi';
 import { accountRoutes } from './routes/account';
+import { agentRoutes } from './routes/agents';
 import { commentRoutes } from './routes/comments';
 import { diffRoutes } from './routes/diffs';
 import { instanceRoutes } from './routes/instance';
@@ -23,6 +25,7 @@ import { installMcp, refuseMcp } from './routes/mcp';
 import { repoRoutes } from './routes/repos';
 import { sourceRoutes } from './routes/sources';
 import { statsRoutes } from './routes/stats';
+import { streamRoutes } from './routes/stream';
 import { systemRoutes } from './routes/system';
 import { installStatic } from './static';
 
@@ -48,8 +51,11 @@ export interface AppDeps {
   localApiUrl?: () => string | null;
   /** Adding repositories (lookups and candidates on any source); by default over `tokens`, `sources` and `sync`. */
   tracking?: Tracking;
-  /** The agent an MCP bearer token belongs to (null: none, or revoked). Test seam; by default the agent_tokens table. */
-  agentFor?: (token: string) => Principal | null;
+  /**
+   * What happens to comments and agents, as it happens (GET /stream, MCP): one per server, shared by its listeners'
+   * apps (startServer passes it). By default a bus of this app's own.
+   */
+  bus?: CommentBus;
 }
 
 export type AppTransport = { kind: 'tcp' } | { kind: 'desktop'; secret: string };
@@ -58,6 +64,7 @@ export function createApp(input: AppDeps): Hono {
   const deps: AppDeps = {
     ...input,
     tracking: input.tracking ?? new Tracking({ db: input.db, tokens: input.tokens, sources: input.sources, sync: input.sync, tz: input.config.defaultTz }),
+    bus: input.bus ?? new CommentBus(),
   };
   const { config } = deps;
   // The sources API needs a registry; without one (tests) github.com is the only source it knows.
@@ -85,8 +92,11 @@ export function createApp(input: AppDeps): Hono {
   if (transport.kind === 'tcp') installAuth(app, deps.db, config);
 
   // Agents: its own auth (an agent token), exempt from installAuth's. Only network listeners serve it.
-  if (transport.kind === 'tcp') installMcp(app, { core: createMcpCore(deps), principalFor: deps.agentFor ?? (() => null) });
-  else refuseMcp(app);
+  if (transport.kind === 'tcp') {
+    installMcp(app, { core: createMcpCore({ ...deps, bus: deps.bus! }), principalFor: (token) => principalForToken(deps.db, token) });
+  } else {
+    refuseMcp(app);
+  }
 
   app.get('/api/health', (c) => c.json({ ok: true, version: config.version }));
   app.route('/api/v1', systemRoutes(deps));
@@ -95,6 +105,8 @@ export function createApp(input: AppDeps): Hono {
   app.route('/api/v1', statsRoutes(deps));
   app.route('/api/v1', diffRoutes(deps));
   app.route('/api/v1', commentRoutes(deps));
+  app.route('/api/v1', agentRoutes(deps));
+  app.route('/api/v1', streamRoutes(deps));
   app.route('/api/v1', accountRoutes(deps));
   app.route('/api/v1', sourceRoutes({ ...deps, sources }));
   app.route('/api/v1', instanceRoutes(deps));

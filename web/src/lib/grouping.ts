@@ -93,6 +93,7 @@ function eventKey(e: ActivityEvent): string {
     case 'issue': return `i:${e.issue.id}:${e.kind}`;
     case 'release': return `r:${e.release.id}`;
     case 'star': return `s:${e.repo}:${actorKey(e.actor)}:${e.at}`;
+    case 'comment': return `m:${e.comment.eventId}`;
   }
 }
 

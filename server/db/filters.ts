@@ -131,8 +131,14 @@ export function addWho(w: Where, who: Who, ctx: QueryCtx, loginCol: string, emai
   w.add(who === 'me' ? me.sql : `NOT ${me.sql}`, ...me.params);
 }
 
-export function addRange(w: Where, col: string, scope: Scope): void {
-  w.add(`${col} >= ? AND ${col} < ?`, isoSec(scope.from), isoSec(scope.to));
+/**
+ * `from` ≤ col < `to`. Timestamps compare as text, so the bounds are written as the column is: whole seconds (what code
+ * hosts give), or with milliseconds (`ms`: gh-dash's own, like comment events), else an event in the bound's own second
+ * would fall on the wrong side.
+ */
+export function addRange(w: Where, col: string, scope: Scope, ms = false): void {
+  const iso = ms ? (t: number) => new Date(t).toISOString() : isoSec;
+  w.add(`${col} >= ? AND ${col} < ?`, iso(scope.from), iso(scope.to));
 }
 
 /**
@@ -154,16 +160,19 @@ export function ftsQuery(q: string): string | null {
 /** A LIKE pattern for "contains `text`": `%`, `_` and the escape character in it match themselves. Use with ESCAPE '\'. */
 export const likeContains = (text: string): string => `%${text.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
 
+/** A plain "contains" filter over `cols` (no FTS index): case-insensitive for ASCII only, as SQLite's LIKE is. */
+export function addLike(w: Where, q: string | null, cols: string[]): void {
+  if (!q) return;
+  const like = likeContains(q);
+  w.add(cols.map((c) => `${c} LIKE ? ESCAPE '\\'`).join(' OR '), ...cols.map(() => like));
+}
+
 export type FtsTable = 'pull_requests' | 'issues' | 'commits' | 'releases';
 
 /** Full-text filter on `alias.id` via the table's FTS index; LIKE over `likeCols` when there is nothing to match. */
 export function addText(w: Where, q: string | null, table: FtsTable, alias: string, likeCols: string[]): void {
   if (!q) return;
   const match = ftsQuery(q);
-  if (match) {
-    w.add(`${alias}.id IN (SELECT rowid FROM ${table}_fts WHERE ${table}_fts MATCH ?)`, match);
-  } else {
-    const like = likeContains(q);
-    w.add(likeCols.map((c) => `${c} LIKE ? ESCAPE '\\'`).join(' OR '), ...likeCols.map(() => like));
-  }
+  if (match) w.add(`${alias}.id IN (SELECT rowid FROM ${table}_fts WHERE ${table}_fts MATCH ?)`, match);
+  else addLike(w, q, likeCols);
 }

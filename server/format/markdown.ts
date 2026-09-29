@@ -1,4 +1,4 @@
-import type { ActivityEvent, Actor, GroupBy, PrStateFilter, ProviderKind, PullRequest, ThreadKindFilter, ThreadListItem, ThreadStatusFilter, Who } from '../../shared/api';
+import type { ActivityEvent, Actor, CommentEventKind, GroupBy, PrStateFilter, ProviderKind, PullRequest, ThreadKindFilter, ThreadListItem, ThreadStatusFilter, Who } from '../../shared/api';
 import { threadsMarkdown } from '../../shared/comment-markdown';
 import { PROVIDERS, mixedPrWords, refText } from '../../shared/provider';
 import { DAY_MS, localDayNum, weekdayMon0 } from '../lib/time';
@@ -141,6 +141,25 @@ function timeOf(iso: string, tz: string): string {
 
 const who = (a: Actor | null) => `**${escapeInline(a?.login ?? a?.name ?? 'someone')}**`;
 
+const COMMENT_VERB: Record<CommentEventKind, string> = {
+  thread_opened: 'opened a thread on',
+  replied: 'replied to a thread on',
+  edited: 'edited a comment on',
+  comment_deleted: 'deleted a comment on',
+  resolved: 'resolved a thread on',
+  reopened: 'reopened a thread on',
+  thread_deleted: 'deleted a thread on',
+};
+
+/** What a comment event is on and where: `alice/app#2 (Title), src/a.ts:3–4`, or `alice/app@abc1234`. */
+export function commentPlace(e: Extract<ActivityEvent, { type: 'comment' }>, kindOf: KindOf): string {
+  const { target, path, startLine, endLine } = e.comment;
+  const ref = target.kind === 'pr' ? refText(kindOf(e.repo), e.repo, target.number, 'pr') : `${e.repo}@${target.oid.slice(0, 7)}`;
+  const title = target.title ? ` (${escapeInline(target.title)})` : '';
+  const lines = startLine === null ? '' : `:${startLine}${endLine !== null && endLine !== startLine ? `–${endLine}` : ''}`;
+  return `${ref}${title}${path === null ? '' : `, ${escapeInline(path)}${lines}`}`;
+}
+
 function eventLine(e: ActivityEvent, kindOf: KindOf): string {
   switch (e.type) {
     case 'commit':
@@ -155,6 +174,10 @@ function eventLine(e: ActivityEvent, kindOf: KindOf): string {
     }
     case 'star':
       return `${who(e.actor)} starred ${e.repo}`;
+    case 'comment': {
+      const said = e.comment.excerpt ? `: ${escapeInline(e.comment.excerpt)}` : '';
+      return `${who(e.actor)} ${COMMENT_VERB[e.kind]} ${commentPlace(e, kindOf)}${said}`;
+    }
   }
 }
 

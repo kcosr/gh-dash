@@ -8,7 +8,7 @@ import { Client as ClientV2, StreamableHTTPClientTransport as TransportV2 } from
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { afterEach, describe, expect, it } from 'vitest';
-import { AGENT_TOKEN, mcpHarness } from '../test/mcp';
+import { mcpHarness } from '../test/mcp';
 import { TOOLS } from './index';
 
 const servers: Server[] = [];
@@ -47,13 +47,13 @@ async function serve(h = mcpHarness()) {
   return { h, url, seen };
 }
 
-const auth = (token = AGENT_TOKEN) => ({ requestInit: { headers: { Authorization: `Bearer ${token}` } } });
+const auth = (token: string) => ({ requestInit: { headers: { Authorization: `Bearer ${token}` } } });
 
 describe('the MCP SDK 1.x client', () => {
   it('connects, lists the tools and calls one', async () => {
     const { h, url, seen } = await serve();
     const client = new Client({ name: 'interop', version: '1.0.0' });
-    await client.connect(new StreamableHTTPClientTransport(url, auth()));
+    await client.connect(new StreamableHTTPClientTransport(url, auth(h.token)));
     // It asks for the stream after initialized: 405 says there is none.
     await new Promise((r) => setTimeout(r, 50));
     expect(seen).toEqual(['POST initialize 200', 'POST notifications/initialized 202', 'GET 405']);
@@ -83,7 +83,7 @@ describe('the MCP SDK 2.x client', () => {
   it("probes with server/discover, falls back to initialize, and works", async () => {
     const { h, url, seen } = await serve();
     const client = new ClientV2({ name: 'interop', version: '2.0.0' }, { versionNegotiation: { mode: 'auto' } });
-    await client.connect(new TransportV2(url, auth()));
+    await client.connect(new TransportV2(url, auth(h.token)));
     expect(seen.slice(0, 3)).toEqual(['POST server/discover 400', 'POST initialize 200', 'POST notifications/initialized 202']);
     const { tools } = await client.listTools();
     expect(tools).toHaveLength(TOOLS.length);

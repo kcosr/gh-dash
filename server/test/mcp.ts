@@ -2,7 +2,9 @@
 
 import type { DiffFile, Principal } from '../../shared/api';
 import { createApp, type AppDeps } from '../api/app';
+import { CommentBus } from '../comments/bus';
 import { type Config, loadConfig } from '../config';
+import { createAgent } from '../db/agents';
 import type { Db } from '../db/db';
 import { DiffCache } from '../diff/cache';
 import { DiffService, type DiffSources } from '../diff/service';
@@ -95,13 +97,11 @@ export function commitDiff(oid: string, parent: string | null, files: DiffFile[]
   return { title: `Commit ${oid.slice(0, 7)}`, baseOid: parent, headOid: oid, files, totalFiles: files.length, additions: 1, deletions: 0, url: `https://github.com/x/commit/${oid}` };
 }
 
-export function addPrincipal(db: Db, name: string): Principal {
-  const id = db.run("INSERT INTO principals (kind, name, created_at) VALUES ('agent', ?, '2026-09-28T00:00:00Z')", [name]).lastInsertRowid;
-  return { id, kind: 'agent', name };
+/** An agent with a token, as the `agents` command makes one. */
+export function addAgent(db: Db, name: string): { principal: Principal; token: string } {
+  const { agent, token } = createAgent(db, name);
+  return { principal: { id: agent.id, kind: 'agent', name: agent.name }, token };
 }
-
-export const AGENT_TOKEN = 'ghd_test-agent';
-export const OTHER_TOKEN = 'ghd_other-agent';
 
 export interface McpHarnessOptions {
   db?: Db;
@@ -117,16 +117,16 @@ export function mcpHarness(opts: McpHarnessOptions = {}) {
   const { code, sources } = fakeCode();
   const logs: string[] = [];
   const diffs = new DiffService({ db, cache: new DiffCache(':memory:'), sources, log: (l) => logs.push(l) });
-  const agent = addPrincipal(db, 'Claude');
-  const other = addPrincipal(db, 'Codex');
-  const byToken = new Map([[AGENT_TOKEN, agent], [OTHER_TOKEN, other]]);
-  const app = createApp({ db, config, sync, diffs, tokens, transport: opts.transport, agentFor: (t) => byToken.get(t) ?? null });
+  const { principal: agent, token } = addAgent(db, 'Claude');
+  const { principal: other, token: otherToken } = addAgent(db, 'Codex');
+  const bus = new CommentBus();
+  const app = createApp({ db, config, sync, diffs, tokens, transport: opts.transport, bus });
 
   let nextId = 1;
   const post = (body: unknown, headers: Record<string, string> = {}) =>
     app.request('http://localhost/mcp', {
       method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${AGENT_TOKEN}`, ...headers },
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}`, ...headers },
       body: typeof body === 'string' ? body : JSON.stringify(body),
     });
   /** A JSON-RPC request's response body. */
@@ -153,7 +153,7 @@ export function mcpHarness(opts: McpHarnessOptions = {}) {
     if (r.error === undefined) throw new Error(`${name} succeeded: ${JSON.stringify(r.data)}`);
     return r.error;
   };
-  return { db, config, app, diffs, code, logs, agent, other, post, rpc, call, ok, fails };
+  return { db, config, app, diffs, bus, code, logs, agent, token, other, otherToken, post, rpc, call, ok, fails };
 }
 
 /** The PR diff a harness's fake host serves for `alice/app#n`. */

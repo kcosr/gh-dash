@@ -146,8 +146,8 @@ describe('PR comment threads', () => {
   const open = (repo: string, target: { kind: 'pr'; number: number } | { kind: 'commit'; oid: string }) =>
     createThread(own, { repoId: repoId(repo), ...target }, { commitOid: 'a'.repeat(40), baseOid: null, anchor: general, body: 'x' }, you);
   open('app', { kind: 'pr', number: 2 });
-  setThreadStatus(own, open('app', { kind: 'pr', number: 2 }).id, 'resolved');
-  setThreadStatus(own, open('app', { kind: 'pr', number: 3 }).id, 'resolved');
+  setThreadStatus(own, open('app', { kind: 'pr', number: 2 }).id, 'resolved', you);
+  setThreadStatus(own, open('app', { kind: 'pr', number: 3 }).id, 'resolved', you);
   // Neither the same number in another repo nor a commit thread counts.
   open('secret', { kind: 'pr', number: 2 });
   open('app', { kind: 'commit', oid: 'a'.repeat(40) });
@@ -190,7 +190,7 @@ describe('commit comment threads, and counts on activity events', () => {
     createThread(own, { repoId: repoId(repo), ...target }, { commitOid, baseOid: null, anchor: general, body: 'x' }, you);
   // c3: two commit threads, one resolved; c2: one open; c1 (landed via PR #1) and c4 (in secret): see below.
   open('app', { kind: 'commit', oid: oid('c3') }, oid('c3'));
-  setThreadStatus(own, open('app', { kind: 'commit', oid: oid('c3') }, oid('c3')).id, 'resolved');
+  setThreadStatus(own, open('app', { kind: 'commit', oid: oid('c3') }, oid('c3')).id, 'resolved', you);
   open('app', { kind: 'commit', oid: oid('c2') }, oid('c2'));
   // Not commit c3's: a PR's thread made on the revision c3, a thread on the same oid in another repo, and one on an
   // oid that is no commit here.
@@ -200,7 +200,7 @@ describe('commit comment threads, and counts on activity events', () => {
   // c4 exists in secret only: app's thread on that oid isn't counted there.
   open('secret', { kind: 'commit', oid: oid('c4') }, oid('c4'));
   open('app', { kind: 'commit', oid: oid('c4') }, oid('c4'));
-  setThreadStatus(own, open('app', { kind: 'pr', number: 3 }, oid('c3')).id, 'resolved');
+  setThreadStatus(own, open('app', { kind: 'pr', number: 3 }, oid('c3')).id, 'resolved', you);
   const ownCtx = loadQueryCtx(own);
   const wide = scope({ repos: ['app', 'secret'] });
 

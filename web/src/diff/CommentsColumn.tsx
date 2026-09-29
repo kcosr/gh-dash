@@ -22,14 +22,16 @@ function ThreadLink({ t, p, onJump }: { t: CommentThread; p: ThreadPlacement | u
   const { focused } = useThreadsState();
   const first = t.comments[0]!;
   // Where it is now (relocated threads move); the file's name here, its path in the title.
-  const lines = p?.kind === 'line' ? (p.startLine === p.endLine ? `${p.startLine}` : `${p.startLine}–${p.endLine}`) : null;
+  const lines = p?.kind === 'line' ? (p.startLine === p.endLine ? `${p.startLine}` : `${p.startLine}–${p.endLine}`) : t.startLine === null ? null : `${t.startLine}`;
   const where = p?.kind === 'line' ? `${p.path}:${lines}` : threadWhere(t);
-  const short = p?.kind === 'line' ? `${baseName(p.path)}:${lines}` : t.path === null ? 'General' : `${baseName(t.path)}${t.startLine === null ? '' : `:${t.startLine}`}`;
   return (
     <button type="button" className={cx('dcc-link', t.status === 'resolved' && 'resolved', focused === t.id && 'on')} data-link={t.id} onClick={() => onJump(t.id)}
       aria-current={focused === t.id ? 'true' : undefined} title={`${where}${t.status === 'resolved' ? ' · resolved' : ''}`}>
       <Icon name={t.status === 'resolved' ? 'check' : 'comment'} />
-      <span className="dcc-where">{short}</span>
+      <span className="dcc-where">
+        <span className="name">{t.path === null ? 'General' : baseName(p?.kind === 'line' ? p.path : t.path)}</span>
+        {lines && <span className="ln">:{lines}</span>}
+      </span>
       <span className="dcc-text">{plainPreview(first.body, 120)}</span>
       {t.comments.length > 1 && <span className="dth-n">+{t.comments.length - 1}</span>}
     </button>

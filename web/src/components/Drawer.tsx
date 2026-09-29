@@ -1,6 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { PullRequest, PullRequestDetail } from '../../../shared/api';
+import type { CommentThread, PullRequest, PullRequestDetail } from '../../../shared/api';
 import { findCachedPr, usePrDetail, useThreads } from '../api/hooks';
 import { hasBlockingLayer, isTypingTarget, useLayer } from '../lib/layers';
 import { plainPreview } from '../lib/markdown';
@@ -14,6 +14,10 @@ import { Labels } from './Label';
 import { Markdown } from './Markdown';
 import { RepoChip } from './RepoChip';
 import { useToast } from './Toasts';
+
+/** Threads in reading order without a diff at hand: general first, then by path and line. */
+const sortThreads = (list: CommentThread[]) =>
+  [...list].sort((a, b) => (a.path ?? '').localeCompare(b.path ?? '') || (a.startLine ?? 0) - (b.startLine ?? 0) || a.id - b.id);
 
 /** PR details: a right column on desktop, the content pane on narrow screens. */
 export function PrDrawer({ id, compact }: { id: string; compact: boolean }) {
@@ -128,14 +132,15 @@ export function PrDrawer({ id, compact }: { id: string; compact: boolean }) {
       {!!threads.data?.length && (
         <section className="dr-sec">
           <h3>Comments <span className="n">{threads.data.length}</span></h3>
-          {threads.data.map((t) => {
+          {sortThreads(threads.data).map((t) => {
             const first = t.comments[0]!;
-            const where = t.path === null ? 'General' : t.startLine === null ? t.path : `${t.path}:${t.startLine === t.endLine ? t.startLine : `${t.startLine}–${t.endLine}`}`;
+            const lines = t.startLine === null ? '' : `:${t.startLine === t.endLine ? t.startLine : `${t.startLine}–${t.endLine}`}`;
+            const name = t.path === null ? 'General' : t.path.slice(t.path.lastIndexOf('/') + 1);
             return (
               <button key={t.id} type="button" className={`th-li${t.status === 'resolved' ? ' resolved' : ''}`} onClick={() => openDiff(id, t.id)}
-                title={`${t.status === 'resolved' ? 'Resolved · ' : ''}Open the diff at this thread`}>
+                title={`${t.path ?? 'General'}${lines}${t.status === 'resolved' ? ' · resolved' : ''} · open the diff at this thread`}>
                 <Icon name={t.status === 'resolved' ? 'check' : 'comment'} />
-                <span className="th-where" title={where}><bdi>{where}</bdi></span>
+                <span className="th-where"><span className="name">{name}</span>{lines && <span className="ln">{lines}</span>}</span>
                 <span className="th-text">{plainPreview(first.body, 140)}</span>
                 {t.comments.length > 1 && <span className="th-n" title={`${t.comments.length - 1} ${plural(t.comments.length - 1, 'reply', 'replies')}`}>+{t.comments.length - 1}</span>}
               </button>

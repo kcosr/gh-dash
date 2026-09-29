@@ -27,7 +27,8 @@ export function PullRequestsView() {
   const { openExport } = useUI();
   const repoMap = useRepoMap();
   const prs = usePrList(prFetchParams(s));
-  const relOn = s.rel && (s.state === 'merged' || s.state === 'all');
+  // Releases have no comments: a comments filter shows PRs alone.
+  const relOn = s.rel && (s.state === 'merged' || s.state === 'all') && !s.comments;
   const rels = useReleases(releaseListParams(s), relOn);
 
   const groups = useMemo(() => {

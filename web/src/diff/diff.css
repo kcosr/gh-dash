@@ -202,7 +202,9 @@ a.dvh-note:hover, .dvh-note.link:hover { color: var(--accent-text); }
 .dcc-link svg { flex: none; width: 12px; height: 12px; align-self: center; color: var(--accent-text); }
 .dcc-link.resolved svg { color: var(--muted); }
 .dcc-link.resolved .dcc-text { color: var(--muted); }
-.dcc-where { flex: none; max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 11px var(--mono); color: var(--text-2); }
+.dcc-where { flex: none; display: flex; max-width: 55%; min-width: 0; white-space: nowrap; font: 11px var(--mono); color: var(--text-2); }
+.dcc-where .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.dcc-where .ln { flex: none; }
 .dcc-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
 .dth-where { font: 11px var(--mono); color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; }
 .dcc-foot { flex: none; display: flex; align-items: center; gap: 4px; padding: 6px 10px 7px 14px; border-top: 1px solid var(--border); font-size: 11.5px; color: var(--muted); }

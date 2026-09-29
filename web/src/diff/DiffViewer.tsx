@@ -510,6 +510,15 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
     else l.focusThread(null);
   }, [initialThread, threadsReady]);
 
+  // The composer's lines stay selected, also when it comes back after a reload (Pierre keeps the selection of a file
+  // that isn't rendered yet and paints it when it is).
+  useEffect(() => {
+    if (!draft || indexOf.get(draft.path) === undefined || (indexOf.get(draft.path) ?? Infinity) >= count) return;
+    const side = pierreSide(draft.side);
+    const cur = view.current?.getSelectedLines();
+    if (cur?.id === draft.path && Math.min(cur.range.start, cur.range.end) === draft.startLine && Math.max(cur.range.start, cur.range.end) === draft.endLine) return;
+    view.current?.setSelectedLines({ id: draft.path, range: { start: draft.startLine, end: draft.endLine, side } });
+  }, [draft, count, indexOf]);
   const closeDraft = useCallback(() => {
     setDraft(null);
     view.current?.clearSelectedLines();

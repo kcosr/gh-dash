@@ -16,6 +16,7 @@ export const ALL_TIME_FROM = '2008-01-01';
 export function scopeParams(s: UrlState, opts: { q?: boolean } = {}): ScopeQuery {
   const r = resolveRange(s.range, s.from, s.to);
   return {
+    source: s.source ?? undefined,
     repos: s.repos === null ? undefined : s.repos.join(','),
     visibility: s.vis === 'all' ? undefined : s.vis,
     ownership: s.own === 'all' ? undefined : s.own,
@@ -37,7 +38,7 @@ export function issueListParams(s: UrlState): IssueQuery & { state: 'open' | 'cl
 }
 
 export function repoListParams(s: UrlState): RepoQuery {
-  return { scope: 'default', repos: s.repos?.join(','), visibility: s.vis, ownership: s.own === 'all' ? undefined : s.own, q: s.q || undefined, sort: s.sort };
+  return { scope: 'default', source: s.source ?? undefined, repos: s.repos?.join(','), visibility: s.vis, ownership: s.own === 'all' ? undefined : s.own, q: s.q || undefined, sort: s.sort };
 }
 
 /** The PR list as exported / shown in the API tab (`group` sets the Markdown headings). */
@@ -60,11 +61,11 @@ export function statsParams(s: UrlState): StatsQuery {
 }
 
 /**
- * A repo page's scope: that one repo, whatever the visibility and ownership filters say (they narrow lists of repos,
- * not a page about one). The page and its API export both use it.
+ * A repo page's scope: that one repo, whatever the context and the visibility and ownership filters say (they narrow
+ * lists of repos, not a page about one). The page and its API export both use it.
  */
 export function repoPageScope(s: UrlState, key: string): UrlState {
-  return { ...s, repos: [key], vis: 'all', own: 'all' };
+  return { ...s, source: null, repos: [key], vis: 'all', own: 'all' };
 }
 
 export interface ExportTarget {

@@ -4,6 +4,7 @@ import {
   defaultRepoScope,
   inputHost,
   matchRepoRef,
+  paletteRefKeys,
   parseGitHubInput,
   parseGitLabInput,
   parseRepoInput,
@@ -131,6 +132,20 @@ describe('repoParts', () => {
     expect(repoParts('gone/repo', many)).toEqual({ owner: 'gone', name: 'repo' });
     expect(repoParts('gone', new Map())).toEqual({ owner: null, name: 'gone' });
   });
+  it('never shows a source\'s host: the namespace path is the owner, and a gone key drops its host', () => {
+    const GL = 'gitlab.example.com';
+    const gl = repo(`${GL}/platform/team/api`, { source: GL, provider: 'gitlab', nameWithOwner: 'platform/team/api', owner: 'platform/team', name: 'api' }, 'manual');
+    const mine = repo(`${GL}/alice/sedes`, { source: GL, provider: 'gitlab', nameWithOwner: 'alice/sedes', owner: 'alice', name: 'sedes' });
+    const list = [...many, gl, mine];
+    expect(repoParts(gl.key, list)).toEqual({ owner: 'platform/team', name: 'api' });
+    expect(repoLabel(gl.key, list)).toBe('platform/team/api');
+    expect(repoLabel(mine.key, list)).toBe('sedes');
+    expect(repoParts(`${GL}/platform/gone`, list)).toEqual({ owner: 'platform', name: 'gone' });
+    expect(repoParts(`${GL}/a/b/c`, new Map())).toEqual({ owner: 'a/b', name: 'c' });
+    expect(repoParts('my.org/repo', new Map())).toEqual({ owner: 'my.org', name: 'repo' }); // one '/': a GitHub key
+    expect(repoParts('org/team.x/proj', new Map())).toEqual({ owner: 'org/team.x', name: 'proj' }); // no '.' in the first segment
+  });
+
   it('agrees with repoLabel: the owner and the name joined by a slash', () => {
     for (const r of many) {
       const { owner, name } = repoParts(r.key, map);
@@ -338,10 +353,17 @@ describe('the palette reference', () => {
     ['my.repo_x#1', 'my.repo_x', '1'],
     ['Kcosr/Gh-Dash#007', 'Kcosr/Gh-Dash', '007'],
   ])('matches %s', (text, repoPart, number) => {
-    expect(matchRepoRef(text)).toEqual({ repo: repoPart, number });
+    expect(matchRepoRef(text)).toEqual({ repo: repoPart, sep: '#', number });
   });
 
-  it.each(['', 'gh-dash', 'gh-dash#', '#12', 'gh dash#1', 'a//b#1', '/a#1', 'a/#1', 'a/b/#1', 'a#1b', 'a#x', 'a#1#2', 'a@b#1'])('does not match %j', (text) => {
+  it.each([
+    ['app!12', 'app', '12'],
+    ['gitlab.example.com/platform/team/app!3', 'gitlab.example.com/platform/team/app', '3'],
+  ])('matches the MR reference %s', (text, repoPart, number) => {
+    expect(matchRepoRef(text)).toEqual({ repo: repoPart, sep: '!', number });
+  });
+
+  it.each(['', 'gh-dash', 'gh-dash#', 'gh-dash!', '#12', '!12', 'gh dash#1', 'a//b#1', '/a#1', 'a/#1', 'a/b/#1', 'a#1b', 'a#x', 'a#1#2', 'a!1#2', 'a#1!2', 'a@b#1'])('does not match %j', (text) => {
     expect(matchRepoRef(text)).toBeNull();
   });
 
@@ -354,6 +376,30 @@ describe('the palette reference', () => {
     expect(repoRefKeys('TWIN', many).sort()).toEqual(['a/twin', 'b/twin']);
     expect(repoRefKeys('nope', many)).toEqual([]);
     expect(repoRefKeys('team/proj', many)).toEqual([]);
+  });
+
+  describe('by kind and context', () => {
+    const GL = 'gitlab.example.com';
+    const gl = (path: string, trackedBy: TrackedBy = 'owned') =>
+      repo(`${GL}/${path}`, { source: GL, provider: 'gitlab', nameWithOwner: path, owner: path.slice(0, path.lastIndexOf('/')) }, trackedBy);
+    const both = [repo('alice/app'), repo('alice/tool'), gl('alice/app'), gl('platform/team/svc', 'manual')];
+    const keys = (text: string, context: string | null = null) => paletteRefKeys(matchRepoRef(text)!, both, context);
+
+    it('reads ! as a GitLab MR, and anything else as text', () => {
+      expect(keys('app!3')).toEqual([`${GL}/alice/app`]);
+      expect(keys('svc!3', 'github.com')).toEqual([`${GL}/platform/team/svc`]);
+      expect(keys('tool!3')).toBeNull(); // only on GitHub: a text search, as before
+      expect(keys('nope!3')).toBeNull();
+    });
+
+    it('reads # as a GitHub PR, the context first, then leniently any repo', () => {
+      expect(keys('app#3')).toEqual(['alice/app']);
+      expect(keys('app#3', 'github.com')).toEqual(['alice/app']);
+      expect(keys('app#3', GL)).toEqual([`${GL}/alice/app`]); // in GitLab's context, its app
+      expect(keys('svc#3')).toEqual([`${GL}/platform/team/svc`]); // no GitHub repo of that name
+      expect(keys('tool#3', GL)).toEqual(['alice/tool']); // not in the context: anywhere
+      expect(keys('nope#3')).toEqual([]);
+    });
   });
 });
 
@@ -407,5 +453,26 @@ describe('selectRepos with keys', () => {
     expect(keys(selectRepos(all, { scope: 'default' }))).toEqual(['dlvhdr/gh-dash', 'kcosr/gh-dash', 'kcosr/sedes']); // most recent activity first
     const pinned = all.map((r) => (r.key === 'kcosr/sedes' ? { ...r, pinned: true } : r));
     expect(keys(selectRepos(pinned, { scope: 'default' }))[0]).toBe('kcosr/sedes');
+  });
+});
+
+describe('selectRepos by source', () => {
+  const keys = (list: Repo[]) => list.map((r) => r.key).sort();
+  const gl = (key: string, over: Partial<Repo> = {}) =>
+    repo(`gitlab.example.com/${key}`, { source: 'gitlab.example.com', provider: 'gitlab', nameWithOwner: key, ...over });
+  const all = [repo('kcosr/gh-dash'), repo('kcosr/old', { isArchived: true }), gl('alice/gh-dash'), gl('platform/team/svc', { hidden: true })];
+
+  it('keeps the repos of the sources named, case-insensitively; none named is every source', () => {
+    expect(keys(selectRepos(all, { source: 'gitlab.example.com' }))).toEqual(['gitlab.example.com/alice/gh-dash', 'gitlab.example.com/platform/team/svc']);
+    expect(keys(selectRepos(all, { source: 'GitHub.com' }))).toEqual(['kcosr/gh-dash', 'kcosr/old']);
+    expect(keys(selectRepos(all, { source: 'github.com, gitlab.example.com' }))).toHaveLength(4);
+    expect(keys(selectRepos(all, { source: '' }))).toHaveLength(4);
+    expect(selectRepos(all, { source: 'nowhere.example.com' })).toEqual([]);
+  });
+
+  it('intersects the explicit selection and the default one', () => {
+    expect(keys(selectRepos(all, { scope: 'default', source: 'gitlab.example.com' }))).toEqual(['gitlab.example.com/alice/gh-dash']);
+    expect(keys(selectRepos(all, { repos: 'gh-dash,gitlab.example.com/platform/team/svc', source: 'gitlab.example.com' }))).toEqual(['gitlab.example.com/platform/team/svc']);
+    expect(selectRepos(all, { repos: 'kcosr/gh-dash', source: 'gitlab.example.com' })).toEqual([]);
   });
 });

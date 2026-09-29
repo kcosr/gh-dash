@@ -4,6 +4,7 @@ import type { Repo } from '../../../shared/api';
 import { repoKind, repoProvider, wordsFor } from '../../../shared/provider';
 import type { Provider, Words } from '../../../shared/provider';
 import { repoLabel } from '../../../shared/repos';
+import type { SourceInfo } from '../lib/contexts';
 
 /**
  * The repo map, provided once by the app shell (RepoMapProvider). Chips and names read it from context instead of each
@@ -39,11 +40,35 @@ export function useProviderOf(): (key: string) => Provider {
   return useCallback((key: string) => repoProvider(repos.get(key)), [repos]);
 }
 
+/** The sources and the context (design §7.1), provided with the repo map by RepoMapProvider. */
+export interface SourceContext {
+  /** The sources present (see `presentSources`), github.com first. */
+  sources: SourceInfo[];
+  byHost: ReadonlyMap<string, SourceInfo>;
+  /** Two or more sources: the switcher shows, and All marks each repo with its source. */
+  multi: boolean;
+  /** The context's source; null = All (and while the URL names no source present). On Settings, the last context. */
+  current: SourceInfo | null;
+  /** Mark repos with their source: in All, with several sources. */
+  badges: boolean;
+}
+
+const NO_SOURCES: SourceContext = { sources: [], byHost: new Map(), multi: false, current: null, badges: false };
+export const SourceCtx = createContext<SourceContext>(NO_SOURCES);
+
+export function useSourceCtx(): SourceContext {
+  return useContext(SourceCtx);
+}
+
 /**
- * Words for text about what a page lists rather than one item ("Pull requests", "PRs merged"): those of the kinds of
- * repos present, GitHub's while none are loaded. The context switcher (step 10) narrows this to the context's source.
+ * Words for text about what a page lists rather than one item ("Pull requests", "PRs merged"): the context's source's,
+ * or in All those of the kinds present ("PRs & MRs" for both); GitHub's while none are loaded.
  */
 export function useWords(): Words {
+  const { sources, current } = useSourceCtx();
   const repos = useContext(ReposCtx);
-  return useMemo(() => wordsFor(Array.from(repos.values(), repoKind)), [repos]);
+  return useMemo(
+    () => wordsFor(current ? [current.kind] : sources.length ? sources.map((s) => s.kind) : Array.from(repos.values(), repoKind)),
+    [current, sources, repos],
+  );
 }

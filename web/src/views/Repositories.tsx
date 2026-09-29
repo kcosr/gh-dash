@@ -15,13 +15,14 @@ import { Icon } from '../components/Icon';
 import { MenuButton } from '../components/Menu';
 import { UnavailableNote, useConfirmRemoveRepo } from '../components/RepoTracking';
 import { RepoName } from '../components/RepoName';
-import { useRepoLabel, useWords } from '../components/repoMapContext';
+import { useRepoLabel, useSourceCtx, useWords } from '../components/repoMapContext';
+import { SourceBadge } from '../components/SourceBadge';
 import { Seg } from '../components/Seg';
 import { useToast } from '../components/Toasts';
 import { useSyncNow } from '../components/TopBar';
 import { useUI } from '../components/ui';
 import { addDays, fmtDate, rel, startOfWeek } from '../lib/time';
-import { carrySearch, encodeParams, useUrlState } from '../lib/urlState';
+import { carrySearch, inContext, repoLinkSearch, useUrlState } from '../lib/urlState';
 import type { RepoLayout, RepoSort } from '../lib/urlState';
 import { cx } from '../lib/util';
 
@@ -74,7 +75,7 @@ export function RepositoriesView() {
           <ErrorNote error={settings.error} onRetry={() => settings.refetch()} />
         ) : !repos.data || !settings.data ? (
           <div className="repo-grid">{Array.from({ length: 8 }, (_, i) => <div key={i} className="rcard skel-card" />)}</div>
-        ) : list.length === 0 && s.own === 'others' && !repos.data.some((r) => r.trackedBy !== 'owned') ? (
+        ) : list.length === 0 && s.own === 'others' && !repos.data.some((r) => r.trackedBy !== 'owned' && inContext(r, s.source)) ? (
           <EmptyState icon="book" title="No repositories from other owners" action={
             <button type="button" className="btn" onClick={openAddRepo}><Icon name="plus" />Add repository</button>
           }>Repositories you own are tracked automatically. Add others, such as an organization's or a project you contribute to.</EmptyState>
@@ -120,6 +121,7 @@ function RepoMenu({ repo }: { repo: Repo }) {
   const sync = useSyncNow();
   const confirmRemove = useConfirmRemoveRepo();
   const label = useRepoLabel()(repo.key);
+  const { current } = useSourceCtx();
   const toggleHidden = () => {
     // Hiding a card in the default selection unmounts this component before the mutation completes.
     void patch.mutateAsync({ key: repo.key, patch: { hidden: !repo.hidden } }).then(() => {
@@ -143,7 +145,7 @@ function RepoMenu({ repo }: { repo: Repo }) {
             <button type="button" role="menuitem" className="opt" onClick={act(() => sync.run({ repo: repo.key }))}>
               <span className="ck"><Icon name="sync" /></span>Sync now
             </button>
-            <Link role="menuitem" className="opt" to={`/activity?${encodeParams([['repos', repo.key]])}`} onClick={close}>
+            <Link role="menuitem" className="opt" to={`/activity?${repoLinkSearch(repo.key, current?.host ?? null)}`} onClick={close}>
               <span className="ck"><Icon name="pulse" /></span>Activity in this repo
             </Link>
             <a role="menuitem" className="opt" href={repo.url} target="_blank" rel="noopener noreferrer" onClick={close}>
@@ -180,9 +182,11 @@ function VisBadge({ repo }: { repo: Repo }) {
 function RepoCard({ repo: r, sets, titles, search }: { repo: Repo; sets: RepoSet[]; titles: string[]; search: string }) {
   const st = r.stats;
   const label = useRepoLabel()(r.key);
+  const { badges } = useSourceCtx();
   return (
     <div className={cx('rcard', (r.isArchived || r.hidden) && 'archived')}>
       <div className="rc-h">
+        {badges && <SourceBadge host={r.source} />}
         <Link className="rc-name" to={`${repoPath(r.key)}${search}`} title={label}><RepoName repo={r.key} /></Link>
         <VisBadge repo={r} />
         <span className="spacer" />
@@ -214,6 +218,7 @@ function RepoCard({ repo: r, sets, titles, search }: { repo: Repo; sets: RepoSet
 function RepoTable({ list, titles, search }: { list: Repo[]; titles: string[]; search: string }) {
   const label = useRepoLabel();
   const w = useWords().pr;
+  const { badges } = useSourceCtx();
   return (
     <div className="rtable-wrap">
       <table className="rtable">
@@ -226,7 +231,7 @@ function RepoTable({ list, titles, search }: { list: Repo[]; titles: string[]; s
         <tbody>
           {list.map((r) => (
             <tr key={r.key} className={cx((r.isArchived || r.hidden) && 'dim')}>
-              <td><Link to={`${repoPath(r.key)}${search}`} title={label(r.key)}><RepoName repo={r.key} /></Link>{r.pinned && <span className="pin-mark" title="Pinned"><Icon name="pin" /></span>}</td>
+              <td>{badges && <SourceBadge host={r.source} />}<Link to={`${repoPath(r.key)}${search}`} title={label(r.key)}><RepoName repo={r.key} /></Link>{r.pinned && <span className="pin-mark" title="Pinned"><Icon name="pin" /></span>}</td>
               <td title={r.unavailable?.reason}>{r.visibility === 'private' ? 'Private' : r.visibility === 'internal' ? 'Internal' : 'Public'}{r.unavailable ? ' · unavailable' : r.syncedAt === null ? ' · syncing…' : ''}{r.isArchived ? ' · archived' : ''}{r.isFork ? ' · fork' : ''}{r.hidden ? ' · hidden' : ''}</td>
               <td>{r.language ? <><i className="lang" style={{ '--lc': r.language.color ?? 'var(--muted)' } as CSSProperties} /> {r.language.name}</> : '—'}</td>
               <td className="r">{r.visibility === 'public' ? <>{r.stars.toLocaleString()}{r.stats.newStars30d > 0 && r.trackedBy === 'owned' && <em className="plus"> +{r.stats.newStars30d}</em>}</> : '—'}</td>

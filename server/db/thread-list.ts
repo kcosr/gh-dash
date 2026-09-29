@@ -1,4 +1,5 @@
 import type { PrState, ThreadKindFilter, ThreadListItem, ThreadSort, ThreadStatus, ThreadStatusFilter } from '../../shared/api';
+import { PROVIDERS } from '../../shared/provider';
 import { hydrate, type ThreadRow } from './comments';
 import type { Db } from './db';
 import { addRepoScope, likeContains, type QueryCtx, type Scope, Where } from './filters';
@@ -23,9 +24,12 @@ export interface ThreadListResult {
 
 interface ThreadListRow extends ThreadRow {
   target_title: string | null;
+  /** The synced PR's or commit's own url. */
   target_url: string | null;
   pr_state: PrState | null;
   pr_head_oid: string | null;
+  repo_url: string;
+  source_kind: string;
 }
 
 // What the filters and counts need: threads in their live repos.
@@ -33,10 +37,16 @@ const THREADS = 'comment_threads t JOIN repos r ON r.id = t.repo_id';
 // What a listed thread is on. Threads are keyed by repo and PR number or commit oid, so they still list when the sync
 // hasn't (or no longer has) the PR or commit; both joins hit a unique key, so a thread is one row.
 const THREADS_WITH_TARGETS =
-  `${THREADS} LEFT JOIN pull_requests p ON p.repo_id = t.repo_id AND p.number = t.pr_number ` +
+  `${THREADS} JOIN sources s ON s.id = r.source_id LEFT JOIN pull_requests p ON p.repo_id = t.repo_id AND p.number = t.pr_number ` +
   'LEFT JOIN commits c ON c.repo_id = t.repo_id AND t.pr_number IS NULL AND c.oid = t.commit_oid';
+// A commit the sync doesn't hold (default branches only) may be one of a synced PR's: its headline is then the newest
+// such PR's (highest number; the same commit reads the same in each). A PR thread never takes a commit's headline.
+const PR_COMMIT_HEADLINE =
+  `(SELECT pc.headline FROM pr_commits pc JOIN pull_requests q ON q.id = pc.pr_id
+     WHERE t.pr_number IS NULL AND q.repo_id = t.repo_id AND pc.oid = t.commit_oid ORDER BY q.number DESC LIMIT 1)`;
 const SELECT =
-  `t.*, ${repoKeySql('r')} AS repo, COALESCE(p.title, c.headline) AS target_title, COALESCE(p.url, c.url) AS target_url, ` +
+  `t.*, ${repoKeySql('r')} AS repo, r.url AS repo_url, s.kind AS source_kind, ` +
+  `COALESCE(p.title, c.headline, ${PR_COMMIT_HEADLINE}) AS target_title, COALESCE(p.url, c.url) AS target_url, ` +
   'p.state AS pr_state, p.head_oid AS pr_head_oid';
 
 /** The scope (as /prs applies it) and the filters; `status` 'all' leaves the status out (for `counts`). */
@@ -51,6 +61,13 @@ function threadWhere(ctx: QueryCtx, scope: Scope, kind: ThreadKindFilter, status
     w.add(`t.path LIKE ? ESCAPE '\\' OR EXISTS (SELECT 1 FROM comments m WHERE m.thread_id = t.id AND m.body LIKE ? ESCAPE '\\')`, like, like);
   }
   return w;
+}
+
+/** Where the PR or commit is on its code host, built from the repo's url when the sync has no row (with its url) for it. */
+function unsyncedUrl(row: ThreadListRow): string {
+  const link = PROVIDERS[row.source_kind === 'gitlab' ? 'gitlab' : 'github'].link;
+  const repoUrl = row.repo_url.replace(/\/+$/, '');
+  return row.pr_number === null ? link.commit(repoUrl, row.commit_oid) : link.pr(repoUrl, row.pr_number);
 }
 
 /**
@@ -94,7 +111,7 @@ export function listThreadItems(db: Db, ctx: QueryCtx, scope: Scope, f: ThreadFi
       ...t,
       targetTitle: row.target_title,
       prState: row.pr_state,
-      targetUrl: row.target_url,
+      targetUrl: row.target_url ?? unsyncedUrl(row),
       earlierPush: row.pr_number !== null && row.pr_head_oid !== null && row.pr_head_oid !== row.commit_oid,
     };
   });

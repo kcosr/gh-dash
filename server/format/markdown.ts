@@ -1,4 +1,4 @@
-import type { ActivityEvent, Actor, GroupBy, PrStateFilter, ProviderKind, PullRequest, ThreadListItem, ThreadStatusFilter, Who } from '../../shared/api';
+import type { ActivityEvent, Actor, GroupBy, PrStateFilter, ProviderKind, PullRequest, ThreadKindFilter, ThreadListItem, ThreadStatusFilter, Who } from '../../shared/api';
 import { threadsMarkdown } from '../../shared/comment-markdown';
 import { PROVIDERS, mixedPrWords, refText } from '../../shared/provider';
 import { DAY_MS, localDayNum, weekdayMon0 } from '../lib/time';
@@ -188,10 +188,22 @@ const THREAD_STATUS_WORD: Record<ThreadStatusFilter, string> = { open: 'unresolv
 /**
  * GET /threads as text: a section per PR or commit, in the order the list first reaches it, holding that target's threads
  * as the per-target export renders them (`threadsMarkdown`, under the section's heading). A commit is `repo@abc1234`.
+ * The heading names the filters in force: `# Comments · unresolved · commits · matching "retry"` (the kind unless all,
+ * the text if any).
  */
-export function threadListMarkdown(items: readonly ThreadListItem[], status: ThreadStatusFilter, kindOf: KindOf = GITHUB_ONLY): string {
-  const heading = `# Comments · ${THREAD_STATUS_WORD[status]}`;
-  if (items.length === 0) return `${heading}\n\n_No ${status === 'all' ? '' : `${THREAD_STATUS_WORD[status]} `}comments._\n`;
+export function threadListMarkdown(
+  items: readonly ThreadListItem[],
+  filter: { status: ThreadStatusFilter; kind: ThreadKindFilter; q: string | null },
+  kindOf: KindOf = GITHUB_ONLY,
+): string {
+  const kinds = items.map((t) => kindOf(t.repo));
+  const heading = [
+    '# Comments',
+    THREAD_STATUS_WORD[filter.status],
+    ...(filter.kind === 'all' ? [] : [filter.kind === 'commit' ? 'commits' : mixedPrWords(kinds).many]),
+    ...(filter.q ? [`matching "${escapeInline(filter.q.replace(/\s+/g, ' '))}"`] : []),
+  ].join(' · ');
+  if (items.length === 0) return `${heading}\n\n_No ${filter.status === 'all' ? '' : `${THREAD_STATUS_WORD[filter.status]} `}comments._\n`;
   const targets = new Map<string, { ref: string; title: string | null; kind: ProviderKind; threads: ThreadListItem[] }>();
   for (const t of items) {
     const key = `${t.kind}\0${t.repo}\0${t.number ?? t.commitOid}`;

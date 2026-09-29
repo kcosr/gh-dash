@@ -594,11 +594,29 @@ describe('GET /threads', () => {
     const byId = new Map((await get(app)).body.items.map((t) => [t.id, t]));
     expect(byId.get(onHead)).toMatchObject({ earlierPush: false, prState: 'open', targetTitle: 'Add parser' });
     expect(byId.get(noHead)).toMatchObject({ earlierPush: false, prState: 'closed', targetTitle: 'PR 3', targetUrl: 'https://github.com/alice/x/pull/3' });
-    expect(byId.get(unsyncedCommit)).toMatchObject({ kind: 'commit', targetTitle: null, prState: null, targetUrl: null, earlierPush: false });
+    expect(byId.get(unsyncedCommit)).toMatchObject({ kind: 'commit', targetTitle: null, prState: null, targetUrl: `https://github.com/alice/app/commit/${UNSYNCED}`, earlierPush: false });
     const synced = [...byId.values()].find((t) => t.kind === 'commit' && t.targetTitle)!;
     expect(synced).toMatchObject({ targetTitle: 'Merge pull request #1', targetUrl: 'https://github.com/c/c1', earlierPush: false });
     const orphan = [...byId.values()].find((t) => t.number === 99)!;
-    expect(orphan).toMatchObject({ targetTitle: null, prState: null, targetUrl: null, earlierPush: false });
+    expect(orphan).toMatchObject({ targetTitle: null, prState: null, targetUrl: 'https://github.com/alice/app/pull/99', earlierPush: false });
+  });
+
+  it('falls back to a PR\'s listing of a commit for its headline, and builds the urls the sync has no row for, per host', async () => {
+    const { db, id, make } = targetsDb();
+    const app = makeApp(db);
+    const listed = 'e'.repeat(40);
+    db.run('UPDATE pr_commits SET oid = ? WHERE oid = ?', [listed, 'p1']);
+    const gl = `${GITLAB_HOST}/platform/app`;
+    const inPr = make({ repoId: id('alice/app'), kind: 'commit', oid: listed }, 'listed by PR #1', 10);
+    const glMr = make({ repoId: id(gl), kind: 'pr', number: 99 }, 'unsynced MR', 11);
+    const glCommit = make({ repoId: id(gl), kind: 'commit', oid: UNSYNCED }, 'unsynced GitLab commit', 12);
+    const byId = new Map((await get(app)).body.items.map((t) => [t.id, t]));
+    expect(byId.get(inPr)).toMatchObject({ targetTitle: 'fix login', targetUrl: `https://github.com/alice/app/commit/${listed}` });
+    expect(byId.get(glMr)).toMatchObject({ targetTitle: null, targetUrl: `https://${gl}/-/merge_requests/99` });
+    expect(byId.get(glCommit)).toMatchObject({ targetTitle: null, targetUrl: `https://${gl}/-/commit/${UNSYNCED}` });
+    // The Markdown section carries the headline like a synced one's.
+    const md = await (await app.send('GET', '/threads?format=md&kind=commit&repos=alice/app')).text();
+    expect(md).toContain(`\n## alice/app@${listed.slice(0, 7)} · fix login\n`);
   });
 
   describe('as Markdown', () => {
@@ -634,14 +652,31 @@ describe('GET /threads', () => {
         `## alice/app@${C1.slice(0, 7)} · Merge pull request #1`, '## alice/app#99',
       ]);
       expect(headings(await md('&limit=1&cursor=garbage'))).toHaveLength(5);
-      expect(headings(await md('&kind=commit'))).toEqual(['# Comments · unresolved', `## alice/app@${C1.slice(0, 7)} · Merge pull request #1`]);
+      expect(headings(await md('&kind=commit'))).toEqual(['# Comments · unresolved · commits', `## alice/app@${C1.slice(0, 7)} · Merge pull request #1`]);
       await app.json('PATCH', `/threads/${ids.commit}`, { status: 'resolved' });
       const resolved = await md('&status=resolved');
       expect(resolved).toBe(`# Comments · resolved\n\n## alice/app@${C1.slice(0, 7)} · Merge pull request #1\n\n### \`README.md\` · resolved\n\n- **You**: Nit\n`);
       expect(headings(await md('&status=all'))[0]).toBe('# Comments · all');
-      expect(await md('&q=nothing-like-this')).toBe('# Comments · unresolved\n\n_No unresolved comments._\n');
-      expect(await md('&status=resolved&kind=pr')).toBe('# Comments · resolved\n\n_No resolved comments._\n');
+      expect(await md('&q=nothing-like-this')).toBe('# Comments · unresolved · matching "nothing-like-this"\n\n_No unresolved comments._\n');
+      expect(await md('&status=resolved&kind=pr')).toBe('# Comments · resolved · pull requests\n\n_No resolved comments._\n');
       expect(await md('&status=all&repos=')).toBe('# Comments · all\n\n_No comments._\n');
+    });
+
+    it('names the filters in force in its heading: the kind unless all, the text if any', async () => {
+      const { db } = targetsDb();
+      const app = makeApp(db);
+      const heading = async (query: string) => (await (await app.send('GET', `/threads?format=md${query}`)).text()).split('\n')[0];
+      expect(await heading('')).toBe('# Comments · unresolved');
+      expect(await heading('&kind=all&q=')).toBe('# Comments · unresolved');
+      expect(await heading('&kind=commit')).toBe('# Comments · unresolved · commits');
+      expect(await heading('&status=all&q=readme')).toBe('# Comments · all · matching "readme"');
+      expect(await heading('&status=resolved&kind=commit&q=retry')).toBe('# Comments · resolved · commits · matching "retry"');
+      // The words of the host(s) of the PRs listed; sort, scope and paging are not filters of the text.
+      expect(await heading('&kind=pr&source=github.com&sort=oldest&limit=1')).toBe('# Comments · unresolved · pull requests');
+      expect(await heading(`&kind=pr&source=${GITLAB_HOST}`)).toBe('# Comments · unresolved · merge requests');
+      expect(await heading('&kind=pr')).toBe('# Comments · unresolved · pull & merge requests');
+      // Text is shown as one line, with its markup escaped.
+      expect(await heading(`&q=${encodeURIComponent('a  *b*\n[c]')}`)).toBe('# Comments · unresolved · matching "a \\*b\\* \\[c\\]"');
     });
 
     it('escapes a title\'s markup and puts an unsynced target\'s ref alone', async () => {

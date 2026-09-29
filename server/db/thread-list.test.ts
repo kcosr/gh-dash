@@ -297,15 +297,17 @@ describe('thread list targets', () => {
     expect(list().items[0]).toMatchObject({ id: t.id, earlierPush: false, targetTitle: 'Add parser' });
   });
 
-  it('lists a thread whose PR is not synced, with nothing known about it', () => {
+  it('lists a thread whose PR is not synced: no title or state, and a url built from the repo\'s', () => {
     const t = add(pr('alice/app', 99), 'orphan', 1, lines);
-    expect(list().items[0]).toMatchObject({ id: t.id, kind: 'pr', number: 99, targetTitle: null, prState: null, targetUrl: null, earlierPush: false });
+    expect(list().items[0]).toMatchObject({
+      id: t.id, kind: 'pr', number: 99, targetTitle: null, prState: null, targetUrl: 'https://github.com/alice/app/pull/99', earlierPush: false,
+    });
     // The same number in another repo is another PR.
     const other = add(pr('alice/secret', 1), 'secret one', 2);
-    expect(list().items.find((i) => i.id === other.id)).toMatchObject({ targetTitle: 'PR 1', prState: 'merged' });
+    expect(list().items.find((i) => i.id === other.id)).toMatchObject({ targetTitle: 'PR 1', prState: 'merged', targetUrl: 'https://github.com/alice/x/pull/1' });
   });
 
-  it('names a synced commit\'s headline and url, and knows nothing of an unsynced one', () => {
+  it('names a synced commit\'s headline and url; an unsynced one has a built url and no headline', () => {
     const synced = add(commit('alice/app', C1), 'on c1', 1);
     const unsynced = add(commit('alice/app', UNSYNCED), 'on unsynced', 2);
     // Synced in another repo only.
@@ -315,9 +317,64 @@ describe('thread list targets', () => {
     expect(res.items.find((i) => i.id === synced.id)).toMatchObject({
       kind: 'commit', number: null, targetTitle: 'Merge pull request #1', prState: null, targetUrl: 'https://github.com/c/c1', earlierPush: false,
     });
-    expect(res.items.find((i) => i.id === unsynced.id)).toMatchObject({ targetTitle: null, prState: null, targetUrl: null, earlierPush: false });
-    expect(res.items.find((i) => i.id === elsewhere.id)).toMatchObject({ targetTitle: null, targetUrl: null });
+    expect(res.items.find((i) => i.id === unsynced.id)).toMatchObject({
+      targetTitle: null, prState: null, targetUrl: `https://github.com/alice/app/commit/${UNSYNCED}`, earlierPush: false,
+    });
+    expect(res.items.find((i) => i.id === elsewhere.id)).toMatchObject({ targetTitle: null, targetUrl: `https://github.com/alice/app/commit/${C4}` });
     expect(res.items.find((i) => i.id === inSecret.id)).toMatchObject({ targetTitle: 'Commit c4', targetUrl: 'https://github.com/c/c4' });
+  });
+
+  describe('a commit the sync does not hold', () => {
+    const PC = 'e'.repeat(40);
+    /** The seed's PR app#1 lists p1 ("fix login"); make it PC, and let app#2 list it too under another headline. */
+    const listedByPrs = () => {
+      db.run('UPDATE pr_commits SET oid = ? WHERE oid = ?', [PC, 'p1']);
+      const app2 = db.get<{ id: number }>('SELECT id FROM pull_requests WHERE repo_id = ? AND number = 2', [repoId('alice/app')])!.id;
+      db.run("INSERT INTO pr_commits (pr_id, position, oid, headline, committed_at, url) VALUES (?, 0, ?, 'fix login (rebased)', ?, 'u')", [app2, PC, at(0)]);
+    };
+
+    it('takes its headline from the newest synced PR that lists it, and null when none does', () => {
+      const bare = add(commit('alice/app', PC), 'before', 1);
+      expect(list().items.find((i) => i.id === bare.id)).toMatchObject({ targetTitle: null });
+      listedByPrs();
+      // PR #2 is newer than #1: its headline wins, however the rows were written.
+      expect(list().items.find((i) => i.id === bare.id)).toMatchObject({
+        kind: 'commit', targetTitle: 'fix login (rebased)', prState: null, earlierPush: false, targetUrl: `https://github.com/alice/app/commit/${PC}`,
+      });
+      db.run('DELETE FROM pr_commits WHERE headline = ?', ['fix login (rebased)']);
+      expect(list().items.find((i) => i.id === bare.id)).toMatchObject({ targetTitle: 'fix login' });
+      // A PR that isn't synced any more lists nothing.
+      db.run('DELETE FROM pull_requests WHERE repo_id = ? AND number = 1', [repoId('alice/app')]);
+      expect(list().items.find((i) => i.id === bare.id)).toMatchObject({ targetTitle: null });
+    });
+
+    it('prefers the synced commit, looks only in its own repo, and never names a PR thread', () => {
+      listedByPrs();
+      db.run("UPDATE commits SET headline = 'from commits' WHERE repo_id = ? AND oid = ?", [repoId('alice/app'), C1]);
+      db.run('UPDATE pr_commits SET oid = ? WHERE oid = ?', [C1, PC]);
+      const synced = add(commit('alice/app', C1), 'synced', 1);
+      expect(list().items.find((i) => i.id === synced.id)).toMatchObject({ targetTitle: 'from commits', targetUrl: 'https://github.com/c/c1' });
+      db.run('UPDATE pr_commits SET oid = ?', [PC]);
+      const elsewhere = add(commit('alice/secret', PC), 'other repo', 2);
+      expect(list().items.find((i) => i.id === elsewhere.id)).toMatchObject({ targetTitle: null });
+      // An unsynced PR whose thread was made on a commit that PRs list: it stays untitled.
+      const orphan = createThread(db, pr('alice/app', 99), { commitOid: PC, baseOid: BASE, anchor: general, body: 'orphan' }, me, at(3));
+      expect(list().items.find((i) => i.id === orphan.id)).toMatchObject({ targetTitle: null, prState: null });
+    });
+  });
+
+  it('builds the url of a GitLab merge request or commit the sync does not hold, from the repo\'s url', () => {
+    const { repoId: gl } = seedGitLab(db);
+    const mr = add({ repoId: gl, kind: 'pr', number: 99 }, 'mr', 1);
+    const sha = add({ repoId: gl, kind: 'commit', oid: UNSYNCED }, 'sha', 2);
+    const synced = add({ repoId: gl, kind: 'pr', number: 2 }, 'synced mr', 3);
+    const byId = new Map(list({}, { source: [GITLAB_HOST] }).items.map((i) => [i.id, i]));
+    expect(byId.get(mr.id)).toMatchObject({ targetTitle: null, targetUrl: `https://${GITLAB_HOST}/platform/app/-/merge_requests/99` });
+    expect(byId.get(sha.id)).toMatchObject({ targetTitle: null, targetUrl: `https://${GITLAB_HOST}/platform/app/-/commit/${UNSYNCED}` });
+    expect(byId.get(synced.id)).toMatchObject({ targetTitle: 'Rework config', targetUrl: 'https://github.com/alice/x/pull/2' });
+    // A trailing slash on the repo's url doesn't double up.
+    db.run("UPDATE repos SET url = url || '/' WHERE id = ?", [gl]);
+    expect(list({}, { source: [GITLAB_HOST] }).items.find((i) => i.id === mr.id)!.targetUrl).toBe(`https://${GITLAB_HOST}/platform/app/-/merge_requests/99`);
   });
 
   it('keeps a PR thread\'s target and a commit thread\'s apart, even when a commit is a PR\'s head', () => {
@@ -328,7 +385,7 @@ describe('thread list targets', () => {
     // ... and a thread of an unsynced PR made on a synced commit is not that commit's.
     const orphan = createThread(db, pr('alice/app', 99), { commitOid: C3, baseOid: BASE, anchor: general, body: 'orphan' }, me, at(3));
     const byId = new Map(list().items.map((i) => [i.id, i]));
-    expect(byId.get(orphan.id)).toMatchObject({ targetTitle: null, targetUrl: null, prState: null, earlierPush: false });
+    expect(byId.get(orphan.id)).toMatchObject({ targetTitle: null, targetUrl: 'https://github.com/alice/app/pull/99', prState: null, earlierPush: false });
     expect(byId.get(onPr.id)).toMatchObject({ targetTitle: 'Add parser', prState: 'open', earlierPush: false });
     expect(byId.get(onCommit.id)).toMatchObject({ targetTitle: 'Refactor parser module', prState: null, earlierPush: false });
   });

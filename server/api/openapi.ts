@@ -359,9 +359,9 @@ const schemas: Record<string, Schema> = {
   }),
   ThreadListItem: {
     allOf: [ref('CommentThread'), obj({
-      targetTitle: nullable(str("The PR's title or the commit's headline; null when that isn't synced (a thread can outlive its PR's row)")),
+      targetTitle: nullable(str("The PR's title or the commit's headline; null when that isn't synced (a thread can outlive its PR's row). A commit the sync doesn't hold takes its headline from a synced PR that lists it (the newest one), else null")),
       prState: nullable({ ...enumOf('open', 'merged', 'closed'), description: "The PR's state; null for a commit thread, or a PR that isn't synced" }),
-      targetUrl: nullable(str("The PR or commit on its code host; null when it isn't synced")),
+      targetUrl: str("The PR or commit on its code host: the synced row's url, else built from the repo's url"),
       earlierPush: { ...bool, description: "A PR thread made on an earlier push than the PR's current head (false for commits, or when the head isn't known)" },
     })],
   },

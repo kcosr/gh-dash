@@ -884,12 +884,15 @@ export interface ThreadListQuery extends Pick<ScopeQuery, 'repos' | 'source' | '
 
 /** A thread in GET /threads: the thread, and what it is on. */
 export interface ThreadListItem extends CommentThread {
-  /** The PR's title or the commit's headline; null when that isn't synced (a thread can outlive its PR's row). */
+  /**
+   * The PR's title or the commit's headline; null when that isn't synced (a thread can outlive its PR's row). A commit the
+   * sync doesn't hold takes its headline from a synced PR that lists it (the newest one), else null.
+   */
   targetTitle: string | null;
   /** The PR's state; null for a commit thread, or a PR that isn't synced. */
   prState: PrState | null;
-  /** The PR or commit on its code host; null when it isn't synced. */
-  targetUrl: string | null;
+  /** The PR or commit on its code host: the synced row's url, else built from the repo's url (never null). */
+  targetUrl: string;
   /** A PR thread made on an earlier push than the PR's current head (false for commits, or when the head isn't known). */
   earlierPush: boolean;
 }

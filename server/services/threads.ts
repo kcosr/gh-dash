@@ -17,7 +17,7 @@ export function queryThreads({ db, config }: QueryDeps, q: z.infer<typeof thread
   const filter = { status: q.status ?? 'open', kind: q.kind ?? 'all', sort: q.sort ?? 'recent' };
   if (q.format === 'md') {
     const { items } = listThreadItems(db, ctx, scope, filter, null);
-    return { format: 'md', text: threadListMarkdown(items, filter.status, repoKinds(db)) };
+    return { format: 'md', text: threadListMarkdown(items, { ...filter, q: scope.q }, repoKinds(db)) };
   }
   const { limit, after } = page(q, 3);
   if (after && (typeof after[0] !== 'string' || typeof after[1] !== 'string' || typeof after[2] !== 'number')) throw new HttpError(400, 'Invalid cursor');

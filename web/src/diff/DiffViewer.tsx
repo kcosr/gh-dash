@@ -564,18 +564,6 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
     if (id !== null && opts.scroll) jumpToThread(id);
   }, [jumpToThread]);
 
-  // Deep link: the URL's thread as of opening, once the threads are in (one that's gone just leaves the URL). Like
-  // the deep-linked file, on every mount: in development StrictMode remounts the CodeView, dropping a first scroll.
-  const [initialThread] = useState(comments.initialThread);
-  const threadsReady = comments.threads !== undefined;
-  const liveThreads = useRef({ jumpToThread, focusThread, threadById });
-  liveThreads.current = { jumpToThread, focusThread, threadById };
-  useEffect(() => {
-    if (initialThread === null || !threadsReady) return;
-    const l = liveThreads.current;
-    if (l.threadById.has(initialThread)) l.jumpToThread(initialThread);
-    else l.focusThread(null);
-  }, [initialThread, threadsReady]);
 
   // The composer's lines stay selected, also when it comes back after a reload (Pierre keeps the selection of a file
   // that isn't rendered yet and paints it when it is).
@@ -649,11 +637,29 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
     return <FileNotes path={item.id} ids={note.ids} outdated={note.outdated} />;
   }, []);
 
-  // Deep link: `file` is the shell's URL as of opening; after that the URL only follows the viewer.
-  const goToRef = useRef(goTo);
-  goToRef.current = goTo;
-  const [initialFile] = useState(() => (file != null && byId.has(file) && file !== current.get() ? file : null));
-  useEffect(() => { if (initialFile) goToRef.current(initialFile); }, [initialFile]);
+  // Deep link: the shell's URL as of opening; after that the URL only follows the viewer. Its thread wins (once the
+  // threads are in: its line can be anywhere in its file, and its file is in the URL too); the file is the fallback,
+  // for a thread that's gone (it leaves the URL) or threads that couldn't be loaded. One effect, so the two never race
+  // for the scroll. On every mount: in development StrictMode remounts the CodeView, dropping a first scroll.
+  const [initial] = useState(() => ({
+    thread: comments.initialThread,
+    file: file != null && byId.has(file) && file !== current.get() ? file : null,
+  }));
+  const threadsSettled = comments.threads !== undefined || comments.error;
+  const restore = useRef({ goTo, jumpToThread, focusThread, threadById, error: comments.error });
+  restore.current = { goTo, jumpToThread, focusThread, threadById, error: comments.error };
+  useEffect(() => {
+    const l = restore.current;
+    if (initial.thread !== null) {
+      if (!threadsSettled) return;
+      if (l.threadById.has(initial.thread)) {
+        l.jumpToThread(initial.thread);
+        return;
+      }
+      if (!l.error) l.focusThread(null);
+    }
+    if (initial.file) l.goTo(initial.file);
+  }, [initial, threadsSettled]);
 
   // Keyboard scrolling (arrows, Page Down, Space) needs focus in the scroller, not the shell's body.
   const root = useRef<HTMLDivElement>(null);

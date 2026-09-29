@@ -691,6 +691,14 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
     else next.delete(key);
     return next;
   }), []);
+  // A send can finish after the reader has left this diff (Back, another diff): the draft and the cached threads are
+  // settled all the same, but only a viewer still showing the diff focuses the new thread (its URL setter would
+  // otherwise take the reader back).
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
   // As it was started (see DraftAnchor), whatever the diff shows now.
   const submitDraft = useCallback(async (body: string) => {
     const cur = openRef.current;
@@ -700,6 +708,7 @@ export default function DiffViewer({ diff, loadFile, compact, isActive, file, on
       const { path, side, startLine, endLine, commitOid, baseOid: base, snippet } = cur.anchor;
       const t = await actions.create({ commitOid, baseOid: base, path, side, startLine, endLine, snippet, body });
       removeNewDraft(cur.key);
+      if (!mounted.current) return;
       if (openRef.current?.key === cur.key) {
         showDraft(null);
         view.current?.clearSelectedLines();

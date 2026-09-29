@@ -17,7 +17,7 @@ export type RepoSort = 'activity' | 'stars' | 'open' | 'name';
 export type RepoLayout = 'grid' | 'list';
 
 export interface UrlState {
-  /** null = default scope (param absent); [] = explicitly nothing. */
+  /** null = the default selection (param absent); [] = explicitly nothing. */
   repos: string[] | null;
   vis: VisibilityFilter;
   /** Repos you own ('mine'), repos added by hand ('others'), or both. */

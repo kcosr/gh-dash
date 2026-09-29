@@ -151,7 +151,7 @@ export function parseRepoInput(text: string): { owner: string; name: string } | 
 // The repository list
 // ---------------------------------------------------------------------------
 
-/** Keys of the repos in the default scope: not archived, not hidden, not a fork (unless `includeForks`). */
+/** Keys of the repos in the default selection: not archived, not hidden, not a fork (unless `includeForks`). */
 export function defaultRepoScope(repos: Repo[], includeForks = false): string[] {
   return repos.filter((r) => !r.isArchived && !r.hidden && (!r.isFork || includeForks)).map((r) => r.key);
 }

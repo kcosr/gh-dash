@@ -26,7 +26,7 @@ const all = { state: 'all', labels: null } as const;
 const prIds = (s: Scope, f: Parameters<typeof listPrs>[3] = all) => listPrs(db, ctx, s, f, null).items.map((p) => p.id);
 
 describe('PR filters', () => {
-  it('default scope excludes archived, forked and hidden repos; sorts by activityAt desc', () => {
+  it('the default selection excludes archived, forked and hidden repos; sorts by activityAt desc', () => {
     expect(prIds(scope())).toEqual(['alice/secret#1', 'alice/app#3', 'alice/app#2', 'alice/app#1']);
   });
 

@@ -119,9 +119,9 @@ function RepoMenu({ repo }: { repo: Repo }) {
   const confirmRemove = useConfirmRemoveRepo();
   const label = useRepoLabel()(repo.key);
   const toggleHidden = () => {
-    // Hiding a default-scope card unmounts this component before the mutation completes.
+    // Hiding a card in the default selection unmounts this component before the mutation completes.
     void patch.mutateAsync({ key: repo.key, patch: { hidden: !repo.hidden } }).then(() => {
-      toast(repo.hidden ? `${label} is back in the default scope`
+      toast(repo.hidden ? `${label} is back in the default selection`
         : `${label} hidden. To unhide, find it with the sidebar search, select it, then open its menu.`, { ms: 6000 });
     }).catch((error: Error) => toast(`Couldn't update ${label}: ${error.message}`, { error: true }));
   };
@@ -135,7 +135,7 @@ function RepoMenu({ repo }: { repo: Repo }) {
               <span className="ck"><Icon name="pin" /></span>{repo.pinned ? 'Unpin' : 'Pin'}
             </button>
             <button type="button" role="menuitem" className="opt" onClick={act(toggleHidden)}>
-              <span className="ck"><Icon name={repo.hidden ? 'eye' : 'eyeOff'} /></span>{repo.hidden ? 'Unhide' : 'Hide from default scope'}
+              <span className="ck"><Icon name={repo.hidden ? 'eye' : 'eyeOff'} /></span>{repo.hidden ? 'Unhide' : 'Hide from default selection'}
             </button>
             {/* For a repo added by hand this also checks again whether the token can read it. */}
             <button type="button" role="menuitem" className="opt" onClick={act(() => sync.run({ repo: repo.key }))}>

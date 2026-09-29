@@ -65,10 +65,13 @@ signed-in user are synced automatically; add others by hand (see below).
 Use **Settings** to adjust the sync interval, backfill window and fork inclusion.
 Add any unlinked commit emails under **My commit emails** so those commits count as yours.
 Click a sidebar repository row to focus on it; use its checkbox to add or remove it
-from your selection. **All / Mine / Others** shows every repository, the ones you own, or the
-ones you added; the filter button next to the search box narrows them by visibility. The selection applies to Pull requests, Issues, Activity,
-Repositories, and Insights, and carries across tabs. Expand **Show inactive** to select
-archived, hidden, or forked repositories explicitly. Sidebar badges show nonzero open PR and issue counts as of the last sync.
+from your selection. The selection applies to Pull requests, Issues, Activity,
+Repositories, and Insights, and carries across tabs. The sidebar's **All** returns to the
+default selection: every repository except archived, hidden and forked ones (**Hide from
+default selection** in a repository's menu leaves one out). Expand **Show inactive** to select
+archived, hidden, or forked repositories explicitly. **All / Mine / Others** shows every
+repository, the ones you own, or the ones you added; the filter button next to the search
+box narrows them by visibility. Sidebar badges show nonzero open PR and issue counts as of the last sync.
 Click repository names in lists and activity to filter to them. Drag the sidebar's
 divider to resize it; its width is saved in your browser. You can also focus the
 divider and use arrow keys, or double-click it to reset the width. To make more room,

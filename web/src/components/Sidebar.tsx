@@ -103,7 +103,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const inScope = all.filter((r) => selected.has(r.key) && passesRepoFilters(r, s)).map((r) => r.key);
   const noOthers = s.own === 'others' && !all.some((r) => r.trackedBy !== 'owned');
 
-  /** Write an explicit selection of repo keys; collapse back to "default scope" when it matches it. */
+  /** Write an explicit selection of repo keys; collapse back to the default selection when it matches it. */
   const select = (keys: Iterable<string>) => {
     const list = [...new Set(keys)].filter((k) => all.some((r) => r.key === k)).sort();
     const isDefault = list.length === scope.length && scope.every((k) => list.includes(k));
@@ -212,7 +212,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
         </div>
         <Seg className="full" value={s.own} onChange={(own) => set({ own })} ariaLabel="Ownership" options={OWN_OPTIONS} />
         <div className="side-quick">
-          <button type="button" onClick={() => set({ repos: null })} title="Default scope: everything except archived, hidden and forks">All</button>
+          <button type="button" onClick={() => set({ repos: null })} title="Default selection: everything except archived, hidden and forks">All</button>
           <button type="button" onClick={() => set({ repos: [] })}>None</button>
           <button type="button" onClick={() => select(all.filter((r) => r.pinned).map((r) => r.key))}>Pinned</button>
           <span className="spacer" />

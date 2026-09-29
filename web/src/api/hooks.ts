@@ -149,7 +149,7 @@ export function useSyncStatus() {
   });
 }
 
-/** Default scope: not archived, not hidden, not a fork (unless includeForks). */
+/** The default selection: not archived, not hidden, not a fork (unless includeForks). */
 export function defaultScope(repos: Repo[], settings?: Settings): string[] {
   return defaultRepoScope(repos, settings?.includeForks);
 }
@@ -455,7 +455,7 @@ export function usePatchSettings() {
     mutationFn: api.patchSettings,
     onSuccess: (s: Settings) => {
       qc.setQueryData(qk.settings, s);
-      // "me" and default scope can change (myEmails, includeForks); the diff cache cap (diffCacheMb)
+      // "me" and the default selection can change (myEmails, includeForks); the diff cache cap (diffCacheMb)
       qc.invalidateQueries({ predicate: (q) => refetchAfterSync(q) && q.queryKey[0] !== 'settings' });
     },
   });

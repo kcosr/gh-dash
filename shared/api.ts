@@ -222,7 +222,7 @@ export interface Settings {
    * Ignored in PATCH.
    */
   myEmailsFromEnv?: string[];
-  includeForks: boolean; // default false: forks are synced but excluded from the default scope
+  includeForks: boolean; // default false: forks are synced but excluded from the default selection
   /** Size cap for the on-disk diff cache in MB (default 200; allowed 10..10000). Least recently viewed entries go first. */
   diffCacheMb: number;
 }
@@ -402,7 +402,7 @@ export interface AddRepoResponse {
 /**
  * Scope shared by every list/stats endpoint.
  *  - repos: comma-separated repo keys ("owner/name"; an owned repo's short name also works). Omitted => the
- *    default scope: all repos that are not archived, not hidden, and (unless settings.includeForks) not forks.
+ *    default selection: all repos that are not archived, not hidden, and (unless settings.includeForks) not forks.
  *    An explicitly empty value (`repos=`) means "no repos" and returns nothing.
  *  - visibility: default 'all'.
  *  - ownership: default 'all'; 'mine' = repositories you own, 'others' = repositories added by hand.
@@ -449,7 +449,7 @@ export interface IssueQuery extends ScopeQuery, PageQuery {
   state?: IssueState | 'all';
 }
 
-/** Repository inventory by default; scope=default uses the dashboard's usual selection. */
+/** Repository inventory by default; scope=default narrows it to the default selection. */
 export interface RepoQuery {
   /** Explicit repo keys (or an owned repo's short name) override scope; an empty string selects nothing. */
   repos?: string;

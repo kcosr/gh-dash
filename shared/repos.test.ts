@@ -257,7 +257,7 @@ describe('selectRepos with keys', () => {
     expect(keys(selectRepos(all, { scope: 'default' }))).toEqual(['dlvhdr/gh-dash', 'kcosr/gh-dash', 'kcosr/sedes']);
     expect(keys(selectRepos(all, { scope: 'default' }, true))).toEqual(['dlvhdr/gh-dash', 'kcosr/gh-dash', 'kcosr/sedes', 'kcosr/frk']);
     expect(keys(selectRepos(all, {}))).toHaveLength(6);
-    // explicit repos= wins over the default scope
+    // explicit repos= wins over the default selection
     expect(keys(selectRepos(all, { scope: 'default', repos: 'kcosr/old' }))).toEqual(['kcosr/old']);
   });
 

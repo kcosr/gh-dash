@@ -7,7 +7,7 @@ import { getSettings } from './settings';
 
 /** Parsed, validated scope shared by every list/stats query. Times are UTC ms; `to` is exclusive. */
 export interface Scope {
-  /** null = default scope (non-archived, non-hidden, non-fork unless includeForks). */
+  /** null = the default selection (non-archived, non-hidden, non-fork unless includeForks). */
   repos: string[] | null;
   visibility: VisibilityFilter;
   /** 'mine': repos tracked because the viewer owns them; 'others': repos added by hand. */
@@ -19,7 +19,7 @@ export interface Scope {
   q: string | null;
 }
 
-/** Per-request facts needed to evaluate "me" and the default scope. */
+/** Per-request facts needed to evaluate "me" and the default selection. */
 export interface QueryCtx {
   /** Lower-cased viewer login, or null before the first sync. */
   viewer: string | null;

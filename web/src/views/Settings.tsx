@@ -235,7 +235,7 @@ export function SettingsView() {
                   </span>
                 </div>
                 <label className="set-row">
-                  <span className="set-l">Include forks<small>Forks are always synced; this adds them to the default scope.</small></span>
+                  <span className="set-l">Include forks<small>Forks are always synced; this adds them to the default selection.</small></span>
                   <span className="set-c"><input type="checkbox" className="switch" checked={form.includeForks} onChange={(e) => setForm({ ...form, includeForks: e.target.checked })} /></span>
                 </label>
                 <div className="set-actions">

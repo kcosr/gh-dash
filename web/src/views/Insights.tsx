@@ -20,7 +20,7 @@ import {
   ttmLine,
 } from '../lib/statsCharts';
 import { repoPath } from '../../../shared/repos';
-import { patchSearch, useUrlState } from '../lib/urlState';
+import { passesRepoFilters, patchSearch, useUrlState } from '../lib/urlState';
 
 export function InsightsView() {
   const { s, set, range, navigate, location } = useUrlState();
@@ -36,8 +36,8 @@ export function InsightsView() {
   const nRepos = useMemo(() => {
     const all = repos.data ?? [];
     const keys = new Set(s.repos ?? defaultScope(all, settings.data));
-    return all.filter((r) => keys.has(r.key) && (s.vis === 'all' || r.visibility === s.vis)).length;
-  }, [repos.data, settings.data, s.repos, s.vis]);
+    return all.filter((r) => keys.has(r.key) && passesRepoFilters(r, s)).length;
+  }, [repos.data, settings.data, s.repos, s.vis, s.own]);
 
   const byWho = s.who === 'me' ? ' by you' : s.who === 'others' ? ' by others' : '';
   const whoSuffix = byWho ? `,${byWho}` : '';

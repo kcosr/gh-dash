@@ -11,7 +11,7 @@ import { API_OFF_HINT, apiLink } from '../lib/account';
 import { ALL_TIME_FROM, exportTarget, exportUrl } from '../lib/apiQuery';
 import { useFocusTrap, useLayer } from '../lib/layers';
 import { browserTz, fmtDate } from '../lib/time';
-import { carrySearch, encodeParams, patchSearch, repoFromPath, useUrlState } from '../lib/urlState';
+import { carrySearch, encodeParams, keepRepoInScope, patchSearch, repoFromPath, useUrlState } from '../lib/urlState';
 import { copyText, useDebounced } from '../lib/util';
 import { prIconClass, prIconName } from './bits';
 import { Icon } from './Icon';
@@ -114,7 +114,7 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggle
             labelParts: parts,
             right: <>{r.visibility === 'private' && <Icon name="lock" title="Private" />}{r.visibility === 'internal' && <Icon name="lock" title="Internal" />}<span>Select only this repo</span></>,
             run: () => {
-              if (view === 'prs' || view === 'issues' || view === 'repos' || view === 'activity' || view === 'insights') set({ repos: [r.key] });
+              if (view === 'prs' || view === 'issues' || view === 'repos' || view === 'activity' || view === 'insights') set({ repos: [r.key], ...keepRepoInScope(r, s) });
               else navigate(`/prs?${encodeParams([['repos', r.key]])}`);
             },
           },

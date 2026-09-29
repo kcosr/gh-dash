@@ -6,7 +6,7 @@ import { Icon } from './Icon';
 import { RepoName } from './RepoName';
 import { RepoMapCtx, useRepoMapCtx } from './repoMapContext';
 import { repoLabel } from '../../../shared/repos';
-import { OVERLAY_KEYS, patchSearch, viewFromPath } from '../lib/urlState';
+import { OVERLAY_KEYS, keepRepoInScope, parseUrlState, patchSearch, viewFromPath } from '../lib/urlState';
 
 /** Provides the repo map once for the whole app shell (see RepoMapCtx). */
 export function RepoMapProvider({ children }: { children: ReactNode }) {
@@ -21,15 +21,13 @@ export function RepoMapProvider({ children }: { children: ReactNode }) {
   // Drawer and diff navigation must not re-render every chip in a long list. Cache one target per repo,
   // and keep this context stable until the actual filters (or repo metadata) change.
   const hrefFor = useMemo(() => {
-    const base = new URLSearchParams(search);
+    const listView = viewFromPath(pathname);
+    const cur = parseUrlState(search, listView);
     const cache = new Map<string, string>();
     return (key: string) => {
       let href = cache.get(key);
       if (href) return href;
-      const vis = base.get('vis');
-      const repo = repos.get(key);
-      const conflict = repo && (vis === 'public' || vis === 'private') && vis !== repo.visibility;
-      href = pathname + patchSearch(search, viewFromPath(pathname), { repos: [key], pr: null, diff: null, ...(conflict ? { vis: 'all' } : {}) });
+      href = pathname + patchSearch(search, listView, { repos: [key], pr: null, diff: null, ...keepRepoInScope(repos.get(key), cur) });
       cache.set(key, href);
       return href;
     };

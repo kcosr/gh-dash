@@ -497,3 +497,17 @@ a.sync:hover .sync-text { color: var(--text); text-decoration: underline; text-u
 .issue-date-hint { font-size: 12px; color: var(--muted); }
 .issue-list-footer { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; padding: 20px 0; font-size: 12px; color: var(--text-2); }
 .issue-page-error { padding: 12px 0; }
+
+/* ---------- sidebar: search with the visibility menu, ownership */
+.side-search { display: flex; gap: 6px; }
+.side-search .field { flex: 1; min-width: 0; }
+.side-vis { position: relative; flex: none; display: grid; place-items: center; width: 30px; height: 30px; border: 1px solid var(--border-strong); border-radius: 7px; background: var(--surface); color: var(--muted); }
+.side-vis svg { width: 14px; height: 14px; }
+.side-vis:hover, .side-vis[aria-expanded="true"] { background: var(--surface-2); color: var(--text); }
+.side-vis.on { color: var(--accent-text); }
+.side-vis .dot { position: absolute; top: 4px; right: 4px; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 1.5px var(--surface); }
+.pop.vis-menu { min-width: 180px; }
+.side-h .note { margin-left: auto; }
+.side-h .note + .mini { margin-left: 6px; }
+.mobile-sidebar .side-search .field input { height: 40px; }
+.mobile-sidebar .side-vis { width: 40px; height: 40px; }

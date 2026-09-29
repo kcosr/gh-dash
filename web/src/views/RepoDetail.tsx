@@ -44,7 +44,7 @@ export function RepoDetailView() {
   const repos = useRepos();
   const patch = usePatchRepo();
   const repo = repos.data?.find((r) => r.key === key);
-  const scoped = { ...s, repos: [key], vis: 'all' as const };
+  const scoped = { ...s, repos: [key], vis: 'all' as const, own: 'all' as const };
   const stats = useStats(statsParams(scoped), !!repo);
   const merged = usePrList({ ...scopeParams(scoped, { q: false }), state: 'merged', limit: 50 }, !!repo);
   const open = usePrList({ ...scopeParams({ ...scoped, who: 'everyone' }, { q: false }), from: ALL_TIME_FROM, state: 'open', limit: 50 }, !!repo);

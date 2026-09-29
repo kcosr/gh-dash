@@ -43,6 +43,7 @@ const PATHS = {
   key: <><circle cx="5" cy="11" r="2.75" /><path d="M7 9l6.5-6.5M11 5l1.75 1.75M9.5 6.5l1.5 1.5" /></>,
   fork: <><circle cx="4.5" cy="3.5" r="1.75" /><circle cx="11.5" cy="3.5" r="1.75" /><circle cx="8" cy="12.5" r="1.75" /><path d="M4.5 5.25v.75a2 2 0 0 0 2 2h3a2 2 0 0 0 2-2v-.75M8 8v2.75" /></>,
   plus: <path d="M8 3v10M3 8h10" />,
+  filter: <path d="M2.5 4.5h11M4.5 8h7M6.5 11.5h3" />,
   trash: <path d="M2.5 4.5h11M6.5 4.5V3a.5.5 0 0 1 .5-.5h2a.5.5 0 0 1 .5.5v1.5M4 4.5l.6 8.6a1 1 0 0 0 1 .9h4.8a1 1 0 0 0 1-.9l.6-8.6" />,
   alert: <><path d="M8 2l6.5 11.5h-13z" /><path d="M8 6.5v3M8 11.5h.01" /></>,
   doc: <><path d="M4 1.75h5.25L12.5 5v9.25H4z" /><path d="M9 1.75V5.25h3.5M6 8.5h4.5M6 11h4.5" /></>,

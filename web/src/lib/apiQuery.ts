@@ -18,6 +18,7 @@ export function scopeParams(s: UrlState, opts: { q?: boolean } = {}): ScopeQuery
   return {
     repos: s.repos === null ? undefined : s.repos.join(','),
     visibility: s.vis === 'all' ? undefined : s.vis,
+    ownership: s.own === 'all' ? undefined : s.own,
     who: s.who,
     from: r.from,
     to: r.to,
@@ -36,7 +37,7 @@ export function issueListParams(s: UrlState): IssueQuery & { state: 'open' | 'cl
 }
 
 export function repoListParams(s: UrlState): RepoQuery {
-  return { scope: 'default', repos: s.repos?.join(','), visibility: s.vis, q: s.q || undefined, sort: s.sort };
+  return { scope: 'default', repos: s.repos?.join(','), visibility: s.vis, ownership: s.own === 'all' ? undefined : s.own, q: s.q || undefined, sort: s.sort };
 }
 
 /** The PR list as exported / shown in the API tab (`group` sets the Markdown headings). */

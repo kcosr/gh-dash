@@ -1,5 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import type { PullRequest, PullRequestDetail } from '../../../shared/api';
 import { findCachedPr, splitPrId, usePrDetail } from '../api/hooks';
 import { hasBlockingLayer, isTypingTarget, useLayer } from '../lib/layers';
@@ -15,8 +16,11 @@ import { RepoChip } from './RepoChip';
 import { useRepoLabel } from './repoMapContext';
 import { useToast } from './Toasts';
 
-/** PR details: a right column on desktop, the content pane on narrow screens. */
-export function PrDrawer({ id, compact }: { id: string; compact: boolean }) {
+/**
+ * PR details: a right column on desktop, the content pane on narrow screens. `resize` is the
+ * column's width separator: kept beside the column (so it doesn't scroll with it) but mounted with it.
+ */
+export function PrDrawer({ id, compact, resize }: { id: string; compact: boolean; resize?: ReactNode }) {
   const { set } = useUrlState();
   const qc = useQueryClient();
   const toast = useToast();
@@ -54,8 +58,9 @@ export function PrDrawer({ id, compact }: { id: string; compact: boolean }) {
     const drawer = scroller.current;
     return () => {
       // This is a nonmodal column: leave focus alone while it is outside the drawer,
-      // but don't lose keyboard position when a focused drawer control disappears.
-      if (!drawer?.contains(document.activeElement)) return;
+      // but don't lose keyboard position when a focused drawer control (or its width separator) disappears.
+      const focus = document.activeElement;
+      if (!drawer || !(drawer.contains(focus) || focus?.getAttribute('aria-controls') === drawer.id)) return;
       const row = document.querySelector<HTMLElement>(`article.pr[data-id="${CSS.escape(id)}"]`);
       const target = row ?? opener;
       if (target && target !== document.body && target.isConnected && !drawer.contains(target)) {
@@ -72,11 +77,13 @@ export function PrDrawer({ id, compact }: { id: string; compact: boolean }) {
 
   const copy = async (text: string, msg: string) => toast((await copyText(text)) ? msg : 'Copy failed');
 
+  const withResize = (aside: ReactNode) => <>{resize}{aside}</>;
+
   if (!pr) {
     const [idRepo, idNumber] = splitPrId(id);
     const loadingId = idRepo && idNumber ? `${label(idRepo)}#${idNumber}` : id;
-    return (
-      <aside className="drawer" ref={scroller} aria-label="Pull request details">
+    return withResize(
+      <aside className="drawer" id="pr-drawer" ref={scroller} aria-label="Pull request details">
         <div className="dr-head">
           <div className="dr-top">
             <span className="num">{loadingId}</span>
@@ -87,7 +94,7 @@ export function PrDrawer({ id, compact }: { id: string; compact: boolean }) {
             ? <p className="dr-missing">{(detail.error as { status?: number }).status === 404 ? 'This pull request is not in the local cache.' : `Couldn't load: ${(detail.error as Error).message}`}</p>
             : <div className="skel-block" aria-busy="true"><i style={{ width: '70%', height: 22 }} /><i style={{ width: '45%' }} /><i style={{ width: '90%' }} /><i style={{ width: '80%' }} /></div>}
         </div>
-      </aside>
+      </aside>,
     );
   }
 
@@ -102,8 +109,8 @@ export function PrDrawer({ id, compact }: { id: string; compact: boolean }) {
       : <>wants to merge {n} {plural(n, 'commit')} into {base}</>;
   const mdCopy = `**${pr.title}** ([${label(pr.repo)}#${pr.number}](${pr.url}))${pr.body.trim() ? `\n\n${pr.body.trim()}` : ''}`;
 
-  return (
-    <aside className="drawer" ref={scroller} aria-label="Pull request details">
+  return withResize(
+    <aside className="drawer" id="pr-drawer" ref={scroller} aria-label="Pull request details">
       <div className="dr-head">
         <div className="dr-top">
           <RepoChip repo={pr.repo} />
@@ -183,6 +190,6 @@ export function PrDrawer({ id, compact }: { id: string; compact: boolean }) {
           <dt>Labels</dt><dd>{pr.labels.length ? <Labels labels={pr.labels} /> : <span className="muted">None</span>}</dd>
         </dl>
       </section>
-    </aside>
+    </aside>,
   );
 }

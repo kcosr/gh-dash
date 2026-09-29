@@ -986,6 +986,93 @@ describe('"me" per source', () => {
   });
 });
 
+describe('source scope', () => {
+  // seedDb's GitHub repos (alice/app, alice/secret, …) plus seedGitLab's gitlab.example.com/platform/app.
+  const range = 'from=2026-09-20&to=2026-09-26&tz=UTC';
+  const GL = 'gitlab.example.com';
+  const KEY = `${GL}/platform/app`;
+  function twoSources() {
+    const db = seedDb();
+    seedGitLab(db);
+    return makeApp({}, db);
+  }
+  const get = async <T>(app: ReturnType<typeof makeApp>, path: string) => {
+    const res = await app.request(`/api/v1${path}`);
+    return { status: res.status, body: (res.headers.get('content-type')?.includes('json') ? await res.json() : await res.text()) as T };
+  };
+  type Items = { items: { id?: string; repo: string }[]; total: number; facets?: { byRepo: Record<string, number> } };
+  const repoOf = (i: { repo: string }) => i.repo;
+
+  it('narrows every list to the sources named, and every source without it', async () => {
+    const app = twoSources();
+    for (const list of ['prs', 'issues', 'commits', 'releases', 'activity']) {
+      const all = (await get<Items>(app, `/${list}?${range}`)).body;
+      const gitlab = (await get<Items>(app, `/${list}?${range}&source=${GL}`)).body;
+      const github = (await get<Items>(app, `/${list}?${range}&source=github.com`)).body;
+      expect(gitlab.items.length, list).toBeGreaterThan(0);
+      expect(github.items.length, list).toBeGreaterThan(0);
+      expect(new Set(gitlab.items.map(repoOf)), list).toEqual(new Set([KEY]));
+      expect(github.items.some((i) => i.repo === KEY), list).toBe(false);
+      expect(gitlab.total + github.total, list).toBe(all.total);
+      const both = (await get<Items>(app, `/${list}?${range}&source=github.com,${GL.toUpperCase()}`)).body;
+      expect(both.total, list).toBe(all.total);
+    }
+  });
+
+  it('intersects repos= and the default selection; facets.byRepo follows the source', async () => {
+    const app = twoSources();
+    const ids = async (q: string) => (await get<Items>(app, `/prs?${range}&${q}`)).body.items.map((i) => i.id);
+    expect(await ids(`source=${GL}`)).toEqual([`${KEY}#3`, `${KEY}#2`, `${KEY}#1`]);
+    expect(await ids(`source=${GL}&repos=alice/app`)).toEqual([]);
+    expect(await ids(`source=github.com&repos=alice/app,${encodeURIComponent(KEY)}`)).toEqual(['alice/app#3', 'alice/app#2', 'alice/app#1']);
+    const facets = (await get<Items>(app, `/prs?${range}&source=${GL}&repos=${encodeURIComponent(KEY)}`)).body.facets!;
+    expect(Object.keys(facets.byRepo)).toEqual([KEY]);
+    const github = (await get<Items>(app, `/prs?${range}&source=github.com`)).body.facets!;
+    expect(Object.keys(github.byRepo)).not.toContain(KEY);
+  });
+
+  it('scopes stats and the exports', async () => {
+    const app = twoSources();
+    type Stats = { tiles: { prsMerged: { value: number } }; byRepo: { repo: string }[]; contributors: { actor: { login: string | null; isMe: boolean } }[] };
+    const gitlab = (await get<Stats>(app, `/stats?${range}&source=${GL}`)).body;
+    expect(gitlab.byRepo.map((r) => r.repo)).toEqual([KEY]);
+    expect(gitlab.tiles.prsMerged.value).toBe(2);
+    expect(gitlab.contributors.find((c) => c.actor.isMe)?.actor.login).toBe('bob');
+    const github = (await get<Stats>(app, `/stats?${range}&source=github.com`)).body;
+    expect(github.byRepo.some((r) => r.repo === KEY)).toBe(false);
+    const md = (await get<string>(app, `/prs?${range}&source=${GL}&format=md`)).body;
+    expect(md).toContain('!1');
+    expect(md).not.toContain('alice/app');
+    const csv = (await get<string>(app, `/activity?${range}&source=github.com&format=csv`)).body;
+    expect(csv).toContain('alice/app');
+    expect(csv).not.toContain(KEY);
+  });
+
+  it('narrows /repos', async () => {
+    const app = twoSources();
+    const keys = async (q: string) => (await get<{ items: { key: string; source: string }[] }>(app, `/repos?${q}`)).body.items.map((r) => r.key);
+    expect(await keys(`source=${GL}`)).toEqual([KEY]);
+    expect((await keys('source=github.com')).includes(KEY)).toBe(false);
+    expect((await keys('')).includes(KEY)).toBe(true);
+    expect(await keys(`source=${GL}&repos=alice/app`)).toEqual([]);
+  });
+
+  it('refuses a host that isn\'t a source, with the ones that are', async () => {
+    const app = twoSources();
+    for (const path of ['prs', 'issues', 'commits', 'releases', 'stars', 'activity', 'stats', 'repos']) {
+      const res = await get<{ error: string; details: { sources: string[] } }>(app, `/${path}?source=gitlab.nowhere.example`);
+      expect(res.status, path).toBe(400);
+      expect(res.body.error, path).toBe("gitlab.nowhere.example isn't a source here.");
+      expect(res.body.details.sources, path).toEqual(['github.com', GL]);
+    }
+    const two = await get<{ error: string }>(app, `/prs?source=a.example,${GL},b.example`);
+    expect(two.body.error).toBe("a.example, b.example aren't sources here.");
+    // Only github.com exists before a GitLab source is added.
+    expect((await get(makeApp(), `/prs?source=${GL}`)).status).toBe(400);
+    expect((await get(makeApp(), '/prs?source=github.com')).status).toBe(200);
+  });
+});
+
 describe('diffs', () => {
   const C = sha('c');
   function diffApp(routes: Record<string, Reply> = {}, token: string | null = 'tok') {

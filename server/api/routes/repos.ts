@@ -9,6 +9,7 @@ import { createSet, createView, deleteSet, deleteView, getRepo, listRepos, listS
 import type { AppDeps } from '../app';
 import { noCrossSiteReads } from '../auth';
 import { HttpError, jsonBody, parseWith } from '../http';
+import { parseSources, requireSources } from '../scope';
 
 const name = z.string().trim().min(1).max(100);
 const repoList = z.array(z.string().trim().min(1)).max(1000);
@@ -17,6 +18,7 @@ const repoPatch = z.object({ pinned: z.boolean().optional(), hidden: z.boolean()
 const repoQuery = z.object({
   repos: z.string().max(100_000).optional(),
   scope: z.enum(['all', 'default']).optional(),
+  source: z.string().max(4000).optional(),
   visibility: z.enum(['all', 'public', 'private', 'internal']).optional(),
   ownership: z.enum(['all', 'mine', 'others']).optional(),
   q: z.string().max(4000).optional(),
@@ -50,6 +52,7 @@ export function repoRoutes({ db, config, tracking, diffs }: AppDeps): Hono {
 
   r.get('/repos', (c) => {
     const query = parseWith(repoQuery, c.req.query());
+    requireSources(db, parseSources(query.source));
     return c.json({ items: selectRepos(listRepos(db, config.defaultTz), query, getSettings(db).includeForks) });
   });
 

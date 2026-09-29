@@ -89,6 +89,13 @@ describe('parseScope', () => {
     expect(parseScope({ from: '2010-01-01' }, 'UTC', NOW).from).toBe(Date.parse('2010-01-01T00:00:00Z'));
   });
 
+  it('reads source as lower-cased hosts; absent or empty is every source', () => {
+    expect(parseScope({}, 'UTC', NOW).source).toBeNull();
+    expect(parseScope({ source: '' }, 'UTC', NOW).source).toBeNull();
+    expect(parseScope({ source: ' , ' }, 'UTC', NOW).source).toBeNull();
+    expect(parseScope({ source: 'GitLab.Example.com, github.com,gitlab.example.com' }, 'UTC', NOW).source).toEqual(['gitlab.example.com', 'github.com']);
+  });
+
   it('blank q is no filter', () => {
     expect(parseScope({ q: '   ' }, 'UTC', NOW).q).toBeNull();
   });

@@ -468,6 +468,9 @@ export interface AddRepoResponse {
  *  - repos: comma-separated repo keys ("owner/name"; an owned repo's short name also works). Omitted => the
  *    default selection: all repos that are not archived, not hidden, and (unless settings.includeForks) not forks.
  *    An explicitly empty value (`repos=`) means "no repos" and returns nothing.
+ *  - source: comma-separated source hosts ("github.com", "gitlab.example.com"): only repos on those sources. Omitted
+ *    (or empty) => every source. It narrows `repos` and the default selection alike. A host that isn't a source is a
+ *    400.
  *  - visibility: default 'all'.
  *  - ownership: default 'all'; 'mine' = repositories you own, 'others' = repositories added by hand.
  *  - who: default 'everyone'. 'me' matches Actor.isMe, judged per source. Stars are always by others.
@@ -479,6 +482,7 @@ export interface AddRepoResponse {
  */
 export interface ScopeQuery {
   repos?: string;
+  source?: string;
   visibility?: VisibilityFilter;
   ownership?: Ownership;
   who?: Who;
@@ -518,6 +522,8 @@ export interface RepoQuery {
   /** Explicit repo keys (or an owned repo's short name) override scope; an empty string selects nothing. */
   repos?: string;
   scope?: 'all' | 'default';
+  /** Comma-separated source hosts: only repos on those sources (omitted: every source; a host that isn't one: 400). */
+  source?: string;
   visibility?: VisibilityFilter;
   ownership?: Ownership;
   /** Case-insensitive substring of owner/name, description, topics or language. */

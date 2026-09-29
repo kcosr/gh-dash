@@ -9,6 +9,11 @@ import { listSources } from './sources';
 export interface Scope {
   /** null = the default selection (non-archived, non-hidden, non-fork unless includeForks). */
   repos: string[] | null;
+  /**
+   * The sources to look at, by host (lower-case): the context switcher's `source=`. Absent or null = every source. It
+   * intersects `repos` (and the default selection), and also applies where `repos` is ignored (facets.byRepo).
+   */
+  source?: string[] | null;
   visibility: VisibilityFilter;
   /** 'mine': repos tracked because the viewer owns them; 'others': repos added by hand. */
   ownership: Ownership;
@@ -88,6 +93,7 @@ export function addRepoScope(w: Where, scope: Scope, ctx: QueryCtx, ignoreRepos 
     else if (scope.repos.length === 0) w.add('0');
     else w.add(`r.id IN ${REPO_IDS_FOR_KEYS}`, JSON.stringify(scope.repos));
   }
+  if (scope.source) w.add('r.source_id IN (SELECT id FROM sources WHERE host IN (SELECT value FROM json_each(?)))', JSON.stringify(scope.source));
   if (scope.visibility !== 'all') w.add('r.visibility = ?', scope.visibility);
   if (scope.ownership !== 'all') w.add(scope.ownership === 'mine' ? `r.tracked_by = 'owned'` : `r.tracked_by <> 'owned'`);
 }

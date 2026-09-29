@@ -24,9 +24,9 @@ import {
   issueQuerySchema,
   listQuerySchema,
   pageSchema,
-  parseScope,
   parseTypes,
   prQuerySchema,
+  scopeFor,
   splitList,
 } from '../scope';
 import type { z } from 'zod';
@@ -64,7 +64,7 @@ export function listRoutes({ db, config }: AppDeps): Hono {
 
   r.get('/prs', (c) => {
     const q = parseWith(prQuerySchema, c.req.query());
-    const scope = parseScope(q, config.defaultTz);
+    const scope = scopeFor(db, q, config.defaultTz);
     const ctx = loadQueryCtx(db, config.myEmails);
     const filter = { state: q.state ?? 'all', labels: splitList(q.labels) };
     if (q.format === 'md' || q.format === 'csv') {
@@ -87,7 +87,7 @@ export function listRoutes({ db, config }: AppDeps): Hono {
 
   r.get('/activity', (c) => {
     const q = parseWith(activityQuerySchema, c.req.query());
-    const scope = parseScope(q, config.defaultTz);
+    const scope = scopeFor(db, q, config.defaultTz);
     const types = parseTypes(q.types);
     const ctx = loadQueryCtx(db, config.myEmails);
     if (q.format === 'md' || q.format === 'csv') {
@@ -101,7 +101,7 @@ export function listRoutes({ db, config }: AppDeps): Hono {
 
   r.get('/commits', (c) => {
     const q = parseWith(listQuerySchema, c.req.query());
-    const scope = parseScope(q, config.defaultTz);
+    const scope = scopeFor(db, q, config.defaultTz);
     const ctx = loadQueryCtx(db, config.myEmails);
     if (q.format === 'md' || q.format === 'csv') {
       const { items } = listCommits(db, ctx, scope, null);
@@ -113,7 +113,7 @@ export function listRoutes({ db, config }: AppDeps): Hono {
 
   r.get('/issues', (c) => {
     const q = parseWith(issueQuerySchema, c.req.query());
-    const scope = parseScope(q, config.defaultTz);
+    const scope = scopeFor(db, q, config.defaultTz);
     const ctx = loadQueryCtx(db, config.myEmails);
     const state = q.state ?? 'all';
     if (q.format === 'md' || q.format === 'csv') {
@@ -126,7 +126,7 @@ export function listRoutes({ db, config }: AppDeps): Hono {
 
   r.get('/releases', (c) => {
     const q = parseWith(listQuerySchema, c.req.query());
-    const scope = parseScope(q, config.defaultTz);
+    const scope = scopeFor(db, q, config.defaultTz);
     const ctx = loadQueryCtx(db, config.myEmails);
     if (q.format === 'md' || q.format === 'csv') {
       const { items } = listReleases(db, ctx, scope, null);
@@ -140,7 +140,7 @@ export function listRoutes({ db, config }: AppDeps): Hono {
 
   r.get('/stars', (c) => {
     const q = parseWith(listQuerySchema, c.req.query());
-    const scope = parseScope(q, config.defaultTz);
+    const scope = scopeFor(db, q, config.defaultTz);
     const ctx = loadQueryCtx(db, config.myEmails);
     if (q.format === 'md' || q.format === 'csv') {
       const { items } = listStars(db, ctx, scope, null);

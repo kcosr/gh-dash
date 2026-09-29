@@ -409,3 +409,24 @@ describe('selectRepos with keys', () => {
     expect(keys(selectRepos(pinned, { scope: 'default' }))[0]).toBe('kcosr/sedes');
   });
 });
+
+describe('selectRepos by source', () => {
+  const keys = (list: Repo[]) => list.map((r) => r.key).sort();
+  const gl = (key: string, over: Partial<Repo> = {}) =>
+    repo(`gitlab.example.com/${key}`, { source: 'gitlab.example.com', provider: 'gitlab', nameWithOwner: key, ...over });
+  const all = [repo('kcosr/gh-dash'), repo('kcosr/old', { isArchived: true }), gl('alice/gh-dash'), gl('platform/team/svc', { hidden: true })];
+
+  it('keeps the repos of the sources named, case-insensitively; none named is every source', () => {
+    expect(keys(selectRepos(all, { source: 'gitlab.example.com' }))).toEqual(['gitlab.example.com/alice/gh-dash', 'gitlab.example.com/platform/team/svc']);
+    expect(keys(selectRepos(all, { source: 'GitHub.com' }))).toEqual(['kcosr/gh-dash', 'kcosr/old']);
+    expect(keys(selectRepos(all, { source: 'github.com, gitlab.example.com' }))).toHaveLength(4);
+    expect(keys(selectRepos(all, { source: '' }))).toHaveLength(4);
+    expect(selectRepos(all, { source: 'nowhere.example.com' })).toEqual([]);
+  });
+
+  it('intersects the explicit selection and the default one', () => {
+    expect(keys(selectRepos(all, { scope: 'default', source: 'gitlab.example.com' }))).toEqual(['gitlab.example.com/alice/gh-dash']);
+    expect(keys(selectRepos(all, { repos: 'gh-dash,gitlab.example.com/platform/team/svc', source: 'gitlab.example.com' }))).toEqual(['gitlab.example.com/platform/team/svc']);
+    expect(selectRepos(all, { repos: 'kcosr/gh-dash', source: 'gitlab.example.com' })).toEqual([]);
+  });
+});

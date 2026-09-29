@@ -270,6 +270,7 @@ const SOURCE = q('source', "The source to look on, by its host; default github.c
 
 const SCOPE: ParamDoc[] = [
   q('repos', 'Comma-separated repo keys (owner/name; the short name of a repo you own also works). Omitted: the default selection (non-archived, non-hidden, non-fork unless includeForks). Empty (`repos=`): no repos.', str(), 'kcosr/gh-dash,kcosr/tools'),
+  q('source', 'Comma-separated source hosts: only repos on those sources (the app\'s context switcher). Omitted or empty: every source. Narrows `repos` and the default selection alike. 400 for a host that isn\'t a source.', str(), 'gitlab.example.com'),
   q('visibility', 'Repo visibility filter (internal: GitHub Enterprise).', { ...enumOf('all', 'public', 'private', 'internal'), default: 'all' }),
   q('ownership', 'mine: repositories you own (tracked automatically); others: repositories added by hand.', { ...enumOf('all', 'mine', 'others'), default: 'all' }),
   q('who', "'me' = the authenticated user of each item's own source (its account's login or commit emails, plus settings.myEmails or GH_DASH_MY_EMAILS on every source); stars are always by others.", { ...enumOf('me', 'others', 'everyone'), default: 'everyone' }, 'me'),
@@ -354,6 +355,7 @@ export const ENDPOINTS: EndpointDoc[] = [
   { method: 'get', path: '/api/v1/repos', tag: 'Repos', summary: 'Repository inventory or a filtered selection', params: [
     q('repos', 'Comma-separated repo keys (or short names of repos you own); explicit empty selects nothing. Overrides scope.'),
     q('scope', 'all (default) returns the inventory; default returns the default selection, which leaves out archived and hidden repos, and forks unless enabled in settings.', enumOf('all', 'default')),
+    q('source', 'Comma-separated source hosts: only repos on those sources. Omitted or empty: every source. 400 for a host that isn\'t a source.', str(), 'gitlab.example.com'),
     q('visibility', 'Repository visibility (internal: GitHub Enterprise)', enumOf('all', 'public', 'private', 'internal')),
     q('ownership', 'mine: repositories you own; others: repositories added by hand', enumOf('all', 'mine', 'others')),
     q('q', 'Case-insensitive substring in owner/name, description, topics or language'),

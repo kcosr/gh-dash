@@ -278,6 +278,7 @@ export function selectRepos(repos: Repo[], query: RepoQuery, includeForks = fals
     selected = query.scope === 'default' ? new Set(defaultRepoScope(repos, includeForks)) : null;
   }
   const text = query.q?.trim().toLowerCase() ?? '';
+  const sources = query.source?.split(',').map((h) => h.trim().toLowerCase()).filter(Boolean) ?? [];
   const activity = (r: Repo) => r.lastActivityAt ?? r.pushedAt ?? r.createdAt;
   const compare = (a: Repo, b: Repo) => {
     switch (query.sort) {
@@ -288,6 +289,7 @@ export function selectRepos(repos: Repo[], query: RepoQuery, includeForks = fals
     }
   };
   return repos.filter((r) => (!selected || selected.has(r.key))
+    && (!sources.length || sources.includes(r.source))
     && (!query.visibility || query.visibility === 'all' || r.visibility === query.visibility)
     && (!query.ownership || query.ownership === 'all' || (query.ownership === 'mine') === (r.trackedBy === 'owned'))
     && (!text || `${r.key} ${r.description ?? ''} ${r.topics.join(' ')} ${r.language?.name ?? ''}`.toLowerCase().includes(text)))

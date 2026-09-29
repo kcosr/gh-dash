@@ -40,3 +40,14 @@ describe('listRepos identity', () => {
     expect(byKey.get('carol/tool')).toMatchObject({ trackedBy: 'manual', unavailable: { since: '2026-09-29T00:00:00Z', reason: 'Not found' } });
   });
 });
+
+describe('listRepos new stars', () => {
+  it('counts stars of owned repos only, like activity and Insights', () => {
+    const db = seedDb();
+    // A manual repo keeps stars from when it was owned (transferred away, then added by hand).
+    const kept = addManualRepo(db, 'bob/kept');
+    upsertStar(db, kept, { login: 'zed', name: null, avatarUrl: null, starredAt: '2026-09-24T22:11:34Z' });
+    const repos = listRepos(db, 'UTC', Date.parse('2026-09-27T12:00:00Z'));
+    expect(repos.find((r) => r.key === 'bob/kept')!.stats.newStars30d).toBe(0);
+  });
+});

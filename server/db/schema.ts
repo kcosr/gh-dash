@@ -2,6 +2,8 @@ import { type RepoResolver, rewriteRepoParams, rewriteRepoPath } from '../../sha
 import type { Db } from './db';
 
 interface Migration {
+  /** Stable name: tests and code refer to a migration by it (`versionOf`), so renumbering one is a one-line change. */
+  name: string;
   version: number;
   /** Destructive migrations (drops/rebuilds) never run from a GH_DASH_SYNC=off instance. */
   destructive: boolean;
@@ -302,15 +304,22 @@ function rewriteSavedViews(db: Db): void {
 }
 
 const MIGRATIONS: Migration[] = [
-  { version: 1, destructive: false, sql: V1 },
-  { version: 2, destructive: false, sql: V2 },
-  { version: 3, destructive: false, sql: V3 },
-  { version: 4, destructive: false, sql: V4 },
-  { version: 5, destructive: true, rebuild: true, sql: REPOS_REBUILD, up: rewriteSavedViews },
+  { name: 'initial', version: 1, destructive: false, sql: V1 },
+  { name: 'commits-repo-index', version: 2, destructive: false, sql: V2 },
+  { name: 'commits-head', version: 3, destructive: false, sql: V3 },
+  { name: 'pr-head-oid', version: 4, destructive: false, sql: V4 },
+  { name: 'repos-v5', version: 5, destructive: true, rebuild: true, sql: REPOS_REBUILD, up: rewriteSavedViews },
 ];
 
 /** The schema version this build creates and understands. */
 export const SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]!.version;
+
+/** The version of the migration called `name` (throws for an unknown name). */
+export function versionOf(name: string): number {
+  const m = MIGRATIONS.find((x) => x.name === name);
+  if (!m) throw new Error(`No migration is called ${name}`);
+  return m.version;
+}
 
 const userVersion = (db: Db) => Number(db.get<{ user_version: number }>('PRAGMA user_version')?.user_version ?? 0);
 const foreignKeysOn = (db: Db) => Number(db.get<{ foreign_keys: number }>('PRAGMA foreign_keys')?.foreign_keys ?? 0) === 1;
@@ -343,10 +352,17 @@ function checkDestructive(version: number, pending: Migration[], allowDestructiv
   }
 }
 
-export function migrate(db: Db, allowDestructive: boolean): void {
+export interface MigrateOptions {
+  /** Stop after this version (tests build a database as it was before a migration: `versionOf(name) - 1`). */
+  upTo?: number;
+}
+
+export function migrate(db: Db, allowDestructive: boolean, opts: MigrateOptions = {}): void {
+  const upTo = opts.upTo ?? SCHEMA_VERSION;
+  const known = MIGRATIONS.filter((m) => m.version <= upTo);
   const current = userVersion(db);
   checkNotNewer(current);
-  const pending = MIGRATIONS.filter((m) => m.version > current);
+  const pending = known.filter((m) => m.version > current);
   if (pending.length === 0) return;
   checkDestructive(current, pending, allowDestructive);
   // PRAGMA foreign_keys is a silent no-op inside a transaction, so it is switched off before BEGIN.
@@ -357,7 +373,7 @@ export function migrate(db: Db, allowDestructive: boolean): void {
       // Re-check inside the write lock in case another process migrated concurrently.
       const now = userVersion(db);
       checkNotNewer(now);
-      const batch = MIGRATIONS.filter((x) => x.version > now);
+      const batch = known.filter((x) => x.version > now);
       // Another process may have created the database meanwhile: the fresh-database exception holds only while it is still v0.
       checkDestructive(now, batch, allowDestructive);
       const rebuild = batch.some((m) => m.rebuild);
@@ -369,7 +385,7 @@ export function migrate(db: Db, allowDestructive: boolean): void {
         m.up?.(db);
         db.exec(`PRAGMA user_version = ${m.version}`);
       }
-      if (rebuild) checkForeignKeys(db, now, SCHEMA_VERSION);
+      if (rebuild) checkForeignKeys(db, now, batch.at(-1)!.version);
     });
   } finally {
     if (suspendFks) db.exec('PRAGMA foreign_keys = ON');

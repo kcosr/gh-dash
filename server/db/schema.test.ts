@@ -2,7 +2,10 @@ import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import { Db, openDb } from './db';
-import { migrate, SCHEMA_VERSION } from './schema';
+import { migrate, SCHEMA_VERSION, versionOf } from './schema';
+
+/** The repos rebuild's tests look at the database it leaves: they stop there. */
+const V5 = { upTo: versionOf('repos-v5') };
 
 const V4_SQL = readFileSync(new URL('../test/fixtures/schema-v4.sql', import.meta.url), 'utf8');
 
@@ -74,9 +77,9 @@ describe('migration to repo keys (repos rebuild)', () => {
     const db = v4();
     const before = counts(db);
     const oldRows = db.all(`SELECT ${REPO_COLS} FROM repos ORDER BY id`);
-    migrate(db, true);
+    migrate(db, true, V5);
 
-    expect(version(db)).toBe(SCHEMA_VERSION);
+    expect(version(db)).toBe(versionOf('repos-v5'));
     expect(counts(db)).toEqual(before);
     expect(db.all(`SELECT ${REPO_COLS} FROM repos ORDER BY id`)).toEqual(oldRows);
     expect(db.all('SELECT repo_id, position FROM repo_set_members ORDER BY position')).toEqual([{ repo_id: 2, position: 0 }, { repo_id: 1, position: 1 }]);
@@ -90,7 +93,7 @@ describe('migration to repo keys (repos rebuild)', () => {
 
   it('backfills every existing repo as owned', () => {
     const db = v4();
-    migrate(db, true);
+    migrate(db, true, V5);
     expect(db.all('SELECT DISTINCT tracked_by, added_at, unavailable_at, unavailable_reason FROM repos')).toEqual([
       { tracked_by: 'owned', added_at: null, unavailable_at: null, unavailable_reason: null },
     ]);
@@ -100,7 +103,7 @@ describe('migration to repo keys (repos rebuild)', () => {
 
   it('keys repos by owner/name among live repos, case-insensitively', () => {
     const db = v4();
-    migrate(db, true);
+    migrate(db, true, V5);
     const idx = db.all<{ name: string; unique: number; partial: number }>('PRAGMA index_list(repos)');
     expect(idx.find((i) => i.name === 'repos_key')).toMatchObject({ unique: 1, partial: 1 });
     // Only node_id is unique inline: the short name no longer is.
@@ -120,7 +123,7 @@ describe('migration to repo keys (repos rebuild)', () => {
 
   it("widens visibility to 'internal' and takes tracked_by without a CHECK", () => {
     const db = v4();
-    migrate(db, true);
+    migrate(db, true, V5);
     repo(db, 4, 'corp', { owner: 'acme', visibility: 'internal' });
     expect(() => repo(db, 5, 'x', { visibility: 'secret' })).toThrow(/CHECK constraint failed/);
     db.run(`UPDATE repos SET tracked_by = 'manual', added_at = '2026-09-29T00:00:00Z' WHERE id = 4`);
@@ -129,7 +132,7 @@ describe('migration to repo keys (repos rebuild)', () => {
 
   it('keeps foreign keys pointing at the new table: deleting a repo cascades, FTS included', () => {
     const db = v4();
-    migrate(db, true);
+    migrate(db, true, V5);
     db.run('DELETE FROM repos WHERE id = 1');
     for (const t of ['sync_state', 'pull_requests', 'commits', 'issues', 'releases', 'stars', 'repo_set_members']) {
       expect(db.get<{ n: number }>(`SELECT count(*) AS n FROM ${t} WHERE repo_id = 1`)!.n, t).toBe(0);
@@ -147,7 +150,7 @@ describe('migration to repo keys (repos rebuild)', () => {
       repo(d, 3, 'app~3', { removedAt: '2026-01-01T00:00:00Z' });
       repo(d, 4, 'other');
     });
-    migrate(db, true);
+    migrate(db, true, V5);
     const rows = db.all<{ id: number; removed_at: string | null }>('SELECT id, removed_at FROM repos ORDER BY id');
     expect(rows[0]!.removed_at).toMatch(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/);
     expect(rows.slice(1)).toEqual([{ id: 2, removed_at: null }, { id: 3, removed_at: '2026-01-01T00:00:00Z' }, { id: 4, removed_at: null }]);
@@ -217,7 +220,7 @@ describe('migration to repo keys (repos rebuild)', () => {
 
   it('never hands out the id of a deleted repo again (AUTOINCREMENT), also after migrating', () => {
     for (const db of [v4(), openDb(':memory:')]) {
-      if (version(db) === 4) migrate(db, true);
+      if (version(db) === 4) migrate(db, true, V5);
       else repo(db, 1, 'a');
       const max = db.get<{ id: number }>('SELECT max(id) AS id FROM repos')!.id;
       db.run('DELETE FROM repos WHERE id = ?', [max]);
@@ -296,5 +299,19 @@ describe('saved views on migration', () => {
       ['/repos/nope', 'who=me'],
       ['/repos', 'repos=alice/a'],
     ]);
+  });
+});
+
+describe('migration names', () => {
+  it('number migrations by name, and stop where asked', () => {
+    expect(versionOf('repos-v5')).toBe(5);
+    expect(versionOf('pr-head-oid')).toBe(4);
+    expect(() => versionOf('nope')).toThrow('No migration is called nope');
+    const db = new Db(new DatabaseSync(':memory:'));
+    migrate(db, true, { upTo: versionOf('pr-head-oid') });
+    expect(version(db)).toBe(versionOf('pr-head-oid'));
+    expect(db.all<{ name: string }>('PRAGMA table_info(repos)').map((c) => c.name)).not.toContain('tracked_by');
+    migrate(db, true);
+    expect(version(db)).toBe(SCHEMA_VERSION);
   });
 });

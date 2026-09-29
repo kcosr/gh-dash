@@ -27,7 +27,7 @@ import {
   upsertStar,
 } from '../db/write';
 import { GitHubError, type GitHubClient } from '../github/client';
-import { mapCommit, mapIssue, mapProbe, mapPullRequest, mapRelease, mapRepo, mapStar } from '../github/map';
+import { mapCommit, mapIssue, mapProbe, mapPullRequest, mapRelease, mapRepo, mapStar, RECORD_FIELDS } from '../github/map';
 import { accessFailure, notFound } from '../github/access';
 import { MANUAL_REPOS, recheckQuery, REPO_DETAIL, REPO_NODE, REPO_PROBES, VIEWER_REPO, VIEWER_REPOS } from '../github/queries';
 import type {
@@ -45,6 +45,7 @@ import type {
   ViewerRepoData,
   ViewerReposData,
 } from '../github/types';
+import { chunked, pool } from '../lib/pool';
 import { DAY_MS, isoSec } from '../lib/time';
 import { type AccessFailure, reasonOf } from '../provider/access';
 
@@ -156,27 +157,6 @@ interface RepoTarget {
 }
 
 type Section = 'commits' | 'prs' | 'issues' | 'openPrs' | 'openIssues' | 'releases' | 'stars';
-
-/**
- * Runs `fn` over `items`, `concurrency` at a time. After the first failure no further items start, but the ones in
- * flight are awaited before it is rethrown: once this settles, nothing it started can still write (the caller
- * releases the sync lock then).
- */
-async function pool<T>(items: T[], concurrency: number, fn: (item: T) => Promise<void>): Promise<void> {
-  let next = 0;
-  let failure: { err: unknown } | null = null;
-  const worker = async () => {
-    while (!failure && next < items.length) {
-      try {
-        await fn(items[next++]!);
-      } catch (err) {
-        failure ??= { err };
-      }
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker));
-  if (failure) throw (failure as { err: unknown }).err;
-}
 
 const isFatal = (err: unknown) => err instanceof GitHubError && (err.kind === 'auth' || err.kind === 'rate-limit');
 const message = (err: unknown) => (err instanceof Error ? err.message : String(err));
@@ -380,13 +360,6 @@ async function fetchAllRepos(deps: SyncDeps, nowIso: string, errors: string[]): 
   return [...owned, ...manual];
 }
 
-/** RepoRecord fields a repository field fills: the ones kept from the database when GitHub denies that field. */
-const RECORD_FIELDS: Record<string, (keyof RepoRecord)[]> = {
-  description: ['description'], visibility: ['visibility'], isArchived: ['isArchived'], isFork: ['isFork'],
-  primaryLanguage: ['languageName', 'languageColor'], repositoryTopics: ['topics'], defaultBranchRef: ['defaultBranch'],
-  stargazerCount: ['stars'], forkCount: ['forks'], createdAt: ['createdAt'], pushedAt: ['pushedAt'],
-};
-
 /**
  * A repository node read with queryPartial, at `at` in the response. Fields the token may not read come back null:
  * they keep what the database has (a denied defaultBranchRef is not an empty repository), the probe is left out, and
@@ -405,9 +378,6 @@ function readNode(db: Db, node: GqlRepo & GqlProbe, errors: GqlError[], at: (str
     problem: failure ? reasonOf(failure) : inside.map((e) => e.message).join('; '),
   };
 }
-
-const chunked = <T>(items: T[], size: number): T[][] =>
-  Array.from({ length: Math.ceil(items.length / size) }, (_, i) => items.slice(i * size, (i + 1) * size));
 
 /**
  * Refreshes the live repos added by hand by node id (they follow renames and transfers), unavailable ones included so

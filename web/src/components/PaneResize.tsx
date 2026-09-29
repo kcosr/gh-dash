@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { CSSProperties, KeyboardEvent, PointerEvent, RefObject } from 'react';
 import {
   DRAWER_DEFAULT, DRAWER_MAX, DRAWER_MIN, SIDEBAR_DEFAULT, SIDEBAR_MAX, SIDEBAR_MIN,
@@ -71,6 +71,14 @@ function usePaneResize(spec: PaneSpec, frame: RefObject<HTMLDivElement | null>, 
     setDragging(false);
   };
   useEffect(() => { if (!enabled) cancel(); }, [enabled]);
+  // The separator can be replaced or removed mid-drag (the details panel remounts for each pull
+  // request, and its separator with it); the removed element never gets pointerup or lostpointercapture.
+  const cancelLatest = useRef(cancel);
+  useLayoutEffect(() => { cancelLatest.current = cancel; });
+  const attach = useCallback((el: HTMLDivElement | null) => {
+    handle.current = el;
+    if (!el) cancelLatest.current();
+  }, []);
 
   const commit = (value: number) => save(Math.round(Math.max(spec.min, Math.min(spec.max, value))));
   const onPointerDown = (e: PointerEvent<HTMLDivElement>) => {
@@ -112,12 +120,13 @@ function usePaneResize(spec: PaneSpec, frame: RefObject<HTMLDivElement | null>, 
       : e.key === 'Home' ? spec.min : e.key === 'End' ? limit : null;
     if (next === null) return;
     e.preventDefault();
-    commit(next);
+    // Like a pointer drag, stop at what the window and the other pane leave.
+    commit(clamp(next));
   };
 
   return {
     dragging,
-    separator: <div ref={handle} className={spec.className} role="separator" tabIndex={0}
+    separator: <div ref={attach} className={spec.className} role="separator" tabIndex={0}
       aria-label={spec.label} aria-orientation="vertical" aria-controls={spec.controls}
       aria-valuemin={spec.min} aria-valuemax={limit} aria-valuenow={width} aria-valuetext={`${width} pixels`}
       title="Drag to resize; arrow keys adjust width; double-click to reset"

@@ -3,6 +3,8 @@
 Coding agents such as Claude Code and Codex can take part in your reviews in gh-dash through
 [MCP](https://modelcontextprotocol.io).
 
+[![A split diff with a comment thread: your question, and an agent's answer marked "agent"](images/review-with-agent.png)](images/review-with-agent.png)
+
 - **Reviewing their own work with you.** You leave comments and questions in a diff. The agent
   answers them, fixes the code, and waits for your reply.
 - **Reviewing code they didn't write.** An agent reads the existing threads, adds comments for

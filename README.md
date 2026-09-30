@@ -175,6 +175,8 @@ Coding agents can join your reviews through MCP:
 
 Each agent has its own token, and what it writes is shown as its own.
 
+[![A split diff with a comment thread: your question, and an agent's answer marked "agent"](docs/images/review-with-agent.png)](docs/images/review-with-agent.png)
+
 1. **Add an agent.** In the desktop app, go to **Settings → Agents → Add agent**. On a server, run
    `node dist/server/index.mjs agents add Claude`.
 2. **Register it.** Paste the setup line shown there into Claude Code or Codex, for example:

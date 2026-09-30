@@ -209,6 +209,46 @@ describe("events in a PR's or a branch's scope follow its view's branch groups",
     expect(kinds({ branch: 'multi' })).toEqual(kinds({ prNumber: 63 }));
   });
 
+  it("keeps a deleted thread where its view had it last: a PR thread the sync took the branch from stays out of the branch's, all its events", () => {
+    prFrom(70, 'topic', 'open');
+    prFrom(71, 'topic', 'open');
+    const kept = onBranch('topic', 'On the branch', at(1));
+    const t = onPr(70, 'topic', 'On #70', at(2));
+    addComment(db, t.id, me, 'Before');
+    // #70 was merged before the thread was made, and the sync learns it: the thread is #70's alone.
+    db.run('UPDATE comment_threads SET branch = NULL WHERE id = ?', [t.id]);
+    addComment(db, t.id, me, 'After');
+    expect(scoped({ prNumber: 71 })).toEqual(ids(kept));
+    deleteThread(db, t.id, me);
+    // Its opening event still says "topic", but the thread's last state, which deleting logs, doesn't.
+    expect(db.all('SELECT kind, branch FROM comment_events WHERE thread_id = ? ORDER BY id', [t.id])).toEqual([
+      { kind: 'thread_opened', branch: 'topic' }, { kind: 'replied', branch: 'topic' }, { kind: 'replied', branch: null }, { kind: 'thread_deleted', branch: null },
+    ]);
+    expect(scoped({ prNumber: 71 })).toEqual(ids(kept));
+    expect(scoped({ branch: 'topic' })).toEqual(ids(kept));
+    // It is #70's own, still, with every event.
+    expect(commentEventsAfter(db, 0, { scope: { repoId: app, prNumber: 70 } }).filter((e) => e.threadId === t.id)).toHaveLength(4);
+  });
+
+  it("keeps a deleted thread the sync gave a branch (a backfill) in the group with all its events, the older ones too", () => {
+    prFrom(80, 'topic', 'open');
+    prFrom(81, 'topic', 'open');
+    // Made before the sync knew where PR 80 was from, so the thread had no branch, and its early events say so.
+    const t = onPr(80, null, 'On #80', at(2));
+    addComment(db, t.id, me, 'Early');
+    db.run("UPDATE comment_threads SET branch = 'topic' WHERE id = ?", [t.id]);
+    addComment(db, t.id, me, 'Late');
+    expect(scoped({ prNumber: 81 })).toEqual(ids(t));
+    const events = () => commentEventsAfter(db, 0, { scope: { repoId: app, branch: 'topic' } }).map((e) => `${e.kind} ${e.threadId}`);
+    const live = events();
+    expect(live).toEqual([`thread_opened ${t.id}`, `replied ${t.id}`, `replied ${t.id}`]);
+    deleteThread(db, t.id, me);
+    // Nothing of it drops out of the group when it is deleted: the older events join the newer ones.
+    expect(events()).toEqual([...live, `thread_deleted ${t.id}`]);
+    expect(scoped({ prNumber: 81 })).toEqual(ids(t));
+    expect(scoped({ prNumber: 80 })).toEqual(ids(t));
+  });
+
   it("follows a PR thread's branch as it is now: taken away by the sync once the PR's merge is known, its earlier events go too", () => {
     prFrom(70, 'topic', 'open');
     const kept = onBranch('topic', 'On the branch', at(1));

@@ -7,9 +7,10 @@ import type { StreamMessage } from '../shared/api';
 import { DESKTOP_ENV, type ServerToMain } from '../shared/desktop';
 import { CommentBus } from './comments/bus';
 import { writeConfigFile } from './config-file';
-import { principalForToken } from './db/agents';
+import { agentSourceIds, builtInAgent, principalForToken } from './db/agents';
 import { openDb } from './db/db';
-import { listSources, tryClaimViewer } from './db/sources';
+import { getMeta } from './db/meta';
+import { ensureSource, listSources, tryClaimViewer } from './db/sources';
 import { mainMessageHandler, type ParentPort, runDesktopChild } from './desktop-child';
 import { GitHubDiffSources } from './github/diff-source';
 import { SourceRegistry, type SourceRuntime } from './sources/registry';
@@ -228,6 +229,37 @@ describe('main → server messages for agents', () => {
       { type: 'request-failed', id: 3, message: expect.stringContaining('24 to 256') },
       expect.objectContaining({ type: 'agent-result', id: 4, token: 'a-second-token-of-my-own-000' }),
     ]);
+  });
+
+  it('limits agents to sources, the built-in one too (made if need be), or lets them reach every one, and tells the windows', async () => {
+    const { db, handle, posted, heard } = setup();
+    const gitlab = ensureSource(db, { kind: 'gitlab', host: 'gitlab.example.com', baseUrl: 'https://gitlab.example.com' }).id;
+    await handle({ type: 'add-agent', id: 1, name: 'Work', sources: ['gitlab.example.com'] });
+    expect(posted[0]).toMatchObject({ type: 'agent-result', id: 1, agent: { id: 2, sources: ['gitlab.example.com'] }, token: expect.stringMatching(/^ghd_/) });
+    expect(agentSourceIds(db, 2)).toEqual([gitlab]);
+    await handle({ type: 'set-agent-sources', id: 2, agent: 2, sources: ['github.com', 'gitlab.example.com'] });
+    expect(posted[1]).toEqual({ type: 'agent-result', id: 2, agent: expect.objectContaining({ id: 2, sources: ['github.com', 'gitlab.example.com'] }), token: null });
+    await handle({ type: 'set-agent-sources', id: 3, agent: 2, sources: null });
+    expect(agentSourceIds(db, 2)).toBeNull();
+    // The built-in agent, before any request made it.
+    expect(getMeta(db, 'builtInAgentId')).toBeNull();
+    await handle({ type: 'set-agent-sources', id: 4, agent: 'built-in', sources: ['github.com'] });
+    expect(posted[3]).toMatchObject({ type: 'agent-result', id: 4, agent: { name: 'Agent', builtIn: true, sources: ['github.com'] }, token: null });
+    expect(agentSourceIds(db, builtInAgent(db).id)).toEqual([1]);
+    expect(heard).toEqual([{ type: 'agents' }, { type: 'agents' }, { type: 'agents' }, { type: 'agents' }]);
+    // Refused: an unknown host (naming the sources), no source, no such agent; nothing changes then.
+    await handle({ type: 'set-agent-sources', id: 5, agent: 2, sources: ['gitlab.nope'] });
+    await handle({ type: 'set-agent-sources', id: 6, agent: 9, sources: null });
+    await handle({ type: 'set-agent-sources', id: 7, agent: 1, sources: ['github.com'] });
+    await handle({ type: 'add-agent', id: 8, name: 'Codex', sources: [] });
+    expect(posted.slice(4)).toEqual([
+      { type: 'request-failed', id: 5, message: "gitlab.nope isn't a source here (the sources: github.com, gitlab.example.com)" },
+      { type: 'request-failed', id: 6, message: 'There is no agent with id 9.' },
+      { type: 'request-failed', id: 7, message: 'There is no agent with id 1.' },
+      { type: 'request-failed', id: 8, message: expect.stringContaining('at least one source') },
+    ]);
+    expect(agentSourceIds(db, 2)).toBeNull();
+    expect(heard).toHaveLength(4);
   });
 
   it("answers request-failed with the reason, and changes nothing", async () => {

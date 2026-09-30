@@ -716,11 +716,63 @@ describe('migration to branches (v9)', () => {
   });
 });
 
+describe('migration to agent sources (v10)', () => {
+  const AGENT_SOURCES = versionOf('agent-sources');
+
+  /** A v9 database: the dashboard user, an agent with a token, and a GitLab source beside github.com. */
+  function v9(): Db {
+    const sqlite = new DatabaseSync(':memory:');
+    sqlite.exec('PRAGMA foreign_keys = ON');
+    const db = new Db(sqlite);
+    migrate(db, true, { upTo: AGENT_SOURCES - 1 });
+    db.run(`INSERT INTO principals (id, kind, name, created_at) VALUES (2, 'agent', 'Claude', 'x')`);
+    db.run(`INSERT INTO agent_tokens (principal_id, token_hash, prefix, created_at) VALUES (2, 'h', 'ghd_abcd', 'x')`);
+    db.run(`INSERT INTO sources (id, kind, host, base_url, name, created_at) VALUES (2, 'gitlab', 'gitlab.example.com', 'https://gitlab.example.com', 'GitLab', 'x')`);
+    return db;
+  }
+
+  it('leaves every principal reaching every source, and lists no source of any agent', () => {
+    const db = v9();
+    migrate(db, true, { upTo: AGENT_SOURCES });
+    expect(version(db)).toBe(AGENT_SOURCES);
+    expect(db.all('SELECT id, all_sources FROM principals ORDER BY id')).toEqual([{ id: 1, all_sources: 1 }, { id: 2, all_sources: 1 }]);
+    expect(db.all('SELECT * FROM agent_sources')).toEqual([]);
+    // New principals too, unless told otherwise; the flag is 0 or 1.
+    db.run(`INSERT INTO principals (kind, name, created_at) VALUES ('agent', 'Codex', 'x')`);
+    expect(db.get('SELECT all_sources FROM principals WHERE id = 3')).toEqual({ all_sources: 1 });
+    expect(() => db.run('UPDATE principals SET all_sources = 2 WHERE id = 2')).toThrow(/CHECK constraint/);
+    expect(db.all('PRAGMA foreign_key_check')).toEqual([]);
+  });
+
+  it('keeps one row per agent and source, of agents and sources that exist, gone with the source', () => {
+    const db = v9();
+    migrate(db, true);
+    db.run('UPDATE principals SET all_sources = 0 WHERE id = 2');
+    const add = (principal: number, source: number) => db.run('INSERT INTO agent_sources (principal_id, source_id) VALUES (?, ?)', [principal, source]);
+    add(2, 1);
+    add(2, 2);
+    expect(() => add(2, 2)).toThrow(/UNIQUE|PRIMARY KEY/);
+    expect(() => add(2, 9)).toThrow(/FOREIGN KEY/);
+    expect(() => add(9, 1)).toThrow(/FOREIGN KEY/);
+    db.run('DELETE FROM sources WHERE id = 2');
+    // The agent keeps its limit, with github.com alone: never every source.
+    expect(db.all('SELECT principal_id, source_id FROM agent_sources')).toEqual([{ principal_id: 2, source_id: 1 }]);
+    expect(db.get('SELECT all_sources FROM principals WHERE id = 2')).toEqual({ all_sources: 0 });
+  });
+
+  it('is additive: a GH_DASH_SYNC=off instance may run it', () => {
+    const db = v9();
+    migrate(db, false, { upTo: AGENT_SOURCES });
+    expect(version(db)).toBe(AGENT_SOURCES);
+  });
+});
+
 describe('migration names', () => {
   it('number migrations by name, and stop where asked', () => {
     // The final order: T2's repos rebuild, then local comments (diff-comments), then sources (the GitLab wave), then
-    // agents and the comment event log (the MCP wave), then branch reviews.
-    expect(['repos-v5', 'comments', 'sources', 'agents', 'branches', 'synced-branches'].map(versionOf)).toEqual([5, 6, 7, 8, 9, 10]);
+    // agents and the comment event log (the MCP wave), then branch reviews, then the sources agents may reach, then the
+    // branches the sync holds.
+    expect(['repos-v5', 'comments', 'sources', 'agents', 'branches', 'agent-sources', 'synced-branches'].map(versionOf)).toEqual([5, 6, 7, 8, 9, 10, 11]);
     expect(SCHEMA_VERSION).toBe(versionOf('synced-branches'));
     expect(() => versionOf('nope')).toThrow('No migration is called nope');
     const db = new Db(new DatabaseSync(':memory:'));

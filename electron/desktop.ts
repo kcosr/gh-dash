@@ -20,7 +20,9 @@ import type {
   SourceMethod,
   SourceTestDraft,
 } from '../shared/desktop';
-import { applyDesktopPatch, ConfigInputError, enableMcpPatch, parseAgentTokenInput, parseDesktopPatch, toDesktopConfig } from './config';
+import {
+  applyDesktopPatch, ConfigInputError, enableMcpPatch, parseAgentSourcesInput, parseAgentTokenInput, parseDesktopPatch, toDesktopConfig,
+} from './config';
 import type { ServerChild, StartResult } from './server-child';
 import {
   addEntry,
@@ -506,21 +508,23 @@ export class Desktop {
   // -------------------------------------------------------------------------
 
   /**
-   * Makes an agent (with the token the user chose, or a generated one), then, when the Local API doesn't serve MCP,
-   * turns that on (enableMcpPatch; the server restarts) so the agent can connect: `enabledMcp` says it did.
+   * Makes an agent (with the token the user chose, or a generated one; reaching the sources named, or every one), then,
+   * when the Local API doesn't serve MCP, turns that on (enableMcpPatch; the server restarts) so the agent can connect:
+   * `enabledMcp` says it did.
    */
-  addAgent(input: unknown, tokenInput?: unknown): Promise<DesktopAgentToken> {
+  addAgent(input: unknown, tokenInput?: unknown, sourcesInput?: unknown): Promise<DesktopAgentToken> {
     if (typeof input !== 'string' || !input.trim()) throw new ConfigInputError('Give the agent a name.');
     if (input.length > 200) throw new ConfigInputError("That name is too long for an agent's.");
     const token = parseAgentTokenInput(tokenInput);
+    const sources = parseAgentSourcesInput(sourcesInput);
     return this.exclusive(async () => {
       // What turning MCP on would write, checked before the agent is made: a config.json that can't take it (unreadable,
       // or refused) stops here, with nothing made.
       const loaded = this.loadForChange();
       const patch = enableMcpPatch(toDesktopConfig(loaded.data, this.d.dataDir));
       if (Object.keys(patch).length) applyDesktopPatch(loaded.data, patch, this.d.dataDir);
-      const made = await this.agentRequest(() => this.d.child.addAgent(input, token));
-      this.d.log(`[agents] added ${made.agent.name} (id ${made.agent.id})`);
+      const made = await this.agentRequest(() => this.d.child.addAgent(input, token, sources));
+      this.d.log(`[agents] added ${made.agent.name} (id ${made.agent.id})${made.agent.sources ? `, reaching ${reachLog(made.agent)}` : ''}`);
       if (!Object.keys(patch).length) return made;
       this.d.log('[agents] MCP was off: turning it on for the new agent');
       // The agent is made: its token goes back whatever happens to the config (the restart failing is reported there).
@@ -559,6 +563,20 @@ export class Desktop {
     return this.exclusive(async () => {
       const agent = await this.agentRequest(() => this.d.child.revokeAgent(id));
       this.d.log(`[agents] revoked ${agent.name} (id ${id})`);
+      return agent;
+    });
+  }
+
+  /**
+   * Which sources an agent reaches through MCP (Settings → Agents): these hosts, or every source (null). `input`: its id,
+   * or 'built-in' for the built-in agent, which the child makes if no request has needed it yet.
+   */
+  setAgentSources(input: unknown, sourcesInput: unknown): Promise<Agent> {
+    const id = input === 'built-in' ? input : agentId(input);
+    const sources = parseAgentSourcesInput(sourcesInput);
+    return this.exclusive(async () => {
+      const agent = await this.agentRequest(() => this.d.child.setAgentSources(id, sources));
+      this.d.log(`[agents] ${agent.name} (id ${agent.id}) now reaches ${reachLog(agent)}`);
       return agent;
     });
   }
@@ -661,6 +679,9 @@ export class Desktop {
 }
 
 const execFileAsync = promisify(execFile);
+
+/** What an agent reaches, for the log: every source, or its hosts. */
+const reachLog = (agent: Agent) => (agent.sources === null ? 'every source' : `${agent.sources.join(', ') || 'no source'} only`);
 
 /** An agent's id from the renderer: a positive integer. */
 function agentId(input: unknown): number {

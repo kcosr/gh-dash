@@ -163,7 +163,7 @@ describe('ServerChild', () => {
   it("sends the agents' requests and hands back the agent, with its token when there is one", async () => {
     await startRunning();
     const proc = procs[0]!;
-    const agent = { id: 2, name: 'Claude', tokenPrefix: 'ghd_abcd', createdAt: 'x', lastUsedAt: null, revokedAt: null, builtIn: false };
+    const agent = { id: 2, name: 'Claude', tokenPrefix: 'ghd_abcd', createdAt: 'x', lastUsedAt: null, revokedAt: null, builtIn: false, sources: null };
     const added = child.addAgent('Claude');
     const regenerated = child.regenerateAgentToken(2);
     const revoked = child.revokeAgent(2);
@@ -202,6 +202,29 @@ describe('ServerChild', () => {
       { type: 'regenerate-agent-token', agent: 2, token: 'another-token-of-mine-98765' },
       { type: 'add-agent', name: 'Codex' },
     ]);
+  });
+
+  it('sends the sources an agent may reach, for a new agent (none: every source) and one already there', async () => {
+    await startRunning();
+    const proc = procs[0]!;
+    const agent = { id: 2, name: 'Claude', tokenPrefix: 'ghd_abcd', createdAt: 'x', lastUsedAt: null, revokedAt: null, builtIn: false, sources: ['github.com'] };
+    void child.addAgent('Claude', null, ['github.com']);
+    void child.addAgent('Codex', null, null);
+    const limited = child.setAgentSources(2, ['github.com']);
+    const builtIn = child.setAgentSources('built-in', null);
+    await flush();
+    const sent = proc.sent.map((m) => { const { id: _id, ...rest } = m as { id: number }; return rest; });
+    expect(sent).toEqual([
+      { type: 'add-agent', name: 'Claude', sources: ['github.com'] },
+      { type: 'add-agent', name: 'Codex' },
+      { type: 'set-agent-sources', agent: 2, sources: ['github.com'] },
+      { type: 'set-agent-sources', agent: 'built-in', sources: null },
+    ]);
+    const [, , s, b] = proc.sent.map((m) => (m as { id: number }).id);
+    proc.reply({ type: 'agent-result', id: s!, agent, token: null });
+    proc.reply({ type: 'request-failed', id: b!, message: 'There is no agent with id 5.' });
+    expect(await limited).toEqual(agent);
+    await expect(builtIn).rejects.toThrow('There is no agent with id 5.');
   });
 
   it('keeps the MCP URL the child reports as ready, apart from the REST API URL', async () => {

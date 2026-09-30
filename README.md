@@ -181,7 +181,8 @@ Coding agents can join your reviews through MCP:
 - they answer the questions you leave in a diff and fix what you point out;
 - they review code themselves and leave comments for you to pick up.
 
-Each agent has its own token, and what it writes is shown as its own.
+Each agent has its own token, and what it writes is shown as its own. An agent reaches every
+source, or only those you choose, such as your work GitLab or your personal GitHub.
 
 1. **Add an agent.** In the desktop app, go to **Settings → Agents → Add agent**. On a server, run
    `node dist/server/index.mjs agents add Claude`.

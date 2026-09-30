@@ -466,6 +466,12 @@ const schemas: Record<string, Schema> = {
     lastUsedAt: { ...nullable(dateTime), description: 'Last MCP request with the token (updated at most once a minute)' },
     revokedAt: nullable(dateTime),
     builtIn: { ...bool, description: 'The built-in agent "Agent" (desktop app, MCP without tokens): no token of its own' },
+    sources: {
+      ...nullable(arr(str())),
+      description:
+        'The sources it may reach through MCP, by host; null for every source, those added later included. A source deleted since is left out, and ' +
+        "never widens it (none left: it reaches nothing). Out of reach, a repository reads to the agent as untracked and a thread as missing. The REST API isn't limited",
+    },
   }),
 };
 
@@ -869,8 +875,9 @@ export const ENDPOINTS: EndpointDoc[] = [
   {
     method: 'get', path: '/api/v1/agents', tag: 'Comments', summary: 'The agents that may comment through MCP (never their tokens)',
     description:
-      'Oldest first, revoked ones included. Agents are made, given a new token and revoked in the desktop app (Settings → Agents) or with the ' +
-      "headless server's `agents` command: never over HTTP. An agent connects to POST /mcp with `Authorization: Bearer <its token>`.",
+      'Oldest first, revoked ones included. Agents are made, given a new token, limited to some sources and revoked in the desktop app ' +
+      "(Settings → Agents) or with the headless server's `agents` command: never over HTTP. An agent connects to POST /mcp with " +
+      '`Authorization: Bearer <its token>`.',
     response: { status: 200, schema: obj({ items: arr(ref('Agent')) }) },
   },
   {

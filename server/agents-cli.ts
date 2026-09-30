@@ -1,10 +1,11 @@
-// `gh-dash agents …` for the headless server (node dist/server/index.mjs agents …): make, list, regenerate and revoke
-// the agents that comment through MCP. Tokens are made here or in the desktop app only, never over HTTP. It opens the
-// database the server uses (GH_DASH_DB, config.json, the env file), so it works whether or not the server is running.
+// `gh-dash agents …` for the headless server (node dist/server/index.mjs agents …): make, list, regenerate, limit to
+// some sources and revoke the agents that comment through MCP. Tokens and sources are set here or in the desktop app
+// only, never over HTTP. It opens the database the server uses (GH_DASH_DB, config.json, the env file), so it works
+// whether or not the server is running.
 
 import type { Agent } from '../shared/api';
 import { loadServerConfig } from './config';
-import { createAgent, findAgent, listAgents, regenerateAgentToken, revokeAgent } from './db/agents';
+import { createAgent, findAgent, listAgents, regenerateAgentToken, revokeAgent, setAgentSources } from './db/agents';
 import { type Db, openDb } from './db/db';
 import { HttpError } from './lib/errors';
 import { localApiUrl } from './start';
@@ -20,10 +21,17 @@ export interface CliIo {
 
 const USAGE = `Usage: gh-dash agents <command>
 
-  add <name> [--token-stdin]            Make an agent and print its token (shown once)
-  list                                  List the agents (never their tokens)
+  add <name> [--source <host>]... [--token-stdin]
+                                        Make an agent and print its token (shown once)
+  list                                  List the agents (never their tokens) and the sources they reach
   regenerate <id|name> [--token-stdin]  Give an agent a new token (the old one stops working) and print it
+  scope <id|name> --source <host>... | --all
+                                        Limit an agent to some sources, or let it reach every one again
   revoke <id|name>                      Revoke an agent's token; its comments stay
+
+--source: a source the agent may reach through MCP, by its host (github.com, gitlab.example.com: see the sources in
+Settings, or GET /api/v1/sources); repeat it for more. Without it, an agent reaches every source, those added later
+too. The REST API isn't limited: it is yours.
 
 --token-stdin: use the token on stdin's first line (24-256 printable ASCII characters, no spaces) instead of a
 generated one. Never put a token on the command line: other users can read it there (ps).
@@ -31,6 +39,32 @@ generated one. Never put a token on the command line: other users can read it th
 Agents comment through MCP at <server>/mcp with "Authorization: Bearer <token>".`;
 
 const TOKEN_STDIN = '--token-stdin';
+const SOURCE = '--source';
+const ALL = '--all';
+
+/** The hosts of `--source <host>` and `--source=<host>`, any number of them, and the arguments left. */
+function takeSources(args: string[]): { hosts: string[]; rest: string[] } {
+  const hosts: string[] = [];
+  const rest: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!;
+    if (arg === SOURCE) {
+      const host = args[++i];
+      if (host === undefined || !host.trim() || host.startsWith('-')) throw new UsageError(`${SOURCE} takes a source's host, such as github.com`);
+      hosts.push(host);
+    } else if (arg.startsWith(`${SOURCE}=`)) {
+      const host = arg.slice(SOURCE.length + 1);
+      if (!host.trim()) throw new UsageError(`${SOURCE} takes a source's host, such as github.com`);
+      hosts.push(host);
+    } else {
+      rest.push(arg);
+    }
+  }
+  return { hosts, rest };
+}
+
+/** What an agent reaches, in a sentence's words: "every source", or the hosts. */
+const reachOf = (a: Agent) => (a.sources === null ? 'every source, those added later too' : a.sources.length ? `${a.sources.join(', ')} only` : 'no source');
 
 /** The process's stdin, whole. */
 async function readStdin(): Promise<string> {
@@ -45,14 +79,15 @@ class UsageError extends Error {}
 /** Runs `agents <args>`; returns the exit code (0 done, 1 failed, 2 usage). */
 export async function runAgentsCommand(args: string[], io: CliIo = { out: console.log, err: console.error, env: process.env }): Promise<number> {
   const [command, ...given] = args;
-  const fromStdin = given.includes(TOKEN_STDIN);
-  const rest = given.filter((a) => a !== TOKEN_STDIN);
   if (command === undefined || command === 'help' || command === '--help' || command === '-h') {
     (command === undefined ? io.err : io.out)(USAGE);
     return command === undefined ? 2 : 0;
   }
   const opened: { db?: Db } = {};
   try {
+    const fromStdin = given.includes(TOKEN_STDIN);
+    const all = given.includes(ALL);
+    const { hosts, rest } = takeSources(given.filter((a) => a !== TOKEN_STDIN && a !== ALL));
     const { config } = loadServerConfig(io.env);
     const open = () => (opened.db ??= openDb(config.dbPath, { allowDestructiveMigrations: config.syncEnabled }));
     const mcpUrl = `${localApiUrl(config.host, config.port)}/mcp`;
@@ -60,6 +95,8 @@ export async function runAgentsCommand(args: string[], io: CliIo = { out: consol
       throw new UsageError(`Never put a token on the command line (other users can read it there): pipe it in with ${TOKEN_STDIN}`);
     }
     if (fromStdin && command !== 'add' && command !== 'regenerate') throw new UsageError(`${TOKEN_STDIN} goes with add or regenerate`);
+    if (hosts.length && command !== 'add' && command !== 'scope') throw new UsageError(`${SOURCE} goes with add or scope`);
+    if (all && command !== 'scope') throw new UsageError(`${ALL} goes with scope (an agent added without ${SOURCE} reaches every source)`);
     /** The token piped in (its first line), or undefined for a generated one. Checked where it is stored. */
     const chosenToken = async () => {
       if (!fromStdin) return undefined;
@@ -86,8 +123,8 @@ export async function runAgentsCommand(args: string[], io: CliIo = { out: consol
     switch (command) {
       case 'add': {
         const name = one('name');
-        const { agent, token } = createAgent(open(), name, undefined, await chosenToken());
-        io.out(`Added agent ${agent.name} (id ${agent.id}).`);
+        const { agent, token } = createAgent(open(), name, undefined, await chosenToken(), hosts.length ? hosts : null);
+        io.out(agent.sources ? `Added agent ${agent.name} (id ${agent.id}); it reaches ${reachOf(agent)}.` : `Added agent ${agent.name} (id ${agent.id}).`);
         printToken(token);
         return 0;
       }
@@ -101,8 +138,9 @@ export async function runAgentsCommand(args: string[], io: CliIo = { out: consol
         const rows = agents.map((a) => [
           String(a.id), a.name, a.tokenPrefix ? `${a.tokenPrefix}…` : '-', a.createdAt, a.lastUsedAt ?? 'never',
           a.builtIn ? 'built in (no token)' : a.revokedAt ? `revoked ${a.revokedAt}` : 'active',
+          a.sources === null ? 'all' : a.sources.join(',') || 'none',
         ]);
-        for (const line of table(['ID', 'NAME', 'TOKEN', 'CREATED', 'LAST USED', 'STATUS'], rows)) io.out(line);
+        for (const line of table(['ID', 'NAME', 'TOKEN', 'CREATED', 'LAST USED', 'STATUS', 'SOURCES'], rows)) io.out(line);
         return 0;
       }
       case 'regenerate': {
@@ -110,6 +148,13 @@ export async function runAgentsCommand(args: string[], io: CliIo = { out: consol
         const { agent, token } = regenerateAgentToken(open(), target.id, undefined, await chosenToken())!;
         io.out(`New token for ${agent.name} (id ${agent.id}); the old one no longer works.`);
         printToken(token);
+        return 0;
+      }
+      case 'scope': {
+        const target = agentBy(one('agent id or name'));
+        if (all === !!hosts.length) throw new UsageError(`agents scope takes ${SOURCE} <host> (one or more), or ${ALL}`);
+        const agent = setAgentSources(open(), target.id, all ? null : hosts)!;
+        io.out(`${agent.name} (id ${agent.id}) now reaches ${reachOf(agent)}, from its next request.`);
         return 0;
       }
       case 'revoke': {

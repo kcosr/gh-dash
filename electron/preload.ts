@@ -28,9 +28,10 @@ const bridge: DesktopBridge = {
   removeSource: (host) => call(DESKTOP_IPC.removeSource, host),
   chooseGlabPath: () => call(DESKTOP_IPC.chooseGlabPath),
   chooseTokenFile: (url) => call(DESKTOP_IPC.chooseTokenFile, url),
-  addAgent: (name, token) => call(DESKTOP_IPC.addAgent, name, token),
+  addAgent: (name, token, sources) => call(DESKTOP_IPC.addAgent, name, token, sources),
   regenerateAgentToken: (id, token) => call(DESKTOP_IPC.regenerateAgentToken, id, token),
   revokeAgent: (id) => call(DESKTOP_IPC.revokeAgent, id),
+  setAgentSources: (id, sources) => call(DESKTOP_IPC.setAgentSources, id, sources),
   enableMcp: () => call(DESKTOP_IPC.enableMcp),
 };
 

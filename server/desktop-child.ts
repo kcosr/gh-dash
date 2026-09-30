@@ -1,6 +1,6 @@
 import { DESKTOP_ENV, type MainToServer, type ServerToMain } from '../shared/desktop';
 import { loadServerConfig } from './config';
-import { createAgent, regenerateAgentToken, revokeAgent } from './db/agents';
+import { builtInAgent, createAgent, regenerateAgentToken, revokeAgent, setAgentSources } from './db/agents';
 import { deleteSource, testSourceDraft } from './services/sources';
 import { type RunningServer, startServer } from './start';
 
@@ -21,8 +21,8 @@ const FATAL_EXIT_DELAY_MS = 200;
  * - `reload-sources` re-reads config.json's sources and answers `sources-result`.
  * - `test-source` validates a draft source with a throwaway credential (`source-test-result`); `delete-source` removes
  *   an unconfigured source with its data (`source-deleted`); `sync-source` starts a source's sync (`sync-started`).
- * - `add-agent`, `regenerate-agent-token` and `revoke-agent` change the MCP agents (`agent-result`, with the new token
- *   for the first two), then tell open windows (an `agents` stream message).
+ * - `add-agent`, `regenerate-agent-token`, `revoke-agent` and `set-agent-sources` change the MCP agents (`agent-result`,
+ *   with the new token for the first two), then tell open windows (an `agents` stream message).
  * - `shutdown` closes the listeners and databases, then exits 0.
  * A request that fails is answered with `request-failed` and the reason, so main never waits for nothing.
  */
@@ -72,7 +72,7 @@ export function mainMessageHandler(
       const result = await need('sync').startOrQueue({ source: msg.source });
       post({ type: 'sync-started', id: msg.id, result });
     } else if (msg.type === 'add-agent') {
-      const { agent, token } = createAgent(agentsDb(), String(msg.name), undefined, msg.token ?? null);
+      const { agent, token } = createAgent(agentsDb(), String(msg.name), undefined, msg.token ?? null, msg.sources ?? null);
       agentChanged();
       post({ type: 'agent-result', id: msg.id, agent, token });
     } else if (msg.type === 'regenerate-agent-token') {
@@ -83,6 +83,14 @@ export function mainMessageHandler(
     } else if (msg.type === 'revoke-agent') {
       const agent = revokeAgent(agentsDb(), msg.agent);
       if (!agent) throw noAgent(msg.agent);
+      agentChanged();
+      post({ type: 'agent-result', id: msg.id, agent, token: null });
+    } else if (msg.type === 'set-agent-sources') {
+      const db = agentsDb();
+      // The built-in agent is made the first time it's needed: limiting it before it has acted is such a time.
+      const id = msg.agent === 'built-in' ? builtInAgent(db).id : msg.agent;
+      const agent = setAgentSources(db, id, msg.sources ?? null);
+      if (!agent) throw noAgent(id);
       agentChanged();
       post({ type: 'agent-result', id: msg.id, agent, token: null });
     } else if (msg.type === 'shutdown') {

@@ -522,6 +522,19 @@ ALTER TABLE pull_requests ADD COLUMN cross_repo INTEGER CHECK (cross_repo IN (0,
 CREATE INDEX pull_requests_head_ref ON pull_requests(repo_id, head_ref);
 `;
 
+// Which sources an agent may reach through MCP (Settings → Agents, `agents scope`). `all_sources` 1, the default (every
+// principal before this had it), is every source, sources added later included; 0 is only those agent_sources lists.
+// Deleting a source takes its rows along but never widens an agent: one left with none reaches nothing. Only agents are
+// ever limited (db/agents.ts): the dashboard's own user keeps 1. The REST API isn't scoped: it is the user's own.
+const AGENT_SOURCES = `
+ALTER TABLE principals ADD COLUMN all_sources INTEGER NOT NULL DEFAULT 1 CHECK (all_sources IN (0, 1));
+CREATE TABLE agent_sources (
+  principal_id INTEGER NOT NULL REFERENCES principals(id) ON DELETE CASCADE,
+  source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+  PRIMARY KEY (principal_id, source_id)
+);
+`;
+
 // Branches the sync holds, per repo: every branch (the default one too) with its head commit, its author (for `who`) and
 // date, and when the sync first saw it. sync_state notes, per repo, the pushedAt the list was last read at (GitHub's
 // moves with a push to any branch), when, and whether that listing was complete (a capped one can't tell what was
@@ -556,7 +569,8 @@ const MIGRATIONS: Migration[] = [
   { name: 'sources', version: 7, destructive: true, rebuild: true, sql: SOURCES, up: moveViewerMeta },
   { name: 'agents', version: 8, destructive: false, sql: AGENTS, up: backfillCommentEvents },
   { name: 'branches', version: 9, destructive: false, sql: BRANCHES },
-  { name: 'synced-branches', version: 10, destructive: false, sql: SYNCED_BRANCHES },
+  { name: 'agent-sources', version: 10, destructive: false, sql: AGENT_SOURCES },
+  { name: 'synced-branches', version: 11, destructive: false, sql: SYNCED_BRANCHES },
 ];
 
 /** The schema version this build creates and understands. */

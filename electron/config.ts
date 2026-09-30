@@ -171,6 +171,24 @@ export function parseTokenInput(token: unknown, remember: unknown): { token: str
   return { token: value, remember };
 }
 
+/** Most sources an agent's list names (a database has a handful). */
+const MAX_AGENT_SOURCES = 100;
+
+/**
+ * The sources an agent may reach, by host (addAgent, setAgentSources): undefined or null = every source. Hosts are
+ * checked against the database's sources in the server (server/db/agents.ts), which names the known ones; here, only
+ * that they are text, and at least one.
+ */
+export function parseAgentSourcesInput(sources: unknown): string[] | null {
+  if (sources === undefined || sources === null) return null;
+  if (!Array.isArray(sources) || sources.length > MAX_AGENT_SOURCES) throw new ConfigInputError('Sources are a list of hosts.');
+  if (!sources.length) throw new ConfigInputError('Choose at least one source, or all of them.');
+  for (const host of sources) {
+    if (typeof host !== 'string' || !host.trim() || host.length > 253 || /[\s\x00-\x1f\x7f]/.test(host.trim())) throw new ConfigInputError('A source is named by its host, such as github.com.');
+  }
+  return sources.map((h: string) => h.trim().toLowerCase());
+}
+
 /**
  * An agent token the user chose (addAgent, regenerateAgentToken): undefined = generate one. Checked here and again in
  * the server (server/db/agents.ts agentToken), which also refuses one another agent has.

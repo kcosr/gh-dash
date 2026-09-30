@@ -35,6 +35,7 @@ beforeEach(() => {
     addAgent: vi.fn(async (name: string) => ({ agent: { id: 2, name }, token: 'ghd_x' })),
     regenerateAgentToken: vi.fn(async (id: number) => ({ agent: { id, name: 'Claude' }, token: 'ghd_y' })),
     revokeAgent: vi.fn(async (id: number) => ({ id, name: 'Claude', revokedAt: 'x' })),
+    setAgentSources: vi.fn(async (id: number | 'built-in', sources: string[] | null) => ({ id: id === 'built-in' ? 5 : id, name: id === 'built-in' ? 'Agent' : 'Claude', sources })),
     enableMcp: vi.fn(async () => ({ mcpUrl: 'http://127.0.0.1:4780/mcp' })),
     tokenFileHost: vi.fn((url: unknown) => {
       if (url !== 'https://gitlab.example.com') throw new ConfigInputError('Enter the address first.');
@@ -95,7 +96,7 @@ describe('the agents over IPC', () => {
     expect(await invoke(DESKTOP_IPC.addAgent, 'Claude')).toEqual({ value: { agent: { id: 2, name: 'Claude' }, token: 'ghd_x' } });
     expect(await invoke(DESKTOP_IPC.regenerateAgentToken, 2)).toEqual({ value: { agent: { id: 2, name: 'Claude' }, token: 'ghd_y' } });
     expect(await invoke(DESKTOP_IPC.revokeAgent, 2)).toEqual({ value: { id: 2, name: 'Claude', revokedAt: 'x' } });
-    expect(desktop.addAgent).toHaveBeenCalledWith('Claude', undefined);
+    expect(desktop.addAgent).toHaveBeenCalledWith('Claude', undefined, undefined);
     expect(desktop.regenerateAgentToken).toHaveBeenCalledWith(2, undefined);
     expect(desktop.revokeAgent).toHaveBeenCalledWith(2);
     desktop.addAgent.mockRejectedValueOnce(new ConfigInputError('There is already an agent called Claude (id 2); regenerate its token instead'));
@@ -109,9 +110,20 @@ describe('the agents over IPC', () => {
   it('passes a token the user chose along, and turns MCP on', async () => {
     await invoke(DESKTOP_IPC.addAgent, 'Claude', 'my-own-agent-token-0123456789');
     await invoke(DESKTOP_IPC.regenerateAgentToken, 2, 'another-token-of-mine-98765');
-    expect(desktop.addAgent).toHaveBeenLastCalledWith('Claude', 'my-own-agent-token-0123456789');
+    expect(desktop.addAgent).toHaveBeenLastCalledWith('Claude', 'my-own-agent-token-0123456789', undefined);
     expect(desktop.regenerateAgentToken).toHaveBeenLastCalledWith(2, 'another-token-of-mine-98765');
     expect(await invoke(DESKTOP_IPC.enableMcp)).toEqual({ value: { mcpUrl: 'http://127.0.0.1:4780/mcp' } });
     expect(logs).toEqual([]);
+  });
+
+  it('passes the sources an agent may reach along, for a new agent and one already there', async () => {
+    await invoke(DESKTOP_IPC.addAgent, 'Work', undefined, ['gitlab.example.com']);
+    expect(desktop.addAgent).toHaveBeenLastCalledWith('Work', undefined, ['gitlab.example.com']);
+    expect(await invoke(DESKTOP_IPC.setAgentSources, 'built-in', ['github.com'])).toEqual({ value: { id: 5, name: 'Agent', sources: ['github.com'] } });
+    expect(desktop.setAgentSources).toHaveBeenLastCalledWith('built-in', ['github.com']);
+    const fn = electron.handlers.get(DESKTOP_IPC.setAgentSources)!;
+    expect(await fn({ sender: webContents, senderFrame: { parent: null, url: 'https://evil.example/' } }, 2, null)).toEqual({ error: 'Not allowed.' });
+    expect(desktop.setAgentSources).toHaveBeenCalledTimes(1);
+    expect(logs).toEqual(['[ipc] refused gh-dash:set-agent-sources from https://evil.example/']);
   });
 });

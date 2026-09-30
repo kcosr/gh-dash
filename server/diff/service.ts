@@ -412,7 +412,7 @@ export class DiffService {
   async branchDiff(repoName: string, branch: string, refresh = false): Promise<Payload> {
     if (!isBranchName(branch)) throw new HttpError(400, 'Invalid branch name');
     const { sourceId, repo, base, url } = this.branchRepo(repoName);
-    if (branch === base) throw new HttpError(400, `${branch} is the default branch: there is nothing to compare it with`);
+    if (branch === base) throw new HttpError(400, `${branch} is the default branch: branches are compared against it`);
     const key = `branch/${repo.key}/${branch}`;
     const label = `${repo.key}~${branch}`;
     const entry = this.safely('lookup', () => this.cache.branchEntry(key), null);

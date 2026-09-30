@@ -219,7 +219,7 @@ describe('add_comment on a branch', () => {
   it('says to push a branch the host has not got, refuses the default branch and bad names, and needs the diff for a head', async () => {
     const h = branchSetup();
     expect(await h.fails('add_comment', { repo: 'alice/app', branch: 'nope', body: 'x' })).toBe("Branch nope not found on GitHub: if it's local, push it first; else check the name");
-    expect(await h.fails('add_comment', { repo: 'alice/app', branch: 'main', body: 'x' })).toBe('main is the default branch: there is nothing to compare it with');
+    expect(await h.fails('add_comment', { repo: 'alice/app', branch: 'main', body: 'x' })).toBe('main is the default branch: branches are compared against it');
     expect(await h.fails('add_comment', { repo: 'alice/app', branch: 'a..b', body: 'x' })).toContain('expected a git branch name');
     h.db.run("UPDATE repos SET default_branch = NULL WHERE key = 'alice/app'");
     expect(await h.fails('add_comment', { repo: 'alice/app', branch: BRANCH, body: 'x' })).toBe("The default branch isn't known yet: sync the repository");

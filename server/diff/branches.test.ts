@@ -189,7 +189,7 @@ describe('branch diffs', () => {
     for (const bad of ['', 'a..b', 'a b', '-x', 'x/', 'x.lock', 'a~b', 'a^b', '@', 'a\nb', 'x'.repeat(256)]) {
       expect(await failure(svc.branchDiff('app', bad)), JSON.stringify(bad)).toMatchObject({ status: 400, message: 'Invalid branch name' });
     }
-    expect(await failure(svc.branchDiff('app', 'main'))).toMatchObject({ status: 400, message: 'main is the default branch: there is nothing to compare it with' });
+    expect(await failure(svc.branchDiff('app', 'main'))).toMatchObject({ status: 400, message: 'main is the default branch: branches are compared against it' });
     expect(await spent(() => status(svc.branchDiff('nope', 'feature/x')))).toEqual({ out: 404, requests: [] });
 
     // The sync hasn't found the default branch (yet): there is nothing to compare with.

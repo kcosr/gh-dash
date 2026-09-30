@@ -85,7 +85,7 @@ describe('GET /branches/:repo/:branch/diff', () => {
     expect(noToken.status).toBe(503);
     expect(await noToken.json()).toEqual({ error: 'No GitHub token: connect a GitHub account in Settings' });
     const main = await app.request('/api/v1/branches/app/main/diff');
-    expect(await main.json()).toEqual({ error: 'main is the default branch: there is nothing to compare it with' });
+    expect(await main.json()).toEqual({ error: 'main is the default branch: branches are compared against it' });
 
     db.run("UPDATE repos SET default_branch = NULL WHERE name = 'app'");
     expect(await code('/api/v1/branches/app/feature%2Fx/diff')).toBe(409);

@@ -376,7 +376,7 @@ describe('get_branch', () => {
 
   it('refuses the default branch and bad names, and says when the repo or its default branch is not known', async () => {
     const h = setup();
-    expect(await h.fails('get_branch', { repo: 'alice/app', branch: 'main' })).toBe('main is the default branch: there is nothing to compare it with');
+    expect(await h.fails('get_branch', { repo: 'alice/app', branch: 'main' })).toBe('main is the default branch: branches are compared against it');
     expect(await h.fails('get_branch', { repo: 'alice/app', branch: 'a:b' })).toContain('expected a git branch name');
     expect(await h.fails('get_branch', { repo: 'alice/app' })).toContain('branch');
     expect(await h.fails('get_branch', { repo: 'alice/nope', branch: 'x' })).toContain("alice/nope isn't tracked");

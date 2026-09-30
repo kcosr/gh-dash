@@ -218,6 +218,32 @@ describe('agents', () => {
     expect(restart).toHaveBeenCalledTimes(2);
   });
 
+  it('turns MCP on for other devices with tokens required, for "Turn on MCP" and a new agent alike', async () => {
+    restart.mockImplementation(async () => ({ ok: true, apiUrl: null }));
+    const shared = { listen: true, restApi: true, host: '0.0.0.0', password: 'longenough', mcp: false, mcpRequireTokens: false };
+    writeFileSync(configPath, JSON.stringify(shared));
+    await desktop.enableMcp();
+    expect(readConfig()).toEqual({ ...shared, mcp: true, mcpRequireTokens: true });
+    writeFileSync(configPath, JSON.stringify(shared));
+    child.mcpUrl = 'http://127.0.0.1:4780/mcp';
+    expect(await desktop.addAgent('Claude')).toMatchObject({ token: 'ghd_secret1', enabledMcp: true });
+    expect(readConfig()).toEqual({ ...shared, mcp: true, mcpRequireTokens: true });
+  });
+
+  it("makes no agent when MCP can't be turned on with it, and hands the token back when turning it on fails after", async () => {
+    // A hand-edited config.json the app would refuse (other devices without a password): nothing is made.
+    writeFileSync(configPath, JSON.stringify({ listen: true, host: '0.0.0.0', mcp: false }));
+    await expect(desktop.addAgent('Claude')).rejects.toThrow(/password/);
+    writeFileSync(configPath, '{ broken');
+    await expect(desktop.addAgent('Claude')).rejects.toThrow(/Fix or remove/);
+    expect(child.addAgent).not.toHaveBeenCalled();
+    // The restart fails: the previous config.json comes back, the agent is made, and its token is not withheld.
+    writeFileSync(configPath, JSON.stringify({ listen: false }));
+    restart.mockResolvedValueOnce({ ok: false, message: 'port 4780 is already in use' }).mockResolvedValue({ ok: true, apiUrl: null });
+    expect(await desktop.addAgent('Codex')).toMatchObject({ agent: { name: 'Codex' }, token: 'ghd_secret1', enabledMcp: false });
+    expect(readConfig()).toEqual({ listen: false });
+  });
+
   it('"Turn on MCP": the port for agents alone when it was off, MCP alone when it was on; nothing when it is served', async () => {
     restart.mockImplementation(async () => ({ ok: true, apiUrl: null }));
     await desktop.enableMcp();

@@ -98,6 +98,16 @@ describe('the Local API switches', () => {
     expect(enableMcpPatch(cfg({ listen: true, restApi: false }))).toEqual({});
   });
 
+  it('"Turn on MCP" on a port other devices reach: tokens back on, so the patch is one applyDesktopPatch takes', () => {
+    const file = { listen: true, restApi: true, host: '0.0.0.0', password: 'longenough', mcp: false, mcpRequireTokens: false };
+    const patch = enableMcpPatch(toDesktopConfig(file, DEFAULT_DIR));
+    expect(patch).toEqual({ mcp: true, mcpRequireTokens: true });
+    expect(applyDesktopPatch(file, patch, DEFAULT_DIR)).toMatchObject({ mcp: true, mcpRequireTokens: true });
+    // On this computer, or with the REST API off (loopback then), tokens stay as they were.
+    expect(enableMcpPatch(toDesktopConfig({ ...file, host: '127.0.0.1' }, DEFAULT_DIR))).toEqual({ mcp: true });
+    expect(enableMcpPatch(toDesktopConfig({ ...file, restApi: false }, DEFAULT_DIR))).toEqual({ mcp: true });
+  });
+
   it('parses the switches as booleans', () => {
     expect(parseDesktopPatch({ restApi: false, mcp: true, mcpRequireTokens: false })).toEqual({ restApi: false, mcp: true, mcpRequireTokens: false });
     for (const key of ['restApi', 'mcp', 'mcpRequireTokens']) expect(() => parseDesktopPatch({ [key]: 'on' }), key).toThrow(new RegExp(key));

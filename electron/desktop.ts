@@ -514,13 +514,23 @@ export class Desktop {
     if (input.length > 200) throw new ConfigInputError("That name is too long for an agent's.");
     const token = parseAgentTokenInput(tokenInput);
     return this.exclusive(async () => {
+      // What turning MCP on would write, checked before the agent is made: a config.json that can't take it (unreadable,
+      // or refused) stops here, with nothing made.
+      const loaded = this.loadForChange();
+      const patch = enableMcpPatch(toDesktopConfig(loaded.data, this.d.dataDir));
+      if (Object.keys(patch).length) applyDesktopPatch(loaded.data, patch, this.d.dataDir);
       const made = await this.agentRequest(() => this.d.child.addAgent(input, token));
       this.d.log(`[agents] added ${made.agent.name} (id ${made.agent.id})`);
-      const patch = enableMcpPatch(toDesktopConfig(this.configOrEmpty(), this.d.dataDir));
       if (!Object.keys(patch).length) return made;
       this.d.log('[agents] MCP was off: turning it on for the new agent');
-      const state = await this.applyConfig(patch);
-      return { ...made, enabledMcp: !!state.mcpUrl };
+      // The agent is made: its token goes back whatever happens to the config (the restart failing is reported there).
+      try {
+        const state = await this.applyConfig(patch);
+        return { ...made, enabledMcp: !!state.mcpUrl };
+      } catch (error) {
+        this.d.log(`[agents] could not turn MCP on: ${(error as Error).message}`);
+        return { ...made, enabledMcp: false };
+      }
     });
   }
 

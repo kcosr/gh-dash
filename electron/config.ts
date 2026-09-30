@@ -76,11 +76,14 @@ export function applyDesktopPatch(file: ConfigFile, patch: DesktopConfigPatch, d
 
 /**
  * "Turn on MCP": the Local API on and its MCP switch on. A Local API that was off comes on for agents alone (its REST
- * API stays off); one that was on keeps its REST API as it was.
+ * API stays off); one that was on keeps its REST API as it was, and requires agent tokens if other devices reach it
+ * (applyDesktopPatch refuses MCP without them there).
  */
 export function enableMcpPatch(current: DesktopConfig): DesktopConfigPatch {
   if (!current.listen) return { listen: true, restApi: false, mcp: true };
-  return current.mcp ? {} : { mcp: true };
+  if (current.mcp) return {};
+  const shared = current.restApi && current.network;
+  return shared && !current.mcpRequireTokens ? { mcp: true, mcpRequireTokens: true } : { mcp: true };
 }
 
 // ---------------------------------------------------------------------------

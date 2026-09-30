@@ -218,10 +218,13 @@ const UPSERT_PR = upsertSql(
 
 // A PR's threads made before v9, or before the sync knew its cross_repo, have no branch; once the PR is known to be from
 // this repo they join its head branch's group (shared/api.ts, "Branch groups"; schema.ts, BRANCHES). Only threads
-// without a branch: a thread's branch is never changed once set. Keyed like the threads are (repo and PR number, the
-// comment_threads_target index), so it reads this PR's threads and nothing else, on every sync of the PR. comment_events,
-// a log, keep the branch they were written with.
-export const JOIN_BRANCH_GROUP = 'UPDATE comment_threads SET branch = ? WHERE repo_id = ? AND pr_number = ? AND branch IS NULL';
+// without a branch: a thread's branch is never changed once set. Not those made after the PR was merged, which stay the
+// PR's own, as createPrThread (services/comments.ts) leaves them: the merge time is read as the thread times are
+// written, to the millisecond. Keyed like the threads are (repo and PR number, the comment_threads_target index), so it
+// reads this PR's threads and nothing else, on every sync of the PR. comment_events, a log, keep the branch they were
+// written with. Binds: branch, repo id, PR number, merged_at (twice; null for a PR that isn't merged).
+export const JOIN_BRANCH_GROUP =
+  "UPDATE comment_threads SET branch = ? WHERE repo_id = ? AND pr_number = ? AND branch IS NULL AND (? IS NULL OR created_at <= strftime('%Y-%m-%dT%H:%M:%fZ', ?))";
 
 export function upsertPr(db: Db, repoId: number, p: PrRecord): boolean {
   // One transaction, so a PR's row and its threads' branch never disagree; inside the sync's write transaction it joins that.
@@ -241,7 +244,7 @@ export function upsertPr(db: Db, repoId: number, p: PrRecord): boolean {
         [id, i, c.oid, c.headline, c.committedAt, c.url, c.author.login, c.author.name, c.author.email, c.author.avatarUrl],
       );
     });
-    if (p.crossRepo === false && p.headRef) db.run(JOIN_BRANCH_GROUP, [p.headRef, repoId, p.number]);
+    if (p.crossRepo === false && p.headRef) db.run(JOIN_BRANCH_GROUP, [p.headRef, repoId, p.number, p.mergedAt, p.mergedAt]);
     return isNew;
   });
 }

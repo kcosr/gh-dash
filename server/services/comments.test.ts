@@ -182,6 +182,10 @@ describe('comment services', () => {
     expect(branchOf(1)).toBeNull();
     expect(branchOf(null)).toBeNull();
     expect(branchOf(0, '')).toBeNull();
+    // Merged: a comment on it now is about what was merged, not the branch's next line of work.
+    db.run("UPDATE pull_requests SET merged_at = '2026-09-20T00:00:00Z' WHERE number = 2");
+    expect(branchOf(0)).toBeNull();
+    db.run('UPDATE pull_requests SET merged_at = NULL WHERE number = 2');
     // So the PR's list and the branch's share the first.
     db.run("UPDATE pull_requests SET cross_repo = 0, head_ref = 'feature' WHERE number = 2");
     const onBranch = createBranchThread(deps, me, 'app', 'feature', { commitOid: HEAD, body: 'On the branch' });

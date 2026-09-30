@@ -456,6 +456,17 @@ describe('upsertPr: cross_repo and branch groups', () => {
     expect(branches(db)).toEqual([null, null]);
   });
 
+  it('leaves the threads made on a merged PR after its merge to the PR', () => {
+    const { db, app } = repos();
+    const made = (time: string) =>
+      db.run(`INSERT INTO comment_threads (repo_id, pr_number, commit_oid, created_at, updated_at) VALUES (?, 1, ?, ?, ?)`, [app, sha('a'), time, time]);
+    made('2026-09-21T11:59:59.999Z');
+    made('2026-09-21T12:00:00.000Z');
+    made('2026-09-21T12:00:00.001Z');
+    upsertPr(db, app, pr(1, { state: 'merged', mergedAt: '2026-09-21T12:00:00Z', headRef: 'feature/x', crossRepo: false }));
+    expect(branches(db)).toEqual(['feature/x', 'feature/x', null]);
+  });
+
   it('never replaces a branch a thread has', () => {
     const { db, app } = repos();
     thread(db, app, 1, 'earlier-name');
@@ -478,7 +489,7 @@ describe('upsertPr: cross_repo and branch groups', () => {
 
   it('searches the threads by the PR they are on, not the whole table', () => {
     const { db } = repos();
-    const plan = db.all<{ detail: string }>(`EXPLAIN QUERY PLAN ${JOIN_BRANCH_GROUP}`, ['b', 1, 1]).map((r) => r.detail);
+    const plan = db.all<{ detail: string }>(`EXPLAIN QUERY PLAN ${JOIN_BRANCH_GROUP}`, ['b', 1, 1, null, null]).map((r) => r.detail);
     expect(plan).toEqual([expect.stringMatching(/^SEARCH comment_threads USING INDEX comment_threads_target \(repo_id=\? AND pr_number=\?\)$/)]);
   });
 });

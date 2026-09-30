@@ -816,8 +816,9 @@ export interface DiffCacheStats {
 //    last merge before the PR's end (merged_at, else closed_at; an open PR has none), up to its first merge at or
 //    after it (the PR's own merge time, for a merged PR). A closed PR, and a new PR later opened from the same branch,
 //    so see each other's threads until a merge separates them.
-// A PR from a fork shares nothing: its head branch is another repo's. A branch deleted and made again without a merge in
-// between can't be told apart from the old one, and keeps its threads.
+// A comment made on a PR after its merge stays that PR's own: it is about what was merged, not the branch's next line
+// of work. A PR from a fork shares nothing: its head branch is another repo's. A branch deleted and made again without a
+// merge in between can't be told apart from the old one, and keeps its threads.
 // ---------------------------------------------------------------------------
 
 /** Who wrote a comment: the dashboard's own user ('self', id 1, "You") or an agent acting through the API. */

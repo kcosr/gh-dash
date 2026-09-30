@@ -230,19 +230,20 @@ function announce(
 /**
  * Opens a thread on a PR the dashboard knows (404 for one the sync never saw, or has dropped). A PR from a branch of the
  * same repo gives the thread that branch, so the branch's review and its other PRs share it (see "Branch groups"); one
- * from a fork, or one the sync hasn't said of yet, keeps it to itself.
+ * from a fork, or one the sync hasn't said of yet, keeps it to itself. So does a merged PR: a comment made on it after
+ * the merge is about what was merged, not the branch's next line of work (which its created_at would put it in).
  */
 export function createPrThread(deps: CommentDeps, actor: Principal, repo: string, number: number, input: NewPrThread): CommentThread {
   const n = prNumber(number);
   const f = parseWith(prThreadBody, input);
   const target = resolveTarget(deps, { repo, kind: 'pr', number: n });
   // Listing works for a PR the sync has since dropped; a new thread needs one the dashboard knows.
-  const pr = deps.db.get<{ head_ref: string; cross_repo: number | null }>(
-    'SELECT head_ref, cross_repo FROM pull_requests WHERE repo_id = ? AND number = ?',
+  const pr = deps.db.get<{ head_ref: string; cross_repo: number | null; merged_at: string | null }>(
+    'SELECT head_ref, cross_repo, merged_at FROM pull_requests WHERE repo_id = ? AND number = ?',
     [target.repoId, n],
   );
   if (!pr) throw new HttpError(404, 'Pull request not found');
-  const prBranch = pr.cross_repo === 0 && pr.head_ref !== '' ? pr.head_ref : null;
+  const prBranch = pr.cross_repo === 0 && pr.head_ref !== '' && pr.merged_at === null ? pr.head_ref : null;
   const thread = store.createThread(deps.db, target, { commitOid: f.commitOid, baseOid: f.baseOid ?? null, anchor: toAnchor(f), body: f.body, prBranch }, actor);
   announce(deps, thread, 'thread_opened', actor);
   return thread;

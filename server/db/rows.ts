@@ -1,4 +1,5 @@
-import type { Actor, Commit, Issue, Label, PullRequest, PullRequestDetail, Release, Star } from '../../shared/api';
+import type { Actor, Branch, Commit, Issue, Label, ProviderKind, PullRequest, PullRequestDetail, Release, Star } from '../../shared/api';
+import { PROVIDERS } from '../../shared/provider';
 import type { ClosingIssueRecord } from './records';
 import type { IsMe } from './filters';
 
@@ -111,6 +112,26 @@ export interface StarRow {
   starred_at: string;
 }
 
+export interface BranchRow {
+  id: number;
+  repo: string;
+  /** The source of the repo, whose account decides who is me; `kind`, its code host, whose compare page `url` is. */
+  source_id: number;
+  kind: ProviderKind;
+  repo_url: string;
+  default_branch: string;
+  name: string;
+  head_oid: string;
+  committed_at: string | null;
+  author_login: string | null;
+  author_name: string | null;
+  author_email: string | null;
+  author_avatar: string | null;
+  /** Local comment threads of the branch's current group, and the ones still open (db/branches.ts counts them). */
+  threads: number;
+  unresolved_threads: number;
+}
+
 export interface PrCommitRow {
   oid: string;
   headline: string;
@@ -218,6 +239,24 @@ export function toRelease(r: ReleaseRow, isMe: IsMe): Release {
     publishedAt: r.published_at,
     isPrerelease: !!r.is_prerelease,
     url: r.url,
+  };
+}
+
+/**
+ * A branch as GET /branches lists it. Its id is the web's diff id ("<repo>~<name>": git forbids '~' in a branch's name).
+ * The head commit's author is null when the code host said nothing of it; a GitLab one has a name and an address, no login.
+ */
+export function toBranch(r: BranchRow, isMe: IsMe): Branch {
+  const unknown = r.author_login === null && r.author_name === null && r.author_email === null;
+  return {
+    id: `${r.repo}~${r.name}`,
+    repo: r.repo,
+    name: r.name,
+    headOid: r.head_oid,
+    committedAt: r.committed_at,
+    author: unknown ? null : toActor(isMe, r.source_id, r.author_login, r.author_name, r.author_avatar, r.author_email),
+    url: PROVIDERS[r.kind].link.compare(r.repo_url.replace(/\/+$/, ''), r.default_branch, r.name),
+    comments: { threads: r.threads, unresolved: r.unresolved_threads },
   };
 }
 

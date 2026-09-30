@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { openDb } from '../db/db';
 import { deleteMeta, getMeta, setMeta } from '../db/meta';
 import { fakeGitHub } from '../test/github';
-import { fakeGraphQL, prNode, repoNode } from '../test/graphql';
+import { branchNode, fakeGraphQL, prNode, repoNode } from '../test/graphql';
 import { addManualRepo, GITHUB, setViewer } from '../test/seed';
 import { ensureSource, GITHUB_SOURCE_ID, getSource } from '../db/sources';
 import { addManual } from '../db/write';
@@ -195,6 +195,7 @@ describe('syncing repos added by hand', () => {
   it('starts the first sync of a repo just added, naming it in the status', async () => {
     const t = setup();
     t.add('bob/tool');
+    t.gql.state.branches['bob/tool'] = [branchNode('main', 'a', '2026-09-20T09:00:00Z', 'bob'), branchNode('topic', 'b', '2026-09-26T09:00:00Z', 'bob')];
     t.hold();
     expect(await t.m.startOrQueue({ repo: 'BOB/Tool' })).toBe('started');
     expect(t.m.status()).toMatchObject({ running: true, trigger: 'manual', repo: 'bob/tool', progress: { total: 1 } });
@@ -202,6 +203,8 @@ describe('syncing repos added by hand', () => {
     await t.idle();
     expect(t.synced('bob/tool')).toBe(true);
     expect(t.gql.state.ops).toEqual(['RepoNode:R_bob/tool', 'RepoDetail:bob/tool']);
+    // Its branches with the rest, in that one round.
+    expect(t.db.all(`SELECT b.name FROM branches b JOIN repos r ON r.id = b.repo_id WHERE r.name_with_owner = 'bob/tool' ORDER BY b.name`)).toEqual([{ name: 'main' }, { name: 'topic' }]);
     expect(t.m.status().repo).toBeNull();
     // A single-repo run doesn't count as the full sync the schedule waits for.
     expect(getMeta(t.db, 'lastFullSyncAt')).toBeNull();

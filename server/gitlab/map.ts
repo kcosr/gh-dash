@@ -1,5 +1,5 @@
 import type { DiffFile, Label, Visibility } from '../../shared/api';
-import type { ActorRecord, CommitRecord, IssueRecord, PrCommitRecord, PrRecord, ReleaseRecord, RepoProbe, RepoRecord, StarRecord } from '../db/records';
+import type { ActorRecord, BranchRecord, CommitRecord, IssueRecord, PrCommitRecord, PrRecord, ReleaseRecord, RepoProbe, RepoRecord, StarRecord } from '../db/records';
 import { isoSec } from '../lib/time';
 import type { RepoCandidateRecord, ViewerInfo } from '../provider/types';
 import { countLines, hunks } from './patch';
@@ -13,6 +13,7 @@ import type {
   GqlUser,
   GqlViewer,
   GqlViewerAccount,
+  RestBranch,
   RestCommit,
   RestDiff,
   RestIssue,
@@ -260,6 +261,20 @@ export function mapCommit(c: RestCommit): CommitRecord {
     additions: c.stats?.additions ?? 0,
     deletions: c.stats?.deletions ?? 0,
     prNumber: null,
+  };
+}
+
+/**
+ * A branch with its head commit's date (in UTC) and author, who is a name and an email as for commits: GitLab doesn't
+ * say which account made a commit, so "me" goes by the email.
+ */
+export function mapBranch(b: RestBranch): BranchRecord {
+  const c = b.commit;
+  return {
+    name: b.name,
+    headOid: c.id,
+    committedAt: utcOrNull(c.committed_date),
+    author: { login: null, name: c.author_name || null, email: c.author_email ? c.author_email.toLowerCase() : null, avatarUrl: null },
   };
 }
 

@@ -3,7 +3,7 @@
 // known to pass a correct source before GitHub's and GitLab's run it against their fakes.
 
 import { describe, expectTypeOf, it } from 'vitest';
-import type { CommitRecord, IssueRecord, PrRecord, ReleaseRecord, RepoProbe, RepoRecord, StarRecord } from '../db/records';
+import type { BranchRecord, CommitRecord, IssueRecord, PrRecord, ReleaseRecord, RepoProbe, RepoRecord, StarRecord } from '../db/records';
 import { GitHubDiffSource } from '../github/diff-source';
 import { GitHubSyncSource } from '../github/sync-source';
 import { GitHubError } from '../github/transport';
@@ -79,6 +79,7 @@ interface Stored {
   commits: CommitRecord[];
   releases: ReleaseRecord[];
   stars: StarRecord[];
+  branches: BranchRecord[];
 }
 
 function repo(owner: string, name: string, items: Partial<Omit<Stored, 'record' | 'probe'>> = {}): Stored {
@@ -94,7 +95,7 @@ function repo(owner: string, name: string, items: Partial<Omit<Stored, 'record' 
     latestPrUpdatedAt: prs[0]?.updatedAt ?? null, latestIssueUpdatedAt: issues[0]?.updatedAt ?? null,
     releaseTags: (items.releases ?? []).slice(0, 3).map((r) => r.tag), latestStarredAt: items.stars?.[0]?.starredAt ?? null,
   };
-  return { record, probe, prs, issues, commits: [], releases: [], stars: [], ...items };
+  return { record, probe, prs, issues, commits: [], releases: [], stars: [], branches: [], ...items };
 }
 
 function pr(number: number, state: PrRecord['state'], at: string): PrRecord {
@@ -124,6 +125,7 @@ class MemorySource implements SyncSource {
   readonly points = null;
   readonly probesStars = true;
   readonly linksCommits = true;
+  readonly pushedAtCoversBranches = true;
   requests = 0;
   /** Node ids whose probe request fails, and the one whose description the token may not read. */
   readonly failing = new Set<string>();
@@ -198,6 +200,7 @@ class MemorySource implements SyncSource {
       out.releases = { ...p, oldestCreatedAt: p.items.at(-1)?.publishedAt ?? null };
     }
     if (req.stars) out.stars = { ...page(s.stars, req.stars.after), totalCount: s.stars.length };
+    if (req.branches) out.branches = page(s.branches, req.branches.after);
     return this.spend(out);
   }
 
@@ -241,6 +244,11 @@ const fixtures = () => [
       { tag: 'v1', name: 'One', body: '', author: alice, publishedAt: day(9), isPrerelease: true, url: 'https://code.example.com/r/v1' },
     ],
     stars: [{ login: 'bob', name: null, avatarUrl: null, starredAt: day(17) }, { login: 'carol', name: 'Carol', avatarUrl: null, starredAt: day(8) }],
+    branches: [
+      { name: 'main', headOid: sha('b'), committedAt: day(19), author: alice },
+      { name: 'topic', headOid: sha('2'), committedAt: day(20), author: alice },
+      { name: 'old', headOid: sha('9'), committedAt: null, author: null },
+    ],
   }),
   repo('alice', 'notes'),
   repo('bob', 'tool', { prs: [pr(5, 'closed', day(3))] }),

@@ -75,7 +75,7 @@ interface PagedSpec<R> {
 }
 
 /** `knownTotal`: skip the count query when the caller already has the total. */
-function runPaged<R>(db: Db, spec: PagedSpec<R>, page: Page, knownTotal?: number): { rows: R[]; next: CursorKey | null; total: number } {
+export function runPaged<R>(db: Db, spec: PagedSpec<R>, page: Page, knownTotal?: number): { rows: R[]; next: CursorKey | null; total: number } {
   const whereSql = spec.where.toSql();
   const baseParams = [...(spec.fromParams ?? []), ...spec.where.params];
   const total = knownTotal ?? db.get<{ n: number }>(`SELECT count(*) AS n FROM ${spec.from} WHERE ${whereSql}`, baseParams)!.n;

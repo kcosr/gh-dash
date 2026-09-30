@@ -538,6 +538,30 @@ CREATE TABLE agent_sources (
 );
 `;
 
+// Branches the sync holds, per repo: every branch (the default one too) with its head commit, its author (for `who`) and
+// date, and when the sync first saw it. sync_state notes, per repo, the pushedAt the list was last read at (GitHub's
+// moves with a push to any branch), when, and whether that listing was complete (a capped one can't tell what was
+// deleted, nor be read in place of the code host's).
+const SYNCED_BRANCHES = `
+CREATE TABLE branches (
+  id INTEGER PRIMARY KEY,
+  repo_id INTEGER NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  head_oid TEXT NOT NULL,
+  committed_at TEXT,
+  author_login TEXT,
+  author_name TEXT,
+  author_email TEXT,
+  author_avatar TEXT,
+  first_seen_at TEXT NOT NULL,
+  UNIQUE (repo_id, name)
+);
+CREATE INDEX branches_committed_at ON branches(committed_at);
+ALTER TABLE sync_state ADD COLUMN branches_pushed_at TEXT;
+ALTER TABLE sync_state ADD COLUMN branches_synced_at TEXT;
+ALTER TABLE sync_state ADD COLUMN branches_complete INTEGER;
+`;
+
 const MIGRATIONS: Migration[] = [
   { name: 'initial', version: 1, destructive: false, sql: V1 },
   { name: 'commits-repo-index', version: 2, destructive: false, sql: V2 },
@@ -549,6 +573,7 @@ const MIGRATIONS: Migration[] = [
   { name: 'agents', version: 8, destructive: false, sql: AGENTS, up: backfillCommentEvents },
   { name: 'branches', version: 9, destructive: false, sql: BRANCHES },
   { name: 'agent-sources', version: 10, destructive: false, sql: AGENT_SOURCES },
+  { name: 'synced-branches', version: 11, destructive: false, sql: SYNCED_BRANCHES },
 ];
 
 /** The schema version this build creates and understands. */

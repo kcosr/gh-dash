@@ -36,7 +36,7 @@ export function streamInvalidations(msg: StreamMessage): QueryKey[] {
 }
 
 /** What a missed stretch may have changed (after a reconnect): every list and count the stream would have refetched. */
-const MISSED = new Set(['threads', 'thread-list', 'prs', 'pr', 'repos', 'activity', 'agents']);
+const MISSED = new Set(['threads', 'thread-list', 'prs', 'pr', 'branch-list', 'repos', 'activity', 'agents']);
 export const missedByStream = (key: QueryKey) => MISSED.has(key[0] as string);
 
 /** A message from the wire, or null for anything this app doesn't know (a newer server's). */

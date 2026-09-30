@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import probesFixture from '../test/fixtures/repo-probes.json';
 import detailFixture from '../test/fixtures/repo-detail.json';
 import reposFixture from '../test/fixtures/viewer-repos.json';
-import { mapCommit, mapIssue, mapProbe, mapPullRequest, mapRelease, mapRepo, mapStar } from './map';
+import { mapBranch, mapCommit, mapIssue, mapProbe, mapPullRequest, mapRelease, mapRepo, mapStar } from './map';
 import { recheckQuery, REPO_DETAIL } from './queries';
 import type { RepoDetailData, RepoProbesData, ViewerReposData } from './types';
 
@@ -70,6 +70,21 @@ describe('GraphQL → rows', () => {
     const [open, closed] = detail.issues!.nodes.map(mapIssue);
     expect(open).toMatchObject({ state: 'open', closedBy: null, activityAt: '2026-09-26T00:00:00Z', labels: [{ name: 'enhancement', color: 'a2eeef' }] });
     expect(closed).toMatchObject({ state: 'closed', activityAt: '2026-09-22T12:00:00Z', author: { login: 'bob' }, closedBy: { login: 'alice', name: 'Alice A' } });
+  });
+
+  it("maps branches: the head commit's date and author (linked login, lower-cased email); none for a ref without a commit", () => {
+    const [fix, main, spike] = detail.branches!.nodes.map(mapBranch);
+    expect(fix).toEqual({
+      name: 'fix', headOid: 'aaaa000000000000000000000000000000000000', committedAt: '2026-09-19T14:30:00Z',
+      author: { login: 'alice', name: 'Alice A', email: 'alice@example.com', avatarUrl: 'https://avatars.example/alice' },
+    });
+    expect(main).toMatchObject({ name: 'main', headOid: '1'.repeat(40) });
+    // An author GitHub linked to no account: "me" goes by the email.
+    expect(spike!.author).toEqual({ login: null, name: 'Bob B', email: 'bob@example.com', avatarUrl: null });
+    // Not a commit (no date or author asked for): null for both. No target at all: nothing to store.
+    expect(mapBranch({ name: 'odd', target: { oid: 'e'.repeat(40) } })).toEqual({ name: 'odd', headOid: 'e'.repeat(40), committedAt: null, author: null });
+    expect([mapBranch({ name: 'none', target: null }), mapBranch(null)]).toEqual([null, null]);
+    expect(REPO_DETAIL).toContain('refs(refPrefix: "refs/heads/", first: 100, after: $branchesAfter) @include(if: $withBranches)');
   });
 
   it('drops draft releases and maps stars', () => {

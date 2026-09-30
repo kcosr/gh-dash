@@ -5,7 +5,9 @@ import type {
   Agent,
   AddRepoResponse,
   ActivityResponse,
+  BranchesResponse,
   BranchListResponse,
+  BranchQuery,
   Commit,
   CommentThread,
   Diff,
@@ -91,7 +93,7 @@ export function toQueryString(params: Params = {}): string {
   return parts.join('&');
 }
 
-export type Endpoint = 'prs' | 'activity' | 'stats' | 'releases' | 'repos' | 'commits' | 'issues' | 'stars' | 'threads' | 'settings' | 'sync/status';
+export type Endpoint = 'prs' | 'branches' | 'activity' | 'stats' | 'releases' | 'repos' | 'commits' | 'issues' | 'stars' | 'threads' | 'settings' | 'sync/status';
 
 /** "/api/v1/prs?repos=a,b&who=me…" */
 export function apiUrl(endpoint: Endpoint | string, params?: Params): string {
@@ -186,6 +188,8 @@ export const api = {
 
   prs: (q: PrQuery) => get<PrListResponse>(apiUrl('prs', { ...q })),
   pr: (repo: string, number: number) => get<PullRequestDetail>(`/api/v1/prs/${enc(repo)}/${number}`),
+  /** Pushed branches with no PR yet, across repos, as the sync holds them (the PR list's "No PR yet" state). */
+  branchList: (q: BranchQuery) => get<BranchesResponse>(apiUrl('branches', { ...q })),
   activity: (q: ActivityQuery) => get<ActivityResponse>(apiUrl('activity', { ...q })),
   commits: (q: ScopeQuery & PageQuery) => get<ListResponse<Commit>>(apiUrl('commits', { ...q })),
   issues: (q: IssueQuery) => get<ListResponse<Issue>>(apiUrl('issues', { ...q })),

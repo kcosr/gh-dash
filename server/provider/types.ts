@@ -11,7 +11,7 @@
 // "group/subgroup/project"), never by this app's key, and by node id once tracked.
 
 import type { Diff, DiffFile, ProviderKind } from '../../shared/api';
-import type { CommitRecord, IssueRecord, PrRecord, ReleaseRecord, RepoProbe, RepoRecord, StarRecord } from '../db/records';
+import type { BranchRecord, CommitRecord, IssueRecord, PrRecord, ReleaseRecord, RepoProbe, RepoRecord, StarRecord } from '../db/records';
 import type { AccessFailure } from './access';
 
 export type { ProviderKind };
@@ -113,6 +113,11 @@ export interface RoundRequest {
   releases?: { after: string | null };
   /** Stargazers, most recent first. */
   stars?: { after: string | null };
+  /**
+   * Every branch, the default one included, in the source's order: GitHub's is by name (it can't list them by date);
+   * GitLab's newest first where the instance sorts them so. The sync stops paging at 1000 (sync.ts, BRANCHES_MAX).
+   */
+  branches?: { after: string | null };
 }
 
 /** One page of each section that was requested; sections that weren't requested are absent. */
@@ -126,6 +131,12 @@ export interface RoundResult {
   releases?: Page<ReleaseRecord> & { oldestCreatedAt: string | null };
   /** `totalCount`: the provider's stargazer count, to detect unstars. */
   stars?: Page<StarRecord> & { totalCount: number };
+  /**
+   * `failed`: why the source couldn't read this page, where it fans a round out and a failure of this section alone
+   * (not the token's, nor a rate limit) doesn't fail the others' (GitLab). The page is then empty and the last, and the
+   * sync keeps the branches it has until a later sync lists them.
+   */
+  branches?: Page<BranchRecord> & { failed?: string };
 }
 
 /** PRs and issues re-read by number: null when it no longer exists in this repo (deleted or transferred). */
@@ -210,6 +221,11 @@ export interface SyncSource {
    * PRs itself, from PrRecord.mergeCommitOid / squashCommitOid and the PRs' commits.
    */
   readonly linksCommits: boolean;
+  /**
+   * Whether RepoRecord.pushedAt moves with a push to any branch (GitHub). When not (GitLab: it is the default branch's
+   * head commit date), nothing says a repo's other branches moved, and the sync lists them every time.
+   */
+  readonly pushedAtCoversBranches: boolean;
 
   /** The token's account, with its commit email addresses. */
   viewer(): Promise<ViewerAccount>;

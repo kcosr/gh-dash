@@ -63,6 +63,11 @@ export const issueQuerySchema = scopeSchema.extend(pageSchema.shape).extend({
 
 export const listQuerySchema = scopeSchema.extend(pageSchema.shape);
 
+/** GET /branches: the scope and a page, as JSON only (a branch has no Markdown or CSV form, so asking for one is a 400). */
+export const branchQuerySchema = listQuerySchema.extend({
+  format: z.literal('json', { error: 'only json: branches have no Markdown or CSV export' }).optional(),
+});
+
 export const statsQuerySchema = scopeSchema.extend({
   bucket: z.enum(['day', 'week', 'month']).optional(),
 });

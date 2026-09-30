@@ -1,10 +1,11 @@
 import { type Context, Hono } from 'hono';
 import type { AppDeps } from '../app';
 import { parseWith } from '../http';
-import { activityQuerySchema, issueQuerySchema, listQuerySchema, prQuerySchema } from '../scope';
+import { activityQuerySchema, branchQuerySchema, issueQuerySchema, listQuerySchema, prQuerySchema } from '../scope';
 import {
   prDetail,
   queryActivity,
+  queryBranches,
   queryCommits,
   queryIssues,
   queryPrs,
@@ -27,6 +28,10 @@ export function listRoutes({ db, config }: AppDeps): Hono {
   r.get('/prs', (c) => reply(c, queryPrs(deps, parseWith(prQuerySchema, c.req.query()))));
 
   r.get('/prs/:repo/:number', (c) => c.json(prDetail(deps, c.req.param('repo'), c.req.param('number'))));
+
+  // The branches the sync holds that have no PR yet, across repos: no code host request, so no noCrossSiteReads. One
+  // repo's branches, with or without a PR, are /branches/:repo (routes/diffs.ts): a segment longer, no clash.
+  r.get('/branches', (c) => c.json(queryBranches(deps, parseWith(branchQuerySchema, c.req.query()))));
 
   r.get('/activity', (c) => reply(c, queryActivity(deps, parseWith(activityQuerySchema, c.req.query()))));
 

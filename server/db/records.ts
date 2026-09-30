@@ -145,3 +145,18 @@ export interface StarRecord {
   avatarUrl: string | null;
   starredAt: string;
 }
+
+/**
+ * A branch as the sync lists it (table branches): the commit it points to, with that commit's date and author, which
+ * the list of branches without a PR sorts and filters by (`who`: by login where the host names the author's account,
+ * GitHub, and by email on either host).
+ */
+export interface BranchRecord {
+  name: string;
+  /** A full SHA. */
+  headOid: string;
+  /** The head commit's committer date (UTC, whole seconds); null when the source doesn't say. */
+  committedAt: string | null;
+  /** The head commit's author, email lower-cased; null when the source doesn't say. */
+  author: ActorRecord | null;
+}

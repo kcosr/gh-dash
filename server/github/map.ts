@@ -1,5 +1,6 @@
 import type {
   ActorRecord,
+  BranchRecord,
   CommitRecord,
   IssueRecord,
   PrRecord,
@@ -10,6 +11,7 @@ import type {
 } from '../db/records';
 import type {
   GqlActor,
+  GqlBranch,
   GqlCommit,
   GqlGitActor,
   GqlIssue,
@@ -178,4 +180,14 @@ export function mapRelease(r: GqlRelease): ReleaseRecord | null {
 
 export function mapStar(e: GqlStarEdge): StarRecord {
   return { login: e.node.login, name: e.node.name || null, avatarUrl: e.node.avatarUrl, starredAt: e.starredAt };
+}
+
+/**
+ * The head commit's author as commits have theirs: the account GitHub linked (by login) and the email, lower-cased.
+ * null for a ref without a target (no branch should be one): the sync can't store a branch without its head.
+ */
+export function mapBranch(b: GqlBranch | null): BranchRecord | null {
+  if (!b?.target) return null;
+  const { oid, committedDate, author } = b.target;
+  return { name: b.name, headOid: oid, committedAt: committedDate ?? null, author: author ? mapGitActor(author) : null };
 }

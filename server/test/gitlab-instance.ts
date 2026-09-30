@@ -6,6 +6,7 @@
 // their memberships (member-projects.json) serves the Add dialog's source and the smoke tool alike, and the smoke tool's
 // own GraphQL operations are answered too (smokeOps). Any other path is a project the instance doesn't show her.
 
+import branchesFixture from './fixtures/gitlab/branches.json';
 import commitDiffFixture from './fixtures/gitlab/commit-diff.json';
 import commitFixture from './fixtures/gitlab/commit.json';
 import commitsFixture from './fixtures/gitlab/commits.json';
@@ -243,6 +244,7 @@ export function fakeInstance(over: Record<string, Handler> = {}, base = BASE, op
       },
       '/api/v4/projects/11/repository/commits': page(commitsFixture, null),
       '/api/v4/projects/11/starrers': page(starrersFixture, null, { 'x-total': String(starrersFixture.length) }),
+      '/api/v4/projects/11/repository/branches': page(branchesFixture, null, { 'x-total': String(branchesFixture.length) }),
       [`${APP}/merge_requests/${MR}/versions`]: page(versionsFixture, null),
       [`${APP}/merge_requests/${MR}/versions/103`]: { body: versionFixture },
       [`${APP}/repository/files/src%2Flogin%2Ets/raw`]: { text: "import { login } from './auth';\nconst retries = 3;\nexport { login };\n" },
@@ -267,6 +269,7 @@ export function syncInstance(over: Record<string, Handler> = {}, ops: Ops = {}) 
     '/api/v4/projects/12/starrers': page([], null, { 'x-total': '0' }),
     '/api/v4/projects/40/issues': page([], null),
     '/api/v4/projects/40/repository/commits': page([], null),
+    '/api/v4/projects/40/repository/branches': page([], null),
     ...over,
   }, BASE, ops);
   const answer = fake.routes['/api/graphql'];

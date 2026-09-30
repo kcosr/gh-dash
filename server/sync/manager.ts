@@ -517,7 +517,7 @@ export class SyncManager {
       `[sync] ${named}${trigger}${scope ? ` (${scope})` : ''} done in ${(durationMs / 1000).toFixed(1)}s · ${result.repos} repos · ` +
         `${result.newItems} new items · ${result.errors.length} errors · ${spent}` +
         (rl ? ` (${rl.remaining}/${rl.limit} left)` : '') +
-        (result.forksSkipped ? ` · commit history skipped for ${result.forksSkipped} forks (includeForks off)` : ''),
+        (result.forksSkipped ? ` · commit history and branches skipped for ${result.forksSkipped} forks (includeForks off)` : ''),
     );
     for (const e of result.errors) this.log(`[sync]   error: ${named ? `${target.label}: ` : ''}${e}`);
     return { ...result, target, points: source.points };

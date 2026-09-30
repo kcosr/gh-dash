@@ -30,6 +30,19 @@ export function threadTarget(t: Pick<CommentThread, 'kind' | 'repo' | 'number' |
   return t.kind === 'branch' && t.branch ? branchDiffId(t.repo, t.branch) : commitDiffId(t.repo, t.commitOid);
 }
 
+/**
+ * The diff that shows a listed thread, as the `diff` param names it (ThreadListItem.view): its own target, except a
+ * branch thread of an earlier line of work, which the merged PR that ended it shows (the branch's review shows only its
+ * current group). Open and act on a thread there; group it by threadTarget. A list item without a view (an older
+ * server's) opens at its own target.
+ */
+export function threadView(t: Pick<ThreadListItem, 'kind' | 'repo' | 'number' | 'branch' | 'commitOid' | 'view'>): string {
+  const v = t.view as ThreadListItem['view'] | undefined;
+  if (!v) return threadTarget(t);
+  if (v.kind === 'pr') return `${t.repo}#${v.number}`;
+  return v.kind === 'branch' ? branchDiffId(t.repo, v.branch) : commitDiffId(t.repo, v.oid);
+}
+
 export interface ThreadGroupOf<T> {
   /** The target (threadTarget), the repo's key, or '' for the one group of `none`. */
   key: string;

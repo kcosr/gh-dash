@@ -37,6 +37,11 @@ export interface NewThreadDraft {
   key: string;
   anchor: DraftAnchor;
   body: string;
+  /**
+   * The diff it was written in (the viewer's scope), kept in the record: the key alone can't say where the scope ends,
+   * since a branch's name may hold the '|' it is joined with. Absent in a record stored before it was kept.
+   */
+  scope?: string;
 }
 
 const NEW = 'gh-dash:new-thread:';
@@ -68,8 +73,9 @@ export const newDraftsVersion = () => version;
 
 export function loadNewDraft(key: string): NewThreadDraft | null {
   try {
-    const v = JSON.parse(sessionStorage.getItem(NEW + key) ?? 'null') as { anchor?: DraftAnchor; body?: unknown } | null;
-    return v && validAnchor(v.anchor) && typeof v.body === 'string' ? { key, anchor: v.anchor, body: v.body } : null;
+    const v = JSON.parse(sessionStorage.getItem(NEW + key) ?? 'null') as { anchor?: DraftAnchor; body?: unknown; scope?: unknown } | null;
+    if (!v || !validAnchor(v.anchor) || typeof v.body !== 'string') return null;
+    return typeof v.scope === 'string' ? { key, anchor: v.anchor, body: v.body, scope: v.scope } : { key, anchor: v.anchor, body: v.body };
   } catch {
     return null;
   }
@@ -77,18 +83,27 @@ export function loadNewDraft(key: string): NewThreadDraft | null {
 
 function store(d: NewThreadDraft): void {
   try {
-    sessionStorage.setItem(NEW + d.key, JSON.stringify({ anchor: d.anchor, body: d.body }));
+    sessionStorage.setItem(NEW + d.key, JSON.stringify({ anchor: d.anchor, body: d.body, scope: d.scope }));
   } catch {
     // As for drafts.
   }
+}
+
+/**
+ * Whether a stored draft was written in `scope`: by the scope it keeps; one stored before scopes were kept (only PRs and
+ * commits then, whose scopes hold no '|') by its key, the scope and then a revision.
+ */
+function inScope(d: NewThreadDraft, scope: string): boolean {
+  if (d.scope !== undefined) return d.scope === scope;
+  return d.key.startsWith(`${scope}|`) && /^(?:[0-9a-f]{40}|[0-9a-f]{64})\|/.test(d.key.slice(scope.length + 1));
 }
 
 /** The draft for these lines at this revision: the one set aside earlier, or a new, empty one. */
 export function openNewDraft(scope: string, anchor: DraftAnchor): NewThreadDraft {
   const key = newDraftKey(scope, anchor);
   const found = loadNewDraft(key);
-  if (found) return found;
-  const d = { key, anchor, body: '' };
+  if (found && inScope(found, scope)) return found;
+  const d = { key, anchor, body: '', scope };
   store(d);
   changed();
   return d;
@@ -131,10 +146,10 @@ export function listNewDrafts(scope: string): NewThreadDraft[] {
     const prefix = `${NEW}${scope}|`;
     for (let i = 0; i < sessionStorage.length; i++) {
       const k = sessionStorage.key(i);
-      // The revision follows the scope: a branch's name may hold '|', so another branch's scope can start with this one.
-      if (!k?.startsWith(prefix) || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})\|/.test(k.slice(prefix.length))) continue;
+      if (!k?.startsWith(prefix)) continue;
+      // Another branch's scope can start with this one and a '|': the draft says which it is.
       const d = loadNewDraft(k.slice(NEW.length));
-      if (d) out.push(d);
+      if (d && inScope(d, scope)) out.push(d);
     }
   } catch {
     // Nothing to list.

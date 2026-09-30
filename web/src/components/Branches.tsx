@@ -5,11 +5,11 @@
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router';
 import type { BranchSummary, Repo } from '../../../shared/api';
-import { isBranchName } from '../../../shared/branch';
 import { capitalize, repoProvider } from '../../../shared/provider';
 import type { Provider } from '../../../shared/provider';
 import { isUnreachable, rateLimitResetAt } from '../api/client';
 import { useBranches } from '../api/hooks';
+import { hostBranchQuery } from '../lib/branches';
 import { fmtDateTime, relFuture, rel } from '../lib/time';
 import { branchDiffId, useUrlState } from '../lib/urlState';
 import { cx, useDebounced } from '../lib/util';
@@ -51,8 +51,8 @@ export function useBranchSearch(repo: string | null, filter: string) {
   const q = filter.trim();
   const dq = useDebounced(q, 250);
   const all = useBranches(repo);
-  // Only a name git allows can match one; the host is asked only when it has more than it listed.
-  const searched = useBranches(repo && all.data?.more && dq && isBranchName(dq) ? repo : null, dq);
+  const asked = hostBranchQuery(all.data, dq);
+  const searched = useBranches(repo && asked ? repo : null, asked ?? '');
   const items = useMemo(() => {
     const ql = q.toLowerCase();
     const from = searched.data && dq && q.startsWith(dq) ? searched.data.items : all.data?.items ?? [];

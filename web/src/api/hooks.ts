@@ -69,6 +69,8 @@ export const qk = {
   threadsIn: (repo: string) => ['threads', repo] as const,
   /** GET /branches/:repo: the code host's branches (`q` narrows them by name). */
   branches: (repo: string, q: string) => ['branches', repo, q] as const,
+  /** One branch's summary, from the list narrowed to its name (its own, so a list seeded from another isn't shared). */
+  branch: (repo: string, branch: string) => ['branches', repo, branch, 'one'] as const,
   /** GET /threads: the Comments list, and the tab's count (a synced PR's title and state come with each thread). */
   threadList: (q: ThreadListQuery) => ['thread-list', q] as const,
   /** GET /agents: who may write comments through MCP. */
@@ -84,11 +86,15 @@ export const qk = {
 /**
  * Queries a finished sync (or a settings change) should refetch. Diffs and file contents are fetched
  * from GitHub on demand, so a sync doesn't swap an open diff under the reader (the diff view has a
- * refresh); a PR or branch diff is revalidated when it's next opened (useDiff). A branch list on screen
- * is asked for again: the sync may have brought a PR from one of its branches, or the default branch.
+ * refresh); a PR or branch diff is revalidated when it's next opened (useDiff). A diff's threads are
+ * asked for again, though: a sync moves them between branch groups with no comment changing (a PR from
+ * the branch merged, a thread's branch learned, a post-merge thread ungrouped; see "Branch groups" in
+ * shared/api.ts), and the PR counts it refreshes count them so. A branch list (or a branch's PR in a
+ * diff's header) on screen is asked for again too: the sync may have brought a PR from one of its
+ * branches, or the default branch.
  */
 export const refetchAfterSync = (q: Query) =>
-  !['sync-status', 'diff', 'blob', 'threads', 'instance', 'desktop-state', 'repo-candidates', 'repo-lookup', 'agents'].includes(q.queryKey[0] as string);
+  !['sync-status', 'diff', 'blob', 'instance', 'desktop-state', 'repo-candidates', 'repo-lookup', 'agents'].includes(q.queryKey[0] as string);
 
 /**
  * Queries whose answers follow the default selection: every list or stats request without an explicit `repos=`
@@ -500,24 +506,43 @@ export function useBranches(repo: string | null, q = '') {
   });
 }
 
-/** A branch as a list already loaded names it (the repo page's, the palette's), to show before or without asking. */
-export function findCachedBranch(qc: QueryClient, repo: string, branch: string): BranchSummary | undefined {
-  for (const [, data] of qc.getQueriesData<BranchListResponse>({ queryKey: ['branches', repo] })) {
+/**
+ * A branch as the newest list already loaded names it (the repo page's, the palette's), with that list's default branch
+ * and age; undefined when none has it.
+ */
+export function findCachedBranch(qc: QueryClient, repo: string, branch: string): { branch: BranchSummary; defaultBranch: string; at: number } | undefined {
+  let found: { branch: BranchSummary; defaultBranch: string; at: number } | undefined;
+  for (const q of qc.getQueryCache().findAll({ queryKey: ['branches', repo] })) {
+    const data = q.state.data as BranchListResponse | undefined;
     const hit = data?.items.find((b) => b.name === branch);
-    if (hit) return hit;
+    if (hit && (!found || q.state.dataUpdatedAt > found.at)) found = { branch: hit, defaultBranch: data!.defaultBranch, at: q.state.dataUpdatedAt };
   }
-  return undefined;
+  return found;
 }
 
 /**
- * One branch's summary (its head, date and PR): from a list already loaded, else asked for by its exact name. Undefined
- * while unknown, and for a branch the host doesn't list.
+ * The query for one branch's summary (its head, date and PR): the host's list narrowed to its name, the branch found in
+ * it by name. Observed while its diff is open, so it is asked for again like a list (when stale, after a sync: a PR from
+ * the branch may have been synced since). A list already loaded that has the branch fills it at once, as old as that
+ * list, so a fresh one saves the request.
  */
+export function branchQuery(qc: QueryClient, repo: string, branch: string) {
+  const cached = findCachedBranch(qc, repo, branch);
+  return {
+    queryKey: qk.branch(repo, branch),
+    queryFn: () => api.branches(repo, branch),
+    select: (d: BranchListResponse) => d.items.find((b) => b.name === branch),
+    staleTime: 60_000,
+    initialData: cached && { items: [cached.branch], defaultBranch: cached.defaultBranch, more: false },
+    initialDataUpdatedAt: cached?.at,
+    retry: (count: number, err: unknown) => count < 1 && !isClientError(err),
+  };
+}
+
+/** One branch's summary (branchQuery); undefined while unknown, for a branch the host doesn't list, and for null. */
 export function useBranch(repo: string, branch: string | null): BranchSummary | undefined {
   const qc = useQueryClient();
-  const cached = branch ? findCachedBranch(qc, repo, branch) : undefined;
-  const list = useBranches(branch && !cached ? repo : null, branch ?? '');
-  return cached ?? list.data?.items.find((b) => b.name === branch);
+  return useQuery({ ...branchQuery(qc, repo, branch ?? ''), enabled: !!branch }).data;
 }
 
 export function useDiffCacheStats() {
@@ -540,20 +565,24 @@ export function useClearDiffCache() {
 // ---------------------------------------------------------------- comment threads
 
 /**
- * Threads of a PR ("<repo>#<n>"), a branch (branchDiffId) or a commit (commitDiffId with the full oid, as a diff's
- * headOid gives it).
+ * The query for the threads of a PR ("<repo>#<n>"), a branch (branchDiffId) or a commit (commitDiffId with the full oid,
+ * as a diff's headOid gives it).
  */
-export function useThreads(id: string | null) {
+export function threadsQuery(id: string | null) {
   const t = parseDiffId(id);
-  return useQuery({
+  return {
     queryKey: qk.threads(id ?? ''),
     queryFn: () => fetchThreads(t!).then((r) => r.items),
     // Commit threads need the full oid; an abbreviated one waits for the diff.
     enabled: !!t && (t.kind !== 'commit' || t.oid.length === 40 || t.oid.length === 64),
     staleTime: 30_000,
     // A 4xx (no such PR or repo, the default branch as a branch) won't change on a retry.
-    retry: (count, err) => count < 1 && !isClientError(err),
-  });
+    retry: (count: number, err: unknown) => count < 1 && !isClientError(err),
+  };
+}
+
+export function useThreads(id: string | null) {
+  return useQuery(threadsQuery(id));
 }
 
 function fetchThreads(t: DiffTarget) {

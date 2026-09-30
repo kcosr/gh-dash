@@ -32,7 +32,7 @@ describe('new-thread drafts', () => {
     expect(second.key).not.toBe(first.key);
     expect(second.body).toBe('');
     // Opening the first one's lines again resumes it, text and anchor.
-    expect(openNewDraft('app#2', anchor(R1))).toEqual({ key: first.key, anchor: anchor(R1), body: 'On the first revision.' });
+    expect(openNewDraft('app#2', anchor(R1))).toEqual({ key: first.key, anchor: anchor(R1), body: 'On the first revision.', scope: 'app#2' });
     expect(listNewDrafts('app#2').map((d) => d.anchor.commitOid)).toEqual([R1, R2]);
     expect(listNewDrafts('app#20')).toEqual([]);
   });
@@ -40,8 +40,22 @@ describe('new-thread drafts', () => {
   it("keeps a branch's drafts apart from those of a branch whose name starts with its name and a '|'", () => {
     openNewDraft('app~fix', anchor(R1));
     openNewDraft('app~fix|more', anchor(R2));
+    // A name can go on with a '|' and a whole SHA, which looks like the revision after the shorter branch's scope.
+    const R3 = '3'.repeat(40);
+    openNewDraft(`app~fix|${R3}`, anchor(R2));
     expect(listNewDrafts('app~fix').map((d) => d.anchor.commitOid)).toEqual([R1]);
     expect(listNewDrafts('app~fix|more').map((d) => d.anchor.commitOid)).toEqual([R2]);
+    expect(listNewDrafts(`app~fix|${R3}`).map((d) => d.key)).toEqual([newDraftKey(`app~fix|${R3}`, anchor(R2))]);
+  });
+
+  it('still lists a draft stored before drafts kept their scope (PRs and commits, whose scopes hold no pipe)', () => {
+    const key = newDraftKey('app#2', anchor(R1));
+    sessionStorage.setItem(`gh-dash:new-thread:${key}`, JSON.stringify({ anchor: anchor(R1), body: 'from before' }));
+    expect(listNewDrafts('app#2')).toEqual([{ key, anchor: anchor(R1), body: 'from before' }]);
+    expect(openNewDraft('app#2', anchor(R1)).body).toBe('from before');
+    // Its text, edited, keeps it where it was.
+    setNewDraftBody(key, 'edited');
+    expect(listNewDrafts('app#2').map((d) => d.body)).toEqual(['edited']);
   });
 
   it("doesn't bring back a draft that was sent or discarded", () => {

@@ -78,7 +78,8 @@ describe('MCP without agent tokens', () => {
     upsertPr(h.db, repo, prRecord(2, { state: 'open', createdAt: '2026-09-22T09:00:00Z', author: actor('bob'), title: 'Add parser', headOid: sha('a') }));
     return h;
   }
-  const none = { authorization: '' };
+  /** No Authorization header at all. */
+  const none = { authorization: null };
 
   it('acts as the built-in agent "Agent" when no token is sent; a sent token must still be valid', async () => {
     const h = withPr();
@@ -86,9 +87,9 @@ describe('MCP without agent tokens', () => {
     expect(who.data).toMatchObject({ agent: { name: BUILT_IN_AGENT } });
     // With its own token, an agent is itself.
     expect((await h.call('whoami')).data).toMatchObject({ agent: { name: 'Claude' } });
-    // A bad, malformed or revoked token is refused, never taken for none.
+    // A bad, malformed, revoked or blank token is refused, never taken for none.
     revokeAgent(h.db, h.other.id);
-    for (const authorization of ['Bearer ghd_nope', `Bearer ${h.otherToken}`, 'Basic abc', 'Bearer']) {
+    for (const authorization of ['Bearer ghd_nope', `Bearer ${h.otherToken}`, 'Basic abc', 'Bearer', '', '   ', 'Bearer   ']) {
       const res = await h.post(PING, { authorization });
       expect(res.status, authorization).toBe(401);
     }

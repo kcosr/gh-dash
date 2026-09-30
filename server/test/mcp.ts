@@ -123,19 +123,20 @@ export function mcpHarness(opts: McpHarnessOptions = {}) {
   const app = createApp({ db, config, sync, diffs, tokens, transport: opts.transport, bus });
 
   let nextId = 1;
-  const post = (body: unknown, headers: Record<string, string> = {}) =>
+  /** `headers`: added to the defaults (Claude's token); null leaves one out altogether. */
+  const post = (body: unknown, headers: Record<string, string | null> = {}) =>
     app.request('http://localhost/mcp', {
       method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}`, ...headers },
+      headers: Object.fromEntries(Object.entries({ 'content-type': 'application/json', authorization: `Bearer ${token}`, ...headers }).filter((e): e is [string, string] => e[1] !== null)),
       body: typeof body === 'string' ? body : JSON.stringify(body),
     });
   /** A JSON-RPC request's response body. */
-  const rpc = async (method: string, params?: unknown, headers: Record<string, string> = {}) => {
+  const rpc = async (method: string, params?: unknown, headers: Record<string, string | null> = {}) => {
     const res = await post({ jsonrpc: '2.0', id: nextId++, method, ...(params === undefined ? {} : { params }) }, headers);
     return (await res.json()) as { id: number; result?: Record<string, unknown>; error?: { code: number; message: string; data?: unknown } };
   };
   /** A tool's result: its structuredContent, or its error text. */
-  const call = async <T = Record<string, any>>(name: string, args: Record<string, unknown> = {}, headers: Record<string, string> = {}) => {
+  const call = async <T = Record<string, any>>(name: string, args: Record<string, unknown> = {}, headers: Record<string, string | null> = {}) => {
     const res = await rpc('tools/call', { name, arguments: args }, headers);
     if (res.error) throw new Error(`JSON-RPC error ${res.error.code}: ${res.error.message}`);
     const result = res.result as { content: { type: string; text: string }[]; structuredContent?: T; isError?: boolean };

@@ -42,15 +42,14 @@ export function installMcp(app: Hono, { core, principalFor, withoutToken }: McpR
     const from = c.req.header('origin');
     if (from !== undefined && from !== origin(c)) return rpcError(c, 403, 'Forbidden: cross-origin requests are not accepted');
 
-    // No Authorization header at all: the built-in agent, if tokens aren't required. Anything sent is checked, and a
-    // bad token is never taken for none.
-    const header = c.req.header('authorization') ?? '';
-    const sent = header.trim() !== '';
-    const token = /^Bearer\s+(\S+)\s*$/i.exec(header)?.[1];
-    const principal = !sent && withoutToken ? withoutToken() : token ? principalFor(token) : null;
+    // No Authorization header at all: the built-in agent, if tokens aren't required. A header that is there is checked,
+    // empty or not: a bad or blank token is never taken for none.
+    const header = c.req.header('authorization');
+    const token = /^Bearer\s+(\S+)\s*$/i.exec(header ?? '')?.[1];
+    const principal = header === undefined && withoutToken ? withoutToken() : token ? principalFor(token) : null;
     if (!principal) {
-      c.header('WWW-Authenticate', sent ? 'Bearer realm="gh-dash", error="invalid_token"' : 'Bearer realm="gh-dash"');
-      return rpcError(c, 401, sent ? `Unauthorized: unknown or revoked agent token; ${AUTH_HINT}` : `Unauthorized: ${AUTH_HINT}`);
+      c.header('WWW-Authenticate', token ? 'Bearer realm="gh-dash", error="invalid_token"' : 'Bearer realm="gh-dash"');
+      return rpcError(c, 401, token ? `Unauthorized: unknown or revoked agent token; ${AUTH_HINT}` : `Unauthorized: ${AUTH_HINT}`);
     }
 
     const type = c.req.header('content-type')?.split(';')[0]!.trim().toLowerCase();

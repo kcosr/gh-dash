@@ -123,6 +123,11 @@ it's limited.
 Removing a source never gives an agent more: a source added again later, even with the same host,
 isn't one it had. An agent left with no sources reaches nothing until you choose again.
 
+Limiting hides what is on the other sources, not that there is activity. Threads, comments and
+comment events are numbered in one sequence across all sources. So a limited agent comparing the ids
+it sees could tell that *something* happened elsewhere, and roughly how much, but never what, where or
+by whom.
+
 **The REST API isn't limited.** The Local API and a server's API (with their password or API key)
 are yours, so they reach everything. Only MCP is limited per agent.
 

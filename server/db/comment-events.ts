@@ -81,7 +81,8 @@ const GROUPED_EVENTS =
 export function lastCommentEventId(db: Db, sourceIds?: readonly number[]): number {
   if (!sourceIds) return db.get<{ id: number | null }>('SELECT max(id) AS id FROM comment_events')?.id ?? 0;
   // An agent's reach: the log's end as far as it can see, so a wait that starts there and times out hands back a cursor
-  // that doesn't move with what happens on other sources.
+  // that doesn't move with what happens on other sources. Ids are still one sequence across sources (as thread and
+  // comment ids are): their gaps can say that something happened out of reach, never what (docs/agents.md).
   return (
     db.get<{ id: number | null }>(
       'SELECT max(ce.id) AS id FROM comment_events ce JOIN repos r ON r.id = ce.repo_id WHERE r.source_id IN (SELECT value FROM json_each(?))',

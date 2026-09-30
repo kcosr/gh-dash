@@ -143,6 +143,57 @@ describe('the stream: server-sent events', () => {
     expect(fetchFn).toHaveBeenCalledTimes(2);
   });
 
+  it("doesn't pile up abort listeners over a long outage (one per wait, gone when the wait ends)", async () => {
+    vi.useFakeTimers();
+    const fetchFn = vi.fn(async () => { throw new TypeError('Failed to fetch'); });
+    const ctl = new AbortController();
+    // Abort listeners on the signal: added less removed.
+    let listening = 0;
+    const add = ctl.signal.addEventListener.bind(ctl.signal);
+    const remove = ctl.signal.removeEventListener.bind(ctl.signal);
+    ctl.signal.addEventListener = ((type: string, fn: EventListener, o?: AddEventListenerOptions) => { if (type === 'abort') listening++; add(type, fn, o); }) as typeof ctl.signal.addEventListener;
+    ctl.signal.removeEventListener = ((type: string, fn: EventListener) => { if (type === 'abort') listening--; remove(type, fn); }) as typeof ctl.signal.removeEventListener;
+    const run = runStream({ onMessage: () => {}, onReconnect: () => {} }, ctl.signal, { fetch: fetchFn as unknown as typeof fetch });
+    await vi.advanceTimersByTimeAsync(24 * 30_000);
+    expect(fetchFn.mock.calls.length).toBeGreaterThan(24);
+    expect(listening).toBeLessThanOrEqual(1);
+    ctl.abort();
+    await run;
+    expect(listening).toBe(0);
+    vi.useRealTimers();
+  });
+
+  it('retries a busy server (503) like a gateway error, after its Retry-After when longer', async () => {
+    expect(retryDelay(0, 503)).toBe(1000);
+    expect(retryDelay(2, 503)).toBe(4000);
+    expect(retryDelay(0, 503, 20)).toBe(20_000);
+    expect(retryDelay(4, 503, 2)).toBe(16_000);
+    // Never longer than a 4xx's wait.
+    expect(retryDelay(0, 503, 3600)).toBe(5 * 60_000);
+    vi.useFakeTimers();
+    const enc = new TextEncoder();
+    const fetchFn = vi.fn()
+      .mockResolvedValueOnce(new Response('{"error":"Too many streams"}', { status: 503, headers: { 'retry-after': '5' } }))
+      .mockImplementationOnce(async (_url: string, init: RequestInit) => new Response(new ReadableStream({
+        start(c) {
+          c.enqueue(enc.encode('data: {"type":"agents"}\n\n'));
+          init.signal!.addEventListener('abort', () => c.error(new DOMException('Aborted', 'AbortError')));
+        },
+      }), { status: 200, headers: { 'content-type': 'text/event-stream' } }))
+      .mockImplementation(hang);
+    const got: string[] = [];
+    const ctl = new AbortController();
+    const run = runStream({ onMessage: (m) => got.push(m.type), onReconnect: () => {} }, ctl.signal, { fetch: fetchFn as typeof fetch });
+    await vi.advanceTimersByTimeAsync(4_900);
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(got).toEqual(['agents']);
+    ctl.abort();
+    await run;
+    vi.useRealTimers();
+  });
+
   it("leaves a server without the stream alone for a while (an older one's 404, or its app page)", async () => {
     vi.useFakeTimers();
     const fetchFn = vi.fn()

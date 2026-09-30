@@ -38,7 +38,7 @@ import { ListSkeleton, NoReposSelected } from './PullRequests';
 const STATUS_WORD = { open: 'unresolved', resolved: 'resolved', all: '' } as const;
 
 /** An author filter's name: "Anyone", "You", "Agents", or the agent's. */
-export function authorName(a: ThreadAuthor | null, agents: readonly Pick<Agent, 'id' | 'name'>[]): string {
+function authorName(a: ThreadAuthor | null, agents: readonly Pick<Agent, 'id' | 'name'>[]): string {
   if (a === null) return 'Anyone';
   if (a === 'self') return 'You';
   if (a === 'agents') return 'Agents';

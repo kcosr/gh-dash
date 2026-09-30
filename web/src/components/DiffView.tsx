@@ -15,6 +15,7 @@ import { fmtDateTime, fmtTime, plural, rel, relFuture, relLong } from '../lib/ti
 import { commitDiffId, parseDiffId, useUrlState } from '../lib/urlState';
 import type { DiffTarget, FileFilter } from '../lib/urlState';
 import type { DiffRequest } from '../diff/DiffViewer';
+import { useDiffNudge } from '../lib/show';
 import { isChunkLoadError } from '../lib/util';
 import { Diffstat } from './bits';
 import { EmptyState, ErrorNote, ProgressBar } from './EmptyState';
@@ -98,13 +99,18 @@ export function DiffView({ id, compact }: { id: string; compact: boolean }) {
   }, []);
   const onOnlyChange = useCallback((only: FileFilter | null) => setRef.current({ only }, { replace: true }), []);
   const [request, setRequest] = useState<DiffRequest | null>(null);
+  // Or asked again for the place the URL names (lib/show.ts nudgeDiff).
+  const nudge = useDiffNudge();
+  const nudged = useRef(nudge);
   useEffect(() => {
     const r = reported.current;
-    const thread = s.thread !== r.thread ? s.thread : null;
-    const file = s.file !== r.file ? s.file : null;
+    const again = nudged.current !== nudge;
+    nudged.current = nudge;
+    const thread = s.thread !== r.thread || again ? s.thread : null;
+    const file = s.file !== r.file || again ? s.file : null;
     reported.current = { thread: s.thread, file: s.file };
     if (thread !== null || file !== null) setRequest((q) => ({ thread, file, n: (q?.n ?? 0) + 1 }));
-  }, [s.thread, s.file]);
+  }, [s.thread, s.file, nudge]);
 
   useEffect(() => {
     // The list and drawer are hidden underneath: start keyboard focus (and scrolling) in the diff.

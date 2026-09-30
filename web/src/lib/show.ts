@@ -107,3 +107,21 @@ export const dismissChip = (id: string) => emit(chips.filter((c) => c.id !== id)
 export function useShowChips(): ShowChip[] {
   return useSyncExternalStore((l) => { chipListeners.add(l); return () => { chipListeners.delete(l); }; }, () => chips, () => chips);
 }
+
+// ---------------------------------------------------------------------------- the diff already open
+
+let nudges = 0;
+const nudgeListeners = new Set<() => void>();
+
+/**
+ * Ask the diff that's open to go to the URL's thread (or file) again: a show of the place the URL already names (the
+ * reader may have scrolled away). A change of `thread` or `file` needs no nudge (DiffView notices it).
+ */
+export function nudgeDiff(): void {
+  nudges++;
+  for (const l of nudgeListeners) l();
+}
+
+export function useDiffNudge(): number {
+  return useSyncExternalStore((l) => { nudgeListeners.add(l); return () => { nudgeListeners.delete(l); }; }, () => nudges, () => nudges);
+}

@@ -11,7 +11,7 @@ import type { ShowTarget } from '../../../shared/api';
 import { repoPath } from '../../../shared/repos';
 import { qk, useThreads } from '../api/hooks';
 import { isTypingTarget } from '../lib/layers';
-import { dismissChip, pushChip, showDiffId, showPatch, showPhrase, showWhat, useFollowAgents, useShowChips } from '../lib/show';
+import { dismissChip, nudgeDiff, pushChip, showDiffId, showPatch, showPhrase, showWhat, useFollowAgents, useShowChips } from '../lib/show';
 import type { ShowChip, ShowMessage } from '../lib/show';
 import { contextSearch, useUrlState } from '../lib/urlState';
 import { cx } from '../lib/util';
@@ -24,7 +24,7 @@ import { useProviderOf, useRepoLabel } from './repoMapContext';
 const CHIP_MS = 30_000;
 const OPENED_MS = 10_000;
 
-/** Open a target over the view you're on (or a repo's page), and hand focus to the diff when the chip had it. */
+/** Open a target over the view you're on, as a Comments row does (a repo alone: its page). */
 export function useOpenShown(): (target: ShowTarget) => Promise<void> {
   const { s, set, navigate, location } = useUrlState();
   const qc = useQueryClient();
@@ -36,9 +36,12 @@ export function useOpenShown(): (target: ShowTarget) => Promise<void> {
       latest.current.navigate(repoPath(target.repo) + contextSearch(latest.current.search));
       return;
     }
-    // The diff already open goes to the thread in place, once its threads are in (the agent may have just made it).
-    if (target.threadId && latest.current.s.diff === patch.diff) await qc.refetchQueries({ queryKey: qk.threads(patch.diff!), type: 'active' });
+    // The diff already open goes to the thread in place, once its threads are in (the agent may have just made it),
+    // also when the URL names it already.
+    const same = latest.current.s.diff === patch.diff;
+    if (same && target.threadId) await qc.refetchQueries({ queryKey: qk.threads(patch.diff!), type: 'active' });
     latest.current.set(patch);
+    if (same) nudgeDiff();
   }, [qc]);
 }
 

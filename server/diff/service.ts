@@ -1,7 +1,7 @@
 import { promisify } from 'node:util';
 import { gunzip as gunzipCb, gzip as gzipCb } from 'node:zlib';
 import type { BranchListResponse, BranchSummary, Diff, DiffCacheStats } from '../../shared/api';
-import { isBranchName, MAX_BRANCH_CHARS } from '../../shared/branch';
+import { isBranchName, isBranchQuery } from '../../shared/branch';
 import { PROVIDERS } from '../../shared/provider';
 import { HttpError } from '../lib/errors';
 import type { Db } from '../db/db';
@@ -455,7 +455,7 @@ export class DiffService {
    */
   async branchList(repoName: string, q: string | null, refresh = false): Promise<BranchListResponse> {
     const query = q?.trim() || null;
-    if (query && (query.length > MAX_BRANCH_CHARS || /[\x00-\x1f\x7f]/.test(query))) throw new HttpError(400, 'Invalid q');
+    if (query && !isBranchQuery(query)) throw new HttpError(400, 'Invalid q');
     const { id, sourceId, repo, base } = this.branchRepo(repoName);
     const key = `${repo.key}\n${query ?? ''}`;
     let listed = this.branchLists.get(key);

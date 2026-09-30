@@ -884,6 +884,11 @@ export interface CommentActivity {
    * deleted comments said.
    */
   excerpt: string | null;
+  /**
+   * The diff that shows the thread now (ThreadListItem.view), to open the event at: `target`, unless the thread is a
+   * branch thread of an earlier line of work, or has left its branch's group since. null once the thread is deleted.
+   */
+  view: ThreadView | null;
 }
 
 /** A branch of a tracked repo, as GET /branches/:repo lists it. */

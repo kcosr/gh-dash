@@ -2,7 +2,7 @@
  * The Comments list's shape: threads across PRs, branches and commits grouped per PR, branch or commit, per repo, or not
  * at all, and ordered by activity or in file order. Pure, so the view and the tests share it.
  */
-import type { CommentThread, ThreadListItem } from '../../../shared/api';
+import type { CommentThread, ThreadListItem, ThreadView } from '../../../shared/api';
 import { branchDiffId, commitDiffId } from './urlState';
 import type { ThreadGroup, ThreadOrder } from './urlState';
 
@@ -37,10 +37,14 @@ export function threadTarget(t: Pick<CommentThread, 'kind' | 'repo' | 'number' |
  * server's) opens at its own target.
  */
 export function threadView(t: Pick<ThreadListItem, 'kind' | 'repo' | 'number' | 'branch' | 'commitOid' | 'view'>): string {
-  const v = t.view as ThreadListItem['view'] | undefined;
-  if (!v) return threadTarget(t);
-  if (v.kind === 'pr') return `${t.repo}#${v.number}`;
-  return v.kind === 'branch' ? branchDiffId(t.repo, v.branch) : commitDiffId(t.repo, v.oid);
+  return viewDiffId(t.repo, t.view as ThreadView | undefined) ?? threadTarget(t);
+}
+
+/** A ThreadView (ThreadListItem.view, CommentActivity.view) as the `diff` param names it; null for none. */
+export function viewDiffId(repo: string, v: ThreadView | null | undefined): string | null {
+  if (!v) return null;
+  if (v.kind === 'pr') return `${repo}#${v.number}`;
+  return v.kind === 'branch' ? branchDiffId(repo, v.branch) : commitDiffId(repo, v.oid);
 }
 
 export interface ThreadGroupOf<T> {

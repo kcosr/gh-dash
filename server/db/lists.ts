@@ -14,9 +14,10 @@ import type {
   PullRequestDetail,
   Release,
   Star,
+  ThreadView,
 } from '../../shared/api';
 import { localDateSql, offsetSegments } from '../lib/time';
-import { prViewSql, SELF_PRINCIPAL_ID } from './comments';
+import { endedByPrSql, prViewSql, SELF_PRINCIPAL_ID, threadView } from './comments';
 import type { Db, Param } from './db';
 import {
   addLike,
@@ -459,13 +460,18 @@ interface CommentEventRow {
   start_line: number | null;
   end_line: number | null;
   excerpt: string | null;
+  /** The live thread's place now (its PR, branch and commit, and endedByPrSql's answer), as JSON; null once it's deleted. */
+  view_of: string | null;
 }
 
-// What an event copied of its thread, plus what is known now: who the actor is, whether the thread is still there, and
+// What an event copied of its thread, plus what is known now: who the actor is, whether the thread is still there (and
+// which diff shows it now: its branch may have been cleared, or a merge ended its line of work, since the event), and
 // the title of what it is on (as GET /threads finds it, the pr_commits fallback included; a branch has none).
 const COMMENT_EVENT_SELECT =
   'ce.*, (SELECT kind FROM principals WHERE id = ce.actor_id) AS actor_kind, (SELECT name FROM principals WHERE id = ce.actor_id) AS actor_name, ' +
   'EXISTS (SELECT 1 FROM comment_threads WHERE id = ce.thread_id) AS live, ' +
+  `(SELECT json_object('pr_number', t.pr_number, 'branch', t.branch, 'commit_oid', t.commit_oid, 'ended_by_pr', ${endedByPrSql('t')}) ` +
+  'FROM comment_threads t WHERE t.id = ce.thread_id) AS view_of, ' +
   'CASE WHEN ce.pr_number IS NOT NULL THEN (SELECT title FROM pull_requests WHERE repo_id = ce.repo_id AND number = ce.pr_number) ' +
   'WHEN ce.branch IS NOT NULL THEN NULL ' +
   `ELSE COALESCE((SELECT headline FROM commits WHERE repo_id = ce.repo_id AND oid = ce.commit_oid), ${prCommitHeadlineSql('ce')}) END AS target_title`;
@@ -490,7 +496,15 @@ const toCommentActivity = (r: CommentEventRow): CommentActivity => ({
   startLine: r.start_line,
   endLine: r.end_line,
   excerpt: r.excerpt,
+  view: viewOf(r.view_of),
 });
+
+/** CommentActivity.view from COMMENT_EVENT_SELECT's view_of. */
+function viewOf(json: string | null): ThreadView | null {
+  if (json === null) return null;
+  const t = JSON.parse(json) as { pr_number: number | null; branch: string | null; commit_oid: string; ended_by_pr: number | null };
+  return threadView(t, t.ended_by_pr);
+}
 
 function hydrateEvents(db: Db, ctx: QueryCtx, rows: EventRow[]): ActivityEvent[] {
   const isMe = isMeFn(ctx);

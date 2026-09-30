@@ -21,7 +21,7 @@ function ev(kind: CommentEventKind, by: Principal, o: Partial<CommentActivity> &
     comment: {
       eventId, threadId: 1, commentId: ['resolved', 'reopened', 'thread_deleted'].includes(kind) ? null : eventId * 10, live: true, by,
       target: { kind: 'pr', number: 17, title: 'Fix the race' }, commitOid: 'a'.repeat(40),
-      path: 'packages/opencode/src/host.ts', side: 'new', startLine: 42, endLine: 44, excerpt: `comment ${eventId}`, ...c,
+      path: 'packages/opencode/src/host.ts', side: 'new', startLine: 42, endLine: 44, excerpt: `comment ${eventId}`, view: { kind: 'pr', number: 17 }, ...c,
     },
   };
 }

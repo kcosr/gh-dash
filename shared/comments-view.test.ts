@@ -4,7 +4,7 @@ import { api } from '../web/src/api/client';
 import { exportTarget, exportUrl, tabCountParams, threadCountParams, threadListParams } from '../web/src/lib/apiQuery';
 import { viewHref } from '../web/src/lib/contexts';
 import type { Places } from '../web/src/lib/contexts';
-import { byFileOrder, groupThreads, sortThreads, threadTarget, threadView, withHeld } from '../web/src/lib/threadList';
+import { byFileOrder, groupThreads, sortThreads, threadTarget, threadView, viewDiffId, withHeld } from '../web/src/lib/threadList';
 import { carrySearch, defaultsFor, parseUrlState, patchSearch, viewFromPath } from '../web/src/lib/urlState';
 
 describe('Comments URL state', () => {
@@ -173,6 +173,10 @@ describe('Comments grouping and order', () => {
     // An older server's item, without a view: its own target.
     const { view: _, ...old } = earlier;
     expect(threadView(old as typeof earlier)).toBe('alice/app~fix/a');
+    // Activity's events carry the same view (null once the thread is deleted: none to open at).
+    expect([viewDiffId('alice/app', { kind: 'pr', number: 7 }), viewDiffId('alice/app', { kind: 'branch', branch: 'a#1@b' }), viewDiffId('alice/app', null)]).toEqual([
+      'alice/app#7', 'alice/app~a#1@b', null,
+    ]);
   });
 
   it("groups a branch's threads under the branch, apart from the PRs from it", () => {

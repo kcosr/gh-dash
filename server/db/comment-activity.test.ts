@@ -58,7 +58,7 @@ describe('comment events in the activity feed', () => {
       actor: { login: null, name: 'You', avatarUrl: null, isMe: true },
       comment: {
         eventId: expect.any(Number), threadId: t.id, commentId: t.comments[0]!.id, live: true, by: me, target: { kind: 'pr', number: 2, title: 'Add parser' }, commitOid: HEAD,
-        path: 'src/a.ts', side: 'new', startLine: 3, endLine: 4, excerpt: 'Why two?',
+        path: 'src/a.ts', side: 'new', startLine: 3, endLine: 4, excerpt: 'Why two?', view: { kind: 'pr', number: 2 },
       },
     });
     expect(items[2]).toMatchObject({ actor: { name: 'Claude', isMe: false }, comment: { by: claude, excerpt: 'Why two?' } });
@@ -212,6 +212,13 @@ describe('comment events in the activity feed', () => {
     const csv = activityCsv(events).split('\r\n');
     expect(csv).toContain(`${at(20)},comment,thread_opened,alice/app,You,Why two?,fix/login,`);
     expect(csv).toContain(`${at(23)},comment,thread_deleted,alice/app,You,,fix/a]b,`);
+    // Each opens where its thread is shown now: the branch's review, nowhere once deleted, and the merged PR once a merge
+    // of the branch ends the line of work it is in (the events still say what it was made on).
+    expect(events.map((e) => e.type === 'comment' && e.comment.view)).toEqual([null, null, { kind: 'branch', branch: 'fix/login' }, { kind: 'branch', branch: 'fix/login' }]);
+    db.run("UPDATE pull_requests SET head_ref = 'fix/login', cross_repo = 0, state = 'merged', merged_at = ? WHERE repo_id = ? AND number = 2", [at(25), app]);
+    expect(comments().items.map((e) => e.type === 'comment' && [e.comment.target.kind, e.comment.view])).toEqual([
+      ['branch', null], ['branch', null], ['branch', { kind: 'pr', number: 2 }], ['branch', { kind: 'pr', number: 2 }],
+    ]);
   });
 
   it('leaves the insights (stats) as they were', () => {

@@ -435,6 +435,18 @@ const schemas: Record<string, Schema> = {
     startLine: nullable(int()),
     endLine: nullable(int()),
     excerpt: nullable(str("Plain text, at most 280 characters: the comment's (for comment events) or the thread's first comment's (thread events). null once that comment or its thread is deleted, and on the delete events")),
+    view: {
+      ...nullable({
+        oneOf: [
+          obj({ kind: enumOf('pr'), number: int() }),
+          obj({ kind: enumOf('branch'), branch: str() }),
+          obj({ kind: enumOf('commit'), oid: str() }),
+        ],
+      }),
+      description:
+        'The diff that shows the thread now (as ThreadListItem.view), to open the event at: `target`, unless the thread is a branch thread of an earlier ' +
+        "line of work, or has left its branch's group since. null once the thread is deleted",
+    },
   }),
   Agent: obj({
     id: int("The agent's principal id (comments' author.id)"),

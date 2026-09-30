@@ -22,6 +22,7 @@ in REST (`avatar_url`).
 | `issues.json` | REST `GET /projects/:id/issues?with_labels_details=true` |
 | `commits.json` | REST `GET /projects/:id/repository/commits?with_stats=true` |
 | `starrers.json` | REST `GET /projects/:id/starrers` |
+| `branches.json` | REST `GET /projects/:id/repository/branches?sort=updated_desc` |
 | `mr-revision.json` | GraphQL `MrRevision` (`project.mergeRequest(iid:)`) |
 | `mr-versions.json` | REST `GET /projects/:id/merge_requests/:iid/versions` |
 | `mr-version.json` | REST `GET /projects/:id/merge_requests/:iid/versions/:version_id` (without `unidiff`) |
@@ -54,6 +55,8 @@ URLs, and compare. Worth checking in particular:
 - `issues.json`: label objects with `with_labels_details=true` (3-digit colors?), `closed_by` on issues closed by an MR.
 - `commits.json`: the `stats` of merge commits, and the empty last page GitLab offers after a full one.
 - `starrers.json`: that the list is oldest first and leaves out private profiles, against `starCount`.
+- `branches.json`: that `sort=updated_desc` (in GitLab's code, not its docs) orders by the head commit's date, and
+  the empty last page GitLab offers after a full one.
 - `mr-version.json`: what `diff` holds for a binary file (a "Binary files … differ" line, or nothing), a pure rename
   and a mode change; `collapsed` / `too_large` files; and that `diffs` lists every stored file of a large MR.
 - `mr-versions.json`: that a push to the target branch adds a version with the same head, and that the MR's

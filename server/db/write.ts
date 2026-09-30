@@ -1,6 +1,7 @@
 import type { Db, Param } from './db';
 import type {
   ActorRecord,
+  BranchRecord,
   CommitRecord,
   IssueRecord,
   PrRecord,
@@ -11,10 +12,13 @@ import type {
 } from './records';
 import { type SourceRef, sourceKey } from './sources';
 
-/** `keep`: columns whose stored value stands when the new one is NULL (the writer doesn't know it, which says nothing). */
-function upsertSql(table: string, columns: string[], conflict: string[], keep: string[] = []): string {
+/**
+ * `keep`: columns whose stored value stands when the new one is NULL (the writer doesn't know it, which says nothing).
+ * `insertOnly`: columns written when the row is inserted, and never updated.
+ */
+function upsertSql(table: string, columns: string[], conflict: string[], keep: string[] = [], insertOnly: string[] = []): string {
   const updates = columns
-    .filter((c) => !conflict.includes(c))
+    .filter((c) => !conflict.includes(c) && !insertOnly.includes(c))
     .map((c) => (keep.includes(c) ? `${c} = coalesce(excluded.${c}, ${table}.${c})` : `${c} = excluded.${c}`));
   return `INSERT INTO ${table} (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')})
     ON CONFLICT(${conflict.join(', ')}) DO UPDATE SET ${updates.join(', ')} RETURNING id`;
@@ -179,6 +183,12 @@ export interface SyncStateRow {
   stars_full_at: string | null;
   /** The repo's star count when its last stars pass completed: what a source that can't probe stars compares with. */
   stars_count: number | null;
+  /** The repo's pushedAt when its branches were last listed (read before the listing: a push during it moves it on). */
+  branches_pushed_at: string | null;
+  /** When the branches were last listed through to the end or the cap; null: never. */
+  branches_synced_at: string | null;
+  /** 1 when that listing had every branch, 0 when it stopped at the cap (nothing was deleted). */
+  branches_complete: number | null;
   synced_at: string | null;
   last_error: string | null;
 }
@@ -376,6 +386,34 @@ export function deleteStarsExcept(db: Db, repoId: number, logins: string[]): num
     repoId,
     JSON.stringify(logins),
   ]).changes;
+}
+
+// ---------------------------------------------------------------------------
+// Branches
+// ---------------------------------------------------------------------------
+
+const UPSERT_BRANCH = upsertSql(
+  'branches',
+  ['repo_id', 'name', 'head_oid', 'committed_at', ...actorCols('author'), 'author_email', 'first_seen_at'],
+  ['repo_id', 'name'],
+  [],
+  ['first_seen_at'],
+);
+
+/**
+ * Writes a branch as listed: its head and the head commit's date and author replace what was stored, and a branch the
+ * repo didn't have is first seen `now` (a branch deleted and pushed again is new again).
+ */
+export function upsertBranch(db: Db, repoId: number, b: BranchRecord, now: string): void {
+  db.get(UPSERT_BRANCH, [repoId, b.name, b.headOid, b.committedAt, ...actorVals(b.author), b.author?.email ?? null, now]);
+}
+
+/**
+ * After a complete listing of the repo's branches (never a capped one, which can't tell): removes the stored branches
+ * it didn't list, deleted since. Returns the number removed.
+ */
+export function deleteBranchesExcept(db: Db, repoId: number, names: string[]): number {
+  return db.run('DELETE FROM branches WHERE repo_id = ? AND name NOT IN (SELECT value FROM json_each(?))', [repoId, JSON.stringify(names)]).changes;
 }
 
 /** Numbers of the PRs / issues we have stored as open for a repo. */

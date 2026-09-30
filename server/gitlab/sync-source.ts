@@ -1,4 +1,4 @@
-import type { CommitRecord, IssueRecord, PrRecord, ReleaseRecord, RepoProbe, RepoRecord, StarRecord } from '../db/records';
+import type { BranchRecord, CommitRecord, IssueRecord, PrRecord, ReleaseRecord, RepoProbe, RepoRecord, StarRecord } from '../db/records';
 import { isFatalSourceError, SourceError } from '../provider/errors';
 import type {
   BackfillCounts,
@@ -19,6 +19,7 @@ import type {
 import { notFound, unavailable, unreadable } from './access';
 import { GitLabClient } from './client';
 import {
+  mapBranch,
   mapCandidate,
   mapCommit,
   mapIssue,
@@ -59,6 +60,7 @@ import type {
   ProjectData,
   ProjectLookupData,
   ReleasesData,
+  RestBranch,
   RestCommit,
   RestIssue,
   RestProject,
@@ -84,6 +86,7 @@ const CANDIDATE_PAGE = 100;
 const SUGGESTED = 8;
 const COMMIT_PAGE = 100;
 const STAR_PAGE = 100;
+const BRANCH_PAGE = 100;
 /** Most starrers listed in one round; beyond, they're paged newest first (the sync doesn't diff unstars past 3000). */
 const MAX_STARS = 3000;
 /** Listings of a project's starrers tried before giving up on one whose count keeps moving. */
@@ -116,6 +119,8 @@ export class GitLabSyncSource implements SyncSource {
   readonly probesStars = false;
   /** A commit doesn't say which MR brought it (prNumber is null). */
   readonly linksCommits = false;
+  /** pushedAt is the default branch's head commit date (mapProject): a push to another branch doesn't move it. */
+  readonly pushedAtCoversBranches = false;
   private readonly transport: GitLabTransport;
   private readonly graphql: GitLabClient;
   private readonly rest: GitLabRestClient;
@@ -235,7 +240,8 @@ export class GitLabSyncSource implements SyncSource {
    * Every section's request settles before the round does, failed or not: the sync's pool starts another repo when a
    * round ends, so a round that failed at its first error would leave its other requests (and their retries) running
    * past the pool's cap. A failed round fails with a token problem first, then a rate limit (both stop the sync), else
-   * the first failure.
+   * the first failure. The branches never fail it on their own: they are optional work, listed again next sync, so a
+   * failure of theirs that doesn't stop the sync is their page's `failed`, and the round's other sections are written.
    */
   async round(repo: RepoRecord, req: RoundRequest): Promise<RoundResult> {
     const out: RoundResult = {};
@@ -249,6 +255,14 @@ export class GitLabSyncSource implements SyncSource {
         req.openIssues && this.issues(repo, req.openIssues.after, 'opened', 'created').then((p) => (out.openIssues = p)),
         req.releases && this.releases(repo, req.releases.after).then((p) => (out.releases = p)),
         req.stars && this.stars(repo, req.stars.after).then((p) => (out.stars = p)),
+        req.branches &&
+          this.branches(repo, req.branches.after).then(
+            (p) => (out.branches = p),
+            (err: unknown) => {
+              if (!(err instanceof GitLabError) || isFatalSourceError(err)) throw err;
+              out.branches = { items: [], hasMore: false, endCursor: null, failed: err.message };
+            },
+          ),
       ].map((section) => section && section.catch((err: unknown) => void failures.push(err))),
     );
     if (failures.length) {
@@ -393,6 +407,22 @@ export class GitLabSyncSource implements SyncSource {
     });
     const next = res.body.length > 0 ? res.nextPage : null;
     return { items: res.body.map((i) => mapIssue(i, this.base)), hasMore: next !== null, endCursor: next === null ? null : String(next) };
+  }
+
+  /**
+   * The project's branches, the default one included, 100 a page, most recently updated first: GitLab's code has
+   * `sort=updated_desc`, its docs don't (they say by name, which an instance that ignores it goes by). The cursor is
+   * the next page number. Offset pages have a gap, as issues() do: a branch deleted from the pages already read shifts
+   * the rest up, and one is skipped this time; so is one pushed to mid-walk, which moves to the front, among the pages
+   * read. The complete listing then drops it, and the next sync, which lists them all again, brings it back (first
+   * seen anew). A listing of one page has no gap.
+   */
+  private async branches(repo: RepoRecord, after: string | null): Promise<Page<BranchRecord>> {
+    const res = await this.rest.page<RestBranch[]>(`/projects/${projectId(repo)}/repository/branches`, {
+      query: { per_page: BRANCH_PAGE, sort: 'updated_desc', page: after ? pageCursor(after) : 1 },
+    });
+    const next = res.body.length > 0 ? res.nextPage : null;
+    return { items: res.body.map(mapBranch), hasMore: next !== null, endCursor: next === null ? null : String(next) };
   }
 
   /** Upcoming releases (release date ahead) are left out like drafts, but count for `oldestCreatedAt`. */

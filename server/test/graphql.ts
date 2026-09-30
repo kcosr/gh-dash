@@ -1,10 +1,10 @@
 // A small GitHub GraphQL API for tests that run whole syncs (the manager, the HTTP API) or a GitHubSyncSource: the
 // viewer's own repositories and other owners' ones, answered by name or node id, with the pull requests, issues,
-// commits, releases and stargazers a test gives them (none by default). Connections page by their `first` and `after`
-// (cursors are item offsets); `pageSize` makes every page smaller, to walk the cursors.
+// commits, releases, stargazers and branches a test gives them (none by default). Connections page by their `first`
+// and `after` (cursors are item offsets); `pageSize` makes every page smaller, to walk the cursors.
 // Serve it with fakeGitHub({ '/graphql': gql.handler }) from ./github.
 
-import type { GqlCommit, GqlError, GqlIssue, GqlProbe, GqlPullRequest, GqlRelease, GqlRepo, GqlStarEdge } from '../github/types';
+import type { GqlBranch, GqlCommit, GqlError, GqlIssue, GqlProbe, GqlPullRequest, GqlRelease, GqlRepo, GqlStarEdge } from '../github/types';
 import type { Handler } from './github';
 
 export type RepoNode = GqlRepo & GqlProbe & { viewerPermission?: string };
@@ -62,6 +62,12 @@ export function releaseNode(key: string, tag: string, at: string, over: Partial<
 
 export const starEdge = (login: string, at: string): GqlStarEdge => ({ starredAt: at, node: { login, name: null, avatarUrl: null } });
 
+/** A branch whose head is `c` repeated, committed `at` by `login` (null: an author GitHub linked to no account). */
+export function branchNode(name: string, c: string, at: string, login: string | null = 'someone'): GqlBranch {
+  const email = `${login ?? 'Nobody'}@Example.com`;
+  return { name, target: { oid: c.repeat(40).slice(0, 40), committedDate: at, author: { name: login ?? 'Nobody', email, avatarUrl: null, user: login ? { login, name: null } : null } } };
+}
+
 export function fakeGraphQL() {
   const state = {
     viewer: { id: 'U_alice', login: 'alice', name: 'Alice' as string | null, avatarUrl: null as string | null },
@@ -75,6 +81,8 @@ export function fakeGraphQL() {
     commits: {} as Record<string, GqlCommit[]>,
     releases: {} as Record<string, GqlRelease[]>,
     stars: {} as Record<string, GqlStarEdge[]>,
+    /** A repository's branches, by name (GitHub's order). */
+    branches: {} as Record<string, GqlBranch[]>,
     /** PRs and issues transferred to another repository: `<key>#<number>` → its key now (a recheck finds them there). */
     moved: {} as Record<string, string>,
     /** When set, no page holds more than this many items. */
@@ -93,6 +101,8 @@ export function fakeGraphQL() {
     size: { commits: 240, prs: 60 as number | null, issues: 12 as number | null, releases: 4 },
     /** Keys of repositories the viewer contributed to (RepoSuggestions). */
     suggested: [] as string[],
+    /** What every answer says of the token's GraphQL budget. */
+    rateLimit: { ...RATE },
   };
   const all = () => [...state.owned, ...state.others];
   const find = (idOrKey: string) => all().find((r) => r.id === idOrKey || r.nameWithOwner.toLowerCase() === idOrKey.toLowerCase()) ?? null;
@@ -141,6 +151,7 @@ export function fakeGraphQL() {
       ...(v.withOpenIssues ? { openIssues: paged(issues.filter((i) => i.state === 'OPEN'), 50, v.openIssuesAfter) } : {}),
       ...(v.withReleases ? { releases: paged(state.releases[key] ?? [], 20, v.releasesAfter) } : {}),
       ...(v.withStars ? (({ nodes, pageInfo }) => ({ stargazers: { totalCount: stars.length, pageInfo, edges: nodes } }))(paged(stars, 100, v.starsAfter)) : {}),
+      ...(v.withBranches ? { branches: paged(state.branches[key] ?? [], 100, v.branchesAfter) } : {}),
     };
   };
 
@@ -216,7 +227,7 @@ export function fakeGraphQL() {
         return { status: 200, body: { errors: [{ message: `fakeGraphQL: no ${op}` }] } };
     }
     state.ops.push(`${op}${v.id ? `:${String(v.id)}` : v.owner ? `:${String(v.owner)}/${String(v.name)}` : ''}`);
-    return { body: { data: { ...data, rateLimit: RATE }, ...(errors.length ? { errors } : {}) } };
+    return { body: { data: { ...data, rateLimit: state.rateLimit }, ...(errors.length ? { errors } : {}) } };
   };
   return { state, handler };
 }

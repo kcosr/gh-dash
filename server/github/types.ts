@@ -211,6 +211,12 @@ export interface GqlStarEdge {
   node: { login: string; name: string | null; avatarUrl: string | null };
 }
 
+/** A ref of refs/heads/. Its target is a commit (the fields are there) unless the ref is odd; null if it has none. */
+export interface GqlBranch {
+  name: string;
+  target: { oid: string; committedDate?: string; author?: GqlGitActor | null } | null;
+}
+
 export interface Connection<T> {
   pageInfo: GqlPageInfo;
   nodes: T[];
@@ -226,6 +232,7 @@ export interface RepoDetailData {
     openIssues?: Connection<GqlIssue>;
     releases?: Connection<GqlRelease>;
     stargazers?: { totalCount: number; pageInfo: GqlPageInfo; edges: GqlStarEdge[] };
+    branches?: Connection<GqlBranch | null>;
   } | null;
   rateLimit: GqlRateLimit;
 }

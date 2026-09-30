@@ -3,7 +3,7 @@
 // the token reads, bob/gone one it can't see.
 
 import { fakeGitHub, page, type Handler, type Reply } from '../test/github';
-import { commitNode, fakeGraphQL, issueNode, prNode, releaseNode, repoNode, starEdge } from '../test/graphql';
+import { branchNode, commitNode, fakeGraphQL, issueNode, prNode, releaseNode, repoNode, starEdge } from '../test/graphql';
 import { describeSyncSourceContract } from '../test/sync-source-contract';
 import { GitHubSyncSource } from './sync-source';
 
@@ -42,6 +42,7 @@ function githubWorld() {
   gql.state.commits[app] = ['a', 'b', 'c', 'd', 'e'].map((c, i) => commitNode(app, c, at(25 - i), c === 'b' ? 1 : null));
   gql.state.releases[app] = [releaseNode(app, 'v1.2', at(24), { isDraft: true }), releaseNode(app, 'v1.1', at(20)), releaseNode(app, 'v1.0', at(10))];
   gql.state.stars[app] = [starEdge('dave', at(22)), starEdge('carol', at(15)), starEdge('erin', at(2))];
+  gql.state.branches[app] = [branchNode('fix', 'b', at(21)), branchNode('main', 'a', at(25)), branchNode('topic', 'f', at(24), null)];
   gql.state.suggested = ['carol/lib'];
 
   /** RepoProbes requests naming one of these node ids fail (a GraphQL error that isn't fatal). */

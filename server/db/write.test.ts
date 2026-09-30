@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { type Db, openDb } from './db';
-import type { CommitRecord, PrRecord, RepoRecord } from './records';
+import type { BranchRecord, CommitRecord, PrRecord, RepoRecord } from './records';
 import { GITHUB } from '../test/seed';
+import { removeRepo } from './repos';
 import { ensureSource } from './sources';
 import {
   addManual,
+  deleteBranchesExcept,
   JOIN_BRANCH_GROUP,
   LEAVE_BRANCH_GROUP,
   linkCommitsToPrs,
@@ -13,6 +15,7 @@ import {
   refreshManual,
   releaseKey,
   storedRepoRecord,
+  upsertBranch,
   upsertCommit,
   upsertOwned,
   upsertPr,
@@ -512,5 +515,59 @@ describe('upsertPr: cross_repo and branch groups', () => {
     const { db } = repos();
     const plan = db.all<{ detail: string }>(`EXPLAIN QUERY PLAN ${JOIN_BRANCH_GROUP}`, ['b', 1, 1, null, null]).map((r) => r.detail);
     expect(plan).toEqual([expect.stringMatching(/^SEARCH comment_threads USING INDEX comment_threads_target \(repo_id=\? AND pr_number=\?\)$/)]);
+  });
+});
+
+describe('branches', () => {
+  const sha = (c: string) => c.repeat(40).slice(0, 40);
+  const alice = { login: 'alice', name: 'Alice A', email: 'alice@example.com', avatarUrl: 'https://avatars.example/alice' };
+  const branch = (name: string, c: string, over: Partial<BranchRecord> = {}): BranchRecord => ({ name, headOid: sha(c), committedAt: '2026-09-20T00:00:00Z', author: alice, ...over });
+  const rows = (db: Db, repoId: number) => db.all('SELECT name, head_oid, committed_at, author_login, author_name, author_email, author_avatar, first_seen_at FROM branches WHERE repo_id = ? ORDER BY name', [repoId]);
+  const names = (db: Db, repoId: number) => db.all<{ name: string }>('SELECT name FROM branches WHERE repo_id = ? ORDER BY name', [repoId]).map((b) => b.name);
+
+  it('writes the head and its commit as listed, and keeps when the branch was first seen', () => {
+    const db = openDb(':memory:');
+    const app = upsertOwned(db, GITHUB, rec('alice/app', 'R_app'), NOW);
+    upsertBranch(db, app, branch('topic', 'a'), '2026-09-20T12:00:00Z');
+    upsertBranch(db, app, branch('bare', 'b', { committedAt: null, author: null }), '2026-09-20T12:00:00Z');
+    expect(rows(db, app)).toEqual([
+      { name: 'bare', head_oid: sha('b'), committed_at: null, author_login: null, author_name: null, author_email: null, author_avatar: null, first_seen_at: '2026-09-20T12:00:00Z' },
+      {
+        name: 'topic', head_oid: sha('a'), committed_at: '2026-09-20T00:00:00Z', author_login: 'alice', author_name: 'Alice A', author_email: 'alice@example.com',
+        author_avatar: 'https://avatars.example/alice', first_seen_at: '2026-09-20T12:00:00Z',
+      },
+    ]);
+    // Pushed to since, by someone GitLab knows by name and email only.
+    const bob = { login: null, name: 'Bob B', email: 'bob@example.com', avatarUrl: null };
+    upsertBranch(db, app, branch('topic', 'c', { committedAt: '2026-09-28T00:00:00Z', author: bob }), NOW);
+    expect(rows(db, app)[1]).toEqual({
+      name: 'topic', head_oid: sha('c'), committed_at: '2026-09-28T00:00:00Z', author_login: null, author_name: 'Bob B', author_email: 'bob@example.com',
+      author_avatar: null, first_seen_at: '2026-09-20T12:00:00Z',
+    });
+  });
+
+  it("deletes the repo's branches a listing didn't return, and no other repo's", () => {
+    const db = openDb(':memory:');
+    const app = upsertOwned(db, GITHUB, rec('alice/app', 'R_app'), NOW);
+    const lib = upsertOwned(db, GITHUB, rec('alice/lib', 'R_lib'), NOW);
+    for (const name of ['main', 'topic', 'gone']) upsertBranch(db, app, branch(name, 'a'), NOW);
+    upsertBranch(db, lib, branch('gone', 'a'), NOW);
+    expect(deleteBranchesExcept(db, app, ['main', 'topic', 'never-stored'])).toBe(1);
+    expect([names(db, app), names(db, lib)]).toEqual([['main', 'topic'], ['gone']]);
+    // Branch names are case-sensitive, as git's are.
+    expect(deleteBranchesExcept(db, app, ['main', 'Topic'])).toBe(1);
+    expect(names(db, app)).toEqual(['main']);
+    expect(deleteBranchesExcept(db, app, [])).toBe(1);
+    expect(names(db, app)).toEqual([]);
+  });
+
+  it('go with their repo when it is no longer tracked', () => {
+    const db = openDb(':memory:');
+    const app = upsertOwned(db, GITHUB, rec('alice/app', 'R_app'), NOW);
+    const lib = upsertOwned(db, GITHUB, rec('alice/lib', 'R_lib'), NOW);
+    upsertBranch(db, app, branch('main', 'a'), NOW);
+    upsertBranch(db, lib, branch('main', 'a'), NOW);
+    expect(removeRepo(db, app)).toBe(true);
+    expect(db.all('SELECT repo_id, name FROM branches')).toEqual([{ repo_id: lib, name: 'main' }]);
   });
 });

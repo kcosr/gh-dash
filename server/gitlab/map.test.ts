@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import branchesFixture from '../test/fixtures/gitlab/branches.json';
 import commitsFixture from '../test/fixtures/gitlab/commits.json';
 import issuesFixture from '../test/fixtures/gitlab/issues.json';
 import memberProjectsFixture from '../test/fixtures/gitlab/member-projects.json';
@@ -13,6 +14,7 @@ import viewerFixture from '../test/fixtures/gitlab/viewer.json';
 import { BASE } from '../test/gitlab';
 import {
   labelColor,
+  mapBranch,
   mapCandidate,
   mapCommit,
   mapIssue,
@@ -34,6 +36,7 @@ import type {
   ProbesData,
   ProjectData,
   ReleasesData,
+  RestBranch,
   RestCommit,
   RestIssue,
   RestProject,
@@ -50,6 +53,7 @@ const releases = (releasesFixture as unknown as ReleasesData).project!.releases!
 const issues = issuesFixture as unknown as RestIssue[];
 const commits = commitsFixture as unknown as RestCommit[];
 const starrers = starrersFixture as unknown as RestStarrer[];
+const branches = branchesFixture as unknown as RestBranch[];
 
 describe('GitLab → rows: helpers', () => {
   it('normalizes timestamps to UTC seconds, whatever offset or precision GitLab sends', () => {
@@ -199,7 +203,7 @@ describe('GitLab → rows: merge requests', () => {
   });
 });
 
-describe('GitLab → rows: issues, commits, releases, stars', () => {
+describe('GitLab → rows: issues, commits, releases, stars, branches', () => {
   it('maps issues from REST, with who closed them', () => {
     const [open, closed] = issues.map((i) => mapIssue(i, BASE));
     expect(open).toEqual({
@@ -254,5 +258,17 @@ describe('GitLab → rows: issues, commits, releases, stars', () => {
       { login: 'carol', name: 'Carol C', avatarUrl: 'https://secure.gravatar.com/avatar/ca401', starredAt: '2026-09-20T00:00:00Z' },
       { login: 'dave', name: null, avatarUrl: 'https://gitlab.example.com/gitlab/uploads/-/system/user/avatar/6/avatar.png', starredAt: '2026-09-25T06:00:00Z' },
     ]);
+  });
+
+  it("maps branches: the head commit's date in UTC, and its author as a name and a lower-cased email, with no login", () => {
+    const [spike, , main] = branches.map(mapBranch);
+    expect(spike).toEqual({
+      name: 'spike/search', headOid: '5eac5eac5eac5eac5eac5eac5eac5eac5eac5eac', committedAt: '2026-09-27T06:15:00Z',
+      author: { login: null, name: 'Bob B', email: 'bob@example.com', avatarUrl: null },
+    });
+    expect(main).toMatchObject({ name: 'main', headOid: '3'.repeat(40), committedAt: '2026-09-21T10:00:00Z', author: { email: 'alice@example.com' } });
+    // A commit without a date or an author (GitLab's schema has them nullable): null, not a made-up time.
+    const bare = { ...branches[0]!, commit: { ...branches[0]!.commit, committed_date: null as unknown as string, author_name: null, author_email: null } };
+    expect(mapBranch(bare)).toMatchObject({ committedAt: null, author: { login: null, name: null, email: null, avatarUrl: null } });
   });
 });

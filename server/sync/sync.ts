@@ -10,6 +10,7 @@ import { resolveRepo } from '../db/repo-key';
 import { type ClaimedViewer, GITHUB_SOURCE_ID, type SourceRow, sourceKey, sourceLabel, tryClaimViewer } from '../db/sources';
 import {
   applyProbe,
+  deleteBranchesExcept,
   deleteItem,
   deleteStarsExcept,
   getSyncState,
@@ -25,6 +26,7 @@ import {
   storedStarInfo,
   type SyncStateRow,
   updateSyncState,
+  upsertBranch,
   upsertCommit,
   upsertIssue,
   upsertPr,
@@ -40,6 +42,21 @@ import type { RepoRead, RoundRequest, RoundResult, SyncSource } from '../provide
 
 /** Repos with more stars than this are never fully re-listed (unstar detection is skipped for them). */
 const FULL_STAR_DIFF_MAX = 3000;
+/**
+ * A repo's branches are listed up to this many (10 pages): beyond, the listing stops, and is incomplete. What it read
+ * is written, but nothing is deleted (it can't tell what was), and the read side asks the host itself for such a repo.
+ */
+export const BRANCHES_MAX = 1000;
+/** A branch listing is read again once it is a day old, less up to this much (6 hours) by repo id: see relistAge. */
+const RELIST_SPREAD = DAY_MS / 4;
+/** The golden ratio's fractional part: its multiples, taken modulo 1, spread consecutive repo ids evenly. */
+const GOLDEN = 0.6180339887498949;
+/**
+ * Optional work waits for a later sync while the source's rate limit has less than this share of its budget left (500
+ * of GitHub's 5000 points an hour): the run stops, fatally, once the budget runs out, and the sections that must be
+ * read matter more. The branch listing is optional: listing it later loses nothing.
+ */
+const SPARE_BUDGET = 0.1;
 /**
  * Repos added by hand re-read per refresh() call, and calls at a time. Each call's answers are written as they land,
  * so a fatal failure of one leaves the others' written.
@@ -67,9 +84,10 @@ export interface SyncProgress {
 
 export interface SyncResult {
   repos: number;
+  /** New commits, PRs, issues, releases and stars (not branches: a repo's first listing would count every one). */
   newItems: number;
   errors: string[];
-  /** Forks whose commit history was not synced because settings.includeForks is off. */
+  /** Forks whose commit history and branches were not synced because settings.includeForks is off. */
   forksSkipped: number;
 }
 
@@ -94,6 +112,8 @@ export interface RepoPlan {
   releases: { stopAtKnown: boolean } | null;
   /** full: list every stargazer and delete the ones that disappeared (unstars). */
   stars: { mode: 'incremental' | 'full' } | null;
+  /** List every branch; `pushedAt`: the repo's, as the plan read it, which the listing is recorded at. */
+  branches: { pushedAt: string | null } | null;
 }
 
 export interface PlanContext {
@@ -105,7 +125,19 @@ export interface PlanContext {
    * the star count moving since the last stars pass (sync_state.stars_count).
    */
   probesStars: boolean;
-  /** Fork commit history (often a large upstream history) is only synced when forks are in scope. */
+  /**
+   * Whether RepoRecord.pushedAt moves with a push to any branch (SyncSource.pushedAtCoversBranches). When not, nothing
+   * tells the branches moved, and they are listed every sync.
+   */
+  pushedAtCoversBranches: boolean;
+  /** The source's rate limit runs low (SPARE_BUDGET): optional work (the branch listing) waits for a later sync. */
+  rateLimitLow: boolean;
+  /**
+   * The repo was read in part (RepoRead.problem). The fields denied are, as a rule, its code's, which a branch listing
+   * reads too, and a section that fails fails its whole round (GitHub's is one request): its branches aren't listed.
+   */
+  readInPart: boolean;
+  /** Fork commit history and branches (often a large upstream's) are only synced when forks are in scope. */
   includeForks: boolean;
   backfillStart: string;
   now: number;
@@ -148,13 +180,43 @@ export function planRepo(r: RepoRecord, probe: RepoProbe | null, s: SyncStateRow
     else if (starred) stars = { mode: 'incremental' };
   }
 
+  // Branches are listed whole or not at all (only a whole listing tells which were deleted): on a full sync, the first
+  // time, and then whenever they may have moved. What that costs a sync:
+  // - GitHub: for a repo pushed to since (pushedAt moved), no request: the section rides the commits round the push
+  //   brings anyway (planned by the same pushedAt), at next to no points (queries.ts, REPO_DETAIL); past 100 branches,
+  //   a request (a point) per 100 more that no other section pages along with. For a repo nothing moved in, a request
+  //   (a point) about once a day (relistAge).
+  // - GitLab, whose pushedAt doesn't cover branches: a REST request per repo (and per 100 more branches) every sync,
+  //   made alongside the round's others when there are any.
+  // - Both: a listing per repo the first time (every repo, on the first sync that lists branches), and none while the
+  //   rate limit runs low.
+  // An archived repo is listed once, then on full syncs only (syncRepo reads nothing else of one it synced).
+  let branches: RepoPlan['branches'] = null;
+  if (r.defaultBranch && (!r.isFork || ctx.includeForks) && !ctx.rateLimitLow && !ctx.readInPart) {
+    const listed = s.branches_synced_at ? Date.parse(s.branches_synced_at) : null;
+    // A pushedAt that covers every branch tells whether any moved; without one, they may have moved any time.
+    const moved = !ctx.pushedAtCoversBranches || r.pushedAt !== s.branches_pushed_at;
+    if (full || listed === null || (!r.isArchived && (moved || ctx.now - listed >= relistAge(s.repo_id)))) branches = { pushedAt: r.pushedAt };
+  }
+
   return {
     commits,
     prs: byUpdatedAt(s.prs_hwm, probe?.latestPrUpdatedAt),
     issues: byUpdatedAt(s.issues_hwm, probe?.latestIssueUpdatedAt),
     releases,
     stars,
+    branches,
   };
+}
+
+/**
+ * How old a repo's branch listing gets before it is read again whatever else says (planRepo): a day, less up to
+ * RELIST_SPREAD by repo id. Repos a first sync listed together come due over those hours rather than in one sync a
+ * day later, and their cycles, of different lengths, drift further apart. A branch deleted without moving pushedAt
+ * leaves the list within a day.
+ */
+export function relistAge(repoId: number): number {
+  return DAY_MS - Math.round(((repoId * GOLDEN) % 1) * RELIST_SPREAD);
 }
 
 interface RepoTarget {
@@ -192,7 +254,8 @@ export async function runSync(deps: SyncDeps, req: SyncRequest = {}): Promise<Sy
     deps.onProgress?.({ ...progress });
     try {
       // Await first: `newItems += await …` would read newItems before the await and lose concurrent updates.
-      const added = await syncRepo(deps, t, { full, includeForks: settings.includeForks, backfillStart, nowMs, nowIso });
+      const run = { full, includeForks: settings.includeForks, backfillStart, nowMs, nowIso };
+      const added = await syncRepo(deps, t, run, (line) => errors.push(`${key}: ${line}`));
       writeTx(db, t, () => updateSyncState(db, t.id, t.problem ? { last_error: t.problem } : { synced_at: nowIso, last_error: null }));
       newItems += added;
       if (t.problem) errors.push(`${key}: ${t.problem}`);
@@ -400,32 +463,48 @@ function answered<K extends Section>(res: RoundResult, section: K): NonNullable<
   return page as NonNullable<RoundResult[K]>;
 }
 
-/** Syncs one repo's sections, paging all active sections together in one round per page. Returns new items. */
-async function syncRepo(deps: SyncDeps, t: RepoTarget, run: RunContext): Promise<number> {
+/**
+ * Syncs one repo's sections, paging all active sections together in one round per page. Returns new items. `warn`
+ * reports what failed without failing the repo (a branch listing the source couldn't read).
+ */
+async function syncRepo(deps: SyncDeps, t: RepoTarget, run: RunContext, warn: (line: string) => void): Promise<number> {
   const { db, source } = deps;
   const { id, record: r } = t;
   const state = getSyncState(db, id);
-  if (r.isArchived && state.synced_at && !run.full) return 0;
+  // An archived repo doesn't change: once synced, only a full sync reads it again, but for its branches, which are
+  // listed once (a repo synced before they were has none). planRepo plans that listing; nothing else of it is read.
+  const settled = r.isArchived && !!state.synced_at && !run.full;
+  if (settled && state.branches_synced_at) return 0;
 
-  const plan = planRepo(r, t.probe, state, {
+  const rl = source.rateLimit;
+  let plan = planRepo(r, t.probe, state, {
     full: run.full,
     syncStars: t.trackedBy === 'owned',
     probesStars: source.probesStars,
+    pushedAtCoversBranches: source.pushedAtCoversBranches,
+    rateLimitLow: !!rl && rl.remaining < rl.limit * SPARE_BUDGET,
+    readInPart: !!t.problem,
     includeForks: run.includeForks,
     backfillStart: run.backfillStart,
     now: run.nowMs,
     storedStars: storedStarInfo(db, id),
     isKnownRelease: (tag) => releaseExists(db, id, tag),
   });
+  if (settled) {
+    if (!plan.branches) return 0;
+    plan = { commits: null, prs: null, issues: null, releases: null, stars: null, branches: plan.branches };
+  }
 
   const active = new Set<Section>((Object.keys(plan) as (keyof RepoPlan)[]).filter((k) => plan[k] !== null));
   const cursor: Record<Section, string | null> = {
-    commits: null, prs: null, issues: null, openPrs: null, openIssues: null, releases: null, stars: null,
+    commits: null, prs: null, issues: null, openPrs: null, openIssues: null, releases: null, stars: null, branches: null,
   };
   let prsHwm = run.full ? null : state.prs_hwm;
   let issuesHwm = run.full ? null : state.issues_hwm;
   let starsMode = plan.stars?.mode ?? 'incremental';
   let starLogins: string[] = [];
+  /** Every branch the listing returned so far. */
+  const branchNames: string[] = [];
   let newItems = 0;
   /** The default-branch walk: its first (newest) commit, and every oid it returned. */
   const commitWalk: { head: string | null | undefined; seen: string[] } = { head: undefined, seen: [] };
@@ -455,8 +534,10 @@ async function syncRepo(deps: SyncDeps, t: RepoTarget, run: RunContext): Promise
       active.add(o.section);
     }
   };
-  if (!plan.prs || run.full) startOpenPassIfNeeded(open.prs);
-  if (!plan.issues || run.full) startOpenPassIfNeeded(open.issues);
+  if (!settled) {
+    if (!plan.prs || run.full) startOpenPassIfNeeded(open.prs);
+    if (!plan.issues || run.full) startOpenPassIfNeeded(open.issues);
+  }
 
   while (active.size > 0) {
     // What this round asks for. An open pass started while its answer is read waits for the next round.
@@ -590,6 +671,26 @@ async function syncRepo(deps: SyncDeps, t: RepoTarget, run: RunContext): Promise
           starLogins = [];
           cursor.stars = null;
           active.add('stars');
+        }
+      }
+
+      if (asked.has('branches')) {
+        const page = answered(res, 'branches');
+        if (page.failed !== undefined) {
+          // Not listed this time (GitLab, failing for a reason that doesn't stop the sync): what is stored stays, and
+          // the listing isn't recorded, so the next sync plans it again.
+          active.delete('branches');
+          warn(`branches: ${page.failed}`);
+        } else {
+          for (const b of page.items) {
+            upsertBranch(db, id, b, run.nowIso);
+            branchNames.push(b.name);
+          }
+          const capped = page.hasMore && branchNames.length >= BRANCHES_MAX;
+          advance('branches', page.hasMore && !capped, page.endCursor, () => {
+            if (!capped) deleteBranchesExcept(db, id, branchNames);
+            updateSyncState(db, id, { branches_pushed_at: plan.branches!.pushedAt, branches_synced_at: run.nowIso, branches_complete: Number(!capped) });
+          });
         }
       }
     });

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { RepoRecord } from '../db/records';
 import { accessLost } from '../provider/access';
 import type { RoundResult } from '../provider/types';
+import branchesFixture from '../test/fixtures/gitlab/branches.json';
 import commitsFixture from '../test/fixtures/gitlab/commits.json';
 import issuesFixture from '../test/fixtures/gitlab/issues.json';
 import lookupFixture from '../test/fixtures/gitlab/lookup.json';
@@ -373,13 +374,14 @@ describe('GitLabSyncSource: rounds', () => {
       '/api/v4/projects/11/issues': page(issuesFixture, null),
       '/api/v4/projects/11/repository/commits': page(commitsFixture, null),
       '/api/v4/projects/11/starrers': page(starrersFixture, null, { 'x-total': '2' }),
+      '/api/v4/projects/11/repository/branches': page(branchesFixture, null),
     });
     const all = await source.round(APP, {
       commits: { after: null, since: '2025-09-29T00:00:00Z' }, prs: { after: null }, issues: { after: null }, openPrs: { after: null },
-      openIssues: { after: null }, releases: { after: null }, stars: { after: null },
+      openIssues: { after: null }, releases: { after: null }, stars: { after: null }, branches: { after: null },
     });
-    expect(Object.keys(all).sort()).toEqual(['commits', 'issues', 'openIssues', 'openPrs', 'prs', 'releases', 'stars']);
-    expect(requests).toHaveLength(7);
+    expect(Object.keys(all).sort()).toEqual(['branches', 'commits', 'issues', 'openIssues', 'openPrs', 'prs', 'releases', 'stars']);
+    expect(requests).toHaveLength(8);
     requests.length = 0;
     expect(Object.keys(await source.round(APP, { releases: { after: null } }))).toEqual(['releases']);
     expect(requests).toEqual(['graphql Releases']);
@@ -634,6 +636,40 @@ describe('GitLabSyncSource: rounds', () => {
       // A binary search: a handful of pages, whatever the estimate.
       expect(requests.length).toBeLessThanOrEqual(12);
     }
+  });
+
+  it('lists branches over REST, most recently updated first, 100 a page with page numbers as cursors', async () => {
+    const { source, requests } = setup({
+      '/api/v4/projects/11/repository/branches': (req) => (req.url.searchParams.get('page') === '1' ? page(branchesFixture, 2) : page([], null)),
+    });
+    const first = (await source.round(APP, { branches: { after: null } })).branches!;
+    expect(first.items.map((b) => [b.name, b.committedAt, b.author?.email])).toEqual([
+      ['spike/search', '2026-09-27T06:15:00Z', 'bob@example.com'],
+      ['settings', '2026-09-26T07:00:00Z', 'alice@example.com'],
+      ['main', '2026-09-21T10:00:00Z', 'alice@example.com'],
+      ['fix', '2026-09-19T14:30:00Z', 'alice@work.example'],
+    ]);
+    expect([first.hasMore, first.endCursor]).toEqual([true, '2']);
+    // GitLab offers a next page after a full one, which can be empty: that ends the listing.
+    expect((await source.round(APP, { branches: { after: '2' } })).branches).toEqual({ items: [], hasMore: false, endCursor: null });
+    expect(requests).toEqual([
+      '/api/v4/projects/11/repository/branches?per_page=100&sort=updated_desc&page=1',
+      '/api/v4/projects/11/repository/branches?per_page=100&sort=updated_desc&page=2',
+    ]);
+  });
+
+  it("fails no other section when the branches can't be listed: their page says why; a token problem fails the round", async () => {
+    const { source, routes, requests } = setup({
+      '/api/v4/projects/11/issues': page(issuesFixture, null),
+      '/api/v4/projects/11/repository/branches': { status: 404, body: { message: '404 Project Not Found' } },
+    });
+    const res = await source.round(APP, { issues: { after: null }, branches: { after: null } });
+    expect(res.issues!.items.map((i) => i.number)).toEqual([9, 3]);
+    expect(res.branches).toEqual({ items: [], hasMore: false, endCursor: null, failed: expect.stringContaining('404') });
+    expect(requests).toHaveLength(2);
+
+    routes['/api/v4/projects/11/repository/branches'] = { status: 401, body: { message: '401 Unauthorized' } };
+    expect(await fail(source.round(APP, { issues: { after: null }, branches: { after: null } }))).toMatchObject({ kind: 'auth', status: 401 });
   });
 
   it('uses the URL-encoded full path for REST when the node id is not a project id', async () => {

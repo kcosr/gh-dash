@@ -155,6 +155,35 @@
         { "starredAt": "2026-09-25T06:00:00Z", "node": { "login": "dave", "name": null, "avatarUrl": "https://avatars.example/dave" } },
         { "starredAt": "2026-09-20T00:00:00Z", "node": { "login": "carol", "name": "Carol C", "avatarUrl": "https://avatars.example/carol" } }
       ]
+    },
+    "branches": {
+      "pageInfo": { "hasNextPage": false, "endCursor": "b 3" },
+      "nodes": [
+        {
+          "name": "fix",
+          "target": {
+            "oid": "aaaa000000000000000000000000000000000000",
+            "committedDate": "2026-09-19T14:30:00Z",
+            "author": { "name": "Alice A", "email": "alice@example.com", "avatarUrl": "https://avatars.example/alice", "user": { "login": "alice", "name": "Alice A" } }
+          }
+        },
+        {
+          "name": "main",
+          "target": {
+            "oid": "1111111111111111111111111111111111111111",
+            "committedDate": "2026-09-21T10:00:00Z",
+            "author": { "name": "Alice A", "email": "alice@example.com", "avatarUrl": "https://avatars.example/alice", "user": { "login": "alice", "name": "Alice A" } }
+          }
+        },
+        {
+          "name": "spike/search",
+          "target": {
+            "oid": "cccc000000000000000000000000000000000000",
+            "committedDate": "2026-09-27T06:15:00Z",
+            "author": { "name": "Bob B", "email": "Bob@Example.com", "avatarUrl": null, "user": null }
+          }
+        }
+      ]
     }
   },
   "rateLimit": { "limit": 5000, "remaining": 4995, "resetAt": "2026-09-27T13:00:00Z", "cost": 3 }

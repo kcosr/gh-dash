@@ -1,6 +1,6 @@
 // The neutral sync over a GitLab source, end to end on the fake instance (test/gitlab-instance.ts): alice's own
 // projects keyed by host, projects added by hand, single-project runs, the commits merge requests landed, stars told by
-// the count moving, and a rejected token. sync.test.ts is the same engine over GitHub.
+// the count moving, branches listed every sync, and a rejected token. sync.test.ts is the same engine over GitHub.
 
 import { describe, expect, it } from 'vitest';
 import { type Db, openDb } from '../db/db';
@@ -9,6 +9,7 @@ import { ensureSource, GITHUB_SOURCE_ID, getSource } from '../db/sources';
 import { notFound } from '../gitlab/access';
 import { GitLabSyncSource } from '../gitlab/sync-source';
 import { reasonOf } from '../provider/access';
+import branchesFixture from '../test/fixtures/gitlab/branches.json';
 import commitsFixture from '../test/fixtures/gitlab/commits.json';
 import { BASE, graphqlErrors, type Handler, page } from '../test/gitlab';
 import { syncInstance } from '../test/gitlab-instance';
@@ -20,6 +21,8 @@ const HOUR = 3_600_000;
 const HOST = 'gitlab.example.com';
 const gid = (id: number) => `gid://gitlab/Project/${id}`;
 const sha = (c: string) => c.repeat(40).slice(0, 40);
+/** alice/app's branch listing: GitLab's pushedAt doesn't cover branches, so every sync lists them. */
+const BRANCHES = '/api/v4/projects/11/repository/branches?per_page=100&sort=updated_desc&page=1';
 
 function setup(over: Record<string, Handler> = {}) {
   const db = openDb(':memory:');
@@ -61,11 +64,12 @@ describe('a GitLab source', () => {
     });
     expect(db.get('SELECT stars_count FROM sync_state WHERE repo_id = ?', [app])).toEqual({ stars_count: 2 });
 
-    // Nothing moved: the list and the probes, nothing else. !2 is locked (being merged): it is open, and GitLab's probe
-    // counts it with the opened ones, so the open counts agree without listing and rechecking the open ones every sync.
+    // Nothing moved: the list, the probes and the branches (alice/corp.tools is empty), nothing else. !2 is locked
+    // (being merged): it is open, and GitLab's probe counts it with the opened ones, so the open counts agree without
+    // listing and rechecking the open ones every sync.
     expect(db.all(`SELECT number FROM pull_requests WHERE repo_id = ? AND state = 'open' ORDER BY number`, [app])).toEqual([{ number: 2 }, { number: 7 }]);
     expect(await sync({}, NOW + HOUR)).toMatchObject({ newItems: 0, errors: [] });
-    expect(take()).toEqual(['graphql OwnedProjects', 'graphql Probes']);
+    expect(take()).toEqual(['graphql OwnedProjects', 'graphql Probes', BRANCHES]);
   });
 
   it("stores whether a merge request's source branch is in another project, and gives the threads a same-project one had before that was known their branch", async () => {
@@ -93,11 +97,11 @@ describe('a GitLab source', () => {
     take();
     fake.owned.projects.nodes[0]!.starCount = 3;
     expect(await sync({}, NOW + HOUR)).toMatchObject({ errors: [] });
-    expect(take()).toEqual(['graphql OwnedProjects', 'graphql Probes', '/api/v4/projects/11/starrers?per_page=100&page=1']);
+    expect(take()).toEqual(['graphql OwnedProjects', 'graphql Probes', '/api/v4/projects/11/starrers?per_page=100&page=1', BRANCHES]);
     expect(db.get(`SELECT stars_count FROM sync_state s JOIN repos r ON r.id = s.repo_id WHERE r.key = '${HOST}/alice/app'`)).toEqual({ stars_count: 3 });
     // Asked once per move.
     await sync({}, NOW + 2 * HOUR);
-    expect(take()).toEqual(['graphql OwnedProjects', 'graphql Probes']);
+    expect(take()).toEqual(['graphql OwnedProjects', 'graphql Probes', BRANCHES]);
   });
 
   it('walks the commits when the head moved to a commit of the same time, and prunes one a force-push rewrote', async () => {
@@ -214,6 +218,7 @@ describe('a GitLab source', () => {
         [`/api/v4/projects/${id}/issues`, page([], null)],
         [`/api/v4/projects/${id}/starrers`, page([], null, { 'x-total': '0' })],
         [`/api/v4/projects/${id}/repository/commits`, page(commitsFixture, null)],
+        [`/api/v4/projects/${id}/repository/branches`, page([], null)],
       ]),
     );
     const fake = syncInstance(routes, { MergeRequests: () => graphqlErrors('Internal server error') });
@@ -236,6 +241,66 @@ describe('a GitLab source', () => {
     // One commits request per project in the pool at most, and none left running.
     expect(most).toBeLessThanOrEqual(3);
     expect(open).toBe(0);
+  });
+
+  it("lists every project's branches every sync, authors by email and dates in UTC, and drops the ones deleted", async () => {
+    const { db, fake, sync, take } = setup();
+    expect(await sync()).toMatchObject({ errors: [] });
+    const app = repoRow(db, `${HOST}/alice/app`)!.id;
+    expect(db.all('SELECT name, head_oid, committed_at, author_login, author_name, author_email, first_seen_at FROM branches WHERE repo_id = ? ORDER BY name', [app])).toEqual([
+      { name: 'fix', head_oid: 'aaaa000000000000000000000000000000000000', committed_at: '2026-09-19T14:30:00Z', author_login: null, author_name: 'Alice (laptop)', author_email: 'alice@work.example', first_seen_at: '2026-09-27T12:00:00Z' },
+      { name: 'main', head_oid: sha('3'), committed_at: '2026-09-21T10:00:00Z', author_login: null, author_name: 'Alice A', author_email: 'alice@example.com', first_seen_at: '2026-09-27T12:00:00Z' },
+      { name: 'settings', head_oid: sha('7'), committed_at: '2026-09-26T07:00:00Z', author_login: null, author_name: 'Alice A', author_email: 'alice@example.com', first_seen_at: '2026-09-27T12:00:00Z' },
+      { name: 'spike/search', head_oid: '5eac'.repeat(10), committed_at: '2026-09-27T06:15:00Z', author_login: null, author_name: 'Bob B', author_email: 'bob@example.com', first_seen_at: '2026-09-27T12:00:00Z' },
+    ]);
+    // Recorded at the project's pushedAt (its default branch's head commit date), which says nothing of the others.
+    expect(db.get('SELECT branches_pushed_at, branches_synced_at, branches_complete FROM sync_state WHERE repo_id = ?', [app])).toEqual({
+      branches_pushed_at: '2026-09-21T10:00:00Z', branches_synced_at: '2026-09-27T12:00:00Z', branches_complete: 1,
+    });
+    // alice/corp.tools is empty (no default branch): nothing to list.
+    expect(take().filter((r) => r.includes('/repository/branches'))).toEqual([BRANCHES]);
+
+    // spike/search deleted, settings pushed to: the default branch didn't move, and they are listed anyway.
+    const pushed = { ...structuredClone(branchesFixture[1]!), commit: { ...branchesFixture[1]!.commit, id: sha('8'), committed_date: '2026-09-27T14:00:00.000+02:00' } };
+    fake.routes['/api/v4/projects/11/repository/branches'] = page([pushed, ...branchesFixture.slice(2)], null);
+    await sync({}, NOW + HOUR);
+    expect(db.all('SELECT name, substr(head_oid, 1, 4) AS head, committed_at, first_seen_at FROM branches WHERE repo_id = ? ORDER BY name', [app])).toEqual([
+      { name: 'fix', head: 'aaaa', committed_at: '2026-09-19T14:30:00Z', first_seen_at: '2026-09-27T12:00:00Z' },
+      { name: 'main', head: '3333', committed_at: '2026-09-21T10:00:00Z', first_seen_at: '2026-09-27T12:00:00Z' },
+      { name: 'settings', head: '8888', committed_at: '2026-09-27T12:00:00Z', first_seen_at: '2026-09-27T12:00:00Z' },
+    ]);
+  });
+
+  it("a branch listing that fails, not for the token or a rate limit, fails nothing else: the rest is written, and it is tried again", async () => {
+    const LIST = '/api/v4/projects/11/repository/branches';
+    const broken = { status: 500, body: { message: '500 Internal Server Error' } };
+    const { db, fake, sync } = setup({ [LIST]: broken });
+    const res = await sync();
+    expect(res.errors).toEqual([expect.stringMatching(new RegExp(`^${HOST}/alice/app: branches: .*500`))]);
+    // Synced, with no error of its own: its merge requests and commits are there; no listing is recorded.
+    const app = repoRow(db, `${HOST}/alice/app`)!;
+    expect(app.synced_at).toBe('2026-09-27T12:00:00Z');
+    expect(db.get('SELECT last_error, branches_synced_at FROM sync_state WHERE repo_id = ?', [app.id])).toEqual({ last_error: null, branches_synced_at: null });
+    expect(db.all('SELECT count(*) AS n FROM pull_requests WHERE repo_id = ? UNION ALL SELECT count(*) FROM commits WHERE repo_id = ?', [app.id, app.id])).toEqual([{ n: 4 }, { n: 2 }]);
+    const names = () => db.all<{ name: string }>('SELECT name FROM branches WHERE repo_id = ? ORDER BY name', [app.id]).map((b) => b.name);
+    expect(names()).toEqual([]);
+
+    fake.routes[LIST] = page(branchesFixture, null);
+    expect(await sync({}, NOW + HOUR)).toMatchObject({ errors: [] });
+    expect(names()).toEqual(['fix', 'main', 'settings', 'spike/search']);
+
+    // Failing on its second page: the first is written, nothing is deleted, and the listing isn't recorded.
+    fake.routes[LIST] = (req) => (req.url.searchParams.get('page') === '1' ? page(branchesFixture.slice(0, 1), 2) : broken);
+    expect((await sync({}, NOW + 2 * HOUR)).errors).toEqual([expect.stringMatching(new RegExp(`^${HOST}/alice/app: branches: `))]);
+    expect(names()).toEqual(['fix', 'main', 'settings', 'spike/search']);
+    expect(db.get('SELECT branches_synced_at FROM sync_state WHERE repo_id = ?', [app.id])).toEqual({ branches_synced_at: '2026-09-27T13:00:00Z' });
+  });
+
+  it('stops at a rejected token in the branch listing, as in any section', async () => {
+    const { db, sync } = setup({ '/api/v4/projects/11/repository/branches': { status: 401, body: { message: '401 Unauthorized' } } });
+    const res = await sync({}, NOW, 1);
+    expect(res.errors).toEqual([expect.stringMatching(/^Sync stopped: GitLab rejected the token \(401\)/)]);
+    expect(repoRow(db, `${HOST}/alice/corp.tools`)!.synced_at).toBeNull();
   });
 
   it('stops at a rejected token, like GitHub', async () => {

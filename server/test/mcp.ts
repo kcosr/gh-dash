@@ -39,6 +39,8 @@ export interface FakeBranch {
   headOid: string;
   baseOid: string;
   files: DiffFile[];
+  /** What the host says the comparison has, when it lists fewer (a timed-out comparison: one above the files). Default: `files.length`. */
+  totalFiles?: number;
   /** The head commit's committer date (ISO, UTC); null for a host that doesn't say. Default: none. */
   committedAt?: string | null;
 }
@@ -48,7 +50,7 @@ export interface FakeBranch {
  * every request fail as a missing token does.
  */
 export interface FakeCode {
-  prs: Map<string, { headOid: string; baseOid: string; files: DiffFile[] }>;
+  prs: Map<string, { headOid: string; baseOid: string; files: DiffFile[]; totalFiles?: number }>;
   commits: Map<string, CommitDiff>;
   /** By branchKey: what a branch's head is and what comparing it with the default branch gives. */
   branches: Map<string, FakeBranch>;
@@ -88,9 +90,9 @@ export function fakeCode(): { code: FakeCode; sources: DiffSources } {
       const hit = [...code.branches].find(([key, b]) => key.startsWith(`${repo.key}~`) && b.headOid === head);
       code.requests.push(`compare ${hit ? hit[0] : `${repo.key}@${head}`}`);
       if (!hit) throw missing(`commit ${head}`);
-      const { baseOid, files } = hit[1];
+      const { baseOid, files, totalFiles } = hit[1];
       return {
-        baseOid, headOid: head, files, totalFiles: files.length, additions: files.reduce((n, f) => n + f.additions, 0), deletions: files.reduce((n, f) => n + f.deletions, 0),
+        baseOid, headOid: head, files, totalFiles: totalFiles ?? files.length, additions: files.reduce((n, f) => n + f.additions, 0), deletions: files.reduce((n, f) => n + f.deletions, 0),
       };
     },
     async branches(repo, query, limit) {
@@ -107,7 +109,7 @@ export function fakeCode(): { code: FakeCode; sources: DiffSources } {
       const pr = code.prs.get(prKey(repo.key, number));
       if (!pr) throw missing(`${repo.key}#${number}`);
       return {
-        headOid: pr.headOid, baseRef: 'main', baseOid: pr.baseOid, title: `PR ${number}`, totalFiles: pr.files.length, additions: 1, deletions: 0,
+        headOid: pr.headOid, baseRef: 'main', baseOid: pr.baseOid, title: `PR ${number}`, totalFiles: pr.totalFiles ?? pr.files.length, additions: 1, deletions: 0,
         url: `https://github.com/${repo.path}/pull/${number}/files`,
       };
     },

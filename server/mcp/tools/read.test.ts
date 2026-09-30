@@ -220,6 +220,18 @@ describe('get_pr', () => {
     expect(pr.note).toBeUndefined();
   });
 
+  it('counts the files the host did not list, whatever the number', async () => {
+    const h = mcpHarness();
+    servePr(h.code, 'alice/app', 2, HEAD, BASE, [addedFile('src/a.ts', ['x']), addedFile('src/b.ts', ['y'])]);
+    h.code.prs.get('alice/app#2')!.totalFiles = 5;
+    const pr = await h.ok('get_pr', { repo: 'alice/app', number: 2 });
+    expect(pr.files).toHaveLength(2);
+    expect(pr.moreFiles).toBe(3);
+    servePr(h.code, 'alice/app', 2, HEAD, BASE, [addedFile('src/a.ts', ['x'])]);
+    h.db.run("UPDATE pull_requests SET updated_at = '2099-01-01T00:00:00Z' WHERE number = 2 AND repo_id = (SELECT id FROM repos WHERE key = 'alice/app')");
+    expect((await h.ok('get_pr', { repo: 'alice/app', number: 2 })).moreFiles).toBeUndefined();
+  });
+
   it("leaves files and baseOid out, with a note, when there's no diff", async () => {
     const h = mcpHarness({ db: withGitLab() });
     h.code.down = 'No GitLab token';
@@ -339,6 +351,25 @@ describe('get_branch', () => {
     expect(big.files).toHaveLength(300);
     expect(big.moreFiles).toBe(2);
     expect((await h.ok('get_branch', { repo: 'alice/app', branch: 'topic/x' })).moreFiles).toBeUndefined();
+  });
+
+  it('counts the files the host left out of a comparison that timed out, below the 300 the tool lists', async () => {
+    const h = setup();
+    // GitLab's compare_timeout: it lists ten files, and says there are more by counting one above them.
+    serveBranch(h.code, 'alice/app', 'slow', sha('9'), BASE, Array.from({ length: 10 }, (_, i) => addedFile(`f${i}.ts`, ['x'])));
+    h.code.branches.get('alice/app~slow')!.totalFiles = 11;
+    const slow = await h.ok('get_branch', { repo: 'alice/app', branch: 'slow' });
+    expect(slow.files).toHaveLength(10);
+    expect(slow.moreFiles).toBe(1);
+    // Beyond both the tool's cut and the files the host sent: what the host counted, less what is listed.
+    serveBranch(h.code, 'alice/app', 'huge', sha('8'), BASE, Array.from({ length: 302 }, (_, i) => addedFile(`f${i}.ts`, ['x'])));
+    h.code.branches.get('alice/app~huge')!.totalFiles = 3000;
+    const huge = await h.ok('get_branch', { repo: 'alice/app', branch: 'huge' });
+    expect(huge.files).toHaveLength(300);
+    expect(huge.moreFiles).toBe(2700);
+    // Exactly 300 files, all listed: nothing is missing.
+    serveBranch(h.code, 'alice/app', 'full', sha('7'), BASE, Array.from({ length: 300 }, (_, i) => addedFile(`f${i}.ts`, ['x'])));
+    expect((await h.ok('get_branch', { repo: 'alice/app', branch: 'full' })).moreFiles).toBeUndefined();
   });
 
   it("notes a stale diff (the host couldn't be asked), and serves what it has", async () => {

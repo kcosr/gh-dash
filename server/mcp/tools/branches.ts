@@ -60,7 +60,8 @@ export const getBranch = readTool({
     '(the default branch) of its diff (`git diff <baseOid>...<headOid>`), its changed files, the newest PR from it that ' +
     'gh-dash has synced, and the comment thread counts of its review (the PRs from it share those threads). Fetch it with ' +
     "`git fetch origin <fetch>`. Head, base and files come from the diff gh-dash fetches from the code host: when it can't, " +
-    'they are left out with a note. Comment on it with add_comment (branch).',
+    'they are left out with a note. `moreFiles`: changed files not listed (at least: a host may cut a big diff short). ' +
+    'Comment on it with add_comment (branch).',
   input: z.object({ repo: repoArg, branch: branchArg }).strict(),
   run: async ({ repo, branch }, { deps, signal }) => {
     const { db } = deps;

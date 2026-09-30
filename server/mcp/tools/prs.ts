@@ -139,10 +139,15 @@ export const findPr = readTool({
 /** Most files get_pr and get_branch list; the rest are counted. */
 const MAX_FILES = 300;
 
-/** The files of a diff, as the get tools give them (at most MAX_FILES; `moreFiles` counts the rest). */
+/**
+ * The files of a diff, as the get tools give them: at most MAX_FILES, and `moreFiles` counts those not listed, whether
+ * the tool cut them or the code host never sent them (totalFiles beyond the files: GitHub's cap on a big diff, or a
+ * GitLab comparison that timed out, which sets it one above what it listed to say some are missing).
+ */
 export function diffFiles(diff: Diff): Record<string, unknown> {
+  const listed = diff.files.slice(0, MAX_FILES);
   const out: Record<string, unknown> = {
-    files: diff.files.slice(0, MAX_FILES).map((f) => ({
+    files: listed.map((f) => ({
       path: f.path,
       ...(f.previousPath ? { previousPath: f.previousPath } : {}),
       status: f.status,
@@ -150,7 +155,8 @@ export function diffFiles(diff: Diff): Record<string, unknown> {
       deletions: f.deletions,
     })),
   };
-  if (diff.totalFiles > MAX_FILES || diff.files.length > MAX_FILES) out.moreFiles = Math.max(diff.totalFiles, diff.files.length) - MAX_FILES;
+  const more = Math.max(diff.totalFiles, diff.files.length) - listed.length;
+  if (more > 0) out.moreFiles = more;
   return out;
 }
 
@@ -163,7 +169,8 @@ export const getPr = readTool({
   description:
     'One pull request: its state, branches, exact revisions and changed files. headOid is the head commit and baseOid the ' +
     'merge base the diff is against (`git diff <baseOid>...<headOid>`); fetch the head with `git fetch origin <fetch>`. ' +
-    'Files and baseOid come from the diff gh-dash fetches from the code host: when it can\'t, they are left out with a note.',
+    'Files and baseOid come from the diff gh-dash fetches from the code host: when it can\'t, they are left out with a ' +
+    'note. `moreFiles`: changed files not listed (at least: a host may cut a big diff short).',
   input: z.object({ repo: repoArg, number: prArg }).strict(),
   run: async ({ repo, number }, ctx: ToolContext) => {
     const { deps, signal } = ctx;

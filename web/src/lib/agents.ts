@@ -70,7 +70,7 @@ export function agentNameProblem(name: string, taken: readonly Pick<Agent, 'name
   if (/^\d+$/.test(n)) return 'Not only digits (those are ids)';
   if (Array.from(n).length > 64) return 'At most 64 characters';
   if (n.toLowerCase() === 'you') return '“You” is you: give the agent another name';
-  if (n.toLowerCase() === 'agent') return '“Agent” is the built-in agent (requests without a token)';
+  if (/^agent(?: \(no token\)(?: \d+)?)?$/i.test(n)) return 'That is the built-in agent’s name (requests without a token)';
   if (taken.some((a) => a.name.toLowerCase() === n.toLowerCase())) return 'An agent has that name: give it a new token instead';
   return null;
 }

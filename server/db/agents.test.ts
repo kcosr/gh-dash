@@ -151,8 +151,17 @@ describe('agents', () => {
     expect(() => createAgent(db, ' AGENT ')).toThrow(/built-in agent/);
   });
 
-  it("names the built-in agent otherwise when an older agent already has its name", () => {
-    db.run(`INSERT INTO principals (kind, name, created_at) VALUES ('agent', 'Agent', ?)`, [T0]);
-    expect(builtInAgent(db).name).toBe('Agent (no token)');
+  it("names the built-in agent otherwise when older agents already have its names, keeping theirs", () => {
+    const legacy = (name: string) => db.run(`INSERT INTO principals (kind, name, created_at) VALUES ('agent', ?, ?)`, [name, T0]).lastInsertRowid;
+    const kept = [legacy('Agent'), legacy('agent (NO TOKEN)'), legacy('Agent (no token) 2')];
+    const agent = builtInAgent(db);
+    expect(agent.name).toBe('Agent (no token) 3');
+    expect(builtInAgent(db)).toEqual(agent);
+    expect(kept.map((id) => getAgent(db, id)!.name)).toEqual(['Agent', 'agent (NO TOKEN)', 'Agent (no token) 2']);
+  });
+
+  it("reserves the built-in agent's names, the fallbacks too", () => {
+    for (const name of ['Agent', 'agent', 'Agent (no token)', 'AGENT (No Token) 7']) expect(() => createAgent(db, name), name).toThrow(/built-in agent/);
+    for (const name of ['Agents', 'Agent Smith', 'Agent (no token) x', 'My Agent']) expect(createAgent(db, name).agent.name, name).toBe(name);
   });
 });

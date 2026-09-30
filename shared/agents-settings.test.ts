@@ -70,7 +70,8 @@ describe('Settings → Agents', () => {
     expect(agentNameProblem('42', list)).toBe('Not only digits (those are ids)');
     expect(agentNameProblem('R2D2', list)).toBeNull();
     expect(agentNameProblem(' Codex ', list)).toBeNull();
-    expect(agentNameProblem('agent', list)).toMatch(/built-in agent/);
+    for (const name of ['agent', 'Agent (no token)', 'agent (no token) 3']) expect(agentNameProblem(name, list), name).toMatch(/built-in agent/);
+    expect(agentNameProblem('Agent Smith', list)).toBeNull();
   });
 
   it('generates tokens shaped like the server’s, and checks one the user typed as the server does', () => {

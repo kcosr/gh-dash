@@ -96,9 +96,13 @@ export function listAgents(db: Db): Agent[] {
   return db.all<AgentRow>(`${AGENT_SELECT} AND (p.id IS NOT ${BUILT_IN_ID} OR EXISTS (SELECT 1 FROM comment_events WHERE actor_id = p.id)) ORDER BY p.id`).map(toAgent);
 }
 
+/** The built-in agent's names: "Agent", else (a user's agent from before it was reserved has it) "Agent (no token)", "… 2"… */
+const BUILT_IN_NAME = /^agent(?: \(no token\)(?: \d+)?)?$/i;
+const builtInName = (n: number) => (n === 0 ? BUILT_IN_AGENT : n === 1 ? `${BUILT_IN_AGENT} (no token)` : `${BUILT_IN_AGENT} (no token) ${n}`);
+
 /**
- * The built-in agent (see above), made the first time it is needed. Named "Agent"; a database that already has a
- * user's agent of that name (from before the name was reserved) calls it "Agent (no token)".
+ * The built-in agent (see above), made the first time it is needed, under the first of its names no agent has (they
+ * are all reserved, but an older database may hold one).
  */
 export function builtInAgent(db: Db, now = nowIso()): Principal {
   const byId = () => {
@@ -111,7 +115,9 @@ export function builtInAgent(db: Db, now = nowIso()): Principal {
   return db.tx(() => {
     const again = byId();
     if (again) return again;
-    const name = agentByName(db, BUILT_IN_AGENT) ? `${BUILT_IN_AGENT} (no token)` : BUILT_IN_AGENT;
+    let n = 0;
+    while (agentByName(db, builtInName(n))) n++;
+    const name = builtInName(n);
     const id = db.run(`INSERT INTO principals (kind, name, created_at) VALUES ('agent', ?, ?)`, [name, now]).lastInsertRowid;
     setMeta(db, 'builtInAgentId', id);
     return { id, kind: 'agent', name };
@@ -149,8 +155,8 @@ export function agentName(input: string): string {
   if (Array.from(name).length > MAX_NAME_CHARS) throw new HttpError(400, `An agent's name has at most ${MAX_NAME_CHARS} characters`);
   if (/[\u0000-\u001f\u007f]/.test(name)) throw new HttpError(400, "An agent's name can't hold control characters");
   if (name.toLowerCase() === 'you') throw new HttpError(400, '"You" is the dashboard user; give the agent another name');
-  if (name.toLowerCase() === BUILT_IN_AGENT.toLowerCase()) {
-    throw new HttpError(400, `"${BUILT_IN_AGENT}" is the built-in agent (requests without a token); give yours another name`);
+  if (BUILT_IN_NAME.test(name)) {
+    throw new HttpError(400, `"${name}" is the built-in agent's (requests without a token); give yours another name`);
   }
   return name;
 }

@@ -123,6 +123,14 @@ describe('MCP without agent tokens', () => {
     expect((await h.post(PING, { authorization: `Bearer ${mine}x` })).status).toBe(401);
   });
 
+  it('still answers when older agents hold the built-in names (no 500)', async () => {
+    const h = localApi({ restApi: false, mcp: true, mcpRequireTokens: false });
+    for (const name of ['Agent', 'Agent (no token)']) h.db.run(`INSERT INTO principals (kind, name, created_at) VALUES ('agent', ?, '2026-09-01T00:00:00.000Z')`, [name]);
+    const res = await h.post({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'whoami', arguments: {} } }, none);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ result: { structuredContent: { agent: { name: 'Agent (no token) 2' } } } });
+  });
+
   it('is refused where tokens are required (the default, and the headless server)', async () => {
     const h = localApi({ restApi: true, mcp: true });
     const res = await h.post(PING, none);

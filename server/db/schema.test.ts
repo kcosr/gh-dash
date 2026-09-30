@@ -767,6 +767,44 @@ describe('migration to agent sources (v10)', () => {
   });
 });
 
+describe('migration to synced branches (v11)', () => {
+  const SYNCED_BRANCHES = versionOf('synced-branches');
+
+  /** A v10 database: a repo whose sync state is known. */
+  function v10(): Db {
+    const sqlite = new DatabaseSync(':memory:');
+    sqlite.exec('PRAGMA foreign_keys = ON');
+    const db = new Db(sqlite);
+    migrate(db, true, { upTo: SYNCED_BRANCHES - 1 });
+    repo(db, 1, 'a');
+    db.run(`INSERT INTO sync_state (repo_id, synced_at) VALUES (1, '2026-09-30T00:00:00Z')`);
+    return db;
+  }
+
+  it('adds an empty branch list per repo, and sync state saying none was read yet', () => {
+    const db = v10();
+    migrate(db, true, { upTo: SYNCED_BRANCHES });
+    expect(version(db)).toBe(SYNCED_BRANCHES);
+    expect(db.all('SELECT * FROM branches')).toEqual([]);
+    expect(db.get('SELECT branches_pushed_at, branches_synced_at, branches_complete FROM sync_state WHERE repo_id = 1')).toEqual({
+      branches_pushed_at: null, branches_synced_at: null, branches_complete: null,
+    });
+    // One row per repo and name, gone with the repo.
+    const add = (name: string) => db.run(`INSERT INTO branches (repo_id, name, head_oid, first_seen_at) VALUES (1, ?, ?, 'x')`, [name, 'a'.repeat(40)]);
+    add('fix/login');
+    expect(() => add('fix/login')).toThrow(/UNIQUE/);
+    db.run('DELETE FROM repos WHERE id = 1');
+    expect(db.all('SELECT * FROM branches')).toEqual([]);
+    expect(db.all('PRAGMA foreign_key_check')).toEqual([]);
+  });
+
+  it('is additive: a GH_DASH_SYNC=off instance may run it', () => {
+    const db = v10();
+    migrate(db, false, { upTo: SYNCED_BRANCHES });
+    expect(version(db)).toBe(SYNCED_BRANCHES);
+  });
+});
+
 describe('migration names', () => {
   it('number migrations by name, and stop where asked', () => {
     // The final order: T2's repos rebuild, then local comments (diff-comments), then sources (the GitLab wave), then

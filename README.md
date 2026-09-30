@@ -22,6 +22,8 @@ GitLab: it never posts, comments or changes anything there.
   </tr>
 </table>
 
+![A split diff with a comment thread: your question, and an agent's answer marked "agent"](docs/images/review-with-agent.png)
+
 ## Features
 
 - **Everything in one place.** Pull requests (merge requests on GitLab), issues, a combined
@@ -174,8 +176,6 @@ Coding agents can join your reviews through MCP:
 - they review code themselves and leave comments for you to pick up.
 
 Each agent has its own token, and what it writes is shown as its own.
-
-[![A split diff with a comment thread: your question, and an agent's answer marked "agent"](docs/images/review-with-agent.png)](docs/images/review-with-agent.png)
 
 1. **Add an agent.** In the desktop app, go to **Settings → Agents → Add agent**. On a server, run
    `node dist/server/index.mjs agents add Claude`.

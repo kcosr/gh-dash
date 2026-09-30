@@ -31,7 +31,8 @@ describe('Settings → Agents', () => {
     expect(c.codexEnv).toBe(`export ${TOKEN_ENV}=ghd_secret`);
   });
 
-  it("keeps a token of your own text when the lines are pasted into a shell, whatever it holds", () => {
+  // A real POSIX shell: there is none on Windows (the quoting itself is covered by shellArg's own tests everywhere).
+  it.skipIf((globalThis as unknown as { process: { platform: string } }).process.platform === 'win32')("keeps a token of your own text when the lines are pasted into a shell, whatever it holds", () => {
     const tokens = [
       'abcdefghijklmnopqrstuvwx$(true)', 'abcdefghijklmnopqrstuvwx`id`', "it's-a-token-with-'quotes'-0", 'a"double"quoted-token-00000',
       'semi;colon;token;000000000', 'back\\slash\\token\\0000000', 'bang!bang!history!00000000', '$HOME-${PATH}-$((1+1))-token',

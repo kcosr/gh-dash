@@ -1,13 +1,15 @@
 /** Grouping for the PR list (day/week/month/repo) and the Activity feed (per day). */
-import type { ActivityEvent, Actor, CommentActivity, CommentEventKind, Commit, GroupBy, PullRequest, Release } from '../../../shared/api';
+import type { ActivityEvent, Actor, Branch, CommentActivity, CommentEventKind, Commit, GroupBy, PullRequest, Release } from '../../../shared/api';
 import { addDays, dayDiff, dayName, fmtDate, fmtDateSmart, fmtMonthYear, fmtWeekday, startOfDay, startOfMonth, startOfWeek } from './time';
 import { actorKey } from './util';
 
 // ------------------------------------------------------------------ PR list
 
+/** A PR or an interleaved release; or, in the "No PR yet" state, a branch (the list is branches alone then). */
 export type ListItem =
   | { kind: 'pr'; at: Date; pr: PullRequest }
-  | { kind: 'release'; at: Date; release: Release };
+  | { kind: 'release'; at: Date; release: Release }
+  | { kind: 'branch'; at: Date; branch: Branch };
 
 export interface ListGroup {
   key: string;
@@ -16,7 +18,10 @@ export interface ListGroup {
   items: ListItem[];
   prs: number;
   releases: number;
+  branches: number;
 }
+
+const itemRepo = (it: ListItem) => (it.kind === 'pr' ? it.pr.repo : it.kind === 'release' ? it.release.repo : it.branch.repo);
 
 function groupStart(d: Date, by: Exclude<GroupBy, 'repo'>): Date {
   if (by === 'day') return startOfDay(d);
@@ -44,7 +49,7 @@ export function groupListItems(items: ListItem[], by: GroupBy, isPrivate: (repo:
   const sorted = [...items].sort((a, b) => b.at.getTime() - a.at.getTime());
   const map = new Map<string, ListGroup>();
   for (const it of sorted) {
-    const repo = it.kind === 'pr' ? it.pr.repo : it.release.repo;
+    const repo = itemRepo(it);
     let key: string, title: string, sub: string;
     if (by === 'repo') {
       key = repo; title = repo; sub = isPrivate(repo) ? 'private' : '';
@@ -54,9 +59,9 @@ export function groupListItems(items: ListItem[], by: GroupBy, isPrivate: (repo:
       [title, sub] = periodLabel(start, by, now);
     }
     let g = map.get(key);
-    if (!g) { g = { key, title, sub, items: [], prs: 0, releases: 0 }; map.set(key, g); }
+    if (!g) { g = { key, title, sub, items: [], prs: 0, releases: 0, branches: 0 }; map.set(key, g); }
     g.items.push(it);
-    if (it.kind === 'pr') g.prs++; else g.releases++;
+    if (it.kind === 'pr') g.prs++; else if (it.kind === 'release') g.releases++; else g.branches++;
   }
   const groups = [...map.values()];
   if (by === 'repo') groups.sort((a, b) => b.items.length - a.items.length || a.key.localeCompare(b.key));
@@ -65,6 +70,9 @@ export function groupListItems(items: ListItem[], by: GroupBy, isPrivate: (repo:
 
 /** Date a PR sorts/filters on. */
 export const prDate = (p: PullRequest) => new Date(p.activityAt);
+
+/** A branch as a list item, dated by its head commit (GET /branches lists none without a date: none can be in a range). */
+export const branchItem = (branch: Branch): ListItem => ({ kind: 'branch', at: new Date(branch.committedAt ?? 0), branch });
 
 // ------------------------------------------------------------------ Activity feed
 

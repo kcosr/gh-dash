@@ -1,5 +1,5 @@
 import { memo } from 'react';
-import type { CommentCounts, PullRequest, Release } from '../../../shared/api';
+import type { Branch, CommentCounts, PullRequest, Release } from '../../../shared/api';
 import { plainPreview } from '../lib/markdown';
 import { isNewSinceLastVisit } from '../lib/storage';
 import { fmtDate, fmtDateTime, rel } from '../lib/time';
@@ -93,6 +93,68 @@ export const PrRow = memo(function PrRow({ pr, density, cursor, active, onOpen }
           {time}
         </span>
         <GhLink url={pr.url} host={p.name} />
+      </div>
+    </article>
+  );
+});
+
+interface BranchRowProps {
+  branch: Branch;
+  density: Density;
+  cursor?: boolean;
+  active?: boolean;
+  onOpen: (branch: Branch) => void;
+}
+
+/**
+ * A branch with no PR yet (the PR list's "No PR yet" state), laid out as a PR: its name for a title, its repo, who
+ * committed its head and when, the threads of its review. It opens the branch's diff. Nothing to say at 'full' that
+ * 'summary' doesn't: a branch has no description. Memoized, as PrRow is.
+ */
+export const BranchRow = memo(function BranchRow({ branch: b, density, cursor, active, onOpen }: BranchRowProps) {
+  const p = useProviderOf()(b.repo);
+  const at = b.committedAt;
+  const cls = cx('pr', 'br', density === 'titles' && 't', cursor && 'cursor', active && 'active');
+  const open = () => onOpen(b);
+  const time = at ? <time dateTime={at} title={fmtDateTime(at)}>{fmtDate(at)}</time> : <span />;
+  const icon = <span className="pr-ic branch" title="Branch"><Icon name="branch" /></span>;
+
+  if (density === 'titles') {
+    return (
+      <article className={cls} onClick={open} tabIndex={-1} aria-label={b.name} data-id={b.id}>
+        {icon}
+        <span className="t-repo"><RepoChip repo={b.repo} /></span>
+        <span className="t-title">{b.name}<CommentBadge c={b.comments} /></span>
+        {b.author ? <Avatar actor={b.author} size={18} /> : <span />}
+        {time}
+        <GhLink url={b.url} host={p.name} />
+      </article>
+    );
+  }
+
+  return (
+    <article className={cls} onClick={open} tabIndex={-1} aria-label={b.name} data-id={b.id}>
+      {icon}
+      <div className="pr-main">
+        <div className="pr-title">{b.name}</div>
+        <div className="pr-meta">
+          <RepoChip repo={b.repo} />
+          {at && <><span className="sep">·</span><span>committed {rel(at)}{b.author && ' by'}</span></>}
+          {b.author && (
+            <span className="author">
+              <Avatar actor={b.author} />
+              <b>{b.author.isMe ? 'you' : actorName(b.author)}</b>
+            </span>
+          )}
+          <CommentBadge c={b.comments} />
+        </div>
+      </div>
+      <div className="pr-side">
+        <span className="when">
+          {at && isNewSinceLastVisit(at) && <span className="new-dot" title="New since your last visit" />}
+          {time}
+        </span>
+        <GhLink url={b.url} host={p.name} />
       </div>
     </article>
   );

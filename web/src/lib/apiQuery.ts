@@ -3,7 +3,7 @@
  * "Copy API URL", so what you see is exactly what the API link returns.
  */
 import { EVENT_TYPES } from '../../../shared/api';
-import type { ActivityQuery, IssueQuery, PrQuery, RepoQuery, ScopeQuery, StatsQuery, ThreadListQuery } from '../../../shared/api';
+import type { ActivityQuery, BranchQuery, IssueQuery, PrQuery, RepoQuery, ScopeQuery, StatsQuery, ThreadListQuery } from '../../../shared/api';
 import { apiUrl } from '../api/client';
 import type { Endpoint } from '../api/client';
 import { resolveRange } from './range';
@@ -36,13 +36,25 @@ export function scopeParams(s: UrlState, opts: { q?: boolean } = {}): ScopeQuery
   };
 }
 
-/** The PR list as the UI fetches it. No `group`: grouping is client-side (it only shapes format=md). */
+/**
+ * The PR list as the UI fetches it. No `group`: grouping is client-side (it only shapes format=md). In the "No PR yet"
+ * state no PRs are fetched (branchListParams is the list); the state is left out rather than made up.
+ */
 export function prFetchParams(s: UrlState): PrQuery {
-  return { ...scopeParams(s), state: s.state, comments: s.comments ?? undefined };
+  return { ...scopeParams(s), state: s.state === 'nopr' ? undefined : s.state, comments: s.comments ?? undefined };
+}
+
+/**
+ * The PR list's "No PR yet" state as the UI fetches it and the export shows it: the branches with no PR yet in the same
+ * scope (GET /branches, where `who` is the head commit's author and `q` a part of the name). The PR filters (comments,
+ * releases) are PRs' own.
+ */
+export function branchListParams(s: UrlState): BranchQuery {
+  return scopeParams(s);
 }
 
 export function issueListParams(s: UrlState): IssueQuery & { state: 'open' | 'closed' | 'all' } {
-  return { ...scopeParams(s), state: s.state === 'merged' ? 'open' : s.state };
+  return { ...scopeParams(s), state: s.state === 'merged' || s.state === 'nopr' ? 'open' : s.state };
 }
 
 export function repoListParams(s: UrlState): RepoQuery {
@@ -132,6 +144,8 @@ export function exportTarget(view: ViewName, s: UrlState, repoKey?: string): Exp
       return { endpoint: 'threads', params: { ...threadListParams(s) }, md: true, csv: false, label: 'comments' };
     case 'prs':
     default:
+      // Branches have no Markdown or CSV form.
+      if (s.state === 'nopr') return { endpoint: 'branches', params: { ...branchListParams(s) }, md: false, label: 'branches with no pull request yet' };
       return { endpoint: 'prs', params: { ...prListParams(s) }, md: true, label: 'pull requests' };
   }
 }

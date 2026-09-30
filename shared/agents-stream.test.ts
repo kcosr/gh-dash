@@ -38,12 +38,12 @@ describe('the stream: what a message refetches', () => {
     ]);
   });
 
-  it("reaches a branch group whole: a branch's thread, or a PR's from a branch, refetches every thread list of the repo and its PRs", () => {
+  it("reaches a branch group whole: a branch's thread, or a PR's from a branch, refetches every thread list of the repo, its PRs and the branches with no PR", () => {
     const branch = comments({ kind: 'branch', number: null, branch: 'fix/login', event: 'resolved' });
-    expect(streamInvalidations(branch)).toEqual([qk.threadsIn('alice/app'), ['thread-list'], ['prs'], qk.prsIn('alice/app'), ['activity']]);
+    expect(streamInvalidations(branch)).toEqual([qk.threadsIn('alice/app'), ['thread-list'], ['prs'], qk.prsIn('alice/app'), ['branch-list'], ['activity']]);
     // A PR from a branch of the same repo: its branch's review lists the thread too, and the other PRs from it.
     expect(streamInvalidations(comments({ branch: 'fix/login', event: 'replied' }))).toEqual([
-      qk.threadsIn('alice/app'), ['thread-list'], ['prs'], qk.prsIn('alice/app'), ['activity'], qk.repos,
+      qk.threadsIn('alice/app'), ['thread-list'], ['prs'], qk.prsIn('alice/app'), ['branch-list'], ['activity'], qk.repos,
     ]);
   });
 
@@ -51,12 +51,16 @@ describe('the stream: what a message refetches', () => {
     const qc = new QueryClient();
     const keys = [
       qk.threads('alice/app~fix/login'), qk.threads('alice/app#7'), qk.threads('alice/app#8'), qk.threads(`alice/app@${OID}`), qk.threads('alice/lib#7'),
-      qk.pr('alice/app', 7), qk.pr('alice/lib', 7), qk.branches('alice/app', ''),
+      qk.pr('alice/app', 7), qk.pr('alice/lib', 7), qk.branches('alice/app', ''), qk.branchList({ who: 'me' }),
     ];
     for (const k of keys) qc.setQueryData(k, {});
     applyStreamMessage(qc, comments({ kind: 'branch', number: null, branch: 'fix/login', event: 'thread_opened' }));
     const stale = keys.filter((k) => qc.getQueryState(k)?.isInvalidated);
-    expect(stale).toEqual([qk.threads('alice/app~fix/login'), qk.threads('alice/app#7'), qk.threads('alice/app#8'), qk.threads(`alice/app@${OID}`), qk.pr('alice/app', 7)]);
+    // The branches with no PR count its threads; a repo's branch list (from the host or the sync) has none to count.
+    expect(stale).toEqual([
+      qk.threads('alice/app~fix/login'), qk.threads('alice/app#7'), qk.threads('alice/app#8'), qk.threads(`alice/app@${OID}`), qk.pr('alice/app', 7),
+      qk.branchList({ who: 'me' }),
+    ]);
   });
 
   it('refetches the agents list on `agents`, nothing on `show`', () => {
@@ -74,7 +78,7 @@ describe('the stream: what a message refetches', () => {
   });
 
   it('after a reconnect refetches everything a missed message could have touched', () => {
-    for (const k of [qk.threads('a#1'), qk.threadList({}), qk.prs({}), qk.pr('a', 1), qk.repos, qk.activity({}), qk.agents]) expect(missedByStream(k), String(k[0])).toBe(true);
+    for (const k of [qk.threads('a#1'), qk.threadList({}), qk.prs({}), qk.pr('a', 1), qk.branchList({}), qk.repos, qk.activity({}), qk.agents]) expect(missedByStream(k), String(k[0])).toBe(true);
     for (const k of [qk.diff('a#1'), qk.settings, qk.sync, qk.stats({}), qk.blob('a', 'r', 'p')]) expect(missedByStream(k), String(k[0])).toBe(false);
   });
 

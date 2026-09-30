@@ -24,6 +24,11 @@ export type ThreadGroup = 'target' | 'repo' | 'none';
 export type ThreadOrder = 'recent' | 'oldest' | 'file';
 /** Who opened a thread (GET /threads `author`): you, any agent, or one agent (its principal id). */
 export type ThreadAuthor = 'self' | 'agents' | number;
+/**
+ * The PR list's state: a PR state, or `nopr`, the branches with no PR yet listed in the PRs' place (GET /branches). The
+ * web's own value: the API's PrStateFilter has no such state.
+ */
+export type PrListState = PrStateFilter | 'nopr';
 
 export interface UrlState {
   /** The context: a source's host (`source=gitlab.example.com`), lower-case; null = All (param absent). */
@@ -37,7 +42,8 @@ export interface UrlState {
   range: RangeId;
   from: string | null;
   to: string | null;
-  state: PrStateFilter;
+  /** PR list: a PR state or `nopr` (PrListState); Issues: an issue state ('merged' is never one). */
+  state: PrListState;
   /** PR list: only PRs with local comment threads (any, or unresolved); null = all. */
   comments: CommentFilter | null;
   group: GroupBy;
@@ -163,7 +169,8 @@ export function parseUrlState(search: string, view: ViewName): UrlState {
     range,
     from: range === 'custom' ? from : null,
     to: range === 'custom' ? to : null,
-    state: oneOf(p.get('state'), view === 'issues' ? ['open', 'closed', 'all'] as const : ['open', 'merged', 'closed', 'all'] as const, d.state),
+    // `nopr` is the PR list's alone.
+    state: oneOf(p.get('state'), view === 'issues' ? ['open', 'closed', 'all'] as const : ['open', 'merged', 'closed', 'all', ...(view === 'prs' ? ['nopr'] as const : [])] as const, d.state),
     comments: view === 'prs' && (comments === 'any' || comments === 'unresolved') ? comments : null,
     group: threads ? d.group : oneOf(p.get('group'), ['day', 'week', 'month', 'repo'] as const, d.group),
     density: oneOf(p.get('density'), ['titles', 'summary', 'full'] as const, d.density),

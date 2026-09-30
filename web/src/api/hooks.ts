@@ -6,6 +6,7 @@ import type {
   ActivityQuery,
   ActivityResponse,
   BranchListResponse,
+  BranchQuery,
   BranchSummary,
   Commit,
   CommentThread,
@@ -71,6 +72,8 @@ export const qk = {
   branches: (repo: string, q: string) => ['branches', repo, q] as const,
   /** One branch's summary, from the list narrowed to its name (its own, so a list seeded from another isn't shared). */
   branch: (repo: string, branch: string) => ['branches', repo, branch, 'one'] as const,
+  /** GET /branches: the branches with no PR yet across repos, as the sync holds them (the PR list's "No PR yet"). */
+  branchList: (q: BranchQuery) => ['branch-list', q] as const,
   /** GET /threads: the Comments list, and the tab's count (a synced PR's title and state come with each thread). */
   threadList: (q: ThreadListQuery) => ['thread-list', q] as const,
   /** GET /agents: who may write comments through MCP. */
@@ -100,7 +103,7 @@ export const refetchAfterSync = (q: Query) =>
  * Queries whose answers follow the default selection: every list or stats request without an explicit `repos=`
  * (the views, the palette's PR search, the export previews). Hiding or showing a repo changes them.
  */
-const SELECTION_QUERIES = ['prs', 'issues', 'activity', 'releases', 'commits', 'stars', 'stats', 'thread-list', 'palette-prs', 'export-md', 'export-sample'];
+const SELECTION_QUERIES = ['prs', 'branch-list', 'issues', 'activity', 'releases', 'commits', 'stars', 'stats', 'thread-list', 'palette-prs', 'export-md', 'export-sample'];
 export const followsDefaultSelection = (q: Query) => SELECTION_QUERIES.includes(q.queryKey[0] as string);
 
 // ---------------------------------------------------------------- reference data
@@ -298,6 +301,16 @@ export function usePrList(q: PrQuery, enabled = true) {
   const params = { ...q, limit: q.limit ?? PR_LIMIT };
   const ready = useSourceReady(q.source);
   return useQuery({ queryKey: qk.prs(params), queryFn: () => api.prs(params), placeholderData: keepPreviousData, enabled: enabled && ready });
+}
+
+/**
+ * The PR list's "No PR yet" state: the branches with no PR yet (GET /branches), as many as a PR list fetches in one go.
+ * A database read, refetched after a sync like the PRs (a sync brings branches, and the PRs that hide them).
+ */
+export function useBranchList(q: BranchQuery, enabled = true) {
+  const params = { ...q, limit: q.limit ?? PR_LIMIT };
+  const ready = useSourceReady(q.source);
+  return useQuery({ queryKey: qk.branchList(params), queryFn: () => api.branchList(params), placeholderData: keepPreviousData, enabled: enabled && ready });
 }
 
 export function useReleases(q: ScopeQuery, enabled = true) {
@@ -597,8 +610,8 @@ function fetchThreads(t: DiffTarget) {
  * counts (the Remove confirmation quotes them). `id`: the target, as the `diff` param names it.
  *
  * A thread in a branch group (a branch's, or a PR's with `branch` set) is on the branch's list and on its PRs' too, and
- * in their counts (see "Branch groups" in shared/api.ts): then every thread list of the repo, and every PR's details
- * there, rather than working out which PRs are from the branch.
+ * in their counts (see "Branch groups" in shared/api.ts): then every thread list of the repo, every PR's details there
+ * (rather than working out which PRs are from the branch), and the "No PR yet" list, whose rows count branch groups.
  */
 export function threadChangeKeys(id: string, change: { comments?: boolean; branch?: string | null } = {}): QueryKey[] {
   const t = parseDiffId(id);
@@ -606,7 +619,7 @@ export function threadChangeKeys(id: string, change: { comments?: boolean; branc
   return [
     group ? qk.threadsIn(t.repo) : qk.threads(id),
     ['thread-list'],
-    ...(group ? [['prs'], qk.prsIn(t.repo)] : t?.kind === 'pr' ? [['prs'], qk.pr(t.repo, t.number)] : []),
+    ...(group ? [['prs'], qk.prsIn(t.repo), ['branch-list']] : t?.kind === 'pr' ? [['prs'], qk.pr(t.repo, t.number)] : []),
     ['activity'],
     ...(change.comments ? [qk.repos] : []),
   ];

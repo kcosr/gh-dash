@@ -48,7 +48,7 @@ export const CommentsColumn = memo(function CommentsColumn({
   order: ReadonlyMap<string, number>;
   /** "repo#12", "repo!12" or "repo@abc1234", the Markdown heading. */
   title: string;
-  kind: 'pr' | 'commit';
+  kind: CommentThread['kind'];
   /** The repo's code host: "Comment on this merge request" on GitLab. */
   provider: Provider;
   /** The threads couldn't be loaded. */

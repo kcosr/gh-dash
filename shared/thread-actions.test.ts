@@ -4,7 +4,7 @@ import type { CommentThread, ThreadListResponse } from './api';
 import { followsDefaultSelection, patchThreadLists, qk, refetchAfterSync, threadActions } from '../web/src/api/hooks';
 
 const thread = (id: number, status: CommentThread['status'] = 'open'): CommentThread => ({
-  id, kind: 'pr', repo: 'app', number: 2, commitOid: 'a'.repeat(40), baseOid: null, path: null, side: null, startLine: null, endLine: null,
+  id, kind: 'pr', repo: 'app', number: 2, branch: null, commitOid: 'a'.repeat(40), baseOid: null, path: null, side: null, startLine: null, endLine: null,
   snippet: null, status, resolvedAt: null, resolvedBy: null, createdAt: '', updatedAt: '', comments: [],
 });
 

@@ -15,7 +15,7 @@ const diff = { headOid: HEAD, baseOid: null, files: [{ path: 'a.ts', patch: PATC
 let id = 0;
 function thread(over: Partial<CommentThread>): CommentThread {
   return {
-    id: ++id, kind: 'pr', repo: 'app', number: 1, commitOid: HEAD, baseOid: null, path: 'a.ts', side: 'new', startLine: 2, endLine: 2,
+    id: ++id, kind: 'pr', repo: 'app', number: 1, branch: null, commitOid: HEAD, baseOid: null, path: 'a.ts', side: 'new', startLine: 2, endLine: 2,
     snippet: 'one', status: 'open', resolvedAt: null, resolvedBy: null, createdAt: '', updatedAt: '', comments: [], ...over,
   };
 }

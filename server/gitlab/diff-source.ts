@@ -2,7 +2,7 @@ import type { DiffFile } from '../../shared/api';
 import type { ResolvedToken, TokenSupply } from '../credentials/types';
 import type { SourceDiffSupply } from '../diff/service';
 import { defaultSleep } from '../provider/transport';
-import type { BlobResult, CommitDiff, DiffRepo, DiffSource, PrRevision } from '../provider/types';
+import type { BlobResult, BranchRef, CommitDiff, CompareDiff, DiffRepo, DiffSource, PrRevision } from '../provider/types';
 import { GitLabClient } from './client';
 import { mapDiffFile, messageParts } from './map';
 import { MR_REVISION } from './queries';
@@ -133,6 +133,19 @@ export class GitLabDiffSource implements DiffSource {
    * GitLab answers 404 for a directory as for a missing file (and an empty file for a submodule), so 'not-file' never
    * comes from here. It sends files of any size: the cap is enforced while reading.
    */
+  // TODO(branch-review): the branch diff methods, implemented by the diff track.
+  async branchHead(_repo: DiffRepo, _branch: string, _knownHead: string | null, _signal: AbortSignal): Promise<string> {
+    throw new GitLabError('http', 'Branch diffs are not implemented yet');
+  }
+
+  async compare(_repo: DiffRepo, _base: string, _head: string, _signal: AbortSignal): Promise<CompareDiff> {
+    throw new GitLabError('http', 'Branch diffs are not implemented yet');
+  }
+
+  async branches(_repo: DiffRepo, _query: string | null, _limit: number, _signal: AbortSignal): Promise<{ items: BranchRef[]; more: boolean }> {
+    throw new GitLabError('http', 'Branch lists are not implemented yet');
+  }
+
   async blob(repo: DiffRepo, sha: string, path: string, maxBytes: number, signal: AbortSignal): Promise<BlobResult> {
     const target = `/projects/${encodeSegment(repo.path)}/repository/files/${encodeSegment(path)}/raw`;
     const file = await this.rest.raw(target, maxBytes, { query: { ref: sha }, signal });

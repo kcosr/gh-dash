@@ -57,6 +57,16 @@ export function fakeCode(): { code: FakeCode; sources: DiffSources } {
     authHint: 'check the token',
     maxFiles: 3000,
     prHeadIs: async () => null,
+    // Branch reviews: TODO(branch-review) fakes for the MCP branch tools.
+    branchHead: async () => {
+      throw new Error('not implemented');
+    },
+    compare: async () => {
+      throw new Error('not implemented');
+    },
+    branches: async () => {
+      throw new Error('not implemented');
+    },
     async prRevision(repo, number): Promise<PrRevision> {
       code.requests.push(`pr ${repo.key}#${number}`);
       const pr = code.prs.get(prKey(repo.key, number));

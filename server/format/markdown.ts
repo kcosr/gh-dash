@@ -151,10 +151,15 @@ const COMMENT_VERB: Record<CommentEventKind, string> = {
   thread_deleted: 'deleted a thread on',
 };
 
-/** What a comment event is on and where: `alice/app#2 (Title), src/a.ts:3–4`, or `alice/app@abc1234`. */
+/** What a comment event is on and where: `alice/app#2 (Title), src/a.ts:3–4`, `alice/app branch fix/x`, or `alice/app@abc1234`. */
 function commentPlace(e: Extract<ActivityEvent, { type: 'comment' }>, kindOf: KindOf): string {
   const { target, path, startLine, endLine } = e.comment;
-  const ref = target.kind === 'pr' ? refText(kindOf(e.repo), e.repo, target.number, 'pr') : `${e.repo}@${target.oid.slice(0, 7)}`;
+  const ref =
+    target.kind === 'pr'
+      ? refText(kindOf(e.repo), e.repo, target.number, 'pr')
+      : target.kind === 'branch'
+        ? `${e.repo} branch ${escapeInline(target.branch)}`
+        : `${e.repo}@${target.oid.slice(0, 7)}`;
   const title = target.title ? ` (${escapeInline(target.title)})` : '';
   const lines = startLine === null ? '' : `:${startLine}${endLine !== null && endLine !== startLine ? `–${endLine}` : ''}`;
   return `${ref}${title}${path === null ? '' : `, ${escapeInline(path)}${lines}`}`;

@@ -750,15 +750,22 @@ export interface DiffFile {
 }
 
 export interface Diff {
-  kind: 'pr' | 'commit';
+  kind: 'pr' | 'commit' | 'branch';
   repo: string;
-  /** PR number for kind 'pr'; null for commits. */
+  /** PR number for kind 'pr'; null for commits and branches. */
   number: number | null;
-  /** PR title or commit headline. */
+  /** For kind 'branch': the branch, compared against `baseRef`. Absent for PRs and commits. */
+  branch?: string;
+  /** For kind 'branch': the repo's default branch, which the branch is compared against. Absent for PRs and commits. */
+  baseRef?: string;
+  /** PR title, commit headline, or the branch's name. */
   title: string;
-  /** Old side of every file: the merge base for a PR, the first parent for a commit (null for a root commit). */
+  /**
+   * Old side of every file: the merge base for a PR or branch (three-dot), the first parent for a commit (null for a
+   * root commit).
+   */
   baseOid: string | null;
-  /** New side of every file: the PR head, or the commit itself. */
+  /** New side of every file: the PR head, the commit itself, or the branch's head. */
   headOid: string;
   /** In the code host's order. */
   files: DiffFile[];
@@ -768,7 +775,10 @@ export interface Diff {
   deletions: number;
   /** When this diff was fetched from the code host (earlier than the request when served from the cache). */
   fetchedAt: string;
-  /** The PR's "Files changed" tab (GitLab: the merge request's changes page) or the commit page on the code host. */
+  /**
+   * The PR's "Files changed" tab (GitLab: the merge request's changes page), the commit page, or the branch's compare
+   * page on the code host.
+   */
   url: string;
   /**
    * Set when this cached copy was served because the code host couldn't be asked whether it's still current
@@ -786,8 +796,22 @@ export interface DiffCacheStats {
 }
 
 // ---------------------------------------------------------------------------
-// Comments: local review threads on PR and commit diffs. Stored in gh-dash only, never posted to
-// GitHub. Placement in a later revision of a PR's diff: shared/comment-placement.ts.
+// Comments: local review threads on PR, branch and commit diffs. Stored in gh-dash only, never posted to
+// GitHub. Placement in a later revision of a PR's or branch's diff: shared/comment-placement.ts.
+//
+// Branch groups. A branch's review (its diff against the default branch, before or without a PR) and the PRs from it
+// share their threads: what matters is the line of work, not which PR (if any) was open when a comment was made. A
+// thread's `branch` says which branch's line of work it belongs to. A same-repo PR from the branch being merged ends
+// one line of work: the branch name may be reused for something else afterwards. So a branch's threads fall into
+// groups split at the merge times of the same-repo PRs from it, and a thread is shown with the group it was made in
+// (by created_at):
+//  - the branch's review shows its current group: threads made after the branch's last merge;
+//  - a PR from the branch shows its own threads (always), and the group it belongs to: threads made after the branch's
+//    last merge before the PR's end (merged_at, else closed_at; an open PR has none), up to its first merge at or
+//    after it (the PR's own merge time, for a merged PR). A closed PR, and a new PR later opened from the same branch,
+//    so see each other's threads until a merge separates them.
+// A PR from a fork shares nothing: its head branch is another repo's. A branch deleted and made again without a merge in
+// between can't be told apart from the old one, and keeps its threads.
 // ---------------------------------------------------------------------------
 
 /** Who wrote a comment: the dashboard's own user ('self', id 1, "You") or an agent acting through the API. */
@@ -833,8 +857,14 @@ export interface CommentActivity {
   live: boolean;
   /** Who did it (also the event's `actor`, as a name without a login: `isMe` for you, an agent otherwise). */
   by: Principal;
-  /** What the thread is on; `title` is the PR's title or the commit's headline, null when not synced. */
-  target: { kind: 'pr'; number: number; title: string | null } | { kind: 'commit'; oid: string; title: string | null };
+  /**
+   * What the thread is on; `title` is the PR's title or the commit's headline, null when not synced (and for a branch,
+   * whose name says it).
+   */
+  target:
+    | { kind: 'pr'; number: number; title: string | null }
+    | { kind: 'branch'; branch: string; title: null }
+    | { kind: 'commit'; oid: string; title: string | null };
   /** The revision the thread was made on. */
   commitOid: string;
   path: string | null;
@@ -847,6 +877,29 @@ export interface CommentActivity {
    * deleted comments said.
    */
   excerpt: string | null;
+}
+
+/** A branch of a tracked repo, as GET /branches/:repo lists it. */
+export interface BranchSummary {
+  name: string;
+  /** The commit the branch points to. */
+  headOid: string;
+  /** The head commit's committer date; null when the code host doesn't say. */
+  committedAt: string | null;
+  /**
+   * The newest synced PR from this branch of the same repo, if any: a branch with an open PR is usually reviewed there
+   * (its threads are shared: see "Branch groups").
+   */
+  pr: { number: number; state: PrState; title: string } | null;
+}
+
+export interface BranchListResponse {
+  /** Newest head commit first; the default branch is left out (it is what branches are compared against). */
+  items: BranchSummary[];
+  /** The repo's default branch. */
+  defaultBranch: string;
+  /** The code host has more matching branches than were listed (narrow them with `q`). */
+  more: boolean;
 }
 
 /** Which side of the diff a line thread is on: the old file (deletions) or the new one (additions). */
@@ -892,11 +945,21 @@ export interface ThreadComment {
 
 export interface CommentThread extends ThreadAnchor {
   id: number;
-  kind: 'pr' | 'commit';
+  /**
+   * What it was made on: a PR's diff, a branch's (compared against the default branch, before or without a PR), or a
+   * commit's.
+   */
+  kind: 'pr' | 'branch' | 'commit';
   repo: string;
-  /** PR number for kind 'pr'; null for commits. */
+  /** PR number for kind 'pr'; null otherwise. */
   number: number | null;
-  /** The revision the thread was made on: the diff's headOid then (the PR head, or the commit itself). */
+  /**
+   * The branch whose line of work the thread belongs to (see "Branch groups" below): always set for kind 'branch'; for
+   * kind 'pr', the PR's head branch when the PR is from a branch of the same repo (null for a PR from a fork, or one made
+   * before the sync knew which); null for commits.
+   */
+  branch: string | null;
+  /** The revision the thread was made on: the diff's headOid then (the PR head, the branch head, or the commit itself). */
   commitOid: string;
   /** The diff's baseOid then (merge base, or first parent); null when not given or for a root commit. */
   baseOid: string | null;
@@ -926,9 +989,12 @@ export interface NewPrThread extends NewThread {
   commitOid: string;
 }
 
+/** POST /branches/:repo/:branch/threads: as for a PR, `commitOid` is the headOid of the branch diff it is made on. */
+export type NewBranchThread = NewPrThread;
+
 export type ThreadStatusFilter = ThreadStatus | 'all';
-/** Threads on PRs, on commits, or both. */
-export type ThreadKindFilter = 'pr' | 'commit' | 'all';
+/** Threads on PRs, on branches, on commits, or all of them. */
+export type ThreadKindFilter = 'pr' | 'branch' | 'commit' | 'all';
 /** By last activity (`updatedAt`): newest first, or oldest first. */
 export type ThreadSort = 'recent' | 'oldest';
 
@@ -951,11 +1017,12 @@ export interface ThreadListQuery extends Pick<ScopeQuery, 'repos' | 'source' | '
   waiting?: 'you';
 }
 
-/** Where an agent asks the app to look (MCP `show`): a thread, or a file of a PR's or commit's diff. */
+/** Where an agent asks the app to look (MCP `show`): a thread, or a file of a PR's, branch's or commit's diff. */
 export interface ShowTarget {
   repo: string;
-  /** A PR number, or a full commit oid: the diff to open. */
+  /** A PR number, a branch, or a full commit oid: the diff to open. */
   pr?: number;
+  branch?: string;
   commit?: string;
   threadId?: number;
   path?: string;
@@ -967,22 +1034,40 @@ export interface ShowTarget {
  * unless the window follows agents). `agents`: an agent was added, given a new token or revoked.
  */
 export type StreamMessage =
-  | { type: 'comments'; repo: string; kind: 'pr' | 'commit'; number: number | null; commitOid: string; threadId: number; event: CommentEventKind; by: Principal }
+  | {
+      type: 'comments';
+      repo: string;
+      kind: CommentThread['kind'];
+      number: number | null;
+      /** The thread's branch (CommentThread.branch): views of that branch, and of PRs from it, list it too. */
+      branch: string | null;
+      commitOid: string;
+      threadId: number;
+      event: CommentEventKind;
+      by: Principal;
+    }
   | { type: 'show'; id: string; agent: Principal; target: ShowTarget; message: string | null; at: string }
   | { type: 'agents' };
 
 /** A thread in GET /threads: the thread, and what it is on. */
 export interface ThreadListItem extends CommentThread {
   /**
-   * The PR's title or the commit's headline; null when that isn't synced (a thread can outlive its PR's row). A commit the
-   * sync doesn't hold takes its headline from a synced PR that lists it (the newest one), else null.
+   * The PR's title or the commit's headline; null when that isn't synced (a thread can outlive its PR's row), and for a
+   * branch thread (`branch` names it). A commit the sync doesn't hold takes its headline from a synced PR that lists it
+   * (the newest one), else null.
    */
   targetTitle: string | null;
-  /** The PR's state; null for a commit thread, or a PR that isn't synced. */
+  /** The PR's state; null for a branch or commit thread, or a PR that isn't synced. */
   prState: PrState | null;
-  /** The PR or commit on its code host: the synced row's url, else built from the repo's url (never null). */
+  /**
+   * The PR or commit on its code host (the synced row's url, else built from the repo's url), or the branch's compare
+   * page against the repo's default branch. Never null.
+   */
   targetUrl: string;
-  /** A PR thread made on an earlier push than the PR's current head (false for commits, or when the head isn't known). */
+  /**
+   * A PR thread made on an earlier push than the PR's current head (false for branches and commits, whose current head
+   * the sync doesn't know, or when the PR's head isn't known).
+   */
   earlierPush: boolean;
 }
 
@@ -1043,6 +1128,11 @@ export interface ThreadListResponse extends ListResponse<ThreadListItem> {
 //          Diffs come from the repo's own source. Diff errors: 404 unknown repo/PR/commit, 503 no token for the source (or a source
 //          this server doesn't configure), 429 rate limit, 502 other failure of the code host.
 //          refresh=1 re-checks the code host for a PR's current head instead of using the last synced one.
+// GET    /api/v1/branches/:repo {q?, refresh?: '1'} -> BranchListResponse   (the code host's branches, newest first, at most
+//          100; `q` narrows them by name. Cached for a minute per repo and q unless refresh=1.)
+// GET    /api/v1/branches/:repo/:branch/diff {refresh?: '1'} -> Diff   (kind 'branch': :branch, URL-encoded, against the
+//          repo's default branch, three-dot. 400 for an invalid name or the default branch itself; 404 unknown repo or a
+//          branch the code host doesn't have. refresh=1 asks the code host even when the cached copy looks current.)
 // GET    /api/v1/blob/:repo     {ref, path}    -> text/plain file contents at a commit (for expanding diff context);
 //          404 missing, 415 binary, 413 too large
 // GET    /api/v1/diff-cache                    -> DiffCacheStats
@@ -1051,6 +1141,10 @@ export interface ThreadListResponse extends ListResponse<ThreadListItem> {
 // POST   /api/v1/prs/:repo/:number/threads NewPrThread -> CommentThread   (404 unless the PR is synced)
 // GET    /api/v1/commits/:repo/:oid/threads {format?: 'md'} -> { items: CommentThread[] } | text/markdown  (oid: full SHA)
 // POST   /api/v1/commits/:repo/:oid/threads NewThread -> CommentThread
+// GET    /api/v1/branches/:repo/:branch/threads {format?: 'md'} -> { items: CommentThread[] } | text/markdown   (the
+//          branch's current group: see "Branch groups". PR threads' lists include their branch's group the same way.)
+// POST   /api/v1/branches/:repo/:branch/threads NewBranchThread -> CommentThread   (400 for the default branch; the
+//          branch need not exist on the code host any more)
 // GET    /api/v1/threads    ThreadListQuery    -> ThreadListResponse | text/markdown   (every thread in scope, across PRs
 //          and commits: status open by default, newest activity first; format=md groups them per PR or commit)
 // GET    /api/v1/threads/:id                   -> CommentThread

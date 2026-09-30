@@ -9,7 +9,7 @@ let nextId = 1;
 
 function thread(over: Partial<CommentThread>, bodies: [Principal, string][] = [[you, 'Why?']]): CommentThread {
   return {
-    id: nextId++, kind: 'pr', repo: 'app', number: 2, commitOid: '0123456789'.repeat(4), baseOid: null,
+    id: nextId++, kind: 'pr', repo: 'app', number: 2, branch: null, commitOid: '0123456789'.repeat(4), baseOid: null,
     path: null, side: null, startLine: null, endLine: null, snippet: null, status: 'open', resolvedAt: null, resolvedBy: null,
     createdAt: '2026-09-29T10:00:00.000Z', updatedAt: '2026-09-29T10:00:00.000Z',
     comments: bodies.map(([author, body], i) => ({ id: 100 + i, author, body, createdAt: '2026-09-29T10:00:00.000Z', editedAt: null })),

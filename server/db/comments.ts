@@ -22,6 +22,7 @@ export interface ThreadRow {
   id: number;
   repo: string;
   pr_number: number | null;
+  branch: string | null;
   commit_oid: string;
   base_oid: string | null;
   path: string | null;
@@ -78,9 +79,10 @@ export function hydrate(db: Db, rows: ThreadRow[]): CommentThread[] {
   );
   return rows.map((r) => ({
     id: r.id,
-    kind: r.pr_number === null ? 'commit' : 'pr',
+    kind: r.pr_number !== null ? 'pr' : r.branch !== null ? 'branch' : 'commit',
     repo: r.repo,
     number: r.pr_number,
+    branch: r.branch,
     commitOid: r.commit_oid,
     baseOid: r.base_oid,
     path: r.path,

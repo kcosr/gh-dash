@@ -4,7 +4,7 @@
 import type { DiffFile, DiffFileStatus } from '../../shared/api';
 import type { SourceDiffSupply } from '../diff/service';
 import { defaultSleep } from '../provider/transport';
-import type { BlobResult, CommitDiff, DiffRepo, DiffSource, PrRevision, RateLimitInfo } from '../provider/types';
+import type { BlobResult, BranchRef, CommitDiff, CompareDiff, DiffRepo, DiffSource, PrRevision, RateLimitInfo } from '../provider/types';
 import { noTokenMessage, type TokenSupply } from '../token';
 import { GitHubClient } from './client';
 import { GitHubRestClient } from './rest';
@@ -210,6 +210,19 @@ export class GitHubDiffSource implements DiffSource {
       this.log(`[diff] could not count the files of ${repo.key}@${sha.slice(0, 7)}: ${(err as Error).message}`);
       return fallback;
     }
+  }
+
+  // TODO(branch-review): the branch diff methods, implemented by the diff track.
+  async branchHead(_repo: DiffRepo, _branch: string, _knownHead: string | null, _signal: AbortSignal): Promise<string> {
+    throw new GitHubError('http', 'Branch diffs are not implemented yet');
+  }
+
+  async compare(_repo: DiffRepo, _base: string, _head: string, _signal: AbortSignal): Promise<CompareDiff> {
+    throw new GitHubError('http', 'Branch diffs are not implemented yet');
+  }
+
+  async branches(_repo: DiffRepo, _query: string | null, _limit: number, _signal: AbortSignal): Promise<{ items: BranchRef[]; more: boolean }> {
+    throw new GitHubError('http', 'Branch lists are not implemented yet');
   }
 
   async blob(repo: DiffRepo, sha: string, path: string, maxBytes: number, signal: AbortSignal): Promise<BlobResult> {

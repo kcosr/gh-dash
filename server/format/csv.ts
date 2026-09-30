@@ -78,7 +78,7 @@ function eventCells(e: ActivityEvent, kindOf: KindOf): [string | null, string | 
     // Comments are gh-dash's own: no url. The title is what was said; the ref is what it's on.
     case 'comment': {
       const { target } = e.comment;
-      return [e.kind, e.comment.excerpt, target.kind === 'pr' ? refText(kindOf(e.repo), '', target.number, 'pr') : target.oid.slice(0, 7), ''];
+      return [e.kind, e.comment.excerpt, target.kind === 'pr' ? refText(kindOf(e.repo), '', target.number, 'pr') : target.kind === 'branch' ? target.branch : target.oid.slice(0, 7), ''];
     }
   }
 }

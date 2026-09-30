@@ -286,6 +286,31 @@ export type BlobResult = { kind: 'file'; bytes: Uint8Array } | { kind: 'not-file
 export type CommitDiff = Omit<Diff, 'kind' | 'repo' | 'number' | 'fetchedAt'>;
 
 /**
+ * A three-dot comparison as a source produces it: the files changed between `baseOid` (the merge base) and `headOid`,
+ * as one consistent snapshot. The diff service adds the fields it owns (kind, repo, branch, title, url, fetchedAt).
+ */
+export interface CompareDiff {
+  /** The merge base of the compared base and head: the left side of every file. */
+  baseOid: string;
+  /** The head that was compared (as asked: a full SHA). */
+  headOid: string;
+  files: DiffFile[];
+  /** Files the comparison changes; exceeds files.length when the list is capped (see DiffSource.compare). */
+  totalFiles: number;
+  additions: number;
+  deletions: number;
+}
+
+/** A branch as a source lists it. */
+export interface BranchRef {
+  name: string;
+  /** The commit it points to: a full SHA. */
+  headOid: string;
+  /** The head commit's committer date (ISO 8601, UTC); null when the source doesn't say. */
+  committedAt: string | null;
+}
+
+/**
  * Fetches diffs and file contents on demand. Failures are SourceErrors (a missing PR/commit/file is 'not-found').
  * Caching, revalidation, request deduplication and the mapping to HTTP errors belong to the diff service.
  */
@@ -311,4 +336,20 @@ export interface DiffSource {
   commit(repo: DiffRepo, ref: string, signal: AbortSignal): Promise<CommitDiff>;
   /** Raw contents of `path` at a commit, for expanding diff context; files over `maxBytes` aren't read. */
   blob(repo: DiffRepo, sha: string, path: string, maxBytes: number, signal: AbortSignal): Promise<BlobResult>;
+  /**
+   * The commit `branch` points to now (a full SHA); 'not-found' for a branch the repo doesn't have. With `knownHead`
+   * the source may ask conditionally (GitHub: a 304, which isn't counted, while the branch is still there).
+   */
+  branchHead(repo: DiffRepo, branch: string, knownHead: string | null, signal: AbortSignal): Promise<string>;
+  /**
+   * The diff of `head` (a full SHA) against its merge base with branch `base` (three-dot, as a PR's), as one consistent
+   * snapshot: the returned baseOid is the merge base the files were computed against. Lists at most maxFiles files;
+   * totalFiles says how many there are, as far as the source can tell.
+   */
+  compare(repo: DiffRepo, base: string, head: string, signal: AbortSignal): Promise<CompareDiff>;
+  /**
+   * The repo's branches, the default branch included: those whose name contains `query` (case-insensitively), or all.
+   * Newest head commit first where the source can tell; at most `limit`, and `more` when there are others.
+   */
+  branches(repo: DiffRepo, query: string | null, limit: number, signal: AbortSignal): Promise<{ items: BranchRef[]; more: boolean }>;
 }

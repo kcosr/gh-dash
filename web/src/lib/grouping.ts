@@ -102,8 +102,8 @@ function eventKey(e: ActivityEvent): string {
   }
 }
 
-/** A comment event's PR or commit, within its repo: "#17" or "@<oid>". */
-const targetKey = (t: CommentActivity['target']) => (t.kind === 'pr' ? `#${t.number}` : `@${t.oid}`);
+/** A comment event's PR, branch or commit, within its repo: "#17", "~<branch>" or "@<oid>". */
+const targetKey = (t: CommentActivity['target']) => (t.kind === 'pr' ? `#${t.number}` : t.kind === 'branch' ? `~${t.branch}` : `@${t.oid}`);
 
 /**
  * Group raw events per local day, applying the mock's rules:

@@ -355,8 +355,8 @@ const FeedItem = memo(function FeedItem({ row, expanded, onExpand, onOpenPr, onO
   } else if (row.kind === 'comments') {
     const evs = row.events;
     const t = row.target;
-    const diff = t.kind === 'pr' ? `${row.repo}#${t.number}` : commitDiffId(row.repo, t.oid);
-    const ref = t.kind === 'pr' ? `${providerOf(row.repo).prRef}${t.number}` : `@${t.oid.slice(0, 7)}`;
+    const diff = t.kind === 'pr' ? `${row.repo}#${t.number}` : t.kind === 'branch' ? `${row.repo}~${t.branch}` : commitDiffId(row.repo, t.oid);
+    const ref = t.kind === 'pr' ? `${providerOf(row.repo).prRef}${t.number}` : t.kind === 'branch' ? t.branch : `@${t.oid.slice(0, 7)}`;
     const shown = evs.length <= COMMITS_SHOWN || expanded ? evs : evs.slice(0, COMMITS_SHOWN);
     const mixed = new Set(evs.map((e) => e.kind)).size > 1;
     cls = 'comment'; icon = evs.every((e) => e.kind === 'resolved') ? 'check' : 'comment';

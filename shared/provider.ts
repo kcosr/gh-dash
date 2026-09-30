@@ -33,6 +33,8 @@ export interface ProviderLinks {
   prCommits(prUrl: string): string;
   /** …/commit/sha | …/-/commit/sha */
   commit(repoUrl: string, sha: string): string;
+  /** A branch compared against `base` (three-dot): …/compare/base...head | …/-/compare/base...head */
+  compare(repoUrl: string, base: string, head: string): string;
   /** The repo's PR list: …/pulls | …/-/merge_requests */
   prs(repoUrl: string): string;
   /** …/issues | …/-/issues */
@@ -62,6 +64,9 @@ async function digestHex(algorithm: 'SHA-1' | 'SHA-256', text: string): Promise<
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+/** A branch name in a URL path: each segment encoded, the slashes kept (both hosts' compare pages expect them so). */
+const refPath = (ref: string) => ref.split('/').map(encodeURIComponent).join('/');
+
 const GITHUB: Provider = {
   kind: 'github',
   name: 'GitHub',
@@ -73,6 +78,7 @@ const GITHUB: Provider = {
     prFiles: (prUrl) => `${prUrl}/files`,
     prCommits: (prUrl) => `${prUrl}/commits`,
     commit: (repoUrl, sha) => `${repoUrl}/commit/${sha}`,
+    compare: (repoUrl, base, head) => `${repoUrl}/compare/${refPath(base)}...${refPath(head)}`,
     prs: (repoUrl) => `${repoUrl}/pulls`,
     issues: (repoUrl) => `${repoUrl}/issues`,
     releases: (repoUrl) => `${repoUrl}/releases`,
@@ -91,6 +97,7 @@ const GITLAB: Provider = {
     prFiles: (prUrl) => `${prUrl}/diffs`,
     prCommits: (prUrl) => `${prUrl}/commits`,
     commit: (repoUrl, sha) => `${repoUrl}/-/commit/${sha}`,
+    compare: (repoUrl, base, head) => `${repoUrl}/-/compare/${refPath(base)}...${refPath(head)}`,
     prs: (repoUrl) => `${repoUrl}/-/merge_requests`,
     issues: (repoUrl) => `${repoUrl}/-/issues`,
     releases: (repoUrl) => `${repoUrl}/-/releases`,

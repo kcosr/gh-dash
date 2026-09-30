@@ -181,8 +181,14 @@ const THREAD_NOT_YOURS = 'Only a thread whose comments are all yours can be dele
 // Writes. Each validates its input, finds its target and writes with no await in between, then tells the bus.
 // ---------------------------------------------------------------------------
 
-function announce(deps: CommentDeps, thread: Pick<CommentThread, 'id' | 'repo' | 'kind' | 'number' | 'commitOid'>, event: CommentEventKind, by: Principal): void {
-  deps.bus?.emit({ type: 'comments', repo: thread.repo, kind: thread.kind, number: thread.number, commitOid: thread.commitOid, threadId: thread.id, event, by });
+function announce(
+  deps: CommentDeps,
+  thread: Pick<CommentThread, 'id' | 'repo' | 'kind' | 'number' | 'branch' | 'commitOid'>,
+  event: CommentEventKind,
+  by: Principal,
+): void {
+  const { repo, kind, number, branch, commitOid, id: threadId } = thread;
+  deps.bus?.emit({ type: 'comments', repo, kind, number, branch, commitOid, threadId, event, by });
 }
 
 /** Opens a thread on a PR the dashboard knows (404 for one the sync never saw, or has dropped). */

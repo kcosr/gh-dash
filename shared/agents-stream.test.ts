@@ -16,7 +16,7 @@ const agent: Principal = { id: 3, kind: 'agent', name: 'Claude' };
 const OID = 'c'.repeat(40);
 
 const comments = (o: Partial<Extract<StreamMessage, { type: 'comments' }>> = {}): StreamMessage =>
-  ({ type: 'comments', repo: 'alice/app', kind: 'pr', number: 7, commitOid: OID, threadId: 5, event: 'replied', by: agent, ...o });
+  ({ type: 'comments', repo: 'alice/app', kind: 'pr', number: 7, branch: null, commitOid: OID, threadId: 5, event: 'replied', by: agent, ...o });
 
 describe('the stream: what a message refetches', () => {
   it("refetches what threadActions does after the same change: the target's threads, the lists, the PR, the feed", () => {

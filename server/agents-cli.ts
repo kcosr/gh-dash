@@ -53,7 +53,7 @@ export async function runAgentsCommand(args: string[], io: CliIo = { out: consol
     const printToken = (token: string) => {
       io.out(`Token (shown once, keep it somewhere safe): ${token}`);
       io.out(`MCP server: ${mcpUrl} (this server's address; use the one agents reach it at)`);
-      io.out(`Claude Code: claude mcp add --transport http gh-dash ${mcpUrl} --header "Authorization: Bearer <token>"`);
+      io.out(`Claude Code: claude mcp add -s user --transport http gh-dash ${mcpUrl} --header "Authorization: Bearer <token>"`);
     };
 
     switch (command) {

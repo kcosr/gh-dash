@@ -37,7 +37,7 @@ describe('gh-dash agents', () => {
     expect([code, err]).toEqual([0, '']);
     expect(out).toContain('Added agent Claude (id 2).');
     expect(out).toContain('MCP server: http://127.0.0.1:4780/mcp');
-    expect(out).toContain('claude mcp add --transport http gh-dash http://127.0.0.1:4780/mcp --header "Authorization: Bearer <token>"');
+    expect(out).toContain('claude mcp add -s user --transport http gh-dash http://127.0.0.1:4780/mcp --header "Authorization: Bearer <token>"');
     const token = tokenIn(out)!;
     expect(out.split(token)).toHaveLength(2);
     expect(principal(token)).toEqual({ id: 2, kind: 'agent', name: 'Claude' });

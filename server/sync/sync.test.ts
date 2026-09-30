@@ -333,10 +333,11 @@ describe('runSync', () => {
     const app = db.get<{ id: number }>(`SELECT id FROM repos WHERE name = 'app'`)!.id;
     const flags = () => db.all('SELECT number, cross_repo FROM pull_requests WHERE repo_id = ? ORDER BY number', [app]);
     expect(flags()).toEqual([{ number: 1, cross_repo: 0 }, { number: 2, cross_repo: 1 }]);
-    // As synced before v9 (schema.ts, BRANCHES): not known, and the threads made since have no branch.
+    // As synced before v9 (schema.ts, BRANCHES): not known, and the threads made since (before the merges: a thread made
+    // on a merged PR after its merge stays the PR's own) have no branch.
     db.run('UPDATE pull_requests SET cross_repo = NULL');
     for (const n of [1, 2]) {
-      db.run(`INSERT INTO comment_threads (repo_id, pr_number, commit_oid, created_at, updated_at) VALUES (?, ?, ?, '2026-09-22T00:00:00Z', '2026-09-22T00:00:00Z')`, [app, n, 'a'.repeat(40)]);
+      db.run(`INSERT INTO comment_threads (repo_id, pr_number, commit_oid, created_at, updated_at) VALUES (?, ?, ?, '2026-09-21T00:00:00Z', '2026-09-21T00:00:00Z')`, [app, n, 'a'.repeat(40)]);
     }
     const branches = () => db.all('SELECT pr_number, branch FROM comment_threads ORDER BY pr_number');
     expect(branches()).toEqual([{ pr_number: 1, branch: null }, { pr_number: 2, branch: null }]);

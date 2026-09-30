@@ -75,10 +75,11 @@ describe('a GitLab source', () => {
     const flags = () => db.all('SELECT number, cross_repo FROM pull_requests WHERE repo_id = ? ORDER BY number', [app]);
     // !4 is from a fork (another source project), the rest from the project's own branches.
     expect(flags()).toEqual([{ number: 2, cross_repo: 0 }, { number: 4, cross_repo: 1 }, { number: 5, cross_repo: 0 }, { number: 7, cross_repo: 0 }]);
-    // As synced before v9 (schema.ts, BRANCHES): not known, and the threads made since have no branch.
+    // As synced before v9 (schema.ts, BRANCHES): not known, and the threads made since (before the merges: a thread made
+    // on a merged PR after its merge stays the PR's own) have no branch.
     db.run('UPDATE pull_requests SET cross_repo = NULL');
     for (const n of [4, 5]) {
-      db.run(`INSERT INTO comment_threads (repo_id, pr_number, commit_oid, created_at, updated_at) VALUES (?, ?, ?, '2026-09-22T00:00:00Z', '2026-09-22T00:00:00Z')`, [app, n, sha('a')]);
+      db.run(`INSERT INTO comment_threads (repo_id, pr_number, commit_oid, created_at, updated_at) VALUES (?, ?, ?, '2026-09-21T00:00:00Z', '2026-09-21T00:00:00Z')`, [app, n, sha('a')]);
     }
 
     await sync({ full: true }, NOW + HOUR);

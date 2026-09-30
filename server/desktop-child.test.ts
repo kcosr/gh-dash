@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -7,7 +7,7 @@ import type { StreamMessage } from '../shared/api';
 import { DESKTOP_ENV, type ServerToMain } from '../shared/desktop';
 import { CommentBus } from './comments/bus';
 import { writeConfigFile } from './config-file';
-import { agentForToken, agentSourceIds, builtInAgent, listAgents, principalForToken } from './db/agents';
+import { agentForToken, agentSourceIds, builtInAgent, listAgents, principalForToken, setAgentEnabled } from './db/agents';
 import { createThread, getPrincipal, getThread } from './db/comments';
 import { openDb } from './db/db';
 import { getMeta } from './db/meta';
@@ -223,6 +223,34 @@ describe('main → server messages for agents', () => {
     expect(heard).toEqual([{ type: 'agents' }, { type: 'agents' }, { type: 'agents' }, { type: 'agents' }]);
   });
 
+  it("says whether a token main kept (by its sha256) is still the agent's, disabled or not", async () => {
+    const { db, handle, posted, heard } = setup();
+    const sha = (t: string) => createHash('sha256').update(t).digest('hex');
+    await handle({ type: 'add-agent', id: 1, name: 'Claude' });
+    await handle({ type: 'add-agent', id: 2, name: 'Codex' });
+    const [claude, codex] = posted.map((m) => (m as Extract<ServerToMain, { type: 'agent-result' }>).token!);
+    const check = async (agent: number, hash: string) => {
+      await handle({ type: 'check-agent-token', id: 9, agent, hash });
+      return (posted.at(-1) as Extract<ServerToMain, { type: 'agent-token-checked' }>).matches;
+    };
+    expect(await check(2, sha(claude!))).toBe(true);
+    expect(await check(2, sha(claude!).toUpperCase())).toBe(true);
+    // Another agent's token, a token that isn't a hash, the token itself: no.
+    expect(await check(2, sha(codex!))).toBe(false);
+    expect(await check(3, sha(claude!))).toBe(false);
+    expect(await check(2, claude!)).toBe(false);
+    expect(await check(2, 'zz'.repeat(32))).toBe(false);
+    expect(await check(1, sha(claude!))).toBe(false);
+    setAgentEnabled(db, 2, false);
+    expect(await check(2, sha(claude!))).toBe(true);
+    // Replaced since: the old one isn't its token any more.
+    await handle({ type: 'regenerate-agent-token', id: 10, agent: 2 });
+    expect(await check(2, sha(claude!))).toBe(false);
+    // Asking changes nothing and tells no one.
+    expect(heard).toHaveLength(3);
+    expect(principalForToken(db, codex!)).toMatchObject({ name: 'Codex' });
+  });
+
   it("says what an agent wrote, then deletes it, keeping its comments under its new name, and tells the windows which", async () => {
     const { db, handle, posted, heard } = setup();
     await handle({ type: 'add-agent', id: 1, name: 'Claude' });
@@ -243,6 +271,11 @@ describe('main → server messages for agents', () => {
     expect(getThread(db, thread.id)!.comments[0]!.author).toEqual({ id: 2, kind: 'agent', name: 'Deleted agent #2' });
     // Asking what it wrote changes nothing, and tells no one.
     expect(heard).toEqual([{ type: 'agents' }, { type: 'agents', deleted: 2 }]);
+    // Its token is no one's now: a token main kept for it isn't shown.
+    const sha = (t: string) => createHash('sha256').update(t).digest('hex');
+    await handle({ type: 'check-agent-token', id: 40, agent: 2, hash: sha(token!) });
+    expect(posted.at(-1)).toEqual({ type: 'agent-token-checked', id: 40, matches: false });
+    posted.pop();
     // Gone: not found again, for anything.
     await handle({ type: 'delete-agent', id: 4, agent: 2 });
     await handle({ type: 'agent-footprint', id: 5, agent: 2 });

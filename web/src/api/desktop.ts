@@ -169,6 +169,8 @@ export function useAgentActions() {
   });
   /** What an agent wrote, for Delete…'s warning: read when asked, never cached (it changes with every comment). */
   const footprint = (id: number) => need(bridge).agentFootprint(id);
+  /** The token the app kept for an agent (Show token), or null: asked when shown, never cached. */
+  const keptToken = (id: number) => need(bridge).keptAgentToken(id);
   const remove = useMutation({
     mutationFn: (id: number) => need(bridge).deleteAgent(id),
     onSettled: () => {
@@ -189,5 +191,5 @@ export function useAgentActions() {
       void qc.invalidateQueries({ predicate: (q) => q.queryKey[0] !== qk.desktop[0] });
     },
   });
-  return { add, regenerate, setEnabled, footprint, remove, setSources, enableMcp };
+  return { add, regenerate, setEnabled, footprint, remove, keptToken, setSources, enableMcp };
 }

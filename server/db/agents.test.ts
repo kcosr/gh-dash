@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import type { Principal, ThreadAnchor } from '../../shared/api';
 import { threadListMarkdown } from '../format/markdown';
 import {
-  agentFootprint, agentForToken, agentSourceIds, BUILT_IN_AGENT, builtInAgent, createAgent, deleteAgent, findAgent, getAgent, listAgents, principalForToken,
+  agentFootprint, agentForToken, agentSourceIds, agentTokenIs, BUILT_IN_AGENT, builtInAgent, createAgent, deleteAgent, findAgent, getAgent, listAgents, principalForToken,
   regenerateAgentToken, setAgentEnabled, setAgentSources,
 } from './agents';
 import { commentEventsAfter } from './comment-events';
@@ -110,6 +110,22 @@ describe('agents', () => {
     expect(setAgentEnabled(db, 99, false)).toBeNull();
     expect(setAgentEnabled(db, 1, false)).toBeNull();
     expect(db.get('SELECT kind FROM principals WHERE id = ?', [agent.id])).toEqual({ kind: 'agent' });
+  });
+
+  it("says whether a token (by its sha256) is an agent's, disabled or not; a deleted agent's is no one's", () => {
+    const sha = (t: string) => createHash('sha256').update(t).digest('hex');
+    const { agent, token } = createAgent(db, 'Claude');
+    const other = createAgent(db, 'Codex');
+    expect(agentTokenIs(db, agent.id, sha(token))).toBe(true);
+    expect(agentTokenIs(db, agent.id, sha(other.token))).toBe(false);
+    expect(agentTokenIs(db, 99, sha(token))).toBe(false);
+    setAgentEnabled(db, agent.id, false);
+    expect(agentTokenIs(db, agent.id, sha(token))).toBe(true);
+    const next = regenerateAgentToken(db, agent.id)!;
+    expect(agentTokenIs(db, agent.id, sha(token))).toBe(false);
+    expect(agentTokenIs(db, agent.id, sha(next.token))).toBe(true);
+    deleteAgent(db, agent.id);
+    expect(agentTokenIs(db, agent.id, sha(next.token))).toBe(false);
   });
 
   it('reads an agent revoked before disabling existed as disabled, and enables it with its old token', () => {

@@ -200,15 +200,19 @@ describe('ServerChild', () => {
     const deleted = child.deleteAgent(2);
     const gone = child.deleteAgent(2);
     const mixed = child.agentFootprint(3);
+    const checked = child.checkAgentToken(2, 'ab'.repeat(32));
     await flush();
-    const [e, f, d, g, m] = proc.sent.map((x) => (x as { id: number }).id);
+    const [e, f, d, g, m, c] = proc.sent.map((x) => (x as { id: number }).id);
     expect(proc.sent).toEqual([
       { type: 'set-agent-enabled', id: e, agent: 2, enabled: true },
       { type: 'agent-footprint', id: f, agent: 2 },
       { type: 'delete-agent', id: d, agent: 2 },
       { type: 'delete-agent', id: g, agent: 2 },
       { type: 'agent-footprint', id: m, agent: 3 },
+      { type: 'check-agent-token', id: c, agent: 2, hash: 'ab'.repeat(32) },
     ]);
+    proc.reply({ type: 'agent-token-checked', id: c!, matches: true });
+    expect(await checked).toBe(true);
     proc.reply({ type: 'agent-deleted', id: d!, deleted: { id: 2, name: 'Claude', deletedAs: 'Deleted agent #2', footprint } });
     proc.reply({ type: 'agent-footprint', id: f!, footprint });
     proc.reply({ type: 'agent-result', id: e!, agent, token: null });

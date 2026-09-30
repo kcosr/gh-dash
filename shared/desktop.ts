@@ -98,6 +98,11 @@ export type MainToServer =
   /** Delete the agent: its token and sources go, its comments stay as by "Deleted agent #<id>". Answered with `agent-deleted`. */
   | { type: 'delete-agent'; id: number; agent: number }
   /**
+   * Whether the agent's token is the one whose sha256 (hex) `hash` is: main asks before it shows a token it kept (the
+   * token itself doesn't travel). Answered with `agent-token-checked`.
+   */
+  | { type: 'check-agent-token'; id: number; agent: number; hash: string }
+  /**
    * Limit the agent with principal id `agent` (or the built-in agent, made if it isn't yet) to the sources with these
    * hosts, or let it reach every source again (null). Answered with `agent-result` (no token).
    */
@@ -137,6 +142,8 @@ export type ServerToMain =
   | { type: 'agent-footprint'; id: number; footprint: AgentFootprint }
   /** Result of delete-agent: who it was, and what it had written. */
   | { type: 'agent-deleted'; id: number; deleted: DeletedAgent }
+  /** Result of check-agent-token. */
+  | { type: 'agent-token-checked'; id: number; matches: boolean }
   /** A request with an `id` failed (an unknown source, one still configured...): `message` says why, for the user. */
   | { type: 'request-failed'; id: number; message: string }
   /** Startup failed (bad config, database locked, port in use...). The child exits after sending it. */
@@ -253,10 +260,15 @@ export interface DesktopSourceResult {
   remembered: boolean;
 }
 
-/** An agent and its new token (addAgent, regenerateAgentToken): show the token now, it can't be read back. */
+/**
+ * An agent and its new token (addAgent, regenerateAgentToken): show the token now. The server can't read it back; the
+ * app keeps it, encrypted with the OS keychain, when it can (`kept`), for keptAgentToken.
+ */
 export interface DesktopAgentToken {
   agent: Agent;
   token: string;
+  /** Kept on this device, so Settings → Agents can show it again; false without a real OS keychain (DesktopState.secureStorage). */
+  kept?: boolean;
   /** addAgent turned MCP on (the Local API was off, or its MCP switch), so the agent can connect. */
   enabledMcp?: boolean;
 }
@@ -338,9 +350,16 @@ export interface DesktopBridge {
   agentFootprint(id: number): Promise<AgentFootprint>;
   /**
    * Deletes an agent (by its id; not the built-in one): its token stops working at once, its name is free again, and
-   * its comments stay, as by "Deleted agent #<id>". GET /agents no longer lists it.
+   * its comments stay, as by "Deleted agent #<id>". GET /agents no longer lists it. The token the app kept goes too.
    */
   deleteAgent(id: number): Promise<DeletedAgent>;
+  /**
+   * The token of an agent (by its id) that the app kept when it made it (addAgent, regenerateAgentToken), decrypted with
+   * the OS keychain, for Settings → Agents to show again: only while it is still that agent's token in this database.
+   * null when none was kept: made before the app kept tokens, on a device without a real keychain, or by the server's
+   * `agents` command. Only through this bridge: the server never has it back, and it is never logged.
+   */
+  keptAgentToken(id: number): Promise<string | null>;
   /**
    * Limits an agent (by its id; 'built-in' for the built-in agent, listed or not yet) to the sources with these hosts
    * (Source.host, at least one), or lets it reach every source again, those added later too (null). It applies from the
@@ -371,6 +390,7 @@ export const DESKTOP_IPC = {
   setAgentEnabled: 'gh-dash:set-agent-enabled',
   agentFootprint: 'gh-dash:agent-footprint',
   deleteAgent: 'gh-dash:delete-agent',
+  keptAgentToken: 'gh-dash:kept-agent-token',
   setAgentSources: 'gh-dash:set-agent-sources',
   enableMcp: 'gh-dash:enable-mcp',
 } as const;

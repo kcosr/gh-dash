@@ -1,6 +1,8 @@
 import { DESKTOP_ENV, type MainToServer, type ServerToMain } from '../shared/desktop';
 import { loadServerConfig } from './config';
-import { agentFootprint, builtInAgent, createAgent, deleteAgent, getAgent, regenerateAgentToken, setAgentEnabled, setAgentSources } from './db/agents';
+import {
+  agentFootprint, agentTokenIs, builtInAgent, createAgent, deleteAgent, getAgent, regenerateAgentToken, setAgentEnabled, setAgentSources,
+} from './db/agents';
 import { deleteSource, testSourceDraft } from './services/sources';
 import { type RunningServer, startServer } from './start';
 
@@ -24,7 +26,8 @@ const FATAL_EXIT_DELAY_MS = 200;
  * - `add-agent`, `regenerate-agent-token`, `set-agent-enabled` and `set-agent-sources` change the MCP agents
  *   (`agent-result`, with the new token for the first two), and `delete-agent` deletes one (`agent-deleted`); then they
  *   tell open windows (an `agents` stream message, saying which was deleted). `agent-footprint` says what one has
- *   written, for the warning before deleting it.
+ *   written, for the warning before deleting it; `check-agent-token` whether a token main kept (by its sha256) is still
+ *   the agent's.
  * - `shutdown` closes the listeners and databases, then exits 0.
  * A request that fails is answered with `request-failed` and the reason, so main never waits for nothing.
  */
@@ -91,6 +94,9 @@ export function mainMessageHandler(
       const db = agentsDb();
       if (!getAgent(db, msg.agent)) throw noAgent(msg.agent);
       post({ type: 'agent-footprint', id: msg.id, footprint: agentFootprint(db, msg.agent) });
+    } else if (msg.type === 'check-agent-token') {
+      const matches = typeof msg.hash === 'string' && /^[0-9a-f]{64}$/i.test(msg.hash) && agentTokenIs(agentsDb(), msg.agent, msg.hash);
+      post({ type: 'agent-token-checked', id: msg.id, matches });
     } else if (msg.type === 'delete-agent') {
       const deleted = deleteAgent(agentsDb(), msg.agent);
       if (!deleted) throw noAgent(msg.agent);

@@ -205,6 +205,12 @@ export class ServerChild {
     return expect(await this.request({ type: 'agent-footprint', agent }), 'agent-footprint').footprint;
   }
 
+  /** Whether the agent's token is the one with this sha256 (hex): the token itself stays here. */
+  async checkAgentToken(agent: number, hash: string): Promise<boolean> {
+    await this.running();
+    return expect(await this.request({ type: 'check-agent-token', agent, hash }), 'agent-token-checked').matches === true;
+  }
+
   /** Deletes an agent; its comments stay, as by "Deleted agent #<id>". */
   async deleteAgent(agent: number): Promise<DeletedAgent> {
     await this.running();

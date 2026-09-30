@@ -90,6 +90,7 @@ export function registerIpc(desktop: Desktop, window: () => BrowserWindow | null
   handle(DESKTOP_IPC.setAgentEnabled, (id, enabled) => desktop.setAgentEnabled(id, enabled));
   handle(DESKTOP_IPC.agentFootprint, (id) => desktop.agentFootprint(id));
   handle(DESKTOP_IPC.deleteAgent, (id) => desktop.deleteAgent(id));
+  handle(DESKTOP_IPC.keptAgentToken, (id) => desktop.keptAgentToken(id));
   handle(DESKTOP_IPC.setAgentSources, (id, sources) => desktop.setAgentSources(id, sources));
   handle(DESKTOP_IPC.enableMcp, () => desktop.enableMcp());
   // The picker names the host the file is for; main keeps the file for that host only.

@@ -4,7 +4,7 @@
  * the child without a restart). Mutations run one at a time.
  */
 import { execFile } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { accessSync, constants, mkdirSync, rmSync, statSync } from 'node:fs';
 import { basename, isAbsolute } from 'node:path';
 import { isDeepStrictEqual, promisify } from 'node:util';
@@ -55,6 +55,8 @@ export interface DesktopDeps {
   log: (line: string) => void;
   /** The keychain file for a GitLab source's pasted token (TokenStores.source). */
   sourceTokens?: (host: string) => TokenStore;
+  /** The keychain file for an agent's token, by its principal id (TokenStores.agent). Without it, no token is kept. */
+  agentTokens?: (id: number) => TokenStore;
   /** The app's environment, for GITLAB_TOKEN. Default: process.env. */
   env?: NodeJS.ProcessEnv;
   /** Where glab is (see sources.ts findGlab); a seam for tests. */
@@ -505,7 +507,9 @@ export class Desktop {
 
   // -------------------------------------------------------------------------
   // Agents (MCP). The child keeps them (its database) and says so to open windows; the token of a new or regenerated
-  // one comes back here once, goes to the renderer to be shown, and is never logged or kept.
+  // one comes back here once and goes to the renderer to be shown. Main keeps it too, encrypted with the OS keychain
+  // (agentTokens), when there is a real one, so Settings → Agents can show it again: kept while the agent is disabled,
+  // replaced by a new token, removed with the agent. It is never logged, and never goes back to the child.
   // -------------------------------------------------------------------------
 
   /**
@@ -524,8 +528,9 @@ export class Desktop {
       const loaded = this.loadForChange();
       const patch = enableMcpPatch(toDesktopConfig(loaded.data, this.d.dataDir));
       if (Object.keys(patch).length) applyDesktopPatch(loaded.data, patch, this.d.dataDir);
-      const made = await this.agentRequest(() => this.d.child.addAgent(input, token, sources));
-      this.d.log(`[agents] added ${made.agent.name} (id ${made.agent.id})${made.agent.sources ? `, reaching ${reachLog(made.agent)}` : ''}`);
+      const added = await this.agentRequest(() => this.d.child.addAgent(input, token, sources));
+      this.d.log(`[agents] added ${added.agent.name} (id ${added.agent.id})${added.agent.sources ? `, reaching ${reachLog(added.agent)}` : ''}`);
+      const made = { ...added, kept: await this.keepAgentToken(added.agent, added.token) };
       if (!Object.keys(patch).length) return made;
       this.d.log('[agents] MCP was off: turning it on for the new agent');
       // The agent is made: its token goes back whatever happens to the config (the restart failing is reported there).
@@ -545,8 +550,41 @@ export class Desktop {
     return this.exclusive(async () => {
       const made = await this.agentRequest(() => this.d.child.regenerateAgentToken(id, token));
       this.d.log(`[agents] new token for ${made.agent.name} (id ${id})`);
-      return made;
+      return { ...made, kept: await this.keepAgentToken(made.agent, made.token) };
     });
+  }
+
+  /**
+   * Keeps an agent's new token, encrypted, in place of the one it had (gone first: a stale token is never left to show).
+   * false when it isn't kept: no real keychain, or no store at all. Never throws: the agent is made either way.
+   */
+  private async keepAgentToken(agent: Agent, token: string): Promise<boolean> {
+    if (!this.d.agentTokens) return false;
+    try {
+      const store = this.d.agentTokens(agent.id);
+      store.remove();
+      return await store.save(token);
+    } catch (error) {
+      this.d.log(`[agents] could not keep the token of ${agent.name} (id ${agent.id}): ${(error as Error).message}`);
+      return false;
+    }
+  }
+
+  /**
+   * Settings → Agents, Show token: the token kept for this agent, decrypted, once the child says it is still the
+   * agent's (by its sha256: kept for another database or data folder, or replaced since by the `agents` command, it
+   * isn't shown). null when there is none to show.
+   */
+  keptAgentToken(input: unknown): Promise<string | null> {
+    const id = agentId(input);
+    // After any change in progress: a token being replaced is shown as it ends up.
+    return this.exclusive(() => this.agentRequest(async () => {
+      const store = this.d.agentTokens?.(id);
+      if (!store?.has()) return null;
+      const token = await store.load();
+      if (!token) return null;
+      return (await this.d.child.checkAgentToken(id, agentTokenHash(token))) ? token : null;
+    }));
   }
 
   /** Settings → Agents, "Turn on MCP": see enableMcpPatch. Nothing to do: the state as it is. */
@@ -582,6 +620,11 @@ export class Desktop {
     return this.exclusive(async () => {
       const deleted = await this.agentRequest(() => this.d.child.deleteAgent(id));
       this.d.log(`[agents] deleted ${deleted.name} (id ${id}); its comments stay, as by ${deleted.deletedAs}`);
+      try {
+        this.d.agentTokens?.(id).remove();
+      } catch (error) {
+        this.d.log(`[agents] could not remove the token kept for ${deleted.name} (id ${id}): ${(error as Error).message}`);
+      }
       return deleted;
     });
   }
@@ -701,6 +744,9 @@ const execFileAsync = promisify(execFile);
 
 /** What an agent reaches, for the log: every source, or its hosts. */
 const reachLog = (agent: Agent) => (agent.sources === null ? 'every source' : `${agent.sources.join(', ') || 'no source'} only`);
+
+/** How the server keeps an agent's token (server/db/agents.ts hashToken): sha256, hex. */
+const agentTokenHash = (token: string) => createHash('sha256').update(token).digest('hex');
 
 /** An agent's id from the renderer: a positive integer. */
 function agentId(input: unknown): number {

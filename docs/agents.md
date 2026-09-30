@@ -40,9 +40,11 @@ setup never needs changing after a restart.
   also use a token of your own: 24–256 characters, no spaces, not used by another agent.
 - **Sources** is **All** by default. Pick **Only** and check the sources the agent may reach to
   limit it.
-- The token is shown **once**, together with setup lines ready to paste.
+- The token is shown with setup lines ready to paste. The app keeps it, encrypted with the OS
+  keychain, so **Show token** shows it again later. See [Seeing a token again](#seeing-a-token-again).
 - Each agent's row has the button that says what it reaches (**All sources**, **GitHub only**…),
-  **New token…**, **Disable** and **Delete…**. See [Disabling and deleting an agent](#disabling-and-deleting-an-agent).
+  **Show token**, **New token…**, **Disable** and **Delete…**. See
+  [Disabling and deleting an agent](#disabling-and-deleting-an-agent).
 
 **Server:** use the `agents` command. It opens the same database as the server (`GH_DASH_DB`,
 `config.json`), whether or not the server is running.
@@ -59,7 +61,7 @@ printf '%s\n' "$MY_TOKEN" | node dist/server/index.mjs agents add Codex --token-
 ```
 
 A token of your own is read from standard input, never from the command line, where other programs
-could see it.
+could see it. The command prints a token once: the server never keeps one, only its hash.
 
 ### 3. Register gh-dash with the agent
 
@@ -131,6 +133,24 @@ by whom.
 **The REST API isn't limited.** The Local API and a server's API (with their password or API key)
 are yours, so they reach everything. Only MCP is limited per agent.
 
+### Seeing a token again
+
+The desktop app keeps each token it makes, or that you give it, encrypted with the OS keychain (the
+macOS Keychain, Windows' DPAPI, or a keyring on Linux), as it does for a GitHub token you choose to
+remember. **Show token** in an agent's row shows it again, with the same setup lines, until you
+close it. It is only ever in the desktop app: never in gh-dash's database, the server, the logs or
+the REST API.
+
+The token stays kept while the agent is disabled. **New token…** replaces it, and deleting the
+agent removes it.
+
+Some tokens can't be shown again:
+- tokens made before gh-dash kept them;
+- tokens made on a Linux computer without a keyring, where there is nothing safe to keep them with.
+  They are shown once, when they are made, and the app says so.
+
+For these, **Show token** offers **New token…**, which makes one you can see again.
+
 ### Disabling and deleting an agent
 
 In the desktop app, each agent's row in **Settings → Agents** has **New token…**, **Disable** (or
@@ -148,7 +168,8 @@ same token in again. If its token may have leaked, give it a new token instead o
 versions show as disabled.
 
 **Delete…** (`agents delete`) removes the agent itself:
-- Its token stops working at once, and it disappears from the list and from `GET /api/v1/agents`.
+- Its token stops working at once (the desktop app forgets it too), and it disappears from the list
+  and from `GET /api/v1/agents`.
 - Its comments stay, as do the threads it resolved and its events in Activity. Everywhere they
   show (diffs, the Comments tab, Activity, Markdown exports, other agents), they read as by
   **Deleted agent #4**, with the agent's id.

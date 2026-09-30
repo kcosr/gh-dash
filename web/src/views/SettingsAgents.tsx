@@ -1,8 +1,9 @@
 /**
  * Settings → Agents (`/settings#agents`): the coding agents that read and write comments here through MCP, each with a
  * token of its own and the sources it may reach, and how to connect one. The desktop app adds agents, makes new tokens,
- * chooses their sources, disables and enables them, and deletes them (a token is shown once, with ready-to-paste
- * config); a headless server does that with its `agents` command, and lists them here.
+ * chooses their sources, disables and enables them, and deletes them. A token is shown when it's made, with
+ * ready-to-paste config, and the app keeps it (encrypted with the OS keychain, when there is one) to show it again. A
+ * headless server does that with its `agents` command, showing a token once, and lists them here.
  */
 import { Fragment, useState } from 'react';
 import type { FormEvent, KeyboardEvent as ReactKeyboardEvent } from 'react';
@@ -23,8 +24,11 @@ import { hostNames } from '../lib/sources';
 import { fmtDateTime, relLong } from '../lib/time';
 import { copyText, cx, useNow } from '../lib/util';
 
-/** A token just made: shown here once, never again. `enabled`: adding it turned MCP on (what it says then). */
-interface Shown { agent: Agent; token: string; kind: 'added' | 'new'; enabled?: string }
+/**
+ * A token on show: one just made ('added', 'new'), which the app kept to show again or not (`kept`), or one it kept,
+ * shown again ('kept'; null when it has none). `enabled`: adding it turned MCP on (what it says then).
+ */
+interface Shown { agent: Agent; token: string | null; kind: 'added' | 'new' | 'kept'; kept?: boolean; enabled?: string }
 
 function Copy({ text, what, className = 'btn sm' }: { text: string; what: string; className?: string }) {
   const toast = useToast();
@@ -59,11 +63,12 @@ function Reach({ a, known, onSources }: { a: Agent; known: readonly AgentSource[
  * One agent: its name, token prefix, when it was added and last used (or disabled), and the sources it reaches; the
  * desktop app's actions.
  */
-function AgentRow({ a, now, known, onSources, onNewToken, onToggle, onDelete }: {
+function AgentRow({ a, now, known, onSources, onShowToken, onNewToken, onToggle, onDelete }: {
   a: Agent;
   now: number;
   known: readonly AgentSource[];
   onSources?: (a: Agent) => void;
+  onShowToken?: (a: Agent) => void;
   onNewToken?: (a: Agent) => void;
   onToggle?: (a: Agent) => void;
   onDelete?: (a: Agent) => void;
@@ -84,7 +89,7 @@ function AgentRow({ a, now, known, onSources, onNewToken, onToggle, onDelete }: 
     );
   }
   return (
-    <li className={cx('trk-row agent-row', disabled && 'disabled', (onSources || onNewToken || onToggle || onDelete) && 'acts')}>
+    <li className={cx('trk-row agent-row', disabled && 'disabled', (onSources || onShowToken || onNewToken || onToggle || onDelete) && 'acts')}>
       <span className="trk-name" title={a.name}>{a.name}</span>
       {a.tokenPrefix && <code className="agent-prefix" title="The token's first characters, to tell tokens apart">{a.tokenPrefix}…</code>}
       <span className="trk-st agent-st" title={[`Added ${fmtDateTime(a.createdAt)}`, a.lastUsedAt && `last used ${fmtDateTime(a.lastUsedAt)}`, a.disabledAt && `disabled ${fmtDateTime(a.disabledAt)}`].filter(Boolean).join(', ')}>
@@ -93,6 +98,12 @@ function AgentRow({ a, now, known, onSources, onNewToken, onToggle, onDelete }: 
       {!onSources && reach}
       <span className="spacer" />
       {onSources && reach}
+      {onShowToken && (
+        <button type="button" className="btn sm ghost" onClick={() => onShowToken(a)} aria-label={`Show ${a.name}'s token`}
+          title="Its token again, with the lines to set it up">
+          Show token
+        </button>
+      )}
       {onNewToken && (
         <button type="button" className="btn sm ghost" onClick={() => onNewToken(a)}
           title={disabled ? 'Replace its token, and enable it: it can write here again with the new one' : 'Replace its token'}>
@@ -117,15 +128,42 @@ function AgentRow({ a, now, known, onSources, onNewToken, onToggle, onDelete }: 
   );
 }
 
-/** The token once, with what to paste into Claude Code or Codex. */
-function TokenPanel({ shown, url, onDone }: { shown: Shown; url: string; onDone: () => void }) {
+/**
+ * The token, with what to paste into Claude Code or Codex: when it's made (once, unless the app kept it), or again (Show
+ * token). A token the app didn't keep can't be shown again: New token… makes one that can.
+ */
+function TokenPanel({ shown, url, keychain, onNewToken, onDone }: { shown: Shown; url: string; keychain: boolean; onNewToken: () => void; onDone: () => void }) {
+  if (shown.token === null) {
+    return (
+      <div className="agent-token" role="region" aria-label={`${shown.agent.name}'s token`}>
+        <p className="agent-token-h">
+          <Icon name="key" />
+          <span>
+            <b>{shown.agent.name}</b>'s token wasn't kept (made before gh-dash kept tokens, or on this device it can't).
+            New token… makes one you can see again.
+          </span>
+        </p>
+        <div className="set-actions">
+          <button type="button" className="btn" onClick={onNewToken}>New token…</button>
+          <button type="button" className="btn" onClick={onDone}>Close</button>
+        </div>
+      </div>
+    );
+  }
   const c = agentConfig(url, shown.token);
+  const what = shown.kind === 'new' ? "'s new token" : "'s token";
+  const told = shown.kind === 'kept'
+    ? ' · kept on this device, encrypted with the OS keychain.'
+    : shown.kept ? ' · kept on this device: Show token shows it again.' : ' · shown only this once: copy it now.';
   return (
     <div className="agent-token" role="region" aria-label={`${shown.agent.name}'s token`}>
       <p className="agent-token-h">
         <Icon name="key" />
-        <span><b>{shown.agent.name}</b>{shown.kind === 'new' ? "'s new token" : "'s token"} · shown only this once: copy it now.{shown.kind === 'new' && ' The old one no longer works.'}</span>
+        <span><b>{shown.agent.name}</b>{what}{told}{shown.kind === 'new' && ' The old one no longer works.'}</span>
       </p>
+      {shown.kind !== 'kept' && !shown.kept && !keychain && (
+        <small className="muted">No OS keychain is available, so gh-dash can't keep it to show again.</small>
+      )}
       {shown.enabled && <p className="agent-enabled" role="status"><Icon name="check" />{shown.enabled}</p>}
       <div className="agent-snip">
         <code className="set-key">{shown.token}</code>
@@ -301,7 +339,7 @@ export function AgentsSection() {
   const agents = useAgents();
   const { bridge, state } = useDesktop();
   const instance = useInstance().data;
-  const { setEnabled, footprint, remove, enableMcp } = useAgentActions();
+  const { setEnabled, footprint, remove, keptToken, enableMcp } = useAgentActions();
   const { openConfirm } = useUI();
   const toast = useToast();
   const now = useNow(60_000);
@@ -358,6 +396,17 @@ export function AgentsSection() {
     });
   };
   const show = (s: Shown) => { setAdding(false); setRenewing(null); setScoping(null); setShown(s); };
+  // Show token: the one the app kept, if it still is this agent's.
+  const showToken = async (a: Agent) => {
+    let token: string | null;
+    try {
+      token = await keptToken(a.id);
+    } catch (e) {
+      toast(bridgeError(e), { error: true });
+      return;
+    }
+    show({ agent: a, token, kind: 'kept' });
+  };
   const scoped = (a: Agent) => { setScoping(null); toast(`${a.name}: ${agentReach(a.sources, known)}`); };
 
   return (
@@ -406,6 +455,7 @@ export function AgentsSection() {
                     {list.map((a) => (
                       <AgentRow key={a.id} a={a} now={now} known={known}
                         onSources={desktop ? (x) => { setShown(null); setAdding(false); setRenewing(null); setScoping(x); } : undefined}
+                        onShowToken={desktop ? (x) => void showToken(x) : undefined}
                         onNewToken={desktop ? (x) => { setShown(null); setAdding(false); setScoping(null); setRenewing(x); } : undefined}
                         onToggle={desktop ? toggleAgent : undefined} onDelete={desktop ? (x) => void deleteAgent(x) : undefined} />
                     ))}
@@ -414,7 +464,10 @@ export function AgentsSection() {
           </span>
         </div>
       </div>
-      {shown && url && <TokenPanel shown={shown} url={url} onDone={() => setShown(null)} />}
+      {shown && url && (
+        <TokenPanel shown={shown} url={url} keychain={state?.secureStorage === 'available'} onDone={() => setShown(null)}
+          onNewToken={() => { const a = shown.agent; setShown(null); setRenewing(a); }} />
+      )}
       {desktop ? (
         renewing ? <NewToken key={renewing.id} agent={renewing} onMade={show} onCancel={() => setRenewing(null)} />
           : scoping ? <AgentSources key={scoping.id} agent={scoping} known={known} onDone={scoped} onCancel={() => setScoping(null)} />

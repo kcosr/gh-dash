@@ -37,6 +37,7 @@ beforeEach(() => {
     setAgentEnabled: vi.fn(async (id: number, enabled: boolean) => ({ id, name: 'Claude', disabledAt: enabled ? null : 'x' })),
     agentFootprint: vi.fn(async () => ({ comments: 12, threads: 5, openThreads: 3, opened: 4 })),
     deleteAgent: vi.fn(async (id: number) => ({ id, name: 'Claude', deletedAs: `Deleted agent #${id}`, footprint: { comments: 0, threads: 0, openThreads: 0, opened: 0 } })),
+    keptAgentToken: vi.fn(async (id: number) => (id === 2 ? 'ghd_kept' : null)),
     setAgentSources: vi.fn(async (id: number | 'built-in', sources: string[] | null) => ({ id: id === 'built-in' ? 5 : id, name: id === 'built-in' ? 'Agent' : 'Claude', sources })),
     enableMcp: vi.fn(async () => ({ mcpUrl: 'http://127.0.0.1:4780/mcp' })),
     tokenFileHost: vi.fn((url: unknown) => {
@@ -127,6 +128,20 @@ describe('the agents over IPC', () => {
     expect(desktop.deleteAgent).toHaveBeenCalledTimes(2);
     expect(desktop.setAgentEnabled).toHaveBeenCalledTimes(2);
     expect(desktop.agentFootprint).toHaveBeenCalledTimes(1);
+  });
+
+  it("hands a kept token to the app's own page only, never logging it", async () => {
+    expect(await invoke(DESKTOP_IPC.keptAgentToken, 2)).toEqual({ value: 'ghd_kept' });
+    expect(await invoke(DESKTOP_IPC.keptAgentToken, 3)).toEqual({ value: null });
+    expect(desktop.keptAgentToken.mock.calls).toEqual([[2], [3]]);
+    desktop.keptAgentToken.mockRejectedValueOnce(new ConfigInputError('That is not an agent.'));
+    expect(await invoke(DESKTOP_IPC.keptAgentToken, 'x')).toEqual({ error: 'That is not an agent.' });
+    const fn = electron.handlers.get(DESKTOP_IPC.keptAgentToken)!;
+    for (const senderFrame of [{ parent: null, url: 'https://evil.example/' }, { parent: {}, url: 'app://gh-dash/' }]) {
+      expect(await fn({ sender: webContents, senderFrame }, 2)).toEqual({ error: 'Not allowed.' });
+    }
+    expect(desktop.keptAgentToken).toHaveBeenCalledTimes(3);
+    expect(logs.join('\n')).not.toContain('ghd_kept');
   });
 
   it('passes a token the user chose along, and turns MCP on', async () => {

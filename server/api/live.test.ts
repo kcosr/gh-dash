@@ -88,6 +88,7 @@ describe('GET /agents', () => {
       ['POST', '/api/v1/agents'], ['PATCH', `/api/v1/agents/${agent.id}`], ['DELETE', `/api/v1/agents/${agent.id}`], ['POST', `/api/v1/agents/${agent.id}/token`],
       ['PUT', `/api/v1/agents/${agent.id}/sources`], ['PATCH', `/api/v1/agents/${agent.id}/sources`], ['POST', `/api/v1/agents/${agent.id}/disable`],
       ['POST', `/api/v1/agents/${agent.id}/enable`], ['PUT', `/api/v1/agents/${agent.id}/enabled`], ['GET', `/api/v1/agents/${agent.id}/footprint`],
+      ['GET', `/api/v1/agents/${agent.id}/token`], ['GET', '/api/v1/agents/tokens'],
     ]) {
       const res = await app.request(path, { method, headers: { 'content-type': 'application/json' }, body: method === 'DELETE' || method === 'GET' ? undefined : '{"name":"x"}' });
       expect(res.status, `${method} ${path}`).toBe(404);

@@ -33,6 +33,7 @@ const bridge: DesktopBridge = {
   setAgentEnabled: (id, enabled) => call(DESKTOP_IPC.setAgentEnabled, id, enabled),
   agentFootprint: (id) => call(DESKTOP_IPC.agentFootprint, id),
   deleteAgent: (id) => call(DESKTOP_IPC.deleteAgent, id),
+  keptAgentToken: (id) => call(DESKTOP_IPC.keptAgentToken, id),
   setAgentSources: (id, sources) => call(DESKTOP_IPC.setAgentSources, id, sources),
   enableMcp: () => call(DESKTOP_IPC.enableMcp),
 };

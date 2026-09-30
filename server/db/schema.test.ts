@@ -689,7 +689,7 @@ describe('migration to branches (v9)', () => {
 
   it("adds the threads' and events' branch, empty, and pull_requests.cross_repo, unknown until the sync says", () => {
     const db = v8();
-    migrate(db, true);
+    migrate(db, true, { upTo: BRANCHES });
     expect(version(db)).toBe(BRANCHES);
     // Every existing thread stays its PR's or commit's alone: none has a branch yet.
     expect(db.all('SELECT pr_number, branch FROM comment_threads ORDER BY id')).toEqual([{ pr_number: 7, branch: null }, { pr_number: null, branch: null }]);
@@ -711,7 +711,7 @@ describe('migration to branches (v9)', () => {
 
   it('is additive: a GH_DASH_SYNC=off instance may run it', () => {
     const db = v8();
-    migrate(db, false);
+    migrate(db, false, { upTo: BRANCHES });
     expect(version(db)).toBe(BRANCHES);
   });
 });
@@ -720,8 +720,8 @@ describe('migration names', () => {
   it('number migrations by name, and stop where asked', () => {
     // The final order: T2's repos rebuild, then local comments (diff-comments), then sources (the GitLab wave), then
     // agents and the comment event log (the MCP wave), then branch reviews.
-    expect(['repos-v5', 'comments', 'sources', 'agents', 'branches'].map(versionOf)).toEqual([5, 6, 7, 8, 9]);
-    expect(SCHEMA_VERSION).toBe(versionOf('branches'));
+    expect(['repos-v5', 'comments', 'sources', 'agents', 'branches', 'synced-branches'].map(versionOf)).toEqual([5, 6, 7, 8, 9, 10]);
+    expect(SCHEMA_VERSION).toBe(versionOf('synced-branches'));
     expect(() => versionOf('nope')).toThrow('No migration is called nope');
     const db = new Db(new DatabaseSync(':memory:'));
     migrate(db, true, { upTo: versionOf('repos-v5') });

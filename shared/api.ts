@@ -914,6 +914,35 @@ export interface BranchListResponse {
   more: boolean;
 }
 
+/**
+ * GET /branches: pushed branches with no PR yet, across the repos in scope, from what the sync holds (so without asking
+ * the code host). A branch is listed unless a PR from it, of the same repo, is open, or has the branch's current head
+ * as its head (merged, closed or open): a branch whose PR was merged and that has new commits since is listed again. The
+ * default branch never is. Scope as for PRs: `who` is the head commit's author, the date range its commit date, and `q`
+ * a part of the name (not full-text). Newest head commit first.
+ */
+export interface BranchQuery extends ScopeQuery, Omit<PageQuery, 'format'> {}
+
+/** A branch in GET /branches (see BranchQuery). */
+export interface Branch {
+  /** The branch diff's id, as the web's `diff` param names it: "<repo>~<name>". */
+  id: string;
+  repo: string;
+  name: string;
+  /** The commit the branch pointed to at the last sync. */
+  headOid: string;
+  /** The head commit's committer date; null when the code host didn't say. */
+  committedAt: string | null;
+  /** The head commit's author; null when the code host didn't say. */
+  author: Actor | null;
+  /** The branch's compare page against the repo's default branch, on the code host. */
+  url: string;
+  /** Comment threads of the branch's review (its current group), as a PR's row counts its own. */
+  comments: CommentCounts;
+}
+
+export interface BranchesResponse extends ListResponse<Branch> {}
+
 /** Which side of the diff a line thread is on: the old file (deletions) or the new one (additions). */
 export type CommentSide = 'old' | 'new';
 export type ThreadStatus = 'open' | 'resolved';
@@ -1153,6 +1182,8 @@ export interface ThreadListResponse extends ListResponse<ThreadListItem> {
 //          Diffs come from the repo's own source. Diff errors: 404 unknown repo/PR/commit, 503 no token for the source (or a source
 //          this server doesn't configure), 429 rate limit, 502 other failure of the code host.
 //          refresh=1 re-checks the code host for a PR's current head instead of using the last synced one.
+// GET    /api/v1/branches       BranchQuery    -> BranchesResponse   (pushed branches with no PR yet, across the repos in scope,
+//          from the sync: see BranchQuery. No code host request.)
 // GET    /api/v1/branches/:repo {q?, refresh?: '1'} -> BranchListResponse   (the code host's branches, newest first, at most
 //          100; `q` narrows them by name. Cached for a minute per repo and q unless refresh=1.)
 // GET    /api/v1/branches/:repo/:branch/diff {refresh?: '1'} -> Diff   (kind 'branch': :branch, URL-encoded, against the

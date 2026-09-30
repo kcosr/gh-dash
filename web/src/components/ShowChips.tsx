@@ -8,12 +8,13 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import type { ShowTarget } from '../../../shared/api';
-import { repoPath } from '../../../shared/repos';
 import { qk, useThreads } from '../api/hooks';
 import { isTypingTarget } from '../lib/layers';
-import { dismissChip, nudgeDiff, pushChip, showDiffId, showPatch, showPhrase, showWhat, useFollowAgents, useShowChips } from '../lib/show';
+import {
+  dismissChip, getFollowAgents, noteShow, nudgeDiff, openShown, pushChip, reofferChip, showDiffId, showPhrase, showWhat, useFollowAgents, useShowChips,
+} from '../lib/show';
 import type { ShowChip, ShowMessage } from '../lib/show';
-import { contextSearch, useUrlState } from '../lib/urlState';
+import { parseUrlState, useUrlState, viewFromPath } from '../lib/urlState';
 import { cx } from '../lib/util';
 import { Avatar } from './Avatar';
 import { AgentMark } from './bits';
@@ -24,40 +25,41 @@ import { useProviderOf, useRepoLabel } from './repoMapContext';
 const CHIP_MS = 30_000;
 const OPENED_MS = 10_000;
 
-/** Open a target over the view you're on, as a Comments row does (a repo alone: its page). */
-export function useOpenShown(): (target: ShowTarget) => Promise<void> {
-  const { s, set, navigate, location } = useUrlState();
+/** Open a target over the view you're on (openShown); resolves whether it did. */
+export function useOpenShown(): (target: ShowTarget, auto?: () => boolean) => Promise<boolean> {
+  const { set, navigate } = useUrlState();
   const qc = useQueryClient();
-  const latest = useRef({ s, set, navigate, search: location.search });
-  latest.current = { s, set, navigate, search: location.search };
-  return useCallback(async (target: ShowTarget) => {
-    const patch = showPatch(target, latest.current.s);
-    if (!patch) {
-      latest.current.navigate(repoPath(target.repo) + contextSearch(latest.current.search));
-      return;
-    }
-    // The diff already open goes to the thread in place, once its threads are in (the agent may have just made it),
-    // also when the URL names it already.
-    const same = latest.current.s.diff === patch.diff;
-    if (same && target.threadId) await qc.refetchQueries({ queryKey: qk.threads(patch.diff!), type: 'active' });
-    latest.current.set(patch);
-    if (same) nudgeDiff();
-  }, [qc]);
+  const latest = useRef({ set, navigate });
+  latest.current = { set, navigate };
+  return useCallback((target: ShowTarget, auto?: () => boolean) => openShown({
+    // The address bar, not the last render's location: a navigation during the wait may not have rendered yet.
+    place: () => {
+      const { pathname, search } = window.location;
+      return { s: parseUrlState(search, viewFromPath(pathname)), pathname, search };
+    },
+    set: (patch) => latest.current.set(patch),
+    navigate: (to) => void latest.current.navigate(to),
+    refetchThreads: (diff) => qc.refetchQueries({ queryKey: qk.threads(diff), type: 'active' }),
+    nudge: nudgeDiff,
+  }, target, auto), [qc]);
 }
 
-/** Whether following may open something now: not while you type, and not over a dialog. */
-const mayFollow = () => !isTypingTarget(document.activeElement) && !document.querySelector('[aria-modal="true"], .modal, .palette');
+/** Whether following may open something now: it's on, and you're not typing or in a dialog. */
+const mayFollow = () => getFollowAgents() && !isTypingTarget(document.activeElement) && !document.querySelector('[aria-modal="true"], .modal, .palette');
 
-/** The stream's `show` messages: a chip, or (following agents) the place opened at once with a chip saying so. */
+/**
+ * The stream's `show` messages: a chip, or (following agents) the place opened at once with a chip saying so. Whether
+ * it may open is asked again after any wait (openShown); when it didn't, its chip offers Open instead.
+ */
 export function useShowHandler(): (msg: ShowMessage) => void {
   const open = useOpenShown();
-  const [follow] = useFollowAgents();
-  const latest = useRef({ open, follow });
-  latest.current = { open, follow };
+  const latest = useRef(open);
+  latest.current = open;
   return useCallback((msg: ShowMessage) => {
-    const opened = latest.current.follow && mayFollow();
-    if (opened) void latest.current.open(msg.target);
+    noteShow();
+    const opened = mayFollow();
     pushChip({ id: msg.id, agent: msg.agent, target: msg.target, message: msg.message, at: msg.at, opened });
+    if (opened) void latest.current(msg.target, mayFollow).then((done) => { if (!done) reofferChip(msg.id); });
   }, []);
 }
 
@@ -111,9 +113,9 @@ function Chip({ chip, last, onSay }: { chip: ShowChip; last: boolean; onSay: (te
   const onOpen = () => {
     const focus = hadFocus();
     dismiss();
-    void open(t).then(() => {
+    void open(t).then((done) => {
       // The chip is gone: hand focus to the diff (or the page) rather than to nothing.
-      if (focus) requestAnimationFrame(() => (document.querySelector<HTMLElement>('.diff-view .dv-body') ?? document.querySelector<HTMLElement>('main .scroll'))?.focus({ preventScroll: true }));
+      if (focus && done) requestAnimationFrame(() => (document.querySelector<HTMLElement>('.diff-view .dv-body') ?? document.querySelector<HTMLElement>('main .scroll'))?.focus({ preventScroll: true }));
     });
   };
   const onKey = (e: KeyboardEvent) => {

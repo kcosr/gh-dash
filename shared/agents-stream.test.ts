@@ -6,8 +6,9 @@ import {
   STREAM_URL, applyStreamMessage, missedByStream, parseStreamMessage, retryDelay, runStream, sseParser, streamInvalidations,
 } from '../web/src/api/stream';
 import {
-  FOLLOW_KEY, MAX_CHIPS, addChip, getFollowAgents, setFollowAgents, showDiffId, showPatch, showPhrase, showWhat,
+  FOLLOW_KEY, MAX_CHIPS, addChip, getFollowAgents, noteShow, openShown, setFollowAgents, showDiffId, showPatch, showPhrase, showWhat,
 } from '../web/src/lib/show';
+import type { OpenDeps, OpenPlace } from '../web/src/lib/show';
 import type { ShowChip } from '../web/src/lib/show';
 import { parseUrlState, patchSearch } from '../web/src/lib/urlState';
 
@@ -281,5 +282,95 @@ describe('show: following agents', () => {
     vi.stubGlobal('localStorage', { getItem: () => { throw new Error('denied'); }, setItem: () => { throw new Error('denied'); }, removeItem: () => {} });
     expect(() => setFollowAgents(true)).not.toThrow();
     expect(getFollowAgents()).toBe(false);
+  });
+});
+
+describe('show: opening, and giving up when superseded', () => {
+  /** A window at `search` on `pathname`; the threads refetch waits until `release()`. */
+  function windowAt(search: string, pathname = '/comments') {
+    let at = { pathname, search };
+    const place = (): OpenPlace => ({ s: parseUrlState(at.search, 'comments'), ...at });
+    const releases: (() => void)[] = [];
+    const d: OpenDeps & { go: (search: string, pathname?: string) => void; release: () => Promise<void> } = {
+      place,
+      set: vi.fn((patch) => { at = { ...at, search: patchSearch(at.search, 'comments', patch) }; }),
+      navigate: vi.fn(),
+      refetchThreads: vi.fn(() => new Promise<void>((r) => releases.push(r))),
+      nudge: vi.fn(),
+      go: (next, p = at.pathname) => { at = { pathname: p, search: next }; },
+      release: async () => { releases.shift()?.(); await new Promise((r) => setTimeout(r, 0)); },
+    };
+    return d;
+  }
+  const OPEN = '?diff=alice/app%237&thread=1';
+
+  it('opens another diff at once, and the one already open after refetching its threads (then goes there again)', async () => {
+    const d = windowAt('?status=all');
+    expect(await openShown(d, { repo: 'alice/app', pr: 7, threadId: 5 })).toBe(true);
+    expect(d.set).toHaveBeenCalledWith({ diff: 'alice/app#7', thread: 5, file: null, only: null });
+    expect(d.refetchThreads).not.toHaveBeenCalled();
+    const e = windowAt(OPEN);
+    const p = openShown(e, { repo: 'alice/app', pr: 7, threadId: 5 });
+    expect(e.set).not.toHaveBeenCalled();
+    await e.release();
+    expect(await p).toBe(true);
+    expect(e.refetchThreads).toHaveBeenCalledWith('alice/app#7');
+    expect(e.set).toHaveBeenCalledWith({ diff: 'alice/app#7', thread: 5, file: null, only: null });
+    expect(e.nudge).toHaveBeenCalledTimes(1);
+    // A repo alone: its page, in the context.
+    const f = windowAt('?source=github.com&state=open', '/prs');
+    expect(await openShown(f, { repo: 'alice/app' })).toBe(true);
+    expect(f.navigate).toHaveBeenCalledWith('/repos/alice/app?source=github.com');
+  });
+
+  it('gives up when the window moved on during the wait (not when the diff only reported its file)', async () => {
+    const d = windowAt(OPEN);
+    const p = openShown(d, { repo: 'alice/app', pr: 7, threadId: 5 });
+    d.go('?diff=alice/app%239');
+    await d.release();
+    expect(await p).toBe(false);
+    expect(d.set).not.toHaveBeenCalled();
+    const e = windowAt(OPEN, '/comments');
+    const q = openShown(e, { repo: 'alice/app', pr: 7, threadId: 5 });
+    e.go(OPEN, '/activity');
+    await e.release();
+    expect(await q).toBe(false);
+    // The diff reporting the file in view as it scrolls is not moving on.
+    const f = windowAt(OPEN);
+    const r = openShown(f, { repo: 'alice/app', pr: 7, threadId: 5 });
+    f.go(`${OPEN}&file=src/a.ts`);
+    await f.release();
+    expect(await r).toBe(true);
+  });
+
+  it('gives way to a newer open', async () => {
+    const d = windowAt(OPEN);
+    const older = openShown(d, { repo: 'alice/app', pr: 7, threadId: 5 });
+    const newer = openShown(d, { repo: 'alice/app', pr: 8, threadId: 6 });
+    expect(await newer).toBe(true);
+    await d.release();
+    expect(await older).toBe(false);
+    expect(d.set).toHaveBeenCalledTimes(1);
+    expect(d.set).toHaveBeenCalledWith({ diff: 'alice/app#8', thread: 6, file: null, only: null });
+  });
+
+  it('asks again whether it may open automatically, and gives way to a newer show, after the wait', async () => {
+    let may = true;
+    const d = windowAt(OPEN);
+    const p = openShown(d, { repo: 'alice/app', pr: 7, threadId: 5 }, () => may);
+    may = false; // you started typing, or turned following off
+    await d.release();
+    expect(await p).toBe(false);
+    may = true;
+    const q = openShown(d, { repo: 'alice/app', pr: 7, threadId: 5 }, () => may);
+    noteShow(); // another show came, offered as a chip
+    await d.release();
+    expect(await q).toBe(false);
+    expect(d.set).not.toHaveBeenCalled();
+    // An Open you clicked isn't cancelled by a chip arriving meanwhile.
+    const r = openShown(d, { repo: 'alice/app', pr: 7, threadId: 5 });
+    noteShow();
+    await d.release();
+    expect(await r).toBe(true);
   });
 });

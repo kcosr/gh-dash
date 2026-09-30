@@ -5,8 +5,9 @@
  */
 import { useSyncExternalStore } from 'react';
 import type { Principal, ShowTarget, StreamMessage } from '../../../shared/api';
+import { repoPath } from '../../../shared/repos';
 import { threadPlace } from './threadList';
-import { commitDiffId } from './urlState';
+import { commitDiffId, contextSearch, orderedSearch, paramsExcept } from './urlState';
 import type { UrlPatch, UrlState } from './urlState';
 
 export type ShowMessage = Extract<StreamMessage, { type: 'show' }>;
@@ -103,6 +104,8 @@ const emit = (next: ShowChip[]) => { chips = next; for (const l of chipListeners
 
 export const pushChip = (chip: ShowChip) => emit(addChip(chips, chip));
 export const dismissChip = (id: string) => emit(chips.filter((c) => c.id !== id));
+/** A chip's show wasn't opened after all (see openShown): it offers Open again. */
+export const reofferChip = (id: string) => emit(chips.map((c) => (c.id === id ? { ...c, opened: false } : c)));
 
 export function useShowChips(): ShowChip[] {
   return useSyncExternalStore((l) => { chipListeners.add(l); return () => { chipListeners.delete(l); }; }, () => chips, () => chips);
@@ -124,4 +127,60 @@ export function nudgeDiff(): void {
 
 export function useDiffNudge(): number {
   return useSyncExternalStore((l) => { nudgeListeners.add(l); return () => { nudgeListeners.delete(l); }; }, () => nudges, () => nudges);
+}
+
+// ---------------------------------------------------------------------------- opening
+
+/** Where the window is: an open that waited is checked against it again. */
+export interface OpenPlace {
+  s: Pick<UrlState, 'diff' | 'only'>;
+  pathname: string;
+  search: string;
+}
+
+export interface OpenDeps {
+  /** The window's place now (read before and after the wait). */
+  place: () => OpenPlace;
+  set: (patch: UrlPatch) => void;
+  navigate: (to: string) => void;
+  /** The open diff's threads, fetched again (the agent may have just made the thread). */
+  refetchThreads: (diff: string) => Promise<unknown>;
+  /** Go to the URL's place again (nudgeDiff). */
+  nudge: () => void;
+}
+
+let opens = 0;
+let shows = 0;
+
+/** A show arrived (chip or followed): an automatic open still waiting gives way to it. */
+export function noteShow(): void {
+  shows++;
+}
+
+/** The window moved on: another page, or params other than the file the open diff reports as it scrolls. */
+const movedOn = (a: OpenPlace, b: OpenPlace) =>
+  a.pathname !== b.pathname || orderedSearch(paramsExcept(a.search, ['file'])) !== orderedSearch(paramsExcept(b.search, ['file']));
+
+/**
+ * Open a target over the view you're on, as a Comments row does (a repo alone: its page); resolves whether it did. In
+ * the diff already open it waits for the diff's threads first, and then gives up when superseded meanwhile: by another
+ * open, by the window moving on (another page or diff, a filter, a thread focused), and for an automatic open (`auto`,
+ * following agents) by a newer show or by `auto()` saying no now (you started typing, a dialog opened, following was
+ * turned off). A newer show that is only offered doesn't cancel an Open you clicked.
+ */
+export async function openShown(d: OpenDeps, target: ShowTarget, auto?: () => boolean): Promise<boolean> {
+  const mine = ++opens;
+  const seen = shows;
+  const before = d.place();
+  const patch = showPatch(target, before.s);
+  const same = !!patch && before.s.diff === patch.diff;
+  if (same && target.threadId) await d.refetchThreads(patch.diff!);
+  if (mine !== opens || movedOn(before, d.place())) return false;
+  if (auto && (shows !== seen || !auto())) return false;
+  if (!patch) d.navigate(repoPath(target.repo) + contextSearch(before.search));
+  else {
+    d.set(patch);
+    if (same) d.nudge();
+  }
+  return true;
 }

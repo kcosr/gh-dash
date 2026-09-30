@@ -8,7 +8,7 @@ import { Client as ClientV2, StreamableHTTPClientTransport as TransportV2 } from
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { afterEach, describe, expect, it } from 'vitest';
-import { mcpHarness } from '../test/mcp';
+import { addedFile, mcpHarness, serveBranch, sha } from '../test/mcp';
 import { TOOLS } from './index';
 
 const servers: Server[] = [];
@@ -62,12 +62,27 @@ describe('the MCP SDK 1.x client', () => {
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name)).toEqual(TOOLS.map((t) => t.name));
     expect(tools.find((t) => t.name === 'find_pr')!.annotations).toMatchObject({ readOnlyHint: true });
+    // The branch tools are among them: two reads, and add_comment takes a branch too.
+    expect(tools.filter((t) => t.name.endsWith('_branch') || t.name.endsWith('_branches')).map((t) => [t.name, t.annotations?.readOnlyHint])).toEqual([['list_branches', true], ['get_branch', true]]);
+    expect(Object.keys((tools.find((t) => t.name === 'add_comment')!.inputSchema.properties ?? {}))).toContain('branch');
     const res = await client.callTool({ name: 'whoami', arguments: {} });
     expect(res.isError).toBeFalsy();
     expect(res.structuredContent).toMatchObject({ agent: { id: h.agent.id, name: 'Claude' } });
     expect(JSON.parse((res.content as { text: string }[])[0]!.text)).toEqual(res.structuredContent);
     const bad = await client.callTool({ name: 'get_thread', arguments: { id: 12345 } });
     expect(bad).toMatchObject({ isError: true, content: [{ type: 'text', text: 'Thread not found' }] });
+    // A branch review, end to end over HTTP: read the branch, comment on it, read the thread back.
+    serveBranch(h.code, 'alice/app', 'topic/x', sha('d'), sha('b'), [addedFile('src/a.ts', ['one', 'two'])], '2026-09-29T10:00:00Z');
+    const listed = await client.callTool({ name: 'list_branches', arguments: { repo: 'alice/app' } });
+    expect(listed.structuredContent).toMatchObject({ defaultBranch: 'main', items: [{ name: 'topic/x', headOid: sha('d') }] });
+    const branch = await client.callTool({ name: 'get_branch', arguments: { repo: 'alice/app', branch: 'topic/x' } });
+    expect(branch.structuredContent).toMatchObject({ ref: 'alice/app branch topic/x', headOid: sha('d'), baseOid: sha('b'), fetch: 'topic/x', files: [{ path: 'src/a.ts' }] });
+    const added = await client.callTool({ name: 'add_comment', arguments: { repo: 'alice/app', branch: 'topic/x', body: 'Nice', path: 'src/a.ts', start_line: 2 } });
+    expect(added.structuredContent).toMatchObject({ target: { kind: 'branch', branch: 'topic/x' }, anchor: { commit: sha('d'), snippet: 'two' }, placement: { kind: 'line', startLine: 2 } });
+    const threads = await client.callTool({ name: 'list_threads', arguments: { repo: 'alice/app', branch: 'topic/x' } });
+    expect(threads.structuredContent).toMatchObject({ total: 1, items: [{ ref: 'alice/app branch topic/x', placement: { kind: 'line', startLine: 2 } }] });
+    const both = await client.callTool({ name: 'add_comment', arguments: { repo: 'alice/app', branch: 'topic/x', pr: 2, body: 'x' } });
+    expect(both).toMatchObject({ isError: true, content: [{ type: 'text', text: expect.stringContaining('give exactly one of pr, branch or commit') }] });
     await client.ping();
     await client.close();
   });
@@ -105,9 +120,13 @@ describe('the MCP SDK 2.x client', () => {
     expect(seen.slice(0, 3)).toEqual(['POST server/discover 400', 'POST initialize 200', 'POST notifications/initialized 202']);
     const { tools } = await client.listTools();
     expect(tools).toHaveLength(TOOLS.length);
+    serveBranch(h.code, 'alice/app', 'topic/x', sha('d'), sha('b'), []);
+    const branch = await client.callTool({ name: 'get_branch', arguments: { repo: 'alice/app', branch: 'refs/heads/topic/x' } });
+    expect(branch.structuredContent).toMatchObject({ name: 'topic/x', headOid: sha('d') });
     const res = await client.callTool({ name: 'resolve_repo', arguments: { remote_url: 'git@github.com:alice/app.git' } });
     expect(res.structuredContent).toEqual({ key: 'alice/app', provider: 'github', url: 'https://github.com/alice/app', tracked: true });
-    expect(h.logs).toEqual([]);
+    // Nothing went wrong (the diff service logs each fetch it makes).
+    expect(h.logs.filter((l) => !/^\[diff\] \S+: \d+ GitHub requests? in /.test(l))).toEqual([]);
     await client.close();
   });
 });

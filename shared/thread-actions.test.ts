@@ -1,10 +1,10 @@
-import { QueryClient } from '@tanstack/react-query';
+import { QueryClient, QueryObserver } from '@tanstack/react-query';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CommentThread, ThreadListResponse } from './api';
-import { followsDefaultSelection, patchThreadLists, qk, refetchAfterSync, threadActions } from '../web/src/api/hooks';
+import { followsDefaultSelection, patchThreadLists, qk, refetchAfterSync, threadActions, threadsQuery } from '../web/src/api/hooks';
 
 const thread = (id: number, status: CommentThread['status'] = 'open'): CommentThread => ({
-  id, kind: 'pr', repo: 'app', number: 2, commitOid: 'a'.repeat(40), baseOid: null, path: null, side: null, startLine: null, endLine: null,
+  id, kind: 'pr', repo: 'app', number: 2, branch: null, commitOid: 'a'.repeat(40), baseOid: null, path: null, side: null, startLine: null, endLine: null,
   snippet: null, status, resolvedAt: null, resolvedBy: null, createdAt: '', updatedAt: '', comments: [],
 });
 
@@ -117,7 +117,36 @@ describe('thread actions', () => {
     const q = (queryKey: readonly unknown[]) => ({ queryKey }) as never;
     expect(refetchAfterSync(q(qk.threadList({ status: 'open' })))).toBe(true);
     expect(followsDefaultSelection(q(qk.threadList({ status: 'open' })))).toBe(true);
-    expect(refetchAfterSync(q(qk.threads('app#2')))).toBe(false);
+    // A diff's threads too (a sync moves them between branch groups), but not the diff and its files.
+    expect(refetchAfterSync(q(qk.threads('app#2')))).toBe(true);
+    expect(refetchAfterSync(q(qk.threads('app~fix/a')))).toBe(true);
+    expect(refetchAfterSync(q(qk.diff('app#2')))).toBe(false);
+    expect(refetchAfterSync(q(qk.blob('app', 'a'.repeat(40), 'x.ts')))).toBe(false);
+  });
+
+  it("refreshes an open branch's and PR's threads when a sync moves them between groups (a merge, a branch backfill)", async () => {
+    const qc = new QueryClient();
+    const branchThread = { ...thread(1), kind: 'branch' as const, number: null, branch: 'fix/a' };
+    const prThread = thread(2);
+    // Before the sync: PR #2's branch isn't known, so its thread is its own; the branch's review has its thread.
+    // After it: the branch is known (backfilled) and #2 merged, ending the line of work: the branch's review shows
+    // neither, and #2 shows both.
+    let synced = false;
+    const lists = (url: string) => {
+      if (url.includes('/branches/')) return synced ? [] : [branchThread];
+      return synced ? [branchThread, { ...prThread, branch: 'fix/a' }] : [prThread];
+    };
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => new Response(JSON.stringify({ items: lists(url) }), { status: 200, headers: { 'content-type': 'application/json' } })));
+    const branch = new QueryObserver(qc, threadsQuery('app~fix/a'));
+    const pr = new QueryObserver(qc, threadsQuery('app#2'));
+    const ids = (o: typeof branch) => o.getCurrentResult().data?.map((t) => t.id);
+    const off = [branch.subscribe(() => {}), pr.subscribe(() => {})];
+    await vi.waitFor(() => { expect([ids(branch), ids(pr)]).toEqual([[1], [2]]); });
+    // The sync finishes: the shell invalidates what refetchAfterSync names, and the diffs on screen refetch.
+    synced = true;
+    await qc.invalidateQueries({ predicate: refetchAfterSync });
+    expect([ids(branch), ids(pr)]).toEqual([[], [1, 2]]);
+    for (const f of off) f();
   });
 
   it('refetches the Activity feed after any change: its comment events, and its PR and commit counts', async () => {
@@ -146,11 +175,48 @@ describe('thread actions', () => {
     }
   });
 
+  it("makes a branch's thread on its branch, and refetches every thread list and PR of the repo (its group's)", async () => {
+    const qc = new QueryClient();
+    const branch = qk.threads('app~fix/login');
+    const lists = [branch, qk.threads('app#2'), qk.threads('app#3'), qk.threads('lib#2'), qk.pr('app', 2), qk.pr('lib', 2), qk.prs({ state: 'open' })];
+    for (const k of lists) qc.setQueryData(k, []);
+    const made = { ...thread(7), kind: 'branch' as const, number: null, branch: 'fix/login' };
+    const fetch = reply(made);
+    vi.stubGlobal('fetch', fetch);
+    await threadActions(qc, 'app~fix/login').create({ commitOid: 'a'.repeat(40), body: 'x' });
+    expect((fetch.mock.calls[0] as unknown[])[0]).toBe('/api/v1/branches/app/fix%2Flogin/threads');
+    expect(qc.getQueryData<CommentThread[]>(branch)?.map((t) => t.id)).toEqual([7]);
+    expect(lists.filter((k) => qc.getQueryState(k)?.isInvalidated)).toEqual([branch, qk.threads('app#2'), qk.threads('app#3'), qk.pr('app', 2), qk.prs({ state: 'open' })]);
+  });
+
+  it("reaches the group from a PR's thread with a branch, also when deleting it (its branch as the list knew it)", async () => {
+    const qc = new QueryClient();
+    const grouped = { ...thread(1), branch: 'fix/login' };
+    const other = qk.threads('app~fix/login');
+    const fresh = () => { qc.setQueryData(key, [grouped, thread(2)]); qc.setQueryData(other, []); };
+    const cases: [(a: ReturnType<typeof threadActions>) => Promise<unknown>, unknown, number?][] = [
+      [(a) => a.reply(1, 'x'), grouped],
+      [(a) => a.deleteThread(1), null, 204],
+      [(a) => a.deleteComment(1, 5), { thread: null }],
+    ];
+    for (const [act, body, status] of cases) {
+      fresh();
+      vi.stubGlobal('fetch', reply(body, status));
+      await act(threadActions(qc, 'app#2'));
+      expect(qc.getQueryState(other)?.isInvalidated).toBe(true);
+    }
+    // A PR's thread without a branch (a fork's PR) leaves the rest of the repo alone.
+    fresh();
+    vi.stubGlobal('fetch', reply(thread(2, 'resolved')));
+    await threadActions(qc, 'app#2').setStatus(2, 'resolved');
+    expect(qc.getQueryState(other)?.isInvalidated).toBe(false);
+  });
+
   it('patches a status into every cached Comments list at once, and leaves each stale, so another filter refetches', () => {
     const qc = new QueryClient();
     const unresolved = qk.threadList({ status: 'open' });
     const resolved = qk.threadList({ status: 'resolved' });
-    const item = { ...thread(1), targetTitle: null, prState: null, targetUrl: 'u', earlierPush: false };
+    const item = { ...thread(1), targetTitle: null, prState: null, targetUrl: 'u', earlierPush: false, view: { kind: 'pr' as const, number: 2 } };
     // Resolved was visited first (empty), then Unresolved; both answers are fresh.
     qc.setQueryData<ThreadListResponse>(resolved, { items: [], total: 0, nextCursor: null, counts: { open: 1, resolved: 0 } });
     qc.setQueryData<ThreadListResponse>(unresolved, { items: [item], total: 1, nextCursor: null, counts: { open: 1, resolved: 0 } });

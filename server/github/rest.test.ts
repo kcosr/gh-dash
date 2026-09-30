@@ -33,17 +33,20 @@ describe('GitHubRestClient', () => {
       () => json([2]),
       () => new Response('a'.repeat(40), { headers: RL }),
       () => new Response('text', { headers: { 'content-type': 'application/vnd.github.raw+json' } }),
+      () => new Response('diff --git a/x b/x\n', { headers: { 'content-type': 'application/vnd.github.diff; charset=utf-8' } }),
     ]);
     await c.json('/repos/o/r/pulls/1');
     await c.paginate<number[], number>('/repos/o/r/items', (p) => p, 10, { query: { per_page: 100 } });
     await c.sha('/repos/o/r/commits/pull/1/head');
     await c.raw('/repos/o/r/contents/a%20b.txt', 100, { query: { ref: 'abc1234' } });
+    await c.diff('/repos/o/r/compare/aaa...bbb', 100);
     expect(calls.map((x) => x.url)).toEqual([
       `${API}/repos/o/r/pulls/1`,
       `${API}/repos/o/r/items?per_page=100`,
       `${API}/repositories/1/items?page=2`,
       `${API}/repos/o/r/commits/pull/1/head`,
       `${API}/repos/o/r/contents/a%20b.txt?ref=abc1234`,
+      `${API}/repos/o/r/compare/aaa...bbb`,
     ]);
     for (const { init } of calls) {
       expect(init.method).toBe('GET');
@@ -56,6 +59,7 @@ describe('GitHubRestClient', () => {
       'application/vnd.github+json',
       'application/vnd.github.sha',
       'application/vnd.github.raw+json',
+      'application/vnd.github.diff',
     ]);
   });
 
@@ -184,6 +188,24 @@ describe('GitHubRestClient', () => {
     });
     expect(await client([() => new Response(stream)]).c.raw('/f', 10)).toMatchObject({ tooLarge: true });
     expect(await client([() => json([{ name: 'dir' }])]).c.raw('/f', 1000)).toMatchObject({ isFile: false });
+  });
+
+  it('reads a diff as text up to a size limit, and does not read one that is longer', async () => {
+    const diff = (body: string, headers: Record<string, string> = {}) => () =>
+      new Response(body, { headers: { 'content-type': 'application/vnd.github.diff; charset=utf-8', ...headers } });
+    expect(await client([diff('diff --git a/é b/é\n')]).c.diff('/c', 100)).toEqual({ text: 'diff --git a/é b/é\n', tooLarge: false });
+    expect(await client([() => new Response(new Uint8Array([0x2b, 0xff, 0x2b]))]).c.diff('/c', 100)).toEqual({ text: '+\uFFFD+', tooLarge: false });
+    expect(await client([diff('x'.repeat(11))]).c.diff('/c', 10)).toEqual({ text: '', tooLarge: true });
+    // A Content-Length over the limit is refused before the body is read.
+    const unread = new ReadableStream({
+      pull() {
+        throw new Error('the body must not be read');
+      },
+    });
+    expect(await client([() => new Response(unread, { headers: { 'content-length': '11' } })]).c.diff('/c', 10)).toEqual({ text: '', tooLarge: true });
+    // Errors are JSON whatever was asked for.
+    const err = await client([() => json({ message: 'Not Found' }, {}, 404)]).c.diff('/c', 10).catch((e: unknown) => e);
+    expect(err).toMatchObject({ kind: 'not-found', status: 404 });
   });
 
   it('never puts the token in an error message', async () => {

@@ -7,8 +7,8 @@ import type { CommentThread } from '../../../shared/api';
 import { createPlacer } from '../../../shared/comment-placement';
 import * as comments from '../../services/comments';
 import { repoKinds } from '../../services/lists';
-import { commitAnchor, prAnchor } from '../anchor';
-import { bodyArg, commitArg, idArg, prArg, repoArg } from '../format';
+import { branchAnchor, commitAnchor, prAnchor } from '../anchor';
+import { bodyArg, branchArg, commitArg, idArg, prArg, repoArg } from '../format';
 import { compactPlacement, type Placement } from '../placement';
 import { requireRepo } from './prs';
 import { LIST_SNIPPET_CHARS, targetTitle, threadOut } from '../threads';
@@ -27,38 +27,46 @@ export const addComment = writeTool({
   name: 'add_comment',
   title: 'Add a comment',
   description:
-    'Opens a comment thread on a PR (at its current head, unless at_commit names an earlier push) or on a commit, shown ' +
-    'to the user in gh-dash\'s diff. Leave path out to comment on the whole PR or commit; give path for a file of its ' +
-    'diff, and start_line (end_line for a range) for lines: side "new" numbers lines as in the file at the head, "old" as ' +
-    'at the base (for removed lines). The lines must exist; gh-dash records their text. Commits must be on the code ' +
-    'host: push first.',
+    'Opens a comment thread on a PR (at its current head, unless at_commit names an earlier push), on a pushed branch (its ' +
+    'diff against the default branch, at its head: review work that has no PR yet) or on a commit, shown to the user in ' +
+    "gh-dash's diff. A branch's comments are shared with the PRs later opened from it. Leave path out to comment on the " +
+    'whole PR, branch or commit; give path for a file of its diff, and start_line (end_line for a range) for lines: side ' +
+    '"new" numbers lines as in the file at the head, "old" as at the base (for removed lines). The lines must exist; ' +
+    'gh-dash records their text. Branches and commits must be on the code host: push first.',
   input: z
     .object({
       repo: repoArg,
       pr: prArg.optional(),
+      branch: branchArg.optional(),
       commit: commitArg.optional(),
       body: bodyArg,
-      path: z.string().min(1).max(4096).optional().describe('File path in the repository, as the diff lists it (get_pr files)'),
+      path: z.string().min(1).max(4096).optional().describe('File path in the repository, as the diff lists it (get_pr or get_branch files)'),
       side: z.enum(['new', 'old']).default('new').describe('new: the head\'s lines (added or unchanged); old: the base\'s (removed)'),
       start_line: z.number().int().min(1).optional().describe('First line (1-based)'),
       end_line: z.number().int().min(1).optional().describe('Last line, inclusive (default: start_line)'),
       at_commit: commitArg.optional().describe('PR only: the revision the comment is on (default: the PR head)'),
     })
     .strict()
-    .refine((a) => (a.pr === undefined) !== (a.commit === undefined), 'give exactly one of pr or commit'),
+    .refine((a) => [a.pr, a.branch, a.commit].filter((x) => x !== undefined).length === 1, 'give exactly one of pr, branch or commit'),
   run: async (args, ctx) => {
     const { deps, principal, signal } = ctx;
     const ref = requireRepo(deps.db, args.repo);
     const kind = repoKinds(deps.db)(ref.key);
     const anchored =
-      args.pr !== undefined ? await prAnchor(deps, ref, kind, args.pr, args, signal) : await commitAnchor(deps, ref, kind, args.commit!, args, signal);
+      args.pr !== undefined
+        ? await prAnchor(deps, ref, kind, args.pr, args, signal)
+        : args.branch !== undefined
+          ? await branchAnchor(deps, ref, kind, args.branch, args, signal)
+          : await commitAnchor(deps, ref, kind, args.commit!, args, signal);
     const { diff, ...fields } = anchored;
     const input = { ...fields, body: args.body };
     // No await since the anchor was read: the service validates and writes at once.
     const thread =
       args.pr !== undefined
         ? comments.createPrThread(deps, principal, ref.key, args.pr, input)
-        : comments.createCommitThread(deps, principal, ref.key, fields.commitOid, input);
+        : args.branch !== undefined
+          ? comments.createBranchThread(deps, principal, ref.key, args.branch, input)
+          : comments.createCommitThread(deps, principal, ref.key, fields.commitOid, input);
     // Where the diff viewer shows it now (the diff is at hand: no fetch).
     return written(thread, ctx, diff && thread.commitOid === diff.headOid ? compactPlacement(createPlacer(diff)(thread)) : undefined);
   },

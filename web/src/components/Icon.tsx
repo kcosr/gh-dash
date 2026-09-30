@@ -10,6 +10,7 @@ const PATHS = {
   issue: <><circle cx="8" cy="8" r="6.25" /><circle cx="8" cy="8" r="1.3" fill="currentColor" stroke="none" /></>,
   issueClosed: <><circle cx="8" cy="8" r="6.25" /><path d="M5.4 8.2l1.8 1.8 3.4-3.6" /></>,
   commit: <><circle cx="8" cy="8" r="2.5" /><path d="M1.5 8h4M10.5 8h4" /></>,
+  branch: <><circle cx="4.5" cy="3.5" r="1.75" /><circle cx="4.5" cy="12.5" r="1.75" /><circle cx="11.5" cy="3.5" r="1.75" /><path d="M4.5 5.25v5.5M11.5 5.25v.5a2.5 2.5 0 0 1-2.5 2.5H7a2.5 2.5 0 0 0-2.5 2.5" /></>,
   tag: <><path d="M2.25 2.25h5.1l6.4 6.4-5.1 5.1-6.4-6.4z" /><circle cx="5.25" cy="5.25" r="1" fill="currentColor" stroke="none" /></>,
   star: <path d="M8 1.75l1.93 3.9 4.3.63-3.11 3.03.73 4.28L8 11.57l-3.85 2.02.73-4.28L1.77 6.28l4.3-.63z" />,
   starFill: <path d="M8 1.75l1.93 3.9 4.3.63-3.11 3.03.73 4.28L8 11.57l-3.85 2.02.73-4.28L1.77 6.28l4.3-.63z" fill="currentColor" />,

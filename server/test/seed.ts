@@ -70,6 +70,7 @@ function pr(number: number, over: Partial<PrRecord> & Pick<PrRecord, 'state' | '
     headRef: 'feature',
     headOid: String(number).repeat(40).slice(0, 40),
     baseRef: 'main',
+    crossRepo: null,
     labels: [],
     closingIssues: [],
     url: `https://github.com/alice/x/pull/${number}`,

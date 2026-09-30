@@ -3,8 +3,10 @@
 
 import type { DiffFile, DiffFileStatus } from '../../shared/api';
 import type { SourceDiffSupply } from '../diff/service';
+import { parseUnifiedDiff } from '../diff/unified';
+import { newestFirst } from '../provider/branches';
 import { defaultSleep } from '../provider/transport';
-import type { BlobResult, CommitDiff, DiffRepo, DiffSource, PrRevision, RateLimitInfo } from '../provider/types';
+import type { BlobResult, BranchRef, CommitDiff, CompareDiff, DiffRepo, DiffSource, PrRevision, RateLimitInfo } from '../provider/types';
 import { noTokenMessage, type TokenSupply } from '../token';
 import { GitHubClient } from './client';
 import { GitHubRestClient } from './rest';
@@ -15,6 +17,12 @@ import type { GqlRateLimit } from './types';
 const MAX_FILES = 3000;
 /** Full fetches of a PR's files before giving up on a PR that keeps changing underneath (each costs 2+ requests). */
 const PR_SNAPSHOT_ATTEMPTS = 2;
+/** A compare's JSON lists at most this many files, however many the comparison changes, and has no next page for the rest. */
+const COMPARE_FILES = 300;
+/** A comparison's `.diff` is read up to this size (it can be as large as the change is); past it the JSON's files are all there is. */
+const MAX_COMPARE_DIFF_BYTES = 20 * 1024 * 1024;
+/** Pages of 100 branches read to find the newest, which GitHub can't list them by: 1 GraphQL point each. */
+const BRANCH_PAGES = 5;
 
 // GitHub REST shapes (only the fields used here).
 interface RestFile {
@@ -44,7 +52,17 @@ interface RestCommit {
 }
 interface RestCompare {
   merge_base_commit: { sha: string };
+  /** On the first page only, at most COMPARE_FILES. */
+  files?: RestFile[];
 }
+/** What a file of this status shows: without a patch it is binary, or GitHub left the patch out (see compare). */
+const HAS_CONTENT = new Set<DiffFileStatus>(['added', 'removed', 'modified']);
+
+/**
+ * Whether GitHub may have left a file's patch out (see compare): a file of a status that shows content, or any file
+ * whose lines GitHub counted (a renamed or copied file with changes: its patch has lines, a pure rename's has none).
+ */
+const mayLackPatch = (f: DiffFile) => f.patch === null && (HAS_CONTENT.has(f.status) || f.additions + f.deletions > 0);
 
 /** `pulls/N` with its ETag: a PrRevision's handle, for the conditional re-read that proves a snapshot of its files. */
 interface Pull {
@@ -62,6 +80,24 @@ interface ChangedFilesData {
   rateLimit: GqlRateLimit;
 }
 
+// GitHub can't list branches newest first: `orderBy: {field: TAG_COMMIT_DATE}` is accepted for refs/heads/ and ignored, they
+// come alphabetically (checked against cli/cli, 254 branches). `query` matches a name's substring, case-insensitively.
+const BRANCHES = `query($owner: String!, $name: String!, $query: String, $after: String) {
+  repository(owner: $owner, name: $name) {
+    refs(refPrefix: "refs/heads/", first: 100, after: $after, query: $query) {
+      pageInfo { hasNextPage endCursor }
+      nodes { name target { oid ... on Commit { committedDate } } }
+    }
+  }
+  rateLimit { limit remaining resetAt cost }
+}`;
+interface BranchesData {
+  repository: {
+    refs: { pageInfo: { hasNextPage: boolean; endCursor: string | null }; nodes: ({ name: string; target: { oid: string; committedDate?: string } | null } | null)[] } | null;
+  } | null;
+  rateLimit: GqlRateLimit;
+}
+
 const toFile = (f: RestFile): DiffFile => ({
   path: f.filename,
   previousPath: f.previous_filename ?? null,
@@ -72,6 +108,13 @@ const toFile = (f: RestFile): DiffFile => ({
 });
 
 const enc = (segment: string) => encodeURIComponent(segment);
+/**
+ * A branch as a ref in the path of `commits/{ref}` and `compare/{basehead}`. "heads/" is GitHub's own spelling for a
+ * branch (a bare name could be a tag, or an abbreviated SHA, as well), and the name is encoded whole: "feature/x" as
+ * "heads%2Ffeature%2Fx" is read like "heads/feature/x" (both checked against cli/cli).
+ */
+const branchRef = (name: string) => enc(`heads/${name}`);
+const sum = (files: DiffFile[], field: 'additions' | 'deletions') => files.reduce((n, f) => n + f[field], 0);
 const repoPath = (repo: DiffRepo) => `/repos/${enc(repo.owner)}/${enc(repo.name)}`;
 /** The compare that yields a PR's merge base, which is a function of (base.sha, head). */
 const rangeOf = (p: RestPull) => `${p.base.sha}...${p.head.sha}`;
@@ -210,6 +253,81 @@ export class GitHubDiffSource implements DiffSource {
       this.log(`[diff] could not count the files of ${repo.key}@${sha.slice(0, 7)}: ${(err as Error).message}`);
       return fallback;
     }
+  }
+
+  /**
+   * The commit `branch` points to: a conditional request for its SHA, a 304 (which GitHub doesn't count) while it is still
+   * `knownHead`. A name GitHub doesn't have is a 422 ("No commit found for SHA: heads/x"), not a 404.
+   */
+  async branchHead(repo: DiffRepo, branch: string, knownHead: string | null, signal: AbortSignal): Promise<string> {
+    return this.rest.sha(`${repoPath(repo)}/commits/${branchRef(branch)}`, knownHead ?? undefined, { signal }).catch((err: unknown) => {
+      if (err instanceof GitHubError && err.status === 422) throw new GitHubError('not-found', err.message, { status: 422 });
+      throw err;
+    });
+  }
+
+  /**
+   * The change of `head` against its merge base with the branch `base`. `compare/<base>...<head>` names the merge base and
+   * lists the files, on its first page and at most COMPARE_FILES (`per_page=1` only trims the commits it lists too). That
+   * list is complete when it is shorter than that and every file with content has its patch. GitHub leaves a patch out,
+   * and counts the file's lines as 0, once the response's patches pass a size budget (a 300-file comparison of cli/cli had
+   * 140 of them), and for a file that alone is too large: a "modified" file without patch, just like a binary file, so the
+   * two can't be told apart. Whenever the list may be short or a patch may be missing, the change is read again as one
+   * `.diff` from the merge base found (so pinned: the base branch may move meanwhile) to `head`, and its files replace the
+   * JSON's: a diff has no file limit and every text file's patch, with lines to count (a change with a binary file in it
+   * pays that second request too). Its hunks are grouped as git does, so a patch can differ a little from the JSON's.
+   *
+   * With a diff over MAX_COMPARE_DIFF_BYTES, or one GitHub won't build, the JSON's files stay: totalFiles is their number
+   * (300 at most, though the change may have more: nothing else counts them) and those without a patch stay without. A
+   * 404 is a base GitHub doesn't have, or (with "No common ancestor" in its message) branches that share no history, as an
+   * orphan gh-pages doesn't.
+   */
+  async compare(repo: DiffRepo, base: string, head: string, signal: AbortSignal): Promise<CompareDiff> {
+    const path = repoPath(repo);
+    const compare = await this.rest.json<RestCompare>(`${path}/compare/${branchRef(base)}...${head}`, { query: { per_page: 1 }, signal });
+    const mergeBase = compare.merge_base_commit.sha;
+    const listed = (compare.files ?? []).map(toFile);
+    const changes = (files: DiffFile[], totalFiles: number): CompareDiff => ({
+      baseOid: mergeBase, headOid: head, files: files.slice(0, MAX_FILES), totalFiles, additions: sum(files, 'additions'), deletions: sum(files, 'deletions'),
+    });
+    if (listed.length < COMPARE_FILES && !listed.some(mayLackPatch)) return changes(listed, listed.length);
+
+    const diff = await this.rest.diff(`${path}/compare/${mergeBase}...${head}`, MAX_COMPARE_DIFF_BYTES, { signal }).catch((err: unknown) => {
+      // GitHub answers a diff it won't build (say, a pull request's: 406) with a client error.
+      if (err instanceof GitHubError && err.kind === 'http' && [406, 413, 422].includes(err.status ?? 0)) return { text: '', tooLarge: true };
+      throw err;
+    });
+    const files = parseUnifiedDiff(diff.text);
+    // A diff that has fewer files than the list can't be of the same change: the parser lost some, or GitHub cut it short.
+    if (diff.tooLarge || files.length < listed.length) {
+      this.log(
+        `[diff] ${repo.key}: the diff of ${base}...${head.slice(0, 7)} ${diff.tooLarge ? `is over ${MAX_COMPARE_DIFF_BYTES / (1024 * 1024)} MB` : 'lacks files the compare lists'}; listing what the compare has`,
+      );
+      return changes(listed, listed.length);
+    }
+    return changes(files, files.length);
+  }
+
+  /**
+   * The branches whose name contains `query`, newest head commit first. GitHub can't sort them (see BRANCHES), so up to
+   * BRANCH_PAGES pages of 100 are read, sorted here and cut to `limit`; `more` is set when there are others, or the
+   * branches past those pages (alphabetically) weren't read.
+   */
+  async branches(repo: DiffRepo, query: string | null, limit: number, signal: AbortSignal): Promise<{ items: BranchRef[]; more: boolean }> {
+    const found: BranchRef[] = [];
+    let after: string | null = null;
+    let hasNext = true;
+    for (let page = 0; hasNext && page < BRANCH_PAGES; page++) {
+      const data: BranchesData = await this.graphql.query<BranchesData>(BRANCHES, { owner: repo.owner, name: repo.name, query, after }, { signal });
+      const refs = data.repository?.refs;
+      if (!refs) throw new GitHubError('not-found', `Repository ${repo.path} not found`);
+      for (const node of refs.nodes) {
+        if (node?.target) found.push({ name: node.name, headOid: node.target.oid, committedAt: node.target.committedDate ?? null });
+      }
+      ({ hasNextPage: hasNext, endCursor: after } = refs.pageInfo);
+    }
+    found.sort(newestFirst);
+    return { items: found.slice(0, limit), more: hasNext || found.length > limit };
   }
 
   async blob(repo: DiffRepo, sha: string, path: string, maxBytes: number, signal: AbortSignal): Promise<BlobResult> {

@@ -3,6 +3,8 @@
 
 import { z } from 'zod';
 import type { Principal, ProviderKind } from '../../shared/api';
+import { isBranchName, MAX_BRANCH_CHARS } from '../../shared/branch';
+import { branchRef } from '../../shared/comment-markdown';
 import { refText } from '../../shared/provider';
 
 /** Who wrote something, as the calling agent reads it: "me", "you" (the user), or "agent:<name>" for another agent. */
@@ -23,9 +25,13 @@ export function clip(text: string, max: number): string {
   return t.length > max ? `${t.slice(0, max).trimEnd()}… (${t.length - max} more characters)` : t;
 }
 
-/** A PR as its host writes it (`alice/app#2`, `gitlab.example.com/g/app!2`), or a commit (`alice/app@1a2b3c4`). */
-export function targetRef(kind: ProviderKind, repo: string, target: { number: number } | { oid: string }): string {
-  return 'number' in target ? refText(kind, repo, target.number, 'pr') : `${repo}@${target.oid.slice(0, 7)}`;
+/**
+ * A PR as its host writes it (`alice/app#2`, `gitlab.example.com/g/app!2`), a branch (`alice/app branch fix/x`), or a
+ * commit (`alice/app@1a2b3c4`).
+ */
+export function targetRef(kind: ProviderKind, repo: string, target: { number: number } | { branch: string } | { oid: string }): string {
+  if ('number' in target) return refText(kind, repo, target.number, 'pr');
+  return 'branch' in target ? branchRef(repo, target.branch) : `${repo}@${target.oid.slice(0, 7)}`;
 }
 
 // Argument schemas shared by the tools. Descriptions are what the agent reads next to each parameter.
@@ -41,6 +47,13 @@ export const commitArg = z
   .regex(/^[0-9a-f]{7,64}$/i, 'expected a commit SHA (7 to 64 hex characters)')
   .transform((s) => s.toLowerCase())
   .describe('Commit SHA (full, or at least 7 characters)');
+export const branchArg = z
+  .string()
+  .min(1)
+  .max(MAX_BRANCH_CHARS)
+  .transform((s) => s.replace(/^refs\/heads\//, ''))
+  .refine(isBranchName, 'expected a git branch name, as on the remote')
+  .describe('Branch name as on the remote (`git branch --show-current`); pushed, and not the default branch');
 export const idArg = (what: string) => z.number().int().min(1).max(2 ** 53 - 1).describe(what);
 export const bodyArg = z
   .string()

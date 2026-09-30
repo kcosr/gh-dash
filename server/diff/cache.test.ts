@@ -84,6 +84,30 @@ describe('DiffCache', () => {
     expect(c.findCommit('other', 'abc1234')).toBeNull();
   });
 
+  it('keeps one diff per branch, replaced in place, apart from the diffs of PRs', () => {
+    const c = cache();
+    const branch = (key: string, head: string, baseOid: string, fetchedAt: number) =>
+      c.put({ key, kind: 'branch', repo: 'app', oid: head, baseRef: 'main', baseOid, fetchedAt, data: Buffer.from('x') });
+    branch('branch/app/feature/x', '1'.repeat(40), 'b'.repeat(40), 10);
+    branch('branch/app/feature/y', '3'.repeat(40), 'b'.repeat(40), 10);
+    c.put({ key: `pr/app/1/${'2'.repeat(40)}`, kind: 'pr', repo: 'app', number: 1, oid: '2'.repeat(40), baseRef: 'feature/x', fetchedAt: 5, data: Buffer.from('x') });
+    expect(c.branchEntry('branch/app/feature/x')).toEqual({ key: 'branch/app/feature/x', oid: '1'.repeat(40), baseRef: 'main', baseOid: 'b'.repeat(40), fetchedAt: 10 });
+    // A push (or a moved merge base) replaces the entry; there is no other diff of the branch to drop.
+    branch('branch/app/feature/x', '4'.repeat(40), 'c'.repeat(40), 20);
+    expect(c.branchEntry('branch/app/feature/x')).toMatchObject({ oid: '4'.repeat(40), baseOid: 'c'.repeat(40), fetchedAt: 20 });
+    expect(c.stats().entries).toBe(3);
+    // PR housekeeping and lookups leave branch entries alone, and the other way round.
+    c.dropOthers('app', 1, 'pr/app/1/other');
+    expect(c.stats().entries).toBe(2);
+    expect(c.prEntry('app', 1)).toBeNull();
+    expect(c.branchEntry('branch/app/feature/y')).not.toBeNull();
+    expect(c.branchEntry('pr/app/1/x')).toBeNull();
+    expect(c.branchEntry('branch/app/nope')).toBeNull();
+    expect(c.findCommit('app', '4444444')).toBeNull();
+    // They are dropped with their repo, and count against the size cap like the rest.
+    expect(c.evict(1000, ['other'])).toBe(2);
+  });
+
   it('gives the disk space back when cleared', () => {
     const path = join(temp(), 'gh-dash-cache.db');
     const c = cache(path);

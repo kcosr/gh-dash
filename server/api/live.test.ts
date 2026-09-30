@@ -94,7 +94,7 @@ describe('GET /stream', () => {
     expect(await stream.until('}\n\n')).toBe(true);
     const data = stream.text.split('\n').filter((l) => l.startsWith('data: ')).map((l) => JSON.parse(l.slice(6)) as StreamMessage);
     expect(data).toEqual([{
-      type: 'comments', repo: 'alice/app', kind: 'commit', number: null, commitOid: 'c'.repeat(40), threadId: thread.id, event: 'thread_opened', by: { id: 1, kind: 'self', name: 'You' },
+      type: 'comments', repo: 'alice/app', kind: 'commit', number: null, branch: null, commitOid: 'c'.repeat(40), threadId: thread.id, event: 'thread_opened', by: { id: 1, kind: 'self', name: 'You' },
     }]);
     const show: StreamMessage = { type: 'show', id: 's1', agent: { id: 2, kind: 'agent', name: 'Claude' }, target: { repo: 'alice/app', pr: 2 }, message: null, at: '2026-09-29T10:00:00.000Z' };
     expect(bus.emit(show)).toBe(1);
@@ -256,7 +256,7 @@ describe('OpenAPI', () => {
     const { schemas } = doc.components;
     expect(schemas.ActivityEvent!.oneOf!.map((v) => v.properties.type.enum[0])).toEqual(['commit', 'pr', 'issue', 'release', 'star', 'comment']);
     expect(Object.keys(schemas.CommentActivity!.properties!)).toEqual([
-      'eventId', 'threadId', 'commentId', 'live', 'by', 'target', 'commitOid', 'path', 'side', 'startLine', 'endLine', 'excerpt',
+      'eventId', 'threadId', 'commentId', 'live', 'by', 'target', 'commitOid', 'path', 'side', 'startLine', 'endLine', 'excerpt', 'view',
     ]);
     expect(Object.keys(schemas.Agent!.properties!)).toEqual(['id', 'name', 'tokenPrefix', 'createdAt', 'lastUsedAt', 'revokedAt', 'builtIn']);
     expect(schemas.CommentThread!.properties).toHaveProperty('resolvedBy');

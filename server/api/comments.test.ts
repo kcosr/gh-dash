@@ -366,7 +366,7 @@ describe('comment threads API', () => {
     expect(op.parameters.every((param) => param.in === 'query')).toBe(true);
     const param = (name: string) => op.parameters.find((x) => x.name === name)!.schema;
     expect(param('status')).toMatchObject({ enum: ['open', 'resolved', 'all'], default: 'open' });
-    expect(param('kind')).toMatchObject({ enum: ['pr', 'commit', 'all'], default: 'all' });
+    expect(param('kind')).toMatchObject({ enum: ['pr', 'branch', 'commit', 'all'], default: 'all' });
     expect(param('sort')).toMatchObject({ enum: ['recent', 'oldest'], default: 'recent' });
     expect(param('waiting').enum).toEqual(['you']);
     expect(param('format').enum).toEqual(['json', 'md']);
@@ -378,8 +378,8 @@ describe('comment threads API', () => {
     expect(Object.keys(body.properties.counts!.properties!)).toEqual(['open', 'resolved']);
     const item = doc.components.schemas.ThreadListItem as unknown as { allOf: [{ $ref: string }, { properties: Record<string, unknown>; required: string[] }] };
     expect(item.allOf[0]).toEqual({ $ref: '#/components/schemas/CommentThread' });
-    expect(Object.keys(item.allOf[1].properties)).toEqual(['targetTitle', 'prState', 'targetUrl', 'earlierPush']);
-    expect(item.allOf[1].required).toEqual(['targetTitle', 'prState', 'targetUrl', 'earlierPush']);
+    expect(Object.keys(item.allOf[1].properties)).toEqual(['targetTitle', 'prState', 'targetUrl', 'earlierPush', 'view']);
+    expect(item.allOf[1].required).toEqual(['targetTitle', 'prState', 'targetUrl', 'earlierPush', 'view']);
     expect(await (await makeApp().app.request('/api/docs')).text()).toContain('/api/v1/threads');
   });
 
@@ -406,6 +406,120 @@ describe('comment threads API', () => {
     const docs = await (await makeApp().app.request('/api/docs')).text();
     expect(docs).toContain('Response: 200 · JSON, or <code>format=md</code></p>');
     expect(docs).toContain('Response: 200 · JSON, or <code>format=md</code> / <code>format=csv</code></p>');
+  });
+});
+
+describe('branch threads API', () => {
+  const branchPath = (repo: string, branch: string) => `/branches/${encodeURIComponent(repo)}/${encodeURIComponent(branch)}/threads`;
+  /** The seed's app#2 is from `feature`: make it a PR of the same repo, as the sync will say. */
+  const sameRepo = (db: Db) => db.run("UPDATE pull_requests SET cross_repo = 0 WHERE number = 2 AND repo_id = (SELECT id FROM repos WHERE key = 'alice/app')");
+
+  it("creates and lists a branch's threads, the branch URL-encoded as one segment as the repo is", async () => {
+    const { json, send } = makeApp();
+    const created = await json('POST', branchPath('app', 'fix/login'), lineThread);
+    expect(created.status).toBe(200);
+    expect(created.body).toMatchObject({ kind: 'branch', repo: 'alice/app', number: null, branch: 'fix/login', commitOid: HEAD, path: 'src/a.ts', startLine: 3 });
+    const general = (await json('POST', branchPath('alice/app', 'fix/login'), { commitOid: HEAD, body: 'Overall fine.' })).body;
+    const listed = await json<{ items: CommentThread[] }>('GET', branchPath('alice/app', 'fix/login'));
+    expect(listed.body.items.map((t) => t.id)).toEqual([created.body.id, general.id]);
+    expect((await json<{ items: CommentThread[] }>('GET', branchPath('app', 'fix'))).body.items).toEqual([]);
+    // Anything git allows in a name comes through: '#', '@' and '%' included.
+    const odd = await json('POST', branchPath('app', 'feat#2@100%'), { commitOid: HEAD, body: 'Odd' });
+    expect(odd.body).toMatchObject({ branch: 'feat#2@100%' });
+    expect((await json<{ items: CommentThread[] }>('GET', branchPath('app', 'feat#2@100%'))).body.items.map((t) => t.id)).toEqual([odd.body.id]);
+    const md = await send('GET', `${branchPath('app', 'fix/login')}?format=md`);
+    expect(md.headers.get('content-type')).toBe('text/markdown; charset=utf-8');
+    expect(await md.text()).toBe('# app branch fix/login\n\n### Branch\n\n- **You**: Overall fine.\n\n### `src/a.ts` lines 3–4 (new)\n\n```ts\na\nb\n```\n\n- **You**: Why?\n');
+    // Replies and the rest go by thread id, as for any thread.
+    expect((await json('POST', `/threads/${general.id}/comments`, { body: 'Thanks' })).body.comments).toHaveLength(2);
+    expect((await json('PATCH', `/threads/${general.id}`, { status: 'resolved' })).body).toMatchObject({ kind: 'branch', status: 'resolved' });
+  });
+
+  it('keeps a GitLab branch under its own repo key', async () => {
+    const db = seedDb();
+    seedGitLab(db);
+    const { json, send } = makeApp(db);
+    const key = `${GITLAB_HOST}/platform/app`;
+    expect((await json('POST', branchPath(key, 'fix/login'), { commitOid: HEAD, body: 'On GitLab' })).body).toMatchObject({ kind: 'branch', repo: key, branch: 'fix/login' });
+    expect((await json<{ items: CommentThread[] }>('GET', branchPath('app', 'fix/login'))).body.items).toEqual([]);
+    expect((await (await send('GET', `${branchPath(key, 'fix/login')}?format=md`)).text()).split('\n')[0]).toBe(`# ${key} branch fix/login`);
+  });
+
+  it("shares a branch's threads with the PRs from it, which count them, and exports each saying where it was made", async () => {
+    const { db, json, send } = makeApp();
+    sameRepo(db);
+    const onBranch = (await json('POST', branchPath('app', 'feature'), { commitOid: HEAD, path: 'src/b.ts', body: 'On the branch' })).body;
+    const onPr = (await json('POST', '/prs/app/2/threads', { commitOid: HEAD, body: 'On the PR' })).body;
+    expect(onPr).toMatchObject({ kind: 'pr', number: 2, branch: 'feature' });
+    const ids = async (path: string) => (await json<{ items: CommentThread[] }>('GET', path)).body.items.map((t) => t.id);
+    expect(await ids('/prs/app/2/threads')).toEqual([onBranch.id, onPr.id]);
+    expect(await ids(branchPath('app', 'feature'))).toEqual([onBranch.id, onPr.id]);
+    // app#3 (closed) is from `feature` too, but the sync hasn't said it is from this repo: it keeps to itself.
+    expect(await ids('/prs/app/3/threads')).toEqual([]);
+    const pr = await (await send('GET', '/prs/app/2/threads?format=md')).text();
+    expect(pr.split('\n').filter((l) => l.startsWith('#'))).toEqual(['# app#2', '### Pull request', '### `src/b.ts` · from the branch review']);
+    const branch = await (await send('GET', `${branchPath('app', 'feature')}?format=md`)).text();
+    expect(branch.split('\n').filter((l) => l.startsWith('#'))).toEqual(['# app branch feature', '### Pull request · from #2', '### `src/b.ts`']);
+    const range = 'from=2026-09-01&to=2026-09-27&tz=UTC&repos=app';
+    const prs = (await json<{ items: { id: string; comments: unknown }[] }>('GET', `/prs?${range}&comments=any`)).body.items;
+    expect(prs.map((p) => [p.id, p.comments])).toEqual([['alice/app#2', { threads: 2, unresolved: 2 }]]);
+  });
+
+  it('refuses an invalid name and the default branch, and needs the repo and a head', async () => {
+    const { db, send } = makeApp();
+    const error = async (method: string, path: string, body?: unknown) => {
+      const res = await send(method, path, body);
+      return { status: res.status, error: ((await res.json()) as { error: string }).error };
+    };
+    for (const name of ['a..b', 'fix~1', 'x.lock', '-x', ' ']) {
+      expect(await error('GET', branchPath('app', name)), name).toEqual({ status: 400, error: 'Invalid branch name' });
+      expect(await error('POST', branchPath('app', name), lineThread), name).toEqual({ status: 400, error: 'Invalid branch name' });
+    }
+    const main = { status: 400, error: 'main is the default branch: branches are compared against it' };
+    expect(await error('GET', branchPath('app', 'main'))).toEqual(main);
+    expect(await error('POST', branchPath('app', 'main'), lineThread)).toEqual(main);
+    expect(await error('GET', branchPath('nope', 'fix'))).toEqual({ status: 404, error: 'Repository not found' });
+    expect(await error('POST', branchPath('app', 'fix'), { body: 'x' })).toMatchObject({ status: 400, error: expect.stringContaining('commitOid') });
+    expect((await send('GET', `${branchPath('app', 'fix')}?format=csv`)).status).toBe(400);
+    // A slash left unencoded makes another path.
+    expect((await send('GET', '/branches/app/fix/login/threads')).status).toBe(404);
+    expect((await send('POST', branchPath('app', 'fix'), lineThread, { origin: 'https://evil.example', host: 'localhost' })).status).toBe(403);
+    db.run("UPDATE repos SET removed_at = '2026-09-29T00:00:00Z' WHERE name = 'app'");
+    expect(await error('POST', branchPath('app', 'fix'), lineThread)).toEqual({ status: 404, error: 'Repository not found' });
+    expect(db.get<{ n: number }>('SELECT count(*) AS n FROM comment_threads')!.n).toBe(0);
+  });
+
+  it('lists branch threads in GET /threads, by kind, with a section per branch', async () => {
+    const { json, send } = makeApp();
+    const t = (await json('POST', branchPath('app', 'fix/login'), { commitOid: HEAD, body: 'On the branch' })).body;
+    await json('POST', '/prs/app/2/threads', { commitOid: HEAD, body: 'On the PR' });
+    const res = await json<ThreadListResponse>('GET', '/threads?kind=branch');
+    expect(res.body.items.map((i) => [i.id, i.kind, i.branch, i.targetTitle, i.prState, i.targetUrl, i.earlierPush])).toEqual([
+      [t.id, 'branch', 'fix/login', null, null, 'https://github.com/alice/app/compare/main...fix/login', false],
+    ]);
+    expect(res.body).toMatchObject({ total: 1, counts: { open: 1, resolved: 0 } });
+    expect(await (await send('GET', '/threads?kind=branch&format=md')).text()).toBe(
+      '# Comments · unresolved · branches\n\n## alice/app branch fix/login\n\n### Branch\n\n- **You**: On the branch\n',
+    );
+    expect((await send('GET', '/threads?kind=branches')).status).toBe(400);
+  });
+
+  it('is in the OpenAPI document: the routes, the body, and the branch of a thread, a stream message and an activity event', async () => {
+    const doc = (await (await makeApp().app.request('/api/v1/openapi.json')).json()) as {
+      paths: Record<string, Record<string, { requestBody?: { content: Record<string, { schema: unknown }> }; responses: Record<string, { content?: Record<string, unknown> }>; description?: string }>>;
+      components: { schemas: Record<string, { required: string[]; properties: Record<string, { enum?: unknown[]; type?: unknown }> }> };
+    };
+    const path = doc.paths['/api/v1/branches/{repo}/{branch}/threads']!;
+    expect(Object.keys(path)).toEqual(['get', 'post']);
+    expect(Object.keys(path.get!.responses['200']!.content!)).toEqual(['application/json', 'text/markdown']);
+    expect(path.post!.requestBody!.content['application/json']!.schema).toEqual({ $ref: '#/components/schemas/NewBranchThread' });
+    const { schemas } = doc.components;
+    expect(schemas.NewBranchThread!.required).toEqual(['commitOid', 'body']);
+    expect(schemas.CommentThread!.properties.kind!.enum).toEqual(['pr', 'branch', 'commit']);
+    expect(schemas.CommentThread!.properties.branch!.type).toEqual(['string', 'null']);
+    expect(schemas.CommentThread!.required).toContain('branch');
+    expect(JSON.stringify(schemas.CommentActivity)).toContain('"enum":["branch"]');
+    expect(doc.paths['/api/v1/stream']!.get!.description).toContain('(repo, kind, number, branch, commitOid,');
   });
 });
 
@@ -466,9 +580,11 @@ describe('GET /threads', () => {
     ]);
     // The item is the per-target thread, plus what it is on.
     const perTarget = (await app.json<{ items: CommentThread[] }>('GET', '/prs/app/2/threads')).body.items;
-    const { targetTitle, prState, targetUrl, earlierPush, ...thread } = res.body.items.find((t) => t.id === ids.line)!;
+    const { targetTitle, prState, targetUrl, earlierPush, view, ...thread } = res.body.items.find((t) => t.id === ids.line)!;
     expect(thread).toEqual(perTarget.find((t) => t.id === ids.line));
-    expect({ targetTitle, prState, targetUrl, earlierPush }).toEqual({ targetTitle: 'Add parser', prState: 'open', targetUrl: 'https://github.com/alice/x/pull/2', earlierPush: true });
+    expect({ targetTitle, prState, targetUrl, earlierPush, view }).toEqual({
+      targetTitle: 'Add parser', prState: 'open', targetUrl: 'https://github.com/alice/x/pull/2', earlierPush: true, view: { kind: 'pr', number: 2 },
+    });
   });
 
   it('follows the per-thread routes: resolving, replying and deleting', async () => {

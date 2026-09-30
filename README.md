@@ -29,9 +29,10 @@ GitLab: it never posts, comments or changes anything there.
 - **Everything in one place.** Pull requests (merge requests on GitLab), issues, a combined
   activity timeline, your repositories and charts of how they're doing. It covers GitHub,
   gitlab.com and self-managed GitLab. Switch between **GitHub**, **GitLab** and **All** at the top.
-- **Review diffs privately.** Open any pull request's or commit's diff and comment on a line, a
-  range, a file or the whole change. Reply and resolve as you go. The **Comments** tab lists every
-  thread, so nothing gets lost. Comments stay in gh-dash.
+- **Review diffs privately.** Open any pull request's or commit's diff, or a pushed branch's before
+  it has a pull request, and comment on a line, a range, a file or the whole change. Reply and
+  resolve as you go. The **Comments** tab lists every thread, so nothing gets lost. Comments stay in
+  gh-dash.
 - **Work with coding agents.** Claude Code, Codex and other MCP clients can read your comments,
   answer them, fix the code and leave review notes of their own. Everything an agent does is marked
   as its own and shows up in Activity. See [Agents](docs/agents.md).
@@ -102,7 +103,7 @@ window.
 | --- | --- |
 | **PRs & MRs** | Pull and merge requests by state, author and date. <kbd>Enter</kbd> opens the details panel, and <kbd>d</kbd> the diff. |
 | **Issues** | Open or closed issues, with their descriptions. |
-| **Comments** | Every comment thread, on PRs and on commits. Filter to unresolved, resolved or all, by who wrote them, or to threads waiting on you. Group and sort them as you like. <kbd>Enter</kbd> opens the diff right at the thread. |
+| **Comments** | Every comment thread, on PRs, branches and commits. Filter to unresolved, resolved or all, by who wrote them, or to threads waiting on you. Group and sort them as you like. <kbd>Enter</kbd> opens the diff right at the thread. |
 | **Repositories** | The repositories you track, as a grid or a list. Pin, hide, add or remove them. |
 | **Activity** | One timeline of commits, pull requests, issues, releases, stars and comments. Click a day in the strip to jump to it. |
 | **Insights** | Charts of activity, contributors and trends. |
@@ -133,6 +134,11 @@ The sidebar decides which repositories every tab shows.
 - **Opening a diff.** Use **Files changed** in a pull request's details, press <kbd>d</kbd> in the
   list, or click a commit's SHA. Switch between unified and split views, wrap long lines, and expand
   the unchanged code around a change.
+- **Reviewing a branch.** A pushed branch can be reviewed before it has a pull request: pick it
+  from **Branches** on its repository's page, or with **Review a branch…** in the
+  <kbd>Ctrl</kbd>/<kbd>⌘</kbd> <kbd>K</kbd> palette. Its diff is against the default branch, as a
+  pull request's would be. Its comments carry over to pull requests later opened from it. Once a
+  pull request from the branch is merged, the branch starts afresh.
 - **Commenting.** Hover a line and click **+**, or drag over line numbers for a range. You can
   also comment on a whole file or the whole change. Comments are Markdown. A comment you haven't
   sent yet is kept as a draft if you close the diff, reload or switch views.

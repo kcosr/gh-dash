@@ -49,7 +49,7 @@ export type DraftSpot =
 /** `visible`: whether the diff on screen shows a line of the draft's file. */
 export function draftSpot(
   d: DraftAnchor,
-  kind: 'pr' | 'commit',
+  kind: PlaceableThread['kind'],
   place: (t: PlaceableThread) => ThreadPlacement,
   visible: (side: CommentSide, line: number) => boolean,
 ): DraftSpot {

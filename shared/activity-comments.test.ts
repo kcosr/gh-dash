@@ -21,7 +21,7 @@ function ev(kind: CommentEventKind, by: Principal, o: Partial<CommentActivity> &
     comment: {
       eventId, threadId: 1, commentId: ['resolved', 'reopened', 'thread_deleted'].includes(kind) ? null : eventId * 10, live: true, by,
       target: { kind: 'pr', number: 17, title: 'Fix the race' }, commitOid: 'a'.repeat(40),
-      path: 'packages/opencode/src/host.ts', side: 'new', startLine: 42, endLine: 44, excerpt: `comment ${eventId}`, ...c,
+      path: 'packages/opencode/src/host.ts', side: 'new', startLine: 42, endLine: 44, excerpt: `comment ${eventId}`, view: { kind: 'pr', number: 17 }, ...c,
     },
   };
 }
@@ -65,6 +65,17 @@ describe('Activity: comment events', () => {
     // Newest first within a row; the row is as new as its newest event.
     const claude17 = day.rows[4]!;
     expect(claude17.at.getMinutes()).toBe(3);
+  });
+
+  it("groups a branch's events per branch, apart from a PR from it", () => {
+    const feed = rows([
+      ev('thread_opened', you, { min: 1, threadId: 1, target: { kind: 'branch', branch: 'fix/a', title: null } }),
+      ev('replied', you, { min: 2, threadId: 2, target: { kind: 'branch', branch: 'fix/a', title: null } }),
+      ev('replied', you, { min: 3, threadId: 3, target: { kind: 'branch', branch: 'fix/b', title: null } }),
+      ev('replied', you, { min: 4, threadId: 4 }),
+    ]);
+    const shape = feed[0]!.rows.map((r) => (r.kind === 'comments' ? [r.target.kind === 'branch' ? r.target.branch : r.target.kind, r.events.map((e) => e.comment.threadId)] : r.kind));
+    expect(shape).toEqual([['pr', [4]], ['fix/b', [3]], ['fix/a', [2, 1]]]);
   });
 
   it('keeps an event once, however the pages overlap', () => {

@@ -279,7 +279,7 @@ describe('startServer', () => {
     const oid = 'c'.repeat(40);
     const res = await fetch(`${server.apiUrl}/api/v1/commits/alice%2Fapp/${oid}/threads`, { method: 'POST', body: JSON.stringify({ body: 'Nit' }) });
     const thread = (await res.json()) as { id: number };
-    const message = { type: 'comments', repo: 'alice/app', kind: 'commit', number: null, commitOid: oid, threadId: thread.id, event: 'thread_opened', by: { id: 1, kind: 'self', name: 'You' } };
+    const message = { type: 'comments', repo: 'alice/app', kind: 'commit', number: null, branch: null, commitOid: oid, threadId: thread.id, event: 'thread_opened', by: { id: 1, kind: 'self', name: 'You' } };
     expect(await readUntil('}\n\n')).toBe(true);
     expect(tcpText).toContain(`data: ${JSON.stringify(message)}\n\n`);
     await vi.waitFor(() => expect(socketText).toContain(`data: ${JSON.stringify(message)}\n\n`));

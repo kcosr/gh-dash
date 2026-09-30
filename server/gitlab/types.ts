@@ -115,6 +115,10 @@ export interface GqlMergeRequest {
   closedAt: string | null;
   sourceBranch: string;
   targetBranch: string;
+  /** The project the source branch is in; null once that project (a fork) is deleted. */
+  sourceProjectId: number | null;
+  /** The project the MR is in. */
+  targetProjectId: number;
   diffHeadSha: string | null;
   commitCount: number | null;
   author: GqlUser | null;
@@ -293,6 +297,19 @@ export interface RestDiff {
 
 export interface RestVersionFull extends RestVersion {
   diffs: RestDiff[];
+}
+
+/** A branch of `GET /repository/branches`: its head commit is all that is used. */
+export interface RestBranch {
+  name: string;
+  commit: Pick<RestCommit, 'id' | 'committed_date'>;
+}
+
+/** `GET /repository/compare`: the files between two refs (commits and the rest of it aren't used). */
+export interface RestCompare {
+  diffs: RestDiff[];
+  /** The comparison exceeded GitLab's size limits or timed out: `diffs` may be incomplete (`commits` never is). */
+  compare_timeout: boolean;
 }
 
 export interface RestTokenInfo {

@@ -20,13 +20,13 @@ import { useUI } from '../components/ui';
 import { NoReposSelected } from './PullRequests';
 import { activityParams, statsParams } from '../lib/apiQuery';
 import { commentPlace, commentSummary, commentVerb, groupFeed } from '../lib/grouping';
-import { threadPlace } from '../lib/threadList';
+import { threadPlace, viewDiffId } from '../lib/threadList';
 import type { CommentEvent, FeedDay, FeedRow } from '../lib/grouping';
 import { plainPreview } from '../lib/markdown';
 import { LAST_VISIT } from '../lib/storage';
 import type { ResolvedRange } from '../lib/range';
 import { addDays, dayDiff, fmtDateSmart, fmtDateTime, fmtShortDay, fmtTime, isoDate, parseDateOnly } from '../lib/time';
-import { commitDiffId, useUrlState } from '../lib/urlState';
+import { branchDiffId, commitDiffId, useUrlState } from '../lib/urlState';
 import { actorName, actorSubject, isPlainClick } from '../lib/util';
 
 const TYPES: { type: EventType; label: string; icon: IconName; color: string }[] = [
@@ -355,8 +355,13 @@ const FeedItem = memo(function FeedItem({ row, expanded, onExpand, onOpenPr, onO
   } else if (row.kind === 'comments') {
     const evs = row.events;
     const t = row.target;
-    const diff = t.kind === 'pr' ? `${row.repo}#${t.number}` : commitDiffId(row.repo, t.oid);
-    const ref = t.kind === 'pr' ? `${providerOf(row.repo).prRef}${t.number}` : `@${t.oid.slice(0, 7)}`;
+    const diff = t.kind === 'pr' ? `${row.repo}#${t.number}` : t.kind === 'branch' ? branchDiffId(row.repo, t.branch) : commitDiffId(row.repo, t.oid);
+    // Each event opens where its thread is shown now (a branch thread of an earlier line of work: the merged PR that
+    // ended it), else on what it was made on; the branch's name opens where they all are, if they agree.
+    const openAt = (e: CommentEvent) => viewDiffId(row.repo, e.comment.view) ?? diff;
+    const where = new Set(evs.map(openAt));
+    const branchDiff = where.size === 1 ? [...where][0]! : diff;
+    const ref = t.kind === 'pr' ? `${providerOf(row.repo).prRef}${t.number}` : t.kind === 'commit' ? `@${t.oid.slice(0, 7)}` : null;
     const shown = evs.length <= COMMITS_SHOWN || expanded ? evs : evs.slice(0, COMMITS_SHOWN);
     const mixed = new Set(evs.map((e) => e.kind)).size > 1;
     cls = 'comment'; icon = evs.every((e) => e.kind === 'resolved') ? 'check' : 'comment';
@@ -364,7 +369,10 @@ const FeedItem = memo(function FeedItem({ row, expanded, onExpand, onOpenPr, onO
       <>
         <Who actor={row.actor.isMe && me ? { ...row.actor, login: me.login, name: me.name ?? me.login } : row.actor} />
         {evs[0]!.comment.by.kind === 'agent' && <AgentMark />} {commentSummary(evs)} in{' '}
-        {t.title && (
+        {t.kind === 'branch' ? (
+          // A branch's name is its title: in the feed's words for a branch (as in "pushed to main").
+          <button type="button" className="t" data-diff={branchDiff} title="View the branch's diff" onClick={() => onOpenDiff(branchDiff)}><code className="br">{t.branch}</code></button>
+        ) : t.title && (
           <button type="button" className="t" data-diff={t.kind === 'commit' ? diff : undefined} title={t.kind === 'pr' ? 'Details' : "View the commit's diff"}
             onClick={() => (t.kind === 'pr' ? onOpenPr(diff) : onOpenDiff(diff))}>{t.title}</button>
         )}
@@ -372,10 +380,10 @@ const FeedItem = memo(function FeedItem({ row, expanded, onExpand, onOpenPr, onO
       </>
     );
     sub = evs.length === 1
-      ? <CommentLine e={evs[0]!} diff={diff} onOpen={onOpenThread} quote />
+      ? <CommentLine e={evs[0]!} diff={openAt(evs[0]!)} onOpen={onOpenThread} quote />
       : (
         <div className="c-box">
-          {shown.map((e) => <CommentLine key={e.comment.eventId} e={e} diff={diff} onOpen={onOpenThread} verb={mixed} />)}
+          {shown.map((e) => <CommentLine key={e.comment.eventId} e={e} diff={openAt(e)} onOpen={onOpenThread} verb={mixed} />)}
           {shown.length < evs.length && <button type="button" className="more" onClick={() => onExpand(row.key)}>Show {evs.length - shown.length} more</button>}
         </div>
       );
@@ -438,8 +446,8 @@ const FeedItem = memo(function FeedItem({ row, expanded, onExpand, onOpenPr, onO
 });
 
 /**
- * One comment event: where (the file's name and lines; "General" for the whole PR or commit), what was said, when. It
- * opens the diff at the thread, unless the thread is gone. `quote`: a row's only event, as the row's description
+ * One comment event: where (the file's name and lines; "General" for the whole PR, branch or commit), what was said,
+ * when. It opens the diff at the thread, unless the thread is gone. `quote`: a row's only event, as the row's description
  * (its place is in the row's words). `verb`: the row has several kinds of events, so each says what happened.
  */
 function CommentLine({ e, diff, onOpen, quote = false, verb = false }: { e: CommentEvent; diff: string; onOpen: (diff: string, thread: number) => void; quote?: boolean; verb?: boolean }) {

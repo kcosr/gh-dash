@@ -688,6 +688,15 @@ describe('with another source', () => {
       authHint: 'check the GitLab token',
       maxFiles: 1000,
       prHeadIs: async () => null,
+      branchHead: async () => {
+        throw new Error('not used');
+      },
+      compare: async () => {
+        throw new Error('not used');
+      },
+      branches: async () => {
+        throw new Error('not used');
+      },
       async prRevision(repo, number) {
         ask(`revision !${number}`, repo);
         return state.rev;

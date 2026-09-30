@@ -13,9 +13,10 @@ import { ALL_TIME_FROM, exportTarget, exportUrl } from '../lib/apiQuery';
 import { useFocusTrap, useLayer } from '../lib/layers';
 import { browserTz, fmtDate } from '../lib/time';
 import { ALL, useSwitchContext } from '../lib/contexts';
-import { carrySearch, keepRepoInScope, patchSearch, repoFromPath, repoLinkSearch, useUrlState } from '../lib/urlState';
+import { branchDiffId, carrySearch, keepRepoInScope, parseDiffId, patchSearch, repoFromPath, repoLinkSearch, useUrlState } from '../lib/urlState';
 import { copyText, useDebounced } from '../lib/util';
 import { prIconClass, prIconName } from './bits';
+import { BranchPrRef, branchListTrouble, useBranchSearch } from './Branches';
 import { Icon, ProviderIcon } from './Icon';
 import type { IconName } from './Icon';
 import { useProviderOf, useRepoLabel, useRepoMapCtx, useSourceCtx, useWords } from './repoMapContext';
@@ -24,9 +25,21 @@ import { useToast } from './Toasts';
 import { useViewHref } from './TopBar';
 import { useUI } from './ui';
 
-/** `labelParts` draws a repo name: a muted owner, then the name (`label` is the same text, for matching). */
-interface Item { key: string; icon: ReactNode; label: string; labelParts?: [string, string]; right?: ReactNode; run: () => void }
+/**
+ * `labelParts` draws a repo name: a muted owner, then the name (`label` is the same text, for matching). `step`: the
+ * item leads to another step of the palette, which stays open.
+ */
+interface Item { key: string; icon: ReactNode; label: string; labelParts?: [string, string]; right?: ReactNode; run: () => void; step?: boolean }
 interface Section { title: string; items: Item[] }
+
+/**
+ * Reviewing a branch takes steps: a repository (skipped when one is in view), then its branches. `back`: where
+ * Backspace in the empty input goes.
+ */
+type Step = { kind: 'repo' } | { kind: 'branch'; repo: string; back: Step | null };
+
+/** Branches a step lists at most (newest first; typing narrows them). */
+const BRANCHES_SHOWN = 12;
 
 function Highlight({ text, q }: { text: string; q: string }) {
   if (!q) return <>{text}</>;
@@ -68,7 +81,14 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggle
   const apiBase = useApiBase();
   const [q, setQ] = useState('');
   const [idx, setIdx] = useState(0);
+  const [step, setStep] = useState<Step | null>(null);
   const dq = useDebounced(q.trim(), 160);
+  const go = (next: Step | null) => { setStep(next); setQ(''); input.current?.focus(); };
+  // The repo in view, if any: its page, the list narrowed to it, or its diff.
+  const inView = [repoParam, s.repos?.length === 1 ? s.repos[0] : undefined, parseDiffId(s.diff)?.repo].find((k) => k && repoMap.has(k)) ?? null;
+  // Branches to list: the step's repo's; on a repo's page, its own as you type.
+  const branchRepo = step?.kind === 'branch' ? step.repo : !step && view === 'repo' && repoParam && repoMap.has(repoParam) ? repoParam : null;
+  const branches = useBranchSearch(branchRepo, q);
   const box = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLInputElement>(null);
   const results = useRef<HTMLDivElement>(null);
@@ -96,6 +116,8 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggle
     placeholderData: keepPreviousData,
     staleTime: 30_000,
     retry: false,
+    // A step lists repositories or branches alone.
+    enabled: !step,
   });
 
   const openPr = (p: PullRequest) => {
@@ -108,7 +130,43 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggle
     const ql = q.trim().toLowerCase();
     const has = (t: string) => !ql || t.toLowerCase().includes(ql);
     const out: Section[] = [];
-    const go = (path: string) => navigate(hrefTo(path));
+
+    /** A repo's branches, as items that open their diff over the view you're on (as a commit's opens). */
+    const branchSection = (repo: string, title: string): Section => {
+      const p = providerOf(repo);
+      return {
+        title,
+        items: branches.items.slice(0, BRANCHES_SHOWN).map((b) => ({
+          key: `branch:${b.name}`,
+          icon: ic('branch'),
+          label: b.name,
+          right: <>{b.pr && <BranchPrRef pr={b.pr} p={p} />}{b.committedAt && <span>{fmtDate(b.committedAt)}</span>}</>,
+          run: () => set({ diff: branchDiffId(repo, b.name), file: null, thread: null, only: null }),
+        })),
+      };
+    };
+    // Reviewing a branch: its repository first, then its branches; nothing else.
+    if (step?.kind === 'repo') {
+      const found = (repos.data ?? [])
+        .map((r) => ({ r, label: repoLabel(r.key) }))
+        .filter(({ label }) => has(label))
+        .sort((a, b) => Number(b.r.key === inView) - Number(a.r.key === inView)
+          || (ql ? Number(!a.label.toLowerCase().startsWith(ql)) - Number(!b.label.toLowerCase().startsWith(ql)) : 0)
+          || (b.r.lastActivityAt ?? '').localeCompare(a.r.lastActivityAt ?? ''))
+        .slice(0, 8);
+      return found.length ? [{
+        title: 'Review a branch of',
+        items: found.map(({ r, label }) => {
+          const { owner, name } = repoParts(r.key, repoMap);
+          return {
+            key: `pick:${r.key}`, icon: ic('book'), label, labelParts: [owner === null ? '' : `${owner}/`, name] as [string, string], step: true,
+            right: <span>Branches</span>, run: () => go({ kind: 'branch', repo: r.key, back: step }),
+          };
+        }),
+      }] : [];
+    }
+    if (step?.kind === 'branch') return branches.items.length ? [branchSection(step.repo, `Branches of ${repoLabel(step.repo)}`)] : [];
+    const goTo = (path: string) => navigate(hrefTo(path));
 
     // A repo is found by what it shows: its name, and for someone else's repo the owner as well. Every source's repos
     // are found; the context's come first, and choosing another's takes you to its context.
@@ -140,6 +198,16 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggle
         ]),
       });
     }
+
+    // Reviewing a branch: the step (the repo in view's branches at once, else a repository first), found as you type;
+    // with an empty query it waits among the actions. On a repo's page, its branches as you type too.
+    const review: Item = {
+      key: 'do:branch', icon: ic('branch'), label: 'Review a branch…', step: true,
+      right: inView ? <span>{repoLabel(inView)}</span> : undefined,
+      run: () => go(inView ? { kind: 'branch', repo: inView, back: null } : { kind: 'repo' }),
+    };
+    const branchItems = [...(ql && has(review.label) ? [review] : []), ...(branchRepo && ql ? branchSection(branchRepo, '').items : [])];
+    if (branchItems.length) out.push({ title: 'Branches', items: branchItems });
 
     const prs = prSearch.data?.items ?? [];
     const prItems: Item[] = [];
@@ -173,7 +241,7 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggle
     if (vs.length) out.push({ title: 'Saved views', items: vs.map((v) => ({ key: `view:${v.id}`, icon: ic('bookmark'), label: v.name, run: () => navigate(`${v.path}${v.query ? `?${v.query}` : ''}`) })) });
 
     const nav: [string, string, IconName][] = [[w.nav, '/prs', 'merge'], ['Issues', '/issues', 'issue'], ['Comments', '/comments', 'comment'], ['Repositories', '/repos', 'book'], ['Activity', '/activity', 'pulse'], ['Insights', '/insights', 'chart'], ['Settings', '/settings', 'sliders']];
-    const navItems = nav.filter(([l]) => has(l)).map(([l, p, i]) => ({ key: `go:${p}`, icon: ic(i), label: l, run: () => go(p) }));
+    const navItems = nav.filter(([l]) => has(l)).map(([l, p, i]) => ({ key: `go:${p}`, icon: ic(i), label: l, run: () => goTo(p) }));
     if (navItems.length) out.push({ title: 'Go to', items: navItems });
 
     const t = exportTarget(view, s, repoParam);
@@ -187,6 +255,7 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggle
         }))
       : [];
     const acts: Item[] = [
+      ...(ql ? [] : [review]),
       ...switches,
       { key: 'do:sync', icon: ic('sync'), label: 'Sync now', run: onSync },
       { key: 'do:addrepo', icon: ic('plus'), label: 'Add repository…', run: openAddRepo },
@@ -202,20 +271,22 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggle
     ].filter((a) => has(a.label));
     if (acts.length) out.push({ title: 'Actions', items: acts });
     return out;
-  }, [q, repos.data, repoMap, repoLabel, providerOf, w, views.data, prSearch.data, view, s, location.search, location.pathname, repoParam, onToggleSidebar, sidebarHidden, apiBase, openAddRepo, sources, multi, ctx, byHost, switchTo, hrefTo]);
+  }, [q, repos.data, repoMap, repoLabel, providerOf, w, views.data, prSearch.data, view, s, location.search, location.pathname, repoParam, onToggleSidebar, sidebarHidden, apiBase, openAddRepo, sources, multi, ctx, byHost, switchTo, hrefTo, step, inView, branchRepo, branches.items]);
 
   const flat = sections.flatMap((sec) => sec.items);
   const cur = Math.min(idx, Math.max(0, flat.length - 1));
 
-  useEffect(() => { setIdx(0); }, [q]);
+  useEffect(() => { setIdx(0); }, [q, step]);
   useEffect(() => {
     results.current?.querySelector<HTMLElement>('.pal-item.on')?.scrollIntoView({ block: 'nearest' });
   }, [cur]);
 
   const run = (it: Item | undefined) => {
     if (!it) return;
-    onRun();
-    onClose();
+    if (!it.step) {
+      onRun();
+      onClose();
+    }
     it.run();
   };
 
@@ -223,7 +294,14 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggle
     if (e.key === 'ArrowDown') { e.preventDefault(); setIdx((cur + 1) % Math.max(1, flat.length)); }
     else if (e.key === 'ArrowUp') { e.preventDefault(); setIdx((cur - 1 + flat.length) % Math.max(1, flat.length)); }
     else if (e.key === 'Enter') { e.preventDefault(); run(flat[cur]); }
+    // Out of a step, one at a time.
+    else if (e.key === 'Backspace' && step && !q) { e.preventDefault(); go(step.kind === 'branch' ? step.back : null); }
   };
+  // What a step says in the input, and why it lists nothing.
+  const stepRepo = step?.kind === 'branch' ? step.repo : null;
+  const trouble = stepRepo && branches.all.isError && !branches.all.data ? branchListTrouble(branches.all.error, providerOf(stepRepo)).text : null;
+  const none = !stepRepo ? 'No results'
+    : trouble ?? (!branches.all.data ? 'Loading branches…' : q.trim() ? `No branches matching “${q.trim()}”` : 'No branches besides the default one');
 
   let k = 0;
   return createPortal(
@@ -231,10 +309,15 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggle
       <div className="scrim" onClick={onClose} />
       <div className="palette" role="dialog" aria-modal="true" aria-label="Command palette" ref={box} onKeyDown={onKeyDown}>
         <div className="pal-in">
-          <Icon name="search" />
+          <Icon name={step ? 'branch' : 'search'} />
+          {step && (
+            <span className="pal-step" title="Backspace to go back">
+              {stepRepo ? repoLabel(stepRepo) : 'Review a branch'}
+            </span>
+          )}
           <input
             ref={input}
-            placeholder={`Search repos, ${w.many}, views, actions…`}
+            placeholder={step?.kind === 'repo' ? 'Pick a repository…' : step ? 'Filter branches…' : `Search repos, ${w.many}, views, actions…`}
             value={q}
             onChange={(e) => setQ(e.target.value)}
             autoComplete="off"
@@ -244,7 +327,7 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggle
             aria-controls="pal-res"
             aria-activedescendant={flat[cur] ? `pal-${cur}` : undefined}
           />
-          {prSearch.isFetching && <span className="spin"><Icon name="sync" /></span>}
+          {(step ? branches.all.isFetching || branches.searching : prSearch.isFetching) && <span className="spin"><Icon name="sync" /></span>}
           <kbd>esc</kbd>
         </div>
         <div className="pal-res" id="pal-res" role="listbox" ref={results}>
@@ -273,11 +356,12 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggle
               })}
             </div>
           ))}
-          {!flat.length && <div className="pal-none">No results</div>}
+          {!flat.length && <div className="pal-none">{none}</div>}
         </div>
         <div className="pal-foot">
           <span><kbd>↑</kbd> <kbd>↓</kbd> navigate</span>
           <span><kbd>↵</kbd> open</span>
+          {step && <span><kbd>⌫</kbd> back</span>}
           <span><kbd>esc</kbd> close</span>
         </div>
       </div>

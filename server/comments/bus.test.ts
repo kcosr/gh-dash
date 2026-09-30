@@ -4,7 +4,7 @@ import { CommentBus } from './bus';
 
 const you = { id: 1, kind: 'self' as const, name: 'You' };
 const comment = (threadId: number): StreamMessage => ({
-  type: 'comments', repo: 'alice/app', kind: 'pr', number: 2, commitOid: 'a'.repeat(40), threadId, event: 'replied', by: you,
+  type: 'comments', repo: 'alice/app', kind: 'pr', number: 2, branch: null, commitOid: 'a'.repeat(40), threadId, event: 'replied', by: you,
 });
 
 afterEach(() => vi.useRealTimers());

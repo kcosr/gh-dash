@@ -2,10 +2,10 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { addManualRepo, seedDb } from '../test/seed';
 import { activityCsv, commitsCsv, prsCsv } from '../format/csv';
 import { eventsMarkdown, prsMarkdown } from '../format/markdown';
-import { createThread, getPrincipal, SELF_PRINCIPAL_ID, setThreadStatus } from './comments';
+import { createThread, getPrincipal, SELF_PRINCIPAL_ID, setThreadStatus, type ThreadTarget } from './comments';
 import type { Db } from './db';
 import { ftsQuery, loadQueryCtx, type QueryCtx, type Scope } from './filters';
-import { COMMIT_SELECT, type CursorKey, getPrDetail, listActivity, listCommits, listIssues, listPrs, listStars } from './lists';
+import { COMMIT_SELECT, type CursorKey, getPrDetail, listActivity, listCommits, listIssues, listPrs, listStars, PR_FROM, PR_SELECT } from './lists';
 
 let db: Db;
 let ctx: QueryCtx;
@@ -177,6 +177,53 @@ describe('PR comment threads', () => {
     expect(any.facets.byRepo).toEqual({ 'alice/app': 2 });
     const unresolved = listPrs(own, ownCtx, scope(), { ...all, comments: 'unresolved' }, null);
     expect(unresolved.items.map((p) => p.id)).toEqual(['alice/app#2']);
+  });
+});
+
+describe("PR comment threads of a branch's line of work", () => {
+  const own = seedDb();
+  const you = getPrincipal(own, SELF_PRINCIPAL_ID)!;
+  const app = own.get<{ id: number }>("SELECT id FROM repos WHERE name = 'app'")!.id;
+  const general = { path: null, side: null, startLine: null, endLine: null, snippet: null };
+  // app#1 (merged 2026-09-21T10:00:00Z) and app#2 (open) are from `feature` of the same repo; app#3 from a fork's.
+  own.run("UPDATE pull_requests SET cross_repo = CASE number WHEN 3 THEN 1 ELSE 0 END, head_ref = 'feature' WHERE repo_id = ?", [app]);
+  const open = (target: ThreadTarget, at: string, prBranch: string | null = null) =>
+    createThread(own, target, { commitOid: 'c3'.padEnd(40, '0'), baseOid: null, anchor: general, body: 'x', prBranch }, you, at);
+  const feature: ThreadTarget = { repoId: app, kind: 'branch', branch: 'feature' };
+  open(feature, '2026-09-20T12:00:00.000Z');
+  open({ repoId: app, kind: 'pr', number: 1 }, '2026-09-21T09:00:00.000Z', 'feature');
+  setThreadStatus(own, open(feature, '2026-09-22T12:00:00.000Z').id, 'resolved', you);
+  open({ repoId: app, kind: 'pr', number: 3 }, '2026-09-24T12:00:00.000Z');
+  // Made on the revision c3, but on a branch: not the commit's.
+  open({ repoId: app, kind: 'branch', branch: 'other' }, '2026-09-24T12:00:00.000Z');
+  const ownCtx = loadQueryCtx(own);
+  const wide = scope({ repos: ['app'] });
+
+  it("counts each PR's threads as its view shows them: its own and its branch group", () => {
+    const counts = Object.fromEntries(listPrs(own, ownCtx, wide, all, null).items.map((p) => [p.id, p.comments]));
+    expect(counts).toEqual({
+      'alice/app#3': { threads: 1, unresolved: 1 },
+      'alice/app#2': { threads: 1, unresolved: 0 },
+      'alice/app#1': { threads: 2, unresolved: 2 },
+    });
+    expect(getPrDetail(own, ownCtx, 'alice/app', 1)!.comments).toEqual({ threads: 2, unresolved: 2 });
+    expect(listCommits(own, ownCtx, wide, null).items.find((c) => c.oid.startsWith('c3'))!.comments).toEqual({ threads: 0, unresolved: 0 });
+  });
+
+  it('filters to PRs whose view shows a thread, or an unresolved one', () => {
+    const ids = (comments: 'any' | 'unresolved') => listPrs(own, ownCtx, wide, { ...all, comments }, null);
+    expect(ids('any').items.map((p) => p.id)).toEqual(['alice/app#3', 'alice/app#2', 'alice/app#1']);
+    const unresolved = ids('unresolved');
+    expect(unresolved.items.map((p) => p.id)).toEqual(['alice/app#3', 'alice/app#1']);
+    expect([unresolved.total, unresolved.facets.byRepo]).toEqual([2, { 'alice/app': 2 }]);
+  });
+
+  it("counts a page's rows by the target and branch indexes, never scanning the threads", () => {
+    const detail = own.all<{ detail: string }>(`EXPLAIN QUERY PLAN SELECT ${PR_SELECT} FROM ${PR_FROM} WHERE r.removed_at IS NULL ORDER BY p.activity_at DESC LIMIT 10`).map((r) => r.detail);
+    expect(detail.filter((d) => d === 'MULTI-INDEX OR')).toHaveLength(2);
+    expect(detail.filter((d) => /^SEARCH t USING (COVERING )?INDEX comment_threads_target \(repo_id=\? AND pr_number=\?\)$/.test(d))).toHaveLength(2);
+    expect(detail.filter((d) => /^SEARCH t USING (COVERING )?INDEX comment_threads_branch \(repo_id=\? AND branch=\?\)$/.test(d))).toHaveLength(2);
+    expect(detail.some((d) => d.startsWith('SCAN t'))).toBe(false);
   });
 });
 

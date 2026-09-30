@@ -75,7 +75,7 @@ export type FeedRow =
   | { kind: 'event'; key: string; at: Date; event: ActivityEvent }
   | { kind: 'commits'; key: string; at: Date; repo: string; actor: Actor; commits: Commit[] }
   | { kind: 'stars'; key: string; at: Date; repo: string; actors: Actor[] }
-  /** One person's (or agent's) comment events on one PR or commit that day, newest first. */
+  /** One person's (or agent's) comment events on one PR, branch or commit that day, newest first. */
   | { kind: 'comments'; key: string; at: Date; repo: string; actor: Actor; target: CommentActivity['target']; events: CommentEvent[] };
 
 export interface FeedDay {
@@ -102,14 +102,14 @@ function eventKey(e: ActivityEvent): string {
   }
 }
 
-/** A comment event's PR or commit, within its repo: "#17" or "@<oid>". */
-const targetKey = (t: CommentActivity['target']) => (t.kind === 'pr' ? `#${t.number}` : `@${t.oid}`);
+/** A comment event's PR, branch or commit, within its repo: "#17", "~<branch>" or "@<oid>". */
+const targetKey = (t: CommentActivity['target']) => (t.kind === 'pr' ? `#${t.number}` : t.kind === 'branch' ? `~${t.branch}` : `@${t.oid}`);
 
 /**
  * Group raw events per local day, applying the mock's rules:
  *  - commits by the same person to the same repo on the same day collapse;
  *  - stars on the same repo on the same day collapse;
- *  - comment events by the same person or agent on the same PR or commit on the same day collapse;
+ *  - comment events by the same person or agent on the same PR, branch or commit on the same day collapse;
  *  - a PR "opened" event is hidden when the same PR also merged/closed that day.
  */
 export function groupFeed(events: ActivityEvent[], now = new Date()): FeedDay[] {
@@ -202,7 +202,10 @@ const KIND_WORDS: Record<CommentEventKind, { at: (place: string) => string; one:
   thread_deleted: { at: (p) => `deleted a thread on ${p}`, one: 'deleted a thread', verb: 'deleted', noun: 'thread' },
 };
 
-/** "host.ts:42–44", "host.ts" (a file), or null for a thread on the whole PR or commit: short, the path's last part. */
+/**
+ * "host.ts:42–44", "host.ts" (a file), or null for a thread on the whole PR, branch or commit: short, the path's last
+ * part.
+ */
 export function commentPlace(c: Pick<CommentActivity, 'path' | 'startLine' | 'endLine'>): string | null {
   if (c.path === null) return null;
   const name = c.path.slice(c.path.lastIndexOf('/') + 1);
@@ -223,7 +226,7 @@ export function commentVerb(kind: CommentEventKind): string {
 }
 
 /**
- * What a comments row says someone did (after their name, before the PR or commit): one event names its place
+ * What a comments row says someone did (after their name, before the PR, branch or commit): one event names its place
  * ("resolved host.ts:42–44"); several count threads (comments, for edits and deletions) per kind, in a thread's life
  * order ("opened 2 threads and replied to 3"; the noun once while it's the same).
  */

@@ -3,7 +3,7 @@ import type { StreamMessage } from '../../../shared/api';
 import { upsertPr } from '../../db/write';
 import { selfPrincipal } from '../../services/comments';
 import * as comments from '../../services/comments';
-import { addedFile, blobKey, commitDiff, mcpHarness, servePr, sha } from '../../test/mcp';
+import { addedFile, blobKey, commitDiff, mcpHarness, serveBranch, servePr, sha } from '../../test/mcp';
 import { actor, GITLAB_HOST, prRecord, seedDb, seedGitLab } from '../../test/seed';
 
 const HEAD = sha('a');
@@ -84,7 +84,7 @@ describe('add_comment', () => {
       `src/zzz.ts isn't in alice/app#2's diff at ${HEAD.slice(0, 7)} (its files: src/a.ts, src/gone.ts, src/new.ts, src/moved.ts)`,
     );
     expect(await h.fails('add_comment', { repo: 'alice/app', pr: 2, body: 'x', start_line: 1 })).toBe('start_line needs a path');
-    expect(await h.fails('add_comment', { repo: 'alice/app', body: 'x' })).toContain('exactly one of pr or commit');
+    expect(await h.fails('add_comment', { repo: 'alice/app', body: 'x' })).toContain('exactly one of pr, branch or commit');
     expect(await h.fails('add_comment', { repo: 'alice/app', pr: 2, body: '  ' })).toContain('must not be empty');
     expect(await h.fails('add_comment', { repo: 'alice/app', pr: 42, body: 'x' })).toContain("alice/app#42 isn't in gh-dash");
   });
@@ -132,6 +132,128 @@ describe('add_comment', () => {
     const h = setup(db);
     servePr(h.code, `${GITLAB_HOST}/platform/app`, 2, HEAD, BASE, [addedFile('a.ts', ['a'])]);
     expect(await h.ok('add_comment', { repo: `${GITLAB_HOST}/platform/app`, pr: 2, body: 'MR note' })).toMatchObject({ ref: `${GITLAB_HOST}/platform/app!2` });
+  });
+});
+
+describe('add_comment on a branch', () => {
+  const BRANCH = 'topic/x';
+  const BHEAD = sha('d');
+  /** alice/app's topic/x at BHEAD over BASE: src/a.ts adds two lines, src/gone.ts is removed, src/new.ts is added. */
+  function branchSetup() {
+    const h = setup();
+    serveBranch(h.code, 'alice/app', BRANCH, BHEAD, BASE, [
+      addedFile('src/a.ts', ['one', 'two']),
+      { path: 'src/gone.ts', previousPath: null, status: 'removed', additions: 0, deletions: 1, patch: '@@ -1,1 +0,0 @@\n-bye' },
+      addedFile('src/new.ts', ['fresh'], { status: 'added' }),
+    ]);
+    return h;
+  }
+
+  it("anchors lines of the branch's head from its diff's patch, and places the new thread there", async () => {
+    const h = branchSetup();
+    const t = await h.ok('add_comment', { repo: 'alice/app', branch: BRANCH, body: 'Why these?', path: 'src/a.ts', start_line: 1, end_line: 2 });
+    expect(t).toMatchObject({
+      repo: 'alice/app', ref: 'alice/app branch topic/x', target: { kind: 'branch', branch: BRANCH }, status: 'open', resolvedBy: null,
+      anchor: { commit: BHEAD, base: BASE, path: 'src/a.ts', side: 'new', startLine: 1, endLine: 2, snippet: 'one\ntwo' },
+      placement: { kind: 'line', startLine: 1, endLine: 2, relocated: false },
+      openedBy: 'me', counts: { comments: 1 }, lastComment: { by: 'me', excerpt: 'Why these?' },
+    });
+    // A branch has no title to name it by.
+    expect(t.target).toEqual({ kind: 'branch', branch: BRANCH });
+    expect(h.code.requests.filter((r) => r.startsWith('blob'))).toEqual([]);
+    // Stored as a branch thread of the agent's, and announced with its branch.
+    expect(h.db.get('SELECT pr_number, branch, commit_oid FROM comment_threads WHERE id = ?', [t.id])).toEqual({ pr_number: null, branch: BRANCH, commit_oid: BHEAD });
+    expect(h.db.get('SELECT kind, actor_id, branch FROM comment_events ORDER BY id DESC LIMIT 1')).toEqual({ kind: 'thread_opened', actor_id: h.agent.id, branch: BRANCH });
+    expect(h.events).toMatchObject([{ type: 'comments', repo: 'alice/app', kind: 'branch', number: null, branch: BRANCH, threadId: t.id, event: 'thread_opened', by: { id: h.agent.id } }]);
+    const api = await (await h.app.request(`http://localhost/api/v1/threads/${t.id}`)).json();
+    expect(api).toMatchObject({ kind: 'branch', branch: BRANCH, comments: [{ author: { id: h.agent.id, kind: 'agent', name: 'Claude' } }] });
+  });
+
+  it('takes a name as `git branch --show-current` or a ref gives it, and reads lines the patch lacks from the head', async () => {
+    const h = branchSetup();
+    h.code.blobs.set(blobKey('alice/app', BHEAD, 'src/a.ts'), FILE);
+    const t = await h.ok('add_comment', { repo: 'app', branch: `refs/heads/${BRANCH}`, body: 'Here', path: 'src/a.ts', start_line: 9, end_line: 10 });
+    expect(t).toMatchObject({ ref: 'alice/app branch topic/x', anchor: { commit: BHEAD, startLine: 9, endLine: 10, snippet: 'line 9\nline 10' } });
+    expect(h.code.requests).toContain(`blob ${blobKey('alice/app', BHEAD, 'src/a.ts')}`);
+  });
+
+  it("anchors the old side at the merge base, and refuses sides a file hasn't", async () => {
+    const h = branchSetup();
+    const removed = await h.ok('add_comment', { repo: 'alice/app', branch: BRANCH, body: 'Keep?', path: 'src/gone.ts', side: 'old', start_line: 1 });
+    expect(removed.anchor).toMatchObject({ commit: BHEAD, base: BASE, side: 'old', startLine: 1, snippet: 'bye' });
+    expect(await h.fails('add_comment', { repo: 'alice/app', branch: BRANCH, body: 'x', path: 'src/new.ts', side: 'old', start_line: 1 })).toContain(
+      'src/new.ts is new in alice/app branch topic/x: it has no old side',
+    );
+    expect(await h.fails('add_comment', { repo: 'alice/app', branch: BRANCH, body: 'x', path: 'src/gone.ts', start_line: 1 })).toContain('src/gone.ts is deleted in alice/app branch topic/x');
+  });
+
+  it('comments on a file of the diff, or the whole branch; a path outside the diff is refused', async () => {
+    const h = branchSetup();
+    expect(await h.ok('add_comment', { repo: 'alice/app', branch: BRANCH, body: 'File note', path: 'src/a.ts' })).toMatchObject({
+      anchor: { commit: BHEAD, base: BASE, path: 'src/a.ts' }, placement: { kind: 'file' },
+    });
+    const general = await h.ok('add_comment', { repo: 'alice/app', branch: BRANCH, body: 'Overall fine.' });
+    expect(general).toMatchObject({ target: { kind: 'branch', branch: BRANCH }, anchor: { commit: BHEAD, base: BASE }, placement: { kind: 'target' } });
+    expect(general.anchor.path).toBeUndefined();
+    expect(await h.fails('add_comment', { repo: 'alice/app', branch: BRANCH, body: 'x', path: 'src/zzz.ts', start_line: 1 })).toBe(
+      `src/zzz.ts isn't in alice/app branch topic/x's diff at ${BHEAD.slice(0, 7)} (its files: src/a.ts, src/gone.ts, src/new.ts)`,
+    );
+    expect(await h.fails('add_comment', { repo: 'alice/app', branch: BRANCH, body: 'x', start_line: 1 })).toBe('start_line needs a path');
+    expect(await h.fails('add_comment', { repo: 'alice/app', branch: BRANCH, body: 'x', path: 'src/a.ts', start_line: 2, end_line: 1 })).toBe('end_line must not be before start_line');
+  });
+
+  it('follows the branch when it is pushed again: a new comment is on the new head', async () => {
+    const h = branchSetup();
+    const first = await h.ok('add_comment', { repo: 'alice/app', branch: BRANCH, body: 'Before', path: 'src/a.ts', start_line: 2 });
+    serveBranch(h.code, 'alice/app', BRANCH, sha('9'), BASE, [addedFile('src/a.ts', ['zero', 'one', 'two'])]);
+    const second = await h.ok('add_comment', { repo: 'alice/app', branch: BRANCH, body: 'After', path: 'src/a.ts', start_line: 2 });
+    expect(first.anchor.commit).toBe(BHEAD);
+    expect(second.anchor).toMatchObject({ commit: sha('9'), snippet: 'one' });
+  });
+
+  it('is the branch head only: at_commit is refused', async () => {
+    const h = branchSetup();
+    expect(await h.fails('add_comment', { repo: 'alice/app', branch: BRANCH, body: 'x', at_commit: BHEAD })).toBe("A branch's comments are on its current head: leave at_commit out");
+  });
+
+  it('says to push a branch the host has not got, refuses the default branch and bad names, and needs the diff for a head', async () => {
+    const h = branchSetup();
+    expect(await h.fails('add_comment', { repo: 'alice/app', branch: 'nope', body: 'x' })).toBe("Branch nope not found on GitHub: if it's local, push it first; else check the name");
+    expect(await h.fails('add_comment', { repo: 'alice/app', branch: 'main', body: 'x' })).toBe('main is the default branch: branches are compared against it');
+    expect(await h.fails('add_comment', { repo: 'alice/app', branch: 'a..b', body: 'x' })).toContain('expected a git branch name');
+    h.db.run("UPDATE repos SET default_branch = NULL WHERE key = 'alice/app'");
+    expect(await h.fails('add_comment', { repo: 'alice/app', branch: BRANCH, body: 'x' })).toBe("The default branch isn't known yet: sync the repository");
+    h.db.run("UPDATE repos SET default_branch = 'main' WHERE key = 'alice/app'");
+    h.code.down = 'No GitHub token';
+    expect(await h.fails('add_comment', { repo: 'alice/app', branch: BRANCH, body: 'General' })).toContain(
+      "gh-dash can't get alice/app branch topic/x's diff (No GitHub token",
+    );
+    expect(h.db.get('SELECT count(*) AS n FROM comment_threads WHERE branch = ?', [BRANCH])).toEqual({ n: 0 });
+  });
+
+  it('gives exactly one of pr, branch or commit', async () => {
+    const h = branchSetup();
+    const both = await h.fails('add_comment', { repo: 'alice/app', pr: 2, branch: BRANCH, body: 'x' });
+    expect(both).toContain('give exactly one of pr, branch or commit');
+    expect(await h.fails('add_comment', { repo: 'alice/app', branch: BRANCH, commit: sha('c'), body: 'x' })).toContain('exactly one of pr, branch or commit');
+    expect(await h.fails('add_comment', { repo: 'alice/app', pr: 2, branch: BRANCH, commit: sha('c'), body: 'x' })).toContain('exactly one of pr, branch or commit');
+    expect(await h.fails('add_comment', { repo: 'alice/app', body: 'x' })).toContain('exactly one of pr, branch or commit');
+  });
+
+  it("words a GitLab project's branch as the ref of its own kind", async () => {
+    const db = seedDb();
+    seedGitLab(db);
+    const h = setup(db);
+    serveBranch(h.code, `${GITLAB_HOST}/platform/app`, 'topic/x', BHEAD, BASE, [addedFile('a.ts', ['a'])]);
+    expect(await h.ok('add_comment', { repo: `${GITLAB_HOST}/platform/app`, branch: 'topic/x', body: 'Branch note' })).toMatchObject({ ref: `${GITLAB_HOST}/platform/app branch topic/x` });
+  });
+
+  it("is shared with the PRs from the branch: the user's view of a PR lists it", async () => {
+    const h = branchSetup();
+    const t = await h.ok('add_comment', { repo: 'alice/app', branch: BRANCH, body: 'From the branch' });
+    h.db.run("UPDATE pull_requests SET head_ref = ?, cross_repo = 0 WHERE repo_id = (SELECT id FROM repos WHERE key = 'alice/app') AND number = 2", [BRANCH]);
+    const api = (await (await h.app.request('http://localhost/api/v1/prs/alice%2Fapp/2/threads')).json()) as { items: { id: number }[] };
+    expect(api.items.map((x) => x.id)).toEqual([t.id]);
   });
 });
 

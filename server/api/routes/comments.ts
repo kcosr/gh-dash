@@ -1,10 +1,11 @@
 import { type Context, Hono } from 'hono';
 import { z } from 'zod';
 import type { ProviderKind } from '../../../shared/api';
-import { threadsMarkdown } from '../../../shared/comment-markdown';
+import { branchRef, threadsMarkdown } from '../../../shared/comment-markdown';
 import { PROVIDERS, refText } from '../../../shared/provider';
 import {
   type CommentDeps,
+  createBranchThread,
   createCommitThread,
   createPrThread,
   deleteComment,
@@ -12,8 +13,10 @@ import {
   editComment,
   getThread,
   listTargetThreads,
+  type NewBranchThread,
   type NewPrThread,
   type NewThread,
+  parseBranch,
   parseId,
   parseOid,
   providerKindOf,
@@ -53,7 +56,10 @@ export function commentRoutes({ db, config, bus }: AppDeps): Hono {
     const items = listTargetThreads(deps, target);
     if (format === 'md') {
       const kind = providerKindOf(db, repoId);
-      return c.body(threadsMarkdown(items, { title: title(kind), provider: PROVIDERS[kind] }), 200, { 'Content-Type': 'text/markdown; charset=utf-8' });
+      // A PR's list and a branch's hold their branch group: threads made elsewhere in it say where.
+      const own = { kind: target.kind, number: target.kind === 'pr' ? target.number : null };
+      const md = threadsMarkdown(items, { title: title(kind), provider: PROVIDERS[kind], target: own });
+      return c.body(md, 200, { 'Content-Type': 'text/markdown; charset=utf-8' });
     }
     return c.json({ items });
   };
@@ -87,7 +93,21 @@ export function commentRoutes({ db, config, bus }: AppDeps): Hono {
     return c.json(createCommitThread(deps, me(), c.req.param('repo')!, oid, body));
   });
 
-  // Every thread in scope, across PRs and commits (the scope hides removed repos, as /prs does).
+  // :branch is URL-encoded as one segment, as :repo is (fix%2Flogin), and comes decoded. Neither route asks the code
+  // host: a branch's threads outlive the branch, as a PR's outlive its row.
+  r.get('/branches/:repo/:branch/threads', (c) => {
+    const branch = parseBranch(c.req.param('branch')!);
+    const repo = c.req.param('repo')!;
+    return list(c, { repo, kind: 'branch', branch }, () => branchRef(repo, branch));
+  });
+
+  r.post('/branches/:repo/:branch/threads', async (c) => {
+    const branch = parseBranch(c.req.param('branch')!);
+    const body = (await jsonBody(c)) as NewBranchThread;
+    return c.json(createBranchThread(deps, me(), c.req.param('repo')!, branch, body));
+  });
+
+  // Every thread in scope, across PRs, branches and commits (the scope hides removed repos, as /prs does).
   r.get('/threads', (c) => {
     const out = queryThreads({ db, config }, parseWith(threadQuerySchema, c.req.query()));
     if (out.format === 'json') return c.json(out.body);

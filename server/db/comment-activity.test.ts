@@ -58,7 +58,7 @@ describe('comment events in the activity feed', () => {
       actor: { login: null, name: 'You', avatarUrl: null, isMe: true },
       comment: {
         eventId: expect.any(Number), threadId: t.id, commentId: t.comments[0]!.id, live: true, by: me, target: { kind: 'pr', number: 2, title: 'Add parser' }, commitOid: HEAD,
-        path: 'src/a.ts', side: 'new', startLine: 3, endLine: 4, excerpt: 'Why two?',
+        path: 'src/a.ts', side: 'new', startLine: 3, endLine: 4, excerpt: 'Why two?', view: { kind: 'pr', number: 2 },
       },
     });
     expect(items[2]).toMatchObject({ actor: { name: 'Claude', isMe: false }, comment: { by: claude, excerpt: 'Why two?' } });
@@ -188,6 +188,37 @@ describe('comment events in the activity feed', () => {
     const csv = activityCsv(events);
     expect(csv).not.toContain('ecret');
     expect(csv.split('\r\n')).toContain(`${at(22)},comment,comment_deleted,alice/app,Claude,,#2,`);
+  });
+
+  it("names a branch thread's events by the branch, with no title, in the feed and its exports", () => {
+    const line = { path: 'src/a.ts', side: 'new' as const, startLine: 3, endLine: 4, snippet: 'a\nb' };
+    // Made on the synced commit C3: the branch's thread doesn't take the commit's headline.
+    const t = createThread(db, { repoId: app, kind: 'branch', branch: 'fix/login' }, { commitOid: C3, baseOid: null, anchor: line, body: 'Why **two**?' }, me, at(20));
+    setThreadStatus(db, t.id, 'resolved', claude, at(21));
+    const gone = createThread(db, { repoId: app, kind: 'branch', branch: 'fix/a]b' }, { commitOid: C3, baseOid: null, anchor: general, body: 'Gone' }, claude, at(22));
+    deleteThread(db, gone.id, me, at(23));
+    const events = comments().items;
+    expect(events.map((e) => e.type === 'comment' && [e.kind, e.comment.target, e.comment.live])).toEqual([
+      ['thread_deleted', { kind: 'branch', branch: 'fix/a]b', title: null }, false],
+      ['thread_opened', { kind: 'branch', branch: 'fix/a]b', title: null }, false],
+      ['resolved', { kind: 'branch', branch: 'fix/login', title: null }, true],
+      ['thread_opened', { kind: 'branch', branch: 'fix/login', title: null }, true],
+    ]);
+    expect(events[3]).toMatchObject({ comment: { commitOid: C3, path: 'src/a.ts', startLine: 3, endLine: 4, excerpt: 'Why two?' } });
+    const md = eventsMarkdown('Activity', events, { tz: 'UTC', now: Date.parse(at(29)), from: Date.parse(at(1)), to: Date.parse(at(29)) });
+    expect(md).toContain('- 10:00 · **You** opened a thread on alice/app branch fix/login, src/a.ts:3–4: Why two?\n');
+    expect(md).toContain('- 10:00 · **Claude** resolved a thread on alice/app branch fix/login, src/a.ts:3–4: Why two?\n');
+    expect(md).toContain('- 10:00 · **You** deleted a thread on alice/app branch fix/a\\]b\n');
+    const csv = activityCsv(events).split('\r\n');
+    expect(csv).toContain(`${at(20)},comment,thread_opened,alice/app,You,Why two?,fix/login,`);
+    expect(csv).toContain(`${at(23)},comment,thread_deleted,alice/app,You,,fix/a]b,`);
+    // Each opens where its thread is shown now: the branch's review, nowhere once deleted, and the merged PR once a merge
+    // of the branch ends the line of work it is in (the events still say what it was made on).
+    expect(events.map((e) => e.type === 'comment' && e.comment.view)).toEqual([null, null, { kind: 'branch', branch: 'fix/login' }, { kind: 'branch', branch: 'fix/login' }]);
+    db.run("UPDATE pull_requests SET head_ref = 'fix/login', cross_repo = 0, state = 'merged', merged_at = ? WHERE repo_id = ? AND number = 2", [at(25), app]);
+    expect(comments().items.map((e) => e.type === 'comment' && [e.comment.target.kind, e.comment.view])).toEqual([
+      ['branch', null], ['branch', null], ['branch', { kind: 'pr', number: 2 }], ['branch', { kind: 'pr', number: 2 }],
+    ]);
   });
 
   it('leaves the insights (stats) as they were', () => {

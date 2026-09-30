@@ -83,6 +83,12 @@ export interface PrRecord {
   /** Head commit; keys the diff cache. Internal: not part of the API's PullRequest. */
   headOid: string;
   baseRef: string;
+  /**
+   * The head branch is in another repo (a fork), so `headRef` says nothing about this repo's branches; false when it is
+   * this repo's own. Null when the provider didn't say: the stored value stays (upsertPr), so a PR never goes from known
+   * to unknown. Only a same-repo PR's threads join its branch's group (shared/api.ts, "Branch groups").
+   */
+  crossRepo: boolean | null;
   labels: Label[];
   closingIssues: ClosingIssueRecord[];
   url: string;

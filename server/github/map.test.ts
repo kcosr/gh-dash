@@ -3,6 +3,7 @@ import probesFixture from '../test/fixtures/repo-probes.json';
 import detailFixture from '../test/fixtures/repo-detail.json';
 import reposFixture from '../test/fixtures/viewer-repos.json';
 import { mapCommit, mapIssue, mapProbe, mapPullRequest, mapRelease, mapRepo, mapStar } from './map';
+import { recheckQuery, REPO_DETAIL } from './queries';
 import type { RepoDetailData, RepoProbesData, ViewerReposData } from './types';
 
 const repos = reposFixture as unknown as ViewerReposData;
@@ -48,6 +49,21 @@ describe('GraphQL → rows', () => {
       closingIssues: [{ number: 10, title: 'Login broken', state: 'closed', url: 'https://github.com/alice/app/issues/10' }],
     });
     expect(merged!.commits[0]).toMatchObject({ oid: 'aaaa000000000000000000000000000000000000', headline: 'fix login', author: { login: 'alice' } });
+  });
+
+  it("maps whether a PR's head branch is in another repo: a fork's PR is cross-repo, one from the repo's own branch is not", () => {
+    const [fork, own] = detail.pullRequests!.nodes;
+    expect([fork!.isCrossRepository, own!.isCrossRepository]).toEqual([true, false]);
+    expect([mapPullRequest(fork!), mapPullRequest(own!)]).toMatchObject([
+      { number: 2, headRef: 'parser', crossRepo: true },
+      { number: 1, headRef: 'fix', crossRepo: false },
+    ]);
+  });
+
+  it('asks for it wherever PRs are read: the listings and the recheck by number', () => {
+    // The fake GraphQL answers whatever a document asks for, so nothing else notices the field going missing.
+    expect(REPO_DETAIL).toContain('isCrossRepository');
+    expect(recheckQuery([2], [])).toContain('isCrossRepository');
   });
 
   it('maps issues with the closing actor', () => {

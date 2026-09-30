@@ -329,6 +329,25 @@ describe('runSync', () => {
     expect(heads()).toEqual([{ number: 1, head: null }, { number: 2, head: 'cccc' }]);
   });
 
+  it("stores whether a PR's head is in another repo, and gives the threads a same-repo PR had before that was known its branch", async () => {
+    const app = db.get<{ id: number }>(`SELECT id FROM repos WHERE name = 'app'`)!.id;
+    const flags = () => db.all('SELECT number, cross_repo FROM pull_requests WHERE repo_id = ? ORDER BY number', [app]);
+    expect(flags()).toEqual([{ number: 1, cross_repo: 0 }, { number: 2, cross_repo: 1 }]);
+    // As synced before v9 (schema.ts, BRANCHES): not known, and the threads made since (before the merges: a thread made
+    // on a merged PR after its merge stays the PR's own) have no branch.
+    db.run('UPDATE pull_requests SET cross_repo = NULL');
+    for (const n of [1, 2]) {
+      db.run(`INSERT INTO comment_threads (repo_id, pr_number, commit_oid, created_at, updated_at) VALUES (?, ?, ?, '2026-09-21T00:00:00Z', '2026-09-21T00:00:00Z')`, [app, n, 'a'.repeat(40)]);
+    }
+    const branches = () => db.all('SELECT pr_number, branch FROM comment_threads ORDER BY pr_number');
+    expect(branches()).toEqual([{ pr_number: 1, branch: null }, { pr_number: 2, branch: null }]);
+
+    // A full sync re-reads both: PR 1's branch (fix) is this repo's, PR 2's (parser, a fork's) is not.
+    await sync(NOW + HOUR, { full: true });
+    expect(flags()).toEqual([{ number: 1, cross_repo: 0 }, { number: 2, cross_repo: 1 }]);
+    expect(branches()).toEqual([{ pr_number: 1, branch: 'fix' }, { pr_number: 2, branch: null }]);
+  });
+
   it('re-reads stored-open items GitHub no longer lists as open, deleting ones that are gone', async () => {
     // Nothing bumped updatedAt (e.g. the issue was deleted), but GitHub now reports no open items.
     gh.fx.openPrs = [];
@@ -336,13 +355,15 @@ describe('runSync', () => {
     gh.fx.probes.nodes[0]!.openPrs.totalCount = 0;
     gh.fx.probes.nodes[0]!.openIssues.totalCount = 0;
     const pr2 = gh.fx.detail.repository.pullRequests.nodes[0]!;
+    // As synced before v9: the recheck says whether it is from a fork.
+    db.run('UPDATE pull_requests SET cross_repo = NULL WHERE number = 2');
     gh.fx.recheck.pr2 = { ...(pr2 as GqlPullRequest), state: 'MERGED', mergedAt: '2026-09-27T09:00:00Z', closedAt: '2026-09-27T09:00:00Z', headRefOid: 'd'.repeat(40), repository: { nameWithOwner: 'alice/app' } };
 
     expect(await sync(NOW + HOUR)).toMatchObject({ newItems: 0, errors: [] });
     expect(gh.calls.map((c) => c.op)).toEqual(['ViewerRepos', 'RepoProbes', 'RepoDetail', 'RecheckItems']);
     expect(state('pull_requests', 2)).toBe('merged');
     expect(state('issues', 11)).toBeNull();
-    expect(db.get('SELECT activity_at, head_oid FROM pull_requests WHERE number = 2')).toEqual({ activity_at: '2026-09-27T09:00:00Z', head_oid: 'd'.repeat(40) });
+    expect(db.get('SELECT activity_at, head_oid, cross_repo FROM pull_requests WHERE number = 2')).toEqual({ activity_at: '2026-09-27T09:00:00Z', head_oid: 'd'.repeat(40), cross_repo: 1 });
   });
 
   describe('commit history', () => {

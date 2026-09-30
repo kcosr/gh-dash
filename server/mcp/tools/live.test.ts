@@ -76,7 +76,7 @@ describe('wait_for_reply', () => {
     // A deleted thread may still be waited on (its events are there); one that never was is an error.
     expect((await h.ok('wait_for_reply', { thread_ids: [h.mine.id], after: cursor })).events).toHaveLength(1);
     expect(await h.fails('wait_for_reply', { thread_ids: [9999] })).toBe('Thread 9999 not found');
-    expect(await h.fails('wait_for_reply', { pr: 2 })).toContain('pr and commit need repo');
+    expect(await h.fails('wait_for_reply', { pr: 2 })).toContain('pr, branch and commit need repo');
     expect(await h.fails('wait_for_reply', { timeout_s: 301 })).toContain('timeout_s');
   });
 
@@ -95,6 +95,92 @@ describe('wait_for_reply', () => {
     expect(rest.events.map((e: { excerpt: string }) => e.excerpt)).toEqual(['Reply 50']);
     expect(rest.more).toBeUndefined();
     expect(await h.fails('wait_for_reply', { repo: 'alice/app', commit: 'fffffff' })).toContain('give its full SHA');
+  });
+
+  describe("a PR's or a branch's scope", () => {
+    /**
+     * PR 2 and 3 are from branch "feature" of this repo (PR 3 from a fork, with `fork`); the agent's thread is on the branch,
+     * the user's on PR 3. (`h.other` is setup's thread on PR 3, made before the sync knew where either was from.)
+     */
+    function shared(fork = false) {
+      const h = setup();
+      const app = "(SELECT id FROM repos WHERE key = 'alice/app')";
+      h.db.run(`UPDATE pull_requests SET cross_repo = 0 WHERE repo_id = ${app} AND number = 2`);
+      h.db.run(`UPDATE pull_requests SET cross_repo = ${fork ? 1 : 0} WHERE repo_id = ${app} AND number = 3`);
+      const codex = h.db.get<{ id: number; kind: 'agent'; name: string }>("SELECT id, kind, name FROM principals WHERE name = 'Codex'")!;
+      const onBranch = comments.createBranchThread(h.deps, h.agent, 'alice/app', 'feature', { commitOid: HEAD, body: 'On the branch' });
+      const onPr3 = comments.createPrThread(h.deps, h.self, 'alice/app', 3, { commitOid: HEAD, body: 'On the other PR' });
+      const elsewhere = comments.createBranchThread(h.deps, h.agent, 'alice/app', 'other', { commitOid: HEAD, body: 'Another branch' });
+      return { ...h, codex, onBranch, onPr3, elsewhere };
+    }
+
+    it("returns at once with the events of every thread the PR's list shows: its branch's, and its branch's other PRs'", async () => {
+      const h = shared();
+      const cursor = h.lastEvent();
+      await h.userReplies(h.onBranch.id, 'Branch reply');
+      await h.userReplies(h.onPr3.id, 'Reply on PR 3 by the user');
+      comments.reply(h.deps, h.codex, h.onPr3.id, 'Codex on PR 3');
+      comments.setThreadStatus(h.deps, h.self, h.onBranch.id, 'resolved');
+      await h.userReplies(h.elsewhere.id, 'Another branch, not shared');
+      await h.userReplies(h.other.id, 'A thread of PR 3, which is only its own');
+      const got = await h.ok('wait_for_reply', { repo: 'alice/app', pr: 2, after: cursor });
+      expect(got.events.map((e: { kind: string; ref: string; excerpt: string }) => [e.kind, e.ref, e.excerpt])).toEqual([
+        ['replied', 'alice/app branch feature', 'Branch reply'],
+        ['replied', 'alice/app#3', 'Reply on PR 3 by the user'],
+        ['replied', 'alice/app#3', 'Codex on PR 3'],
+        ['resolved', 'alice/app branch feature', 'On the branch'],
+      ]);
+      // The same events from the other PR's side, and from the branch's.
+      const kinds = async (args: Record<string, unknown>) => (await h.ok('wait_for_reply', { repo: 'alice/app', after: cursor, ...args })).events.length;
+      expect(await kinds({ pr: 3 })).toBe(5);
+      expect(await kinds({ branch: 'feature' })).toBe(4);
+      expect(await kinds({ branch: 'other' })).toBe(1);
+    });
+
+    it("wakes a wait on a PR for a reply to its branch's thread, and one on the branch for a PR's", async () => {
+      const h = shared();
+      const started = Date.now();
+      const onPr = h.ok('wait_for_reply', { repo: 'alice/app', pr: 2, timeout_s: 20 });
+      const onBranch = h.ok('wait_for_reply', { repo: 'alice/app', branch: 'feature', timeout_s: 20 });
+      const onOther = h.ok('wait_for_reply', { repo: 'alice/app', branch: 'other', timeout_s: 1 });
+      await later(30);
+      await h.userReplies(h.onBranch.id, 'A reply on the branch');
+      const woke = await onPr;
+      expect(woke.events).toMatchObject([{ kind: 'replied', ref: 'alice/app branch feature', by: 'you', excerpt: 'A reply on the branch', threadStatus: 'open' }]);
+      expect((await onBranch).events).toHaveLength(1);
+      expect(Date.now() - started).toBeLessThan(5000);
+      // Nothing for the other branch, whose thread nobody wrote in.
+      expect(await onOther).toEqual({ events: [], cursor: expect.any(Number) });
+      // A reply on a PR from the branch wakes the branch's wait.
+      const next = h.ok('wait_for_reply', { repo: 'alice/app', branch: 'feature', timeout_s: 20, after: woke.cursor });
+      await later(30);
+      await h.userReplies(h.onPr3.id, 'On PR 3');
+      expect((await next).events).toMatchObject([{ ref: 'alice/app#3', excerpt: 'On PR 3' }]);
+    });
+
+    it('sees threads opened and deleted in the group, and ignores those of a fork PR', async () => {
+      const h = shared(true);
+      const cursor = h.lastEvent();
+      const opened = comments.createBranchThread(h.deps, h.self, 'alice/app', 'feature', { commitOid: HEAD, body: 'One more' });
+      comments.deleteThread(h.deps, h.self, h.onBranch.id);
+      comments.reply(h.deps, h.self, h.onPr3.id, 'On the fork PR');
+      const got = await h.ok('wait_for_reply', { repo: 'alice/app', pr: 2, after: cursor });
+      expect(got.events.map((e: { kind: string; threadId: number; threadStatus: string }) => [e.kind, e.threadId, e.threadStatus])).toEqual([
+        ['thread_opened', opened.id, 'open'],
+        ['thread_deleted', h.onBranch.id, 'deleted'],
+      ]);
+      // PR 3 is from a fork: it shares nothing, and is its own threads' alone (setup's, and the one made here).
+      expect((await h.ok('wait_for_reply', { repo: 'alice/app', pr: 3, after: cursor })).events.map((e: { threadId: number }) => e.threadId)).toEqual([h.onPr3.id]);
+    });
+
+    it('gives one of pr, branch or commit, with a repo; not the default branch or a bad name', async () => {
+      const h = shared();
+      expect(await h.fails('wait_for_reply', { branch: 'feature' })).toContain('pr, branch and commit need repo');
+      expect(await h.fails('wait_for_reply', { repo: 'alice/app', pr: 2, branch: 'feature' })).toContain('give only one of pr, branch or commit');
+      expect(await h.fails('wait_for_reply', { repo: 'alice/app', branch: 'feature', commit: sha('c') })).toContain('give only one of pr, branch or commit');
+      expect(await h.fails('wait_for_reply', { repo: 'alice/app', branch: 'main' })).toBe('main is the default branch: branches are compared against it');
+      expect(await h.fails('wait_for_reply', { repo: 'alice/app', branch: 'a~b' })).toContain('expected a git branch name');
+    });
   });
 
   it('stops waiting on notifications/cancelled, from another request', async () => {
@@ -182,8 +268,54 @@ describe('show', () => {
     expect(seen.map((m) => m.type === 'show' && m.target)).toEqual([{ repo: 'alice/app', pr: 2, path: 'src/a.ts' }, { repo: 'alice/app', commit: oid }]);
     expect(await h.fails('show', { repo: 'alice/app', commit: 'abcdef1' })).toContain('give its full SHA');
     expect(await h.fails('show', { repo: 'alice/app', pr: 77 })).toBe("alice/app#77 isn't in gh-dash");
-    expect(await h.fails('show', { repo: 'alice/app' })).toContain('exactly one of pr or commit');
+    expect(await h.fails('show', { repo: 'alice/app' })).toContain('exactly one of pr, branch or commit');
     expect(await h.fails('show', { thread_id: h.mine.id, path: 'x' })).toContain('thread_id goes alone');
     expect(await h.fails('show', {})).toContain('give thread_id, or repo');
+  });
+
+  it('shows a branch (and a file of it), a thread of one, and refuses what is no branch to show', async () => {
+    const h = setup();
+    const seen: StreamMessage[] = [];
+    h.bus.subscribe((m) => seen.push(m), { window: true });
+    const onBranch = comments.createBranchThread(h.deps, h.agent, 'alice/app', 'fix/login', { commitOid: HEAD, path: 'src/a.ts', body: 'On the file' });
+    expect(await h.ok('show', { repo: 'app', branch: 'fix/login', path: 'src/a.ts', message: 'The change' })).toEqual({ windows: 1 });
+    expect(await h.ok('show', { repo: 'alice/app', branch: 'refs/heads/fix/login' })).toEqual({ windows: 1 });
+    expect(await h.ok('show', { thread_id: onBranch.id })).toEqual({ windows: 1 });
+    expect(seen.filter((m) => m.type === 'show').map((m) => m.type === 'show' && [m.target, m.message])).toEqual([
+      [{ repo: 'alice/app', branch: 'fix/login', path: 'src/a.ts' }, 'The change'],
+      [{ repo: 'alice/app', branch: 'fix/login' }, null],
+      [{ repo: 'alice/app', branch: 'fix/login', threadId: onBranch.id, path: 'src/a.ts' }, null],
+    ]);
+    // A PR's thread is shown on its PR, whatever branch it shares.
+    expect(await h.ok('show', { thread_id: h.mine.id })).toEqual({ windows: 1 });
+    expect(seen.at(-1)).toMatchObject({ target: { repo: 'alice/app', pr: 2, threadId: h.mine.id } });
+    expect(await h.fails('show', { repo: 'alice/app', pr: 2, branch: 'fix/login' })).toContain('exactly one of pr, branch or commit');
+    expect(await h.fails('show', { repo: 'alice/app', branch: 'fix/login', commit: 'abcdef1' })).toContain('exactly one of pr, branch or commit');
+    expect(await h.fails('show', { thread_id: h.mine.id, branch: 'fix/login' })).toContain('thread_id goes alone');
+    expect(await h.fails('show', { repo: 'alice/app', branch: 'main' })).toBe('main is the default branch: branches are compared against it');
+    expect(await h.fails('show', { repo: 'alice/app', branch: '-x' })).toContain('expected a git branch name');
+  });
+
+  it("shows a branch thread of an earlier line of work on the merged PR that ended it, where the user finds it", async () => {
+    const h = setup();
+    const app = "(SELECT id FROM repos WHERE key = 'alice/app')";
+    const seen: StreamMessage[] = [];
+    h.bus.subscribe((m) => seen.push(m), { window: true });
+    // PR 1 (merged) is from branch fix/login of this repo: the thread made before its merge is in its line of work, not the next.
+    h.db.run(`UPDATE pull_requests SET head_ref = 'fix/login', cross_repo = 0, merged_at = '2026-09-10T00:00:00Z' WHERE repo_id = ${app} AND number = 1`);
+    const before = comments.createBranchThread(h.deps, h.agent, 'alice/app', 'fix/login', { commitOid: HEAD, path: 'src/a.ts', body: 'Before the merge' });
+    h.db.run("UPDATE comment_threads SET created_at = '2026-09-09T00:00:00.000Z' WHERE id = ?", [before.id]);
+    const after = comments.createBranchThread(h.deps, h.agent, 'alice/app', 'fix/login', { commitOid: HEAD, body: 'After the merge' });
+    expect(await h.ok('show', { thread_id: before.id })).toEqual({ windows: 1 });
+    expect(await h.ok('show', { thread_id: after.id })).toEqual({ windows: 1 });
+    const shown = seen.filter((m) => m.type === 'show').map((m) => m.type === 'show' && m.target);
+    expect(shown).toEqual([
+      { repo: 'alice/app', pr: 1, threadId: before.id, path: 'src/a.ts' },
+      { repo: 'alice/app', branch: 'fix/login', threadId: after.id },
+    ]);
+    // Until the sync says PR 1 is from this repo, its merge ends nothing: the branch's review shows both.
+    h.db.run(`UPDATE pull_requests SET cross_repo = NULL WHERE repo_id = ${app} AND number = 1`);
+    expect(await h.ok('show', { thread_id: before.id })).toEqual({ windows: 1 });
+    expect(seen.filter((m) => m.type === 'show').at(-1)).toMatchObject({ target: { repo: 'alice/app', branch: 'fix/login', threadId: before.id } });
   });
 });

@@ -2,7 +2,8 @@
 // revisions and files when gh-dash can get them.
 
 import { z } from 'zod';
-import type { ProviderKind, PullRequest } from '../../../shared/api';
+import type { Diff, ProviderKind, PullRequest } from '../../../shared/api';
+import { isBranchName } from '../../../shared/branch';
 import type { Db } from '../../db/db';
 import { isMeFn, loadQueryCtx } from '../../db/filters';
 import { PR_FROM, PR_SELECT } from '../../db/lists';
@@ -89,7 +90,8 @@ export const findPr = readTool({
   description:
     'Pull requests of a repository whose head branch is `branch` (open ones first), or that contain `commit` (as their ' +
     'head, one of their commits, or the commit they were merged or squashed as). Give one of branch or commit: typically ' +
-    '`git branch --show-current` or `git rev-parse HEAD` in your clone.',
+    '`git branch --show-current` or `git rev-parse HEAD` in your clone. A branch with no PR can be reviewed on its own ' +
+    '(get_branch, add_comment with branch).',
   input: z
     .object({
       repo: repoArg,
@@ -104,8 +106,8 @@ export const findPr = readTool({
     type Row = PrRow & { match: 'branch' | 'head' | 'merged' | 'commit' };
     let rows: Row[];
     const order = "ORDER BY p.state = 'open' DESC, p.updated_at DESC LIMIT 20";
-    if (branch !== undefined) {
-      const name = branch.replace(/^refs\/heads\//, '');
+    const name = branch?.replace(/^refs\/heads\//, '');
+    if (name !== undefined) {
       rows = db.all<Row>(`SELECT ${PR_SELECT}, 'branch' AS match FROM ${PR_FROM} WHERE p.repo_id = ? AND p.head_ref = ? ${order}`, [ref.id, name]);
     } else {
       const range = [commit!, `${commit!}g`];
@@ -122,12 +124,44 @@ export const findPr = readTool({
     }
     const isMe = isMeFn(loadQueryCtx(db, deps.config.myEmails));
     const kind = repoKinds(db)(ref.key);
-    return { items: rows.map((r) => ({ ...prItem(toPr(r, isMe), kind, r.head_oid), match: r.match })) };
+    const items = rows.map((r) => ({ ...prItem(toPr(r, isMe), kind, r.head_oid), match: r.match }));
+    const out: Record<string, unknown> = { items };
+    // A branch no PR is from can be reviewed on its own (not the default branch: it is what branches are compared against).
+    if (name !== undefined && items.length === 0 && isBranchName(name) && !db.get('SELECT 1 FROM repos WHERE id = ? AND default_branch = ?', [ref.id, name])) {
+      out.note =
+        `No pull request from ${name} in gh-dash. If it's pushed, get_branch reads it and add_comment with branch comments on it ` +
+        '(shared with a PR opened from it later); if it only exists locally, push it first.';
+    }
+    return out;
   },
 });
 
-/** Most files get_pr lists; the rest are counted. */
+/** Most files get_pr and get_branch list; the rest are counted. */
 const MAX_FILES = 300;
+
+/**
+ * The files of a diff, as the get tools give them: at most MAX_FILES, and `moreFiles` counts those not listed, whether
+ * the tool cut them or the code host never sent them (totalFiles beyond the files: GitHub's cap on a big diff, or a
+ * GitLab comparison that timed out, which sets it one above what it listed to say some are missing).
+ */
+export function diffFiles(diff: Diff): Record<string, unknown> {
+  const listed = diff.files.slice(0, MAX_FILES);
+  const out: Record<string, unknown> = {
+    files: listed.map((f) => ({
+      path: f.path,
+      ...(f.previousPath ? { previousPath: f.previousPath } : {}),
+      status: f.status,
+      additions: f.additions,
+      deletions: f.deletions,
+    })),
+  };
+  const more = Math.max(diff.totalFiles, diff.files.length) - listed.length;
+  if (more > 0) out.moreFiles = more;
+  return out;
+}
+
+/** What a stale diff (served from the cache because the code host couldn't be asked) says about its files and revisions. */
+export const STALE_NOTE = "The code host couldn't be asked: files and revisions are from gh-dash's cache and may be behind";
 
 export const getPr = readTool({
   name: 'get_pr',
@@ -135,7 +169,8 @@ export const getPr = readTool({
   description:
     'One pull request: its state, branches, exact revisions and changed files. headOid is the head commit and baseOid the ' +
     'merge base the diff is against (`git diff <baseOid>...<headOid>`); fetch the head with `git fetch origin <fetch>`. ' +
-    'Files and baseOid come from the diff gh-dash fetches from the code host: when it can\'t, they are left out with a note.',
+    'Files and baseOid come from the diff gh-dash fetches from the code host: when it can\'t, they are left out with a ' +
+    'note. `moreFiles`: changed files not listed (at least: a host may cut a big diff short).',
   input: z.object({ repo: repoArg, number: prArg }).strict(),
   run: async ({ repo, number }, ctx: ToolContext) => {
     const { deps, signal } = ctx;
@@ -154,15 +189,8 @@ export const getPr = readTool({
       const diff = await loadDiff(deps, { repo: ref.key, kind: 'pr', number }, signal);
       out.headOid = diff.headOid;
       out.baseOid = diff.baseOid;
-      out.files = diff.files.slice(0, MAX_FILES).map((f) => ({
-        path: f.path,
-        ...(f.previousPath ? { previousPath: f.previousPath } : {}),
-        status: f.status,
-        additions: f.additions,
-        deletions: f.deletions,
-      }));
-      if (diff.totalFiles > MAX_FILES || diff.files.length > MAX_FILES) out.moreFiles = Math.max(diff.totalFiles, diff.files.length) - MAX_FILES;
-      if (diff.stale) out.note = "The code host couldn't be asked: files and revisions are from gh-dash's cache and may be behind";
+      Object.assign(out, diffFiles(diff));
+      if (diff.stale) out.note = STALE_NOTE;
     } catch (err) {
       if (!(err instanceof HttpError)) throw err;
       out.note = `No diff (${err.message}): files and baseOid are left out; headOid is from the last sync`;

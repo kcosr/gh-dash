@@ -207,6 +207,8 @@ export function mapMergeRequest(m: GqlMergeRequest, base: string): PrRecord {
     headRef: m.sourceBranch,
     headOid: m.diffHeadSha ?? '',
     baseRef: m.targetBranch,
+    // No source project (a fork deleted since) differs from the target too: the branch was never this project's.
+    crossRepo: m.sourceProjectId !== m.targetProjectId,
     labels: mapLabels(m.labels),
     closingIssues: (m.workItemRelations?.nodes ?? []).flatMap(({ workItem: w }) =>
       w ? [{ number: Number(w.iid), title: w.title, state: w.state === 'OPEN' ? ('open' as const) : ('closed' as const), url: w.webUrl ?? '' }] : [],

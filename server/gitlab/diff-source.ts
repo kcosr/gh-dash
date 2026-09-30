@@ -1,14 +1,15 @@
 import type { DiffFile } from '../../shared/api';
 import type { ResolvedToken, TokenSupply } from '../credentials/types';
 import type { SourceDiffSupply } from '../diff/service';
+import { newestFirst } from '../provider/branches';
 import { defaultSleep } from '../provider/transport';
-import type { BlobResult, CommitDiff, DiffRepo, DiffSource, PrRevision } from '../provider/types';
+import type { BlobResult, BranchRef, CommitDiff, CompareDiff, DiffRepo, DiffSource, PrRevision } from '../provider/types';
 import { GitLabClient } from './client';
 import { mapDiffFile, messageParts } from './map';
 import { MR_REVISION } from './queries';
 import { encodeSegment, GitLabRestClient } from './rest';
 import { GitLabError, GitLabTransport, type GitLabOptions } from './transport';
-import type { MrRevisionData, RestCommit, RestDiff, RestVersion, RestVersionFull } from './types';
+import type { MrRevisionData, RestBranch, RestCommit, RestCompare, RestDiff, RestVersion, RestVersionFull } from './types';
 
 /** Most files a diff lists, as for GitHub. GitLab itself stops at its diff_max_files setting (1000 unless raised). */
 export const MAX_FILES = 3000;
@@ -19,6 +20,12 @@ const REVISION_ATTEMPTS = 2;
 
 /** What follows a rejected token's error when the source's credentials say nothing better. */
 const DEFAULT_AUTH_HINT = 'check the GitLab token: it needs the read_api scope and must not have expired';
+
+/** A date GitLab sends (with the committer's UTC offset) as UTC, which is what BranchRef says; null when it is missing or isn't one. */
+function utc(date: string | null | undefined): string | null {
+  const time = date ? Date.parse(date) : NaN;
+  return Number.isNaN(time) ? null : new Date(time).toISOString();
+}
 
 /** What prRevision hands prFiles: the start SHA, which with head and base identifies a diff version. */
 interface Handle {
@@ -127,6 +134,54 @@ export class GitLabDiffSource implements DiffSource {
       deletions: c.stats?.deletions ?? files.reduce((n, f) => n + f.deletions, 0),
       url: c.web_url,
     };
+  }
+
+  /**
+   * The commit a branch points to, 1 request: GitLab has no conditional request that would make this free, so `knownHead`
+   * isn't used. 404 (`not-found`) for a branch the project doesn't have.
+   */
+  async branchHead(repo: DiffRepo, branch: string, _knownHead: string | null, signal: AbortSignal): Promise<string> {
+    const found = await this.rest.json<RestBranch>(`/projects/${encodeSegment(repo.path)}/repository/branches/${encodeSegment(branch)}`, { signal });
+    return found.commit.id;
+  }
+
+  /**
+   * The merge base of `base` and `head`, then the comparison from that commit to `head` (both SHAs: pinned, so the files
+   * are those of the merge base returned, however the branches move meanwhile). GitLab counts no lines, so they are
+   * counted from the hunks, as for merge requests. A comparison that exceeded GitLab's limits or timed out
+   * (`compare_timeout`) may list fewer files than there are, without saying how many: totalFiles is then one above the
+   * files listed, so that the diff shows as cut off. A 404 from either request is a base or head GitLab doesn't have, or
+   * branches that share no history (there is then no merge base).
+   */
+  async compare(repo: DiffRepo, base: string, head: string, signal: AbortSignal): Promise<CompareDiff> {
+    const repository = `/projects/${encodeSegment(repo.path)}/repository`;
+    const mergeBase = await this.rest.json<RestCommit>(`${repository}/merge_base`, { query: { 'refs[]': [base, head] }, signal });
+    const compare = await this.rest.json<RestCompare>(`${repository}/compare`, { query: { from: mergeBase.id, to: head }, signal });
+    const files = compare.diffs.slice(0, MAX_FILES).map(mapDiffFile);
+    return {
+      baseOid: mergeBase.id,
+      headOid: head,
+      files,
+      totalFiles: compare.diffs.length + (compare.compare_timeout ? 1 : 0),
+      additions: files.reduce((n, f) => n + f.additions, 0),
+      deletions: files.reduce((n, f) => n + f.deletions, 0),
+    };
+  }
+
+  /**
+   * One page of branches whose name contains `query` (GitLab's `search`, which also takes `^prefix` and `suffix$`), newest
+   * head commit first. GitLab does that itself with `sort=updated_desc`, which its code has but its docs don't ("sorted
+   * by name"), so they are sorted here as well, in case an instance goes by name. `more` when GitLab names a next page,
+   * or counts more than it sent, or (it counts nothing for large lists) the page is full.
+   */
+  async branches(repo: DiffRepo, query: string | null, limit: number, signal: AbortSignal): Promise<{ items: BranchRef[]; more: boolean }> {
+    const perPage = Math.min(limit, 100);
+    const page = await this.rest.page<RestBranch[]>(`/projects/${encodeSegment(repo.path)}/repository/branches`, {
+      query: { per_page: perPage, sort: 'updated_desc', ...(query ? { search: query } : {}) },
+      signal,
+    });
+    const items = page.body.map((b) => ({ name: b.name, headOid: b.commit.id, committedAt: utc(b.commit.committed_date) })).sort(newestFirst);
+    return { items, more: page.nextPage !== null || (page.total !== null ? page.total > items.length : items.length >= perPage) };
   }
 
   /**

@@ -508,6 +508,20 @@ function backfillCommentEvents(db: Db): void {
   }
 }
 
+// Branch reviews (shared/api.ts, "Branch groups"). A thread's `branch` is the branch whose line of work it belongs to: a
+// branch thread's own (pr_number NULL, branch set: the third kind, beside PR and commit threads), or a PR thread's PR's
+// head branch when the PR is from the same repo. pull_requests.cross_repo says which PRs are: 1 from a fork (another
+// repo), 0 from the same repo, NULL until the next sync of the PR says. Existing PR threads get their branch when the
+// sync first reports their PR's cross_repo as 0; until then they stay their PR's alone. comment_events copies the
+// branch, as it copies the rest of the thread's place.
+const BRANCHES = `
+ALTER TABLE comment_threads ADD COLUMN branch TEXT;
+CREATE INDEX comment_threads_branch ON comment_threads(repo_id, branch) WHERE branch IS NOT NULL;
+ALTER TABLE comment_events ADD COLUMN branch TEXT;
+ALTER TABLE pull_requests ADD COLUMN cross_repo INTEGER CHECK (cross_repo IN (0, 1));
+CREATE INDEX pull_requests_head_ref ON pull_requests(repo_id, head_ref);
+`;
+
 const MIGRATIONS: Migration[] = [
   { name: 'initial', version: 1, destructive: false, sql: V1 },
   { name: 'commits-repo-index', version: 2, destructive: false, sql: V2 },
@@ -517,6 +531,7 @@ const MIGRATIONS: Migration[] = [
   { name: 'comments', version: 6, destructive: false, sql: COMMENTS },
   { name: 'sources', version: 7, destructive: true, rebuild: true, sql: SOURCES, up: moveViewerMeta },
   { name: 'agents', version: 8, destructive: false, sql: AGENTS, up: backfillCommentEvents },
+  { name: 'branches', version: 9, destructive: false, sql: BRANCHES },
 ];
 
 /** The schema version this build creates and understands. */

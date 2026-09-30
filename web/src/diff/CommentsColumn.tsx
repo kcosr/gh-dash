@@ -1,6 +1,6 @@
 /**
  * The comments column beside the diff (an overlay on compact screens): every thread of the diff in one place. Threads
- * with nowhere to go in the diff (PR- or commit-level ones, and those whose file left the diff) live here in full;
+ * with nowhere to go in the diff (PR-, branch- or commit-level ones, and those whose file left the diff) live here in full;
  * the rest are one-line entries that scroll the diff to the thread. It never covers the diff, and stays open until
  * closed (a saved preference on desktop).
  */
@@ -40,15 +40,17 @@ function ThreadLink({ t, p, onJump }: { t: CommentThread; p: ThreadPlacement | u
 }
 
 export const CommentsColumn = memo(function CommentsColumn({
-  threads, order, title, kind, provider, error, onRetry, onJump, onClose, onCreateGeneral, unsent, sending, headOid, onResume, onDiscardDraft,
+  threads, order, title, kind, number, provider, error, onRetry, onJump, onClose, onCreateGeneral, unsent, sending, headOid, onResume, onDiscardDraft,
 }: {
   /** In n/p order: general, then by file (file-list order) and line. */
   threads: CommentThread[];
   /** File ids in file-list order, to group the in-diff entries. */
   order: ReadonlyMap<string, number>;
-  /** "repo#12", "repo!12" or "repo@abc1234", the Markdown heading. */
+  /** "repo#12", "repo!12", "repo branch fix/login" or "repo@abc1234", the Markdown heading. */
   title: string;
-  kind: 'pr' | 'commit';
+  kind: CommentThread['kind'];
+  /** The PR's number; null for a branch or commit. */
+  number: number | null;
   /** The repo's code host: "Comment on this merge request" on GitLab. */
   provider: Provider;
   /** The threads couldn't be loaded. */
@@ -84,10 +86,12 @@ export const CommentsColumn = memo(function CommentsColumn({
   const open = threads.filter((t) => t.status === 'open').length;
   const copy = async (unresolvedOnly: boolean) => {
     const list = unresolvedOnly ? threads.filter((t) => t.status === 'open') : threads;
-    const ok = await copyText(threadsMarkdown(list, { title, placements: s.placements, provider }));
+    // A PR's list and a branch's hold their branch group: threads made elsewhere in it say where ("from #3").
+    const target = kind === 'commit' ? undefined : { kind, number };
+    const ok = await copyText(threadsMarkdown(list, { title, placements: s.placements, provider, target }));
     toast(ok ? `Copied ${list.length} ${plural(list.length, 'thread')} as Markdown` : 'Copy failed');
   };
-  const what = kind === 'pr' ? provider.pr.one : 'commit';
+  const what = kind === 'pr' ? provider.pr.one : kind;
 
   return (
     <aside className="dcc" aria-label="Comments">

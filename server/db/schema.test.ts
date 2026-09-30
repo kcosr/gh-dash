@@ -360,12 +360,12 @@ describe('migration to sources', () => {
     expect(counts(db)).toEqual({ ...before, meta: before.meta! - 2 });
     expect(db.all(`SELECT ${V5_REPO_COLS} FROM repos ORDER BY id`)).toEqual(oldRepos);
     for (const [t, rows] of Object.entries(children)) {
-      // New columns (NULL) aside, the child rows are the same.
-      const now = db.all<Record<string, unknown>>(`SELECT * FROM ${t} ORDER BY 1, 2`).map((r) => {
-        const { stars_count: _s, merge_commit_oid: _m, squash_commit_oid: _q, ...rest } = r;
-        return rest;
-      });
-      expect(now, t).toEqual(rows);
+      // New columns (NULL) aside, the child rows are the same. The columns are the ones the rows had before: later
+      // migrations add more (and a statement prepared before a migration may or may not report them, by Node version).
+      const now = db.all<Record<string, unknown>>(`SELECT * FROM ${t} ORDER BY 1, 2`);
+      const cols = Object.keys(rows[0] ?? {});
+      expect(now.map((r) => Object.fromEntries(cols.map((c) => [c, r[c]]))), t).toEqual(rows);
+      for (const r of now) for (const [c, v] of Object.entries(r)) if (!cols.includes(c)) expect(v, `${t}.${c}`).toBeNull();
     }
     expectFtsIntact(db);
     expect(db.all('PRAGMA foreign_key_check')).toEqual([]);
@@ -586,6 +586,8 @@ describe('comment threads across the sources rebuild', () => {
 
 describe('migration to agents (v8)', () => {
   const AGENTS = versionOf('agents');
+  /** The tests that look at the version stop there. */
+  const V8 = { upTo: AGENTS };
   const HEAD = 'a'.repeat(40);
 
   /** A v7 database: two repos, threads with replies by the dashboard user and an agent, one resolved, one deleted. */
@@ -618,7 +620,7 @@ describe('migration to agents (v8)', () => {
 
   it('adds who resolved a thread (the dashboard user, the only writer so far, for resolved ones), agent tokens and the comment event log', () => {
     const db = v7();
-    migrate(db, true);
+    migrate(db, true, V8);
     expect(version(db)).toBe(AGENTS);
     expect(db.all('SELECT id, status, resolved_by FROM comment_threads ORDER BY id')).toEqual([
       { id: 1, status: 'resolved', resolved_by: 1 },
@@ -648,7 +650,7 @@ describe('migration to agents (v8)', () => {
 
   it('is additive: a GH_DASH_SYNC=off instance may run it', () => {
     const db = v7();
-    migrate(db, false);
+    migrate(db, false, V8);
     expect(version(db)).toBe(AGENTS);
   });
 
@@ -664,12 +666,62 @@ describe('migration to agents (v8)', () => {
   });
 });
 
+describe('migration to branches (v9)', () => {
+  const BRANCHES = versionOf('branches');
+  const HEAD = 'a'.repeat(40);
+
+  /** A v8 database: a merged PR, a PR thread and a commit thread with their events. */
+  function v8(): Db {
+    const sqlite = new DatabaseSync(':memory:');
+    sqlite.exec('PRAGMA foreign_keys = ON');
+    const db = new Db(sqlite);
+    migrate(db, true, { upTo: BRANCHES - 1 });
+    repo(db, 1, 'a');
+    db.run(`INSERT INTO pull_requests (repo_id, number, title, state, created_at, updated_at, merged_at, activity_at, url, head_ref)
+      VALUES (1, 7, 'Fix', 'merged', 'x', 'x', '2026-09-02T00:00:00Z', 'x', 'u', 'fix/login')`);
+    for (const pr of [7, null]) {
+      const t = db.run(`INSERT INTO comment_threads (repo_id, pr_number, commit_oid, created_at, updated_at) VALUES (1, ?, ?, 'x', 'x')`, [pr, HEAD]).lastInsertRowid;
+      db.run(`INSERT INTO comments (thread_id, author_id, body, created_at) VALUES (?, 1, 'Why?', 'x')`, [t]);
+      db.run(`INSERT INTO comment_events (at, actor_id, kind, repo_id, pr_number, commit_oid, thread_id, comment_id) VALUES ('x', 1, 'thread_opened', 1, ?, ?, ?, ?)`, [pr, HEAD, t, t]);
+    }
+    return db;
+  }
+
+  it("adds the threads' and events' branch, empty, and pull_requests.cross_repo, unknown until the sync says", () => {
+    const db = v8();
+    migrate(db, true);
+    expect(version(db)).toBe(BRANCHES);
+    // Every existing thread stays its PR's or commit's alone: none has a branch yet.
+    expect(db.all('SELECT pr_number, branch FROM comment_threads ORDER BY id')).toEqual([{ pr_number: 7, branch: null }, { pr_number: null, branch: null }]);
+    expect(db.all('SELECT pr_number, branch FROM comment_events ORDER BY id')).toEqual([{ pr_number: 7, branch: null }, { pr_number: null, branch: null }]);
+    expect([getThread(db, 1)!.kind, getThread(db, 2)!.kind]).toEqual(['pr', 'commit']);
+    expect(db.all('SELECT number, cross_repo FROM pull_requests')).toEqual([{ number: 7, cross_repo: null }]);
+    for (const value of [0, 1]) db.run('UPDATE pull_requests SET cross_repo = ?', [value]);
+    expect(() => db.run('UPDATE pull_requests SET cross_repo = 2')).toThrow(/CHECK constraint/);
+    expect(db.all('PRAGMA foreign_key_check')).toEqual([]);
+  });
+
+  it("finds a branch's threads and a head branch's PRs by index", () => {
+    const db = v8();
+    migrate(db, true);
+    const plan = (sql: string) => db.all<{ detail: string }>(`EXPLAIN QUERY PLAN ${sql}`).map((r) => r.detail).join('\n');
+    expect(plan(`SELECT * FROM comment_threads WHERE repo_id = 1 AND branch = 'fix/login'`)).toContain('USING INDEX comment_threads_branch (repo_id=? AND branch=?)');
+    expect(plan(`SELECT * FROM pull_requests WHERE repo_id = 1 AND head_ref = 'fix/login'`)).toContain('USING INDEX pull_requests_head_ref (repo_id=? AND head_ref=?)');
+  });
+
+  it('is additive: a GH_DASH_SYNC=off instance may run it', () => {
+    const db = v8();
+    migrate(db, false);
+    expect(version(db)).toBe(BRANCHES);
+  });
+});
+
 describe('migration names', () => {
   it('number migrations by name, and stop where asked', () => {
     // The final order: T2's repos rebuild, then local comments (diff-comments), then sources (the GitLab wave), then
-    // agents and the comment event log (the MCP wave).
-    expect(['repos-v5', 'comments', 'sources', 'agents'].map(versionOf)).toEqual([5, 6, 7, 8]);
-    expect(SCHEMA_VERSION).toBe(versionOf('agents'));
+    // agents and the comment event log (the MCP wave), then branch reviews.
+    expect(['repos-v5', 'comments', 'sources', 'agents', 'branches'].map(versionOf)).toEqual([5, 6, 7, 8, 9]);
+    expect(SCHEMA_VERSION).toBe(versionOf('branches'));
     expect(() => versionOf('nope')).toThrow('No migration is called nope');
     const db = new Db(new DatabaseSync(':memory:'));
     migrate(db, true, { upTo: versionOf('repos-v5') });

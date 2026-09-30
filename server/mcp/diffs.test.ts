@@ -51,4 +51,24 @@ describe('a tool cancelled before it fetches a diff', () => {
     expect(prDiff).not.toHaveBeenCalled();
     expect(unhandled).toEqual([]);
   });
+
+  it("starts no branch diff or branch list fetch either", async () => {
+    const h = mcpHarness();
+    h.code.down = 'No GitHub token';
+    const branchDiff = vi.spyOn(h.diffs, 'branchDiff');
+    const branchList = vi.spyOn(h.diffs, 'branchList');
+    const core = createMcpCore({ db: h.db, config: h.config, diffs: h.diffs, bus: h.bus });
+    for (const [name, args] of [
+      ['get_branch', { repo: 'alice/app', branch: 'topic/x' }],
+      ['add_comment', { repo: 'alice/app', branch: 'topic/x', body: 'x' }],
+      ['list_branches', { repo: 'alice/app' }],
+    ] as const) {
+      const out = await core.handle({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }, { principal: h.agent, signal: AbortSignal.abort() });
+      expect(out, name).toMatchObject({ id: 1, error: { code: REQUEST_CANCELLED } });
+    }
+    await settle();
+    expect(branchDiff).not.toHaveBeenCalled();
+    expect(branchList).not.toHaveBeenCalled();
+    expect(unhandled).toEqual([]);
+  });
 });

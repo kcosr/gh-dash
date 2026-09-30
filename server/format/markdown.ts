@@ -1,5 +1,5 @@
 import type { ActivityEvent, Actor, CommentEventKind, GroupBy, PrStateFilter, ProviderKind, PullRequest, ThreadKindFilter, ThreadListItem, ThreadStatusFilter, Who } from '../../shared/api';
-import { threadsMarkdown } from '../../shared/comment-markdown';
+import { branchRef, threadsMarkdown } from '../../shared/comment-markdown';
 import { PROVIDERS, mixedPrWords, refText } from '../../shared/provider';
 import { DAY_MS, localDayNum, weekdayMon0 } from '../lib/time';
 
@@ -151,10 +151,15 @@ const COMMENT_VERB: Record<CommentEventKind, string> = {
   thread_deleted: 'deleted a thread on',
 };
 
-/** What a comment event is on and where: `alice/app#2 (Title), src/a.ts:3–4`, or `alice/app@abc1234`. */
+/** What a comment event is on and where: `alice/app#2 (Title), src/a.ts:3–4`, `alice/app branch fix/x`, or `alice/app@abc1234`. */
 function commentPlace(e: Extract<ActivityEvent, { type: 'comment' }>, kindOf: KindOf): string {
   const { target, path, startLine, endLine } = e.comment;
-  const ref = target.kind === 'pr' ? refText(kindOf(e.repo), e.repo, target.number, 'pr') : `${e.repo}@${target.oid.slice(0, 7)}`;
+  const ref =
+    target.kind === 'pr'
+      ? refText(kindOf(e.repo), e.repo, target.number, 'pr')
+      : target.kind === 'branch'
+        ? branchRef(e.repo, escapeInline(target.branch))
+        : `${e.repo}@${target.oid.slice(0, 7)}`;
   const title = target.title ? ` (${escapeInline(target.title)})` : '';
   const lines = startLine === null ? '' : `:${startLine}${endLine !== null && endLine !== startLine ? `–${endLine}` : ''}`;
   return `${ref}${title}${path === null ? '' : `, ${escapeInline(path)}${lines}`}`;
@@ -208,11 +213,14 @@ export function eventsMarkdown(title: string, events: ActivityEvent[], ctx: MdCo
 
 const THREAD_STATUS_WORD: Record<ThreadStatusFilter, string> = { open: 'unresolved', resolved: 'resolved', all: 'all' };
 
+const KIND_WORD: Record<Exclude<ThreadKindFilter, 'all' | 'pr'>, string> = { branch: 'branches', commit: 'commits' };
+
 /**
- * GET /threads as text: a section per PR or commit, in the order the list first reaches it, holding that target's threads
- * as the per-target export renders them (`threadsMarkdown`, under the section's heading). A commit is `repo@abc1234`.
- * The heading names the filters in force: `# Comments · unresolved · commits · by agents · waiting on you · matching
- * "retry"` (the kind unless all, who opened them and waiting if asked, the text if any).
+ * GET /threads as text: a section per PR, branch or commit, in the order the list first reaches it, holding that
+ * target's threads as the per-target export renders them (`threadsMarkdown`, under the section's heading). A commit is
+ * `repo@abc1234`, a branch `repo branch fix/x` (its threads alone: each section is what the thread was made on, not a
+ * view's branch group). The heading names the filters in force: `# Comments · unresolved · commits · by agents ·
+ * waiting on you · matching "retry"` (the kind unless all, who opened them and waiting if asked, the text if any).
  */
 export function threadListMarkdown(
   items: readonly ThreadListItem[],
@@ -223,7 +231,7 @@ export function threadListMarkdown(
   const heading = [
     '# Comments',
     THREAD_STATUS_WORD[filter.status],
-    ...(filter.kind === 'all' ? [] : [filter.kind === 'commit' ? 'commits' : mixedPrWords(kinds).many]),
+    ...(filter.kind === 'all' ? [] : [filter.kind === 'pr' ? mixedPrWords(kinds).many : KIND_WORD[filter.kind]]),
     ...(filter.by ? [`by ${escapeInline(filter.by)}`] : []),
     ...(filter.waiting ? ['waiting on you'] : []),
     ...(filter.q ? [`matching "${escapeInline(filter.q.replace(/\s+/g, ' '))}"`] : []),
@@ -231,11 +239,16 @@ export function threadListMarkdown(
   if (items.length === 0) return `${heading}\n\n_No ${filter.status === 'all' ? '' : `${THREAD_STATUS_WORD[filter.status]} `}comments._\n`;
   const targets = new Map<string, { ref: string; title: string | null; kind: ProviderKind; threads: ThreadListItem[] }>();
   for (const t of items) {
-    const key = `${t.kind}\0${t.repo}\0${t.number ?? t.commitOid}`;
+    const key = `${t.kind}\0${t.repo}\0${t.number ?? t.branch ?? t.commitOid}`;
     let target = targets.get(key);
     if (!target) {
       const kind = kindOf(t.repo);
-      const ref = t.number === null ? `${t.repo}@${t.commitOid.slice(0, 7)}` : refText(kind, t.repo, t.number, 'pr');
+      const ref =
+        t.number !== null
+          ? refText(kind, t.repo, t.number, 'pr')
+          : t.branch !== null
+            ? branchRef(t.repo, escapeInline(t.branch))
+            : `${t.repo}@${t.commitOid.slice(0, 7)}`;
       targets.set(key, (target = { ref, title: t.targetTitle?.trim() || null, kind, threads: [] }));
     }
     target.threads.push(t);

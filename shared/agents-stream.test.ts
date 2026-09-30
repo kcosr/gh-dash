@@ -16,7 +16,7 @@ const agent: Principal = { id: 3, kind: 'agent', name: 'Claude' };
 const OID = 'c'.repeat(40);
 
 const comments = (o: Partial<Extract<StreamMessage, { type: 'comments' }>> = {}): StreamMessage =>
-  ({ type: 'comments', repo: 'alice/app', kind: 'pr', number: 7, commitOid: OID, threadId: 5, event: 'replied', by: agent, ...o });
+  ({ type: 'comments', repo: 'alice/app', kind: 'pr', number: 7, branch: null, commitOid: OID, threadId: 5, event: 'replied', by: agent, ...o });
 
 describe('the stream: what a message refetches', () => {
   it("refetches what threadActions does after the same change: the target's threads, the lists, the PR, the feed", () => {
@@ -36,6 +36,27 @@ describe('the stream: what a message refetches', () => {
     expect(streamInvalidations(comments({ kind: 'commit', number: null, event: 'resolved' }))).toEqual([
       qk.threads(`alice/app@${OID}`), ['thread-list'], ['activity'],
     ]);
+  });
+
+  it("reaches a branch group whole: a branch's thread, or a PR's from a branch, refetches every thread list of the repo and its PRs", () => {
+    const branch = comments({ kind: 'branch', number: null, branch: 'fix/login', event: 'resolved' });
+    expect(streamInvalidations(branch)).toEqual([qk.threadsIn('alice/app'), ['thread-list'], ['prs'], qk.prsIn('alice/app'), ['activity']]);
+    // A PR from a branch of the same repo: its branch's review lists the thread too, and the other PRs from it.
+    expect(streamInvalidations(comments({ branch: 'fix/login', event: 'replied' }))).toEqual([
+      qk.threadsIn('alice/app'), ['thread-list'], ['prs'], qk.prsIn('alice/app'), ['activity'], qk.repos,
+    ]);
+  });
+
+  it("marks the branch's list, its PRs' lists and details stale, and no other repo's", () => {
+    const qc = new QueryClient();
+    const keys = [
+      qk.threads('alice/app~fix/login'), qk.threads('alice/app#7'), qk.threads('alice/app#8'), qk.threads(`alice/app@${OID}`), qk.threads('alice/lib#7'),
+      qk.pr('alice/app', 7), qk.pr('alice/lib', 7), qk.branches('alice/app', ''),
+    ];
+    for (const k of keys) qc.setQueryData(k, {});
+    applyStreamMessage(qc, comments({ kind: 'branch', number: null, branch: 'fix/login', event: 'thread_opened' }));
+    const stale = keys.filter((k) => qc.getQueryState(k)?.isInvalidated);
+    expect(stale).toEqual([qk.threads('alice/app~fix/login'), qk.threads('alice/app#7'), qk.threads('alice/app#8'), qk.threads(`alice/app@${OID}`), qk.pr('alice/app', 7)]);
   });
 
   it('refetches the agents list on `agents`, nothing on `show`', () => {
@@ -217,7 +238,10 @@ describe('show: where a chip leads', () => {
     expect(showDiffId({ repo: 'alice/app', pr: 7 })).toBe('alice/app#7');
     expect(showDiffId({ repo: 'gitlab.example.com/alice/app', commit: OID })).toBe(`gitlab.example.com/alice/app@${OID}`);
     expect(showDiffId({ repo: 'alice/app' })).toBeNull();
+    // A branch, as the diff param names it: its name may hold '#' or '@'.
+    expect(showDiffId({ repo: 'alice/app', branch: 'fix/a#1' })).toBe('alice/app~fix/a#1');
     const none = { diff: null, only: null };
+    expect(showPatch({ repo: 'alice/app', branch: 'fix/login', threadId: 5, path: 'src/a.ts' }, none)).toEqual({ diff: 'alice/app~fix/login', thread: 5, file: 'src/a.ts', only: null });
     expect(showPatch({ repo: 'alice/app', pr: 7, threadId: 5 }, none)).toEqual({ diff: 'alice/app#7', thread: 5, file: null, only: null });
     expect(showPatch({ repo: 'alice/app', commit: OID, path: 'src/a.ts' }, none)).toEqual({ diff: `alice/app@${OID}`, thread: null, file: 'src/a.ts', only: null });
     expect(showPatch({ repo: 'alice/app' }, none)).toBeNull();
@@ -234,6 +258,7 @@ describe('show: where a chip leads', () => {
     expect(next).toBe('?status=all&diff=alice/app%237&thread=5');
     expect(patchSearch(next, 'comments', { diff: null })).toBe('?status=all');
     expect(patchSearch('?state=open', 'prs', showPatch({ repo: 'alice/app', pr: 7, path: 'a b.ts' }, { diff: null, only: null })!)).toBe('?state=open&diff=alice/app%237&file=a%20b.ts');
+    expect(patchSearch('?state=open', 'prs', showPatch({ repo: 'alice/app', branch: 'fix/login', threadId: 5 }, { diff: null, only: null })!)).toBe('?state=open&diff=alice/app~fix/login&thread=5');
   });
 
   it('names the place: the thread\'s lines when known, the file, a thread, or the PR or commit', () => {
@@ -246,6 +271,8 @@ describe('show: where a chip leads', () => {
     expect(w({ repo: 'alice/app', pr: 7, path: 'src/a.ts' })).toBe('a.ts on app#7');
     expect(w({ repo: 'alice/app', pr: 7, path: 'README.md' })).toBe('README.md on app#7');
     expect(w({ repo: 'alice/app', commit: OID })).toBe('app@ccccccc');
+    expect(w({ repo: 'alice/app', branch: 'fix/login', threadId: 5 }, { path: 'src/host.ts', startLine: 42, endLine: 42 })).toBe('host.ts:42 on app branch fix/login');
+    expect(w({ repo: 'alice/app', branch: 'fix/login' })).toBe('app branch fix/login');
     expect(showPhrase(showWhat({ repo: 'g/alice/app', pr: 3 }, { label: 'alice/app', prRef: '!' }))).toBe('alice/app!3');
     expect(w({ repo: 'alice/app' })).toBe('app');
   });

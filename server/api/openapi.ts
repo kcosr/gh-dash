@@ -351,6 +351,16 @@ const schemas: Record<string, Schema> = {
     defaultBranch: str("The repo's default branch, as of the last sync"),
     more: { ...bool, description: 'The code host has more matching branches than were listed (at most 100): narrow them with `q`.' },
   }),
+  Branch: obj({
+    id: str('<repo>~<name>: the web app\'s `diff` param for the branch\'s review (git forbids ~ in a branch\'s name)'),
+    repo: str(),
+    name: str(),
+    headOid: str('The commit the branch pointed to at the last sync'),
+    committedAt: nullable({ ...dateTime, description: "The head commit's committer date; null when the code host didn't say" }),
+    author: { ...nullable(ref('Actor')), description: "The head commit's author (on GitLab a name and an address, no login); null when the code host didn't say" },
+    url: str("The branch's compare page against the repo's default branch, on the code host"),
+    comments: { ...ref('CommentCounts'), description: "Local comment threads of the branch's review (its current group: the threads a PR from it will show too)" },
+  }),
   DiffCacheStats: obj({
     entries: int(),
     bytes: int('Bytes used by cached diffs and file contents (compressed)'),
@@ -675,6 +685,25 @@ export const ENDPOINTS: EndpointDoc[] = [
   {
     method: 'get', path: '/api/v1/prs/{repo}/{number}', tag: 'Lists', summary: 'One pull request with commits and linked issues',
     params: [REPO, p('number', 'PR number', int())], response: { status: 200, schema: ref('PullRequestDetail') },
+  },
+  {
+    method: 'get', path: '/api/v1/branches', tag: 'Lists', summary: 'Pushed branches with no pull request (merge request on GitLab) yet',
+    description:
+      'The branches the sync holds, across the repos in scope, without asking the code host. A branch is left out when a PR from it (of the same repo, or ' +
+      "one the sync hasn't classified yet) is open, or has the branch's current head as its head, whatever its state: a branch whose PR was merged and that " +
+      'has had commits since is listed again. The default branch never is. Sorted on committedAt desc (tie-break repo, name); branches without a commit ' +
+      "date aren't listed, as they can't be in a range. A repo with more branches than the sync lists (1000) has those it listed; one it hasn't listed has none. " +
+      'JSON only: format=md and format=csv are a 400.',
+    params: [
+      ...SCOPE.map((param) =>
+        param.name === 'q' ? { ...param, description: 'A part of the branch name, without regard to ASCII case (not full-text).' }
+        : param.name === 'who' ? { ...param, description: `${param.description} Branches: the head commit's author, by login or commit email.` }
+        : param.name === 'from' ? { ...param, description: `${param.description} Branches: on the head commit's date.` }
+        : param),
+      ...PAGE.filter((param) => param.name !== 'format'),
+    ],
+    response: { status: 200, schema: list(ref('Branch')) },
+    example: 'who=me&from=-30d',
   },
   {
     method: 'get', path: '/api/v1/activity', tag: 'Lists', summary: 'Activity feed (commits without a PR, PR/issue events, releases, stars)',

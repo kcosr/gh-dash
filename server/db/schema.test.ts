@@ -562,7 +562,12 @@ describe('comment threads across the sources rebuild', () => {
       migrate(db, true);
 
       expect(version(db)).toBe(SCHEMA_VERSION);
-      expect(rows(db)).toEqual(before);
+      // Every column the threads had, as they were. Named, not `SELECT *`: a statement cached before the migration may
+      // or may not see the column v8 adds, depending on the SQLite version.
+      const columns = Object.keys(before.threads[0] as object).join(', ');
+      expect({ ...rows(db), threads: db.all(`SELECT ${columns} FROM comment_threads ORDER BY id`) }).toEqual(before);
+      // ... and v8's resolved_by, empty: none of them was resolved.
+      expect(db.all<{ resolved_by: number | null }>('SELECT resolved_by FROM comment_threads ORDER BY id').map((t) => t.resolved_by)).toEqual([null, null, null]);
       expect(db.all('PRAGMA foreign_key_check')).toEqual([]);
       expect(foreignKeys(db)).toBe(1);
       expect(db.all<{ table: string; from: string; on_delete: string }>('PRAGMA foreign_key_list(comment_threads)').map((f) => [f.table, f.from, f.on_delete]))

@@ -111,13 +111,10 @@ describe('gh-dash agents', () => {
     expect((await run('list')).out).toMatch(/^2 +Claude +ghd_\S+… +\S+ +\S+ +active +all$/m);
   });
 
-  it('takes revoke as disable, for the scripts that use it', async () => {
-    const token = tokenIn((await run('add', 'Claude')).out)!;
-    expect(await run('revoke', 'Claude')).toEqual({ code: 0, out: 'Disabled Claude (id 2): its token is refused until you enable it again. Its comments stay.', err: '' });
-    expect(principal(token)).toBeNull();
-    expect((await run('revoke', '2')).out).toBe('Claude (id 2) was already disabled.');
-    await run('enable', 'Claude');
-    expect(principal(token)).toMatchObject({ id: 2 });
+  it('has no revoke: disable and enable replace it', async () => {
+    await run('add', 'Claude');
+    expect(await run('revoke', 'Claude')).toMatchObject({ code: 2, err: expect.stringContaining('Unknown command: agents revoke') });
+    expect((await run('list')).out).toMatch(/^2 +Claude .* active /m);
   });
 
   it('says what went wrong: unknown agents, taken or bad names (1); usage (2)', async () => {
@@ -125,12 +122,12 @@ describe('gh-dash agents', () => {
     expect(await run('add', 'claude')).toMatchObject({ code: 1, err: 'gh-dash: There is already an agent called Claude (id 2); regenerate its token instead' });
     expect(await run('add', 'You')).toMatchObject({ code: 1, err: expect.stringContaining('"You" is the dashboard user') });
     expect(await run('add', 'Deleted agent #7')).toMatchObject({ code: 1, err: 'gh-dash: Names like "Deleted agent #7" are kept for deleted agents; give yours another name' });
-    for (const command of ['disable', 'enable', 'revoke', 'delete']) {
+    for (const command of ['disable', 'enable', 'delete']) {
       expect(await run(command, 'nobody')).toMatchObject({ code: 1, err: 'gh-dash: No agent is called or numbered nobody (see: gh-dash agents list)' });
     }
     expect(await run('regenerate', '1')).toMatchObject({ code: 1, err: expect.stringContaining('No agent is called or numbered 1') });
     for (const args of [
-      [], ['add'], ['add', 'a', 'b'], ['add', '  '], ['add', '--help'], ['add', '-h'], ['revoke', '--help'], ['revoke'], ['disable'], ['enable', 'a', 'b'],
+      [], ['add'], ['add', 'a', 'b'], ['add', '  '], ['add', '--help'], ['add', '-h'], ['disable', '--help'], ['disable'], ['enable', 'a', 'b'],
       ['delete'], ['delete', '--yes'], ['delete', 'Claude', 'Codex'], ['list', 'x'], ['remove', 'Claude'], ['disable', 'Claude', '--yes'], ['add', 'X', '--yes'],
     ]) {
       const res = await run(...args);
@@ -157,7 +154,7 @@ describe('gh-dash agents', () => {
     expect(await runWith(`${next}\n`, 'add', 'Codex', '--token-stdin')).toMatchObject({ code: 1, err: "gh-dash: That token is already another agent's" });
     expect(await runWith('', 'add', 'Codex', '--token-stdin')).toMatchObject({ code: 1, err: 'gh-dash: --token-stdin: no token on stdin' });
     // Not on the command line, and only with add or regenerate.
-    for (const args of [['add', 'Codex', '--token', mine], ['add', 'Codex', `--token=${mine}`], ['list', '--token-stdin'], ['revoke', 'claude', '--token-stdin'], ['delete', 'claude', '--token-stdin']]) {
+    for (const args of [['add', 'Codex', '--token', mine], ['add', 'Codex', `--token=${mine}`], ['list', '--token-stdin'], ['disable', 'claude', '--token-stdin'], ['delete', 'claude', '--token-stdin']]) {
       const res = await run(...args);
       expect([args, res.code]).toEqual([args, 2]);
       expect(res.err).not.toContain(`${mine} `);
@@ -246,7 +243,7 @@ describe('gh-dash agents', () => {
       for (const args of [
         ['scope', 'Claude'], ['scope', 'Claude', '--all', '--source', 'github.com'], ['scope', '--all'], ['scope', 'Claude', 'Codex', '--all'],
         ['scope', 'Claude', '--source'], ['scope', 'Claude', '--source', '--all'], ['scope', 'Claude', '--source='], ['add', 'Codex', '--all'],
-        ['list', '--source', 'github.com'], ['regenerate', 'Claude', '--source', 'github.com'], ['revoke', 'Claude', '--all'], ['delete', 'Claude', '--all'],
+        ['list', '--source', 'github.com'], ['regenerate', 'Claude', '--source', 'github.com'], ['disable', 'Claude', '--all'], ['delete', 'Claude', '--all'],
       ]) {
         const res = await run(...args);
         expect([args, res.code, res.out]).toEqual([args, 2, '']);

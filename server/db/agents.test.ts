@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import type { Principal, ThreadAnchor } from '../../shared/api';
 import { threadListMarkdown } from '../format/markdown';
 import {
-  agentFootprint, agentForToken, agentSourceIds, agentTokenIs, BUILT_IN_AGENT, builtInAgent, createAgent, deleteAgent, findAgent, getAgent, listAgents, principalForToken,
+  AgentWrote, agentFootprint, agentForToken, agentSourceIds, agentTokenIs, BUILT_IN_AGENT, builtInAgent, createAgent, deleteAgent, findAgent, getAgent, listAgents, principalForToken,
   regenerateAgentToken, setAgentEnabled, setAgentSources,
 } from './agents';
 import { commentEventsAfter } from './comment-events';
@@ -386,6 +386,30 @@ describe('deleting agents', () => {
     for (const name of ['Claude', `Deleted agent #${agent.id}`, String(agent.id)]) expect(findAgent(db, name), name).toBeNull();
     // The others are as they were.
     expect(principalForToken(db, other.token)).toMatchObject({ name: 'Codex' });
+  });
+
+  it('leaves an agent that wrote something as it is when asked to delete it only if it wrote nothing, counting as it deletes', () => {
+    const { claude, mine } = withComments();
+    const quiet = createAgent(db, 'Quiet', T0);
+    // Nothing written: deleted.
+    expect(deleteAgent(db, quiet.agent.id, { unlessItWrote: true })).toMatchObject({ deletedAs: `Deleted agent #${quiet.agent.id}` });
+    // Written: refused with what it wrote, and nothing changed (its token still works, its name is its own).
+    const refused = (() => {
+      try {
+        deleteAgent(db, claude.agent.id, { unlessItWrote: true });
+      } catch (err) {
+        return err;
+      }
+    })();
+    expect(refused).toBeInstanceOf(AgentWrote);
+    expect(refused).toMatchObject({ agent: { id: claude.agent.id, name: 'Claude' }, footprint: { comments: 4, threads: 3, openThreads: 1 } });
+    expect(principalForToken(db, claude.token)).toMatchObject({ name: 'Claude' });
+    // A first comment made after a look at the agent, but before the delete, is counted: the count is the delete's own.
+    const fresh = createAgent(db, 'Fresh', T0);
+    expect(agentFootprint(db, fresh.agent.id).comments).toBe(0);
+    addComment(db, mine.id, as(fresh.agent.id), 'Just now', T1);
+    expect(() => deleteAgent(db, fresh.agent.id, { unlessItWrote: true })).toThrow(AgentWrote);
+    expect(getAgent(db, fresh.agent.id)).toMatchObject({ name: 'Fresh' });
   });
 
   it('keeps what it wrote, resolved and did, everywhere its name shows, under its new name', () => {

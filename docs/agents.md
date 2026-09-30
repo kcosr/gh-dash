@@ -164,8 +164,7 @@ A disabled agent is enabled with its new token.
 again. Nothing else changes: its token, sources and comments stay, and the list shows it as disabled.
 An agent using the token is told it is disabled in gh-dash. **Enable** (`agents enable`) lets the
 same token in again. If its token may have leaked, give it a new token instead of enabling it.
-`agents revoke` still works, as another name for `agents disable`; agents revoked in earlier
-versions show as disabled.
+Agents revoked in earlier versions show as disabled.
 
 **Delete…** (`agents delete`) removes the agent itself:
 - Its token stops working at once (the desktop app forgets it too), and it disappears from the list

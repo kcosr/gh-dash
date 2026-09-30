@@ -6,7 +6,7 @@
 import { agentDeletionSentences, warningText } from '../shared/agents';
 import type { Agent } from '../shared/api';
 import { loadServerConfig } from './config';
-import { agentFootprint, createAgent, deleteAgent, findAgent, listAgents, regenerateAgentToken, setAgentEnabled, setAgentSources } from './db/agents';
+import { AgentWrote, createAgent, deleteAgent, findAgent, listAgents, regenerateAgentToken, setAgentEnabled, setAgentSources } from './db/agents';
 import { type Db, openDb } from './db/db';
 import { HttpError } from './lib/errors';
 import { localApiUrl } from './start';
@@ -31,7 +31,7 @@ const USAGE = `Usage: gh-dash agents <command>
   scope <id|name> --source <host>... | --all
                                         Limit an agent to some sources, or let it reach every one again
   disable <id|name>                     Refuse an agent's token until it's enabled again; its token, sources and
-                                        comments stay (revoke: the same)
+                                        comments stay
   enable <id|name>                      Accept a disabled agent's token again (if it may have leaked, regenerate
                                         instead)
   delete <id|name> [--yes]              Delete an agent: its token stops working, its name is free again, and its
@@ -169,9 +169,7 @@ export async function runAgentsCommand(args: string[], io: CliIo = { out: consol
         io.out(`${agent.name} (id ${agent.id}) now reaches ${reachOf(agent)}, from its next request.`);
         return 0;
       }
-      // revoke: what disabling was called before it could be undone, for the scripts that use it.
-      case 'disable':
-      case 'revoke': {
+      case 'disable': {
         const before = agentBy(one('agent id or name'));
         const agent = setAgentEnabled(open(), before.id, false)!;
         io.out(before.disabledAt
@@ -188,16 +186,16 @@ export async function runAgentsCommand(args: string[], io: CliIo = { out: consol
       case 'delete': {
         const target = agentBy(one('agent id or name'));
         const who = { id: target.id, disabled: !!target.disabledAt };
-        // What it wrote decides whether to ask: nothing lost, nothing to confirm.
-        if (!target.builtIn && !yes) {
-          const footprint = agentFootprint(open(), target.id);
-          if (footprint.comments > 0) {
-            io.err(`Delete ${target.name} (id ${target.id})? ${warningText(agentDeletionSentences(who, footprint))}`);
-            io.err(`Run again with ${YES} to delete it: gh-dash agents delete ${target.id} ${YES}`);
-            return 1;
-          }
+        // What it wrote decides whether to ask: nothing lost, nothing to confirm. Counted as it is deleted (AgentWrote).
+        let deleted;
+        try {
+          deleted = deleteAgent(open(), target.id, { unlessItWrote: !yes })!;
+        } catch (err) {
+          if (!(err instanceof AgentWrote)) throw err;
+          io.err(`Delete ${target.name} (id ${target.id})? ${warningText(agentDeletionSentences(who, err.footprint))}`);
+          io.err(`Run again with ${YES} to delete it: gh-dash agents delete ${target.id} ${YES}`);
+          return 1;
         }
-        const deleted = deleteAgent(open(), target.id)!;
         io.out(`Deleted ${deleted.name} (id ${deleted.id}). ${warningText(agentDeletionSentences(who, deleted.footprint, true))}`);
         return 0;
       }

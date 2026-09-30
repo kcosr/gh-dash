@@ -342,14 +342,25 @@ export function agentFootprint(db: Db, id: number): AgentFootprint {
   )!;
 }
 
+/** deleteAgent's `unlessItWrote` refusal: the agent has comments, so deleting it wants a confirmation. Nothing was changed. */
+export class AgentWrote extends Error {
+  constructor(
+    readonly agent: Agent,
+    readonly footprint: AgentFootprint,
+  ) {
+    super(`${agent.name} (id ${agent.id}) has written ${footprint.comments} comment${footprint.comments === 1 ? '' : 's'}`);
+  }
+}
+
 /**
  * Deletes an agent, enabled or disabled, in one transaction (see above): its token stops working at once and goes, with
  * its sources; it reaches nothing; its principal stays, renamed "Deleted agent #<id>", so what it wrote stays, under
- * that name. Answers what it had written. null when there is no such agent (a deleted one included; the dashboard's user
+ * that name. Answers what it had written. With `unlessItWrote`, an agent with any comment is left as it is (AgentWrote:
+ * the count and the delete are one transaction). null when there is no such agent (a deleted one included; the dashboard's user
  * is none); 400 for the built-in one; 409 when an agent from before such names were kept already has the one it would
  * take.
  */
-export function deleteAgent(db: Db, id: number): DeletedAgent | null {
+export function deleteAgent(db: Db, id: number, opts: { unlessItWrote?: boolean } = {}): DeletedAgent | null {
   return db.tx(() => {
     const agent = getAgent(db, id);
     if (!agent) return null;
@@ -358,6 +369,8 @@ export function deleteAgent(db: Db, id: number): DeletedAgent | null {
     const holder = db.get<{ id: number; name: string }>(`SELECT id, name FROM principals WHERE kind = 'agent' AND id <> ? AND name = ? COLLATE NOCASE`, [id, deletedAs]);
     if (holder) throw new HttpError(409, `Another agent (id ${holder.id}) is called ${holder.name}, the name ${agent.name} would take: delete that one first`);
     const footprint = agentFootprint(db, id);
+    // Counted in the write lock, so a first comment can't slip in between the count and the delete.
+    if (opts.unlessItWrote && footprint.comments > 0) throw new AgentWrote(agent, footprint);
     db.run('DELETE FROM agent_tokens WHERE principal_id = ?', [id]);
     db.run('DELETE FROM agent_sources WHERE principal_id = ?', [id]);
     db.run('UPDATE principals SET name = ?, all_sources = 0 WHERE id = ?', [deletedAs, id]);

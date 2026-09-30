@@ -8,6 +8,7 @@ import { parseWith } from '../http';
 
 const refreshQuery = z.object({ refresh: z.literal('1').optional() });
 const blobQuery = z.object({ ref: z.string(), path: z.string() });
+const branchesQuery = z.object({ q: z.string().optional(), refresh: z.literal('1').optional() });
 
 /**
  * Whether Accept-Encoding allows gzip: its own entry decides when present (so `gzip;q=0` wins over `*`), else `*`.
@@ -49,6 +50,18 @@ export function diffRoutes({ diffs }: AppDeps): Hono {
   r.get('/commits/:repo/:oid/diff', noCrossSiteReads, async (c) => {
     const { refresh } = parseWith(refreshQuery, c.req.query());
     return send(c, await diffs.commitDiff(c.req.param('repo'), c.req.param('oid'), !!refresh), JSON_TYPE);
+  });
+
+  // A branch's name, like the repo's key, is one URL-encoded segment ("feature%2Fx"): Hono decodes it for us, and a name
+  // written with its slashes doesn't match these routes (the threads' are /branches/:repo/:branch/threads, no clash).
+  r.get('/branches/:repo', noCrossSiteReads, async (c) => {
+    const { q, refresh } = parseWith(branchesQuery, c.req.query());
+    return c.json(await diffs.branchList(c.req.param('repo'), q ?? null, !!refresh));
+  });
+
+  r.get('/branches/:repo/:branch/diff', noCrossSiteReads, async (c) => {
+    const { refresh } = parseWith(refreshQuery, c.req.query());
+    return send(c, await diffs.branchDiff(c.req.param('repo'), c.req.param('branch'), !!refresh), JSON_TYPE);
   });
 
   r.get('/blob/:repo', noCrossSiteReads, async (c) => {

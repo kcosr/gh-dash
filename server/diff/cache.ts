@@ -3,7 +3,7 @@ import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { Db } from '../db/db';
 
-export type CacheKind = 'pr' | 'commit' | 'blob';
+export type CacheKind = 'pr' | 'commit' | 'branch' | 'blob';
 
 export interface CacheEntry {
   key: string;
@@ -12,9 +12,9 @@ export interface CacheEntry {
   repo: string;
   /** PR number for kind 'pr', so a new head can supersede the old one. */
   number?: number | null;
-  /** PR head, commit, or the commit a blob was read at. */
+  /** PR or branch head, commit, or the commit a blob was read at. */
   oid: string;
-  /** For PRs: the base branch and merge base the diff was computed against (either can move under a fixed head). */
+  /** For PRs and branches: the base branch and merge base the diff was computed against (either can move under a fixed head). */
   baseRef?: string | null;
   baseOid?: string | null;
   /** When the data was fetched from GitHub, or last confirmed unchanged there (ms). */
@@ -31,6 +31,9 @@ export interface PrEntry {
   baseOid: string | null;
   fetchedAt: number;
 }
+
+/** A cached branch diff's identity: what a PR's is (its base branch is the repo's default branch when it was fetched). */
+export type BranchEntry = PrEntry;
 
 // Evicting stops at this fraction of the cap, so a full cache doesn't evict on every insert.
 const LOW_WATER = 0.9;
@@ -128,6 +131,16 @@ export class DiffCache {
          WHERE repo = ? AND kind = 'pr' AND number = ? ORDER BY accessed_at DESC LIMIT 1`,
         [repo, number],
       ) ?? null
+    );
+  }
+
+  /**
+   * The cached diff of a branch, whose key (`branch/<repo>/<branch>`) is its identity: there is one per branch, which
+   * a newer head or merge base overwrites in place, so nothing needs dropping (as dropOthers does for a PR).
+   */
+  branchEntry(key: string): BranchEntry | null {
+    return (
+      this.db.get<BranchEntry>("SELECT key, oid, base_ref AS baseRef, base_oid AS baseOid, fetched_at AS fetchedAt FROM entries WHERE key = ? AND kind = 'branch'", [key]) ?? null
     );
   }
 

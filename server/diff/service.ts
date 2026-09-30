@@ -1,12 +1,14 @@
 import { promisify } from 'node:util';
 import { gunzip as gunzipCb, gzip as gzipCb } from 'node:zlib';
-import type { DiffCacheStats, Diff } from '../../shared/api';
+import type { BranchListResponse, BranchSummary, Diff, DiffCacheStats } from '../../shared/api';
+import { isBranchName, MAX_BRANCH_CHARS } from '../../shared/branch';
+import { PROVIDERS } from '../../shared/provider';
 import { HttpError } from '../lib/errors';
 import type { Db } from '../db/db';
 import { repoKeySql, resolveRepo } from '../db/repo-key';
 import { getSettings } from '../db/settings';
 import { SourceError } from '../provider/errors';
-import type { DiffRepo, DiffSource, PrRevision, ProviderKind } from '../provider/types';
+import type { BranchRef, DiffRepo, DiffSource, PrRevision, ProviderKind } from '../provider/types';
 import type { CacheEntry, DiffCache, PrEntry } from './cache';
 
 const gzip = promisify(gzipCb);
@@ -16,6 +18,14 @@ const gunzip = promisify(gunzipCb);
 export const MAX_BLOB_BYTES = 5 * 1024 * 1024;
 /** How long an open PR's cached diff is trusted before its merge base is re-checked: the base branch can move under an unchanged head. */
 export const OPEN_PR_TTL_MS = 60 * 60_000;
+/** How long a branch's cached diff is trusted before its merge base is re-checked: the default branch moves like an open PR's base branch. */
+export const BRANCH_TTL_MS = OPEN_PR_TTL_MS;
+/** How long a repo's branch list is kept in memory: a picker asks on every keystroke and every visit. */
+export const BRANCH_LIST_TTL_MS = 60_000;
+/** Branches a list holds; the code host is asked for one more, so that leaving out the default branch still fills it. */
+export const BRANCH_LIST_LIMIT = 100;
+/** Branch lists kept in memory, one per (repo, name filter): the oldest go first. */
+const MAX_BRANCH_LISTS = 200;
 /**
  * A diff build gives up after this. Deliberately longer than a reverse proxy's usual 60 s: a build that outlives its
  * request still lands in the cache, and the client's retry joins it in flight.
@@ -71,7 +81,7 @@ export interface DiffServiceOptions {
   buildTimeoutMs?: number;
 }
 
-type Fetcher = (source: DiffSource, signal: AbortSignal) => Promise<Payload>;
+type Fetcher<T> = (source: DiffSource, signal: AbortSignal) => Promise<T>;
 
 /**
  * A commit SHA or an abbreviation of one, lower-cased: 7-40 hex characters in a SHA-1 repository, up to 64 in a SHA-256
@@ -107,7 +117,9 @@ export class DiffService {
   private readonly log: (line: string) => void;
   private readonly now: () => number;
   /** Identical requests in flight share one fetch (a double click doesn't spend twice). */
-  private readonly inflight = new Map<string, Promise<Payload>>();
+  private readonly inflight = new Map<string, Promise<unknown>>();
+  /** What the code host last said about a repo's branches (the default branch included), by repo key and name filter. */
+  private readonly branchLists = new Map<string, { at: number; refs: BranchRef[]; more: boolean }>();
 
   constructor(opts: DiffServiceOptions) {
     this.db = opts.db;
@@ -206,8 +218,8 @@ export class DiffService {
     }
   }
 
-  private once(key: string, fn: () => Promise<Payload>): Promise<Payload> {
-    let p = this.inflight.get(key);
+  private once<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    let p = this.inflight.get(key) as Promise<T> | undefined;
     if (!p) {
       p = fn().finally(() => this.inflight.delete(key));
       this.inflight.set(key, p);
@@ -216,7 +228,7 @@ export class DiffService {
   }
 
   /** Runs a fetch from the source under the build deadline, mapping failures to API errors and logging what it cost. */
-  private async fetching(sourceId: number, label: string, fn: Fetcher): Promise<Payload> {
+  private async fetching<T>(sourceId: number, label: string, fn: Fetcher<T>): Promise<T> {
     const source = await this.source(sourceId);
     const started = Date.now();
     const before = source.requests;
@@ -367,6 +379,113 @@ export class DiffService {
         return this.store(entry, JSON.stringify(diff));
       }),
     );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Branch diffs
+  // ---------------------------------------------------------------------------
+
+  /**
+   * A tracked repository for a branch review, with the default branch as of the last sync (what branches are compared
+   * with) and its page on the code host. Without a default branch (the sync hasn't seen one) there is nothing to
+   * compare with, and no branch to leave out of a list: 409.
+   */
+  private branchRepo(key: string): { id: number; sourceId: number; repo: DiffRepo; base: string; url: string } {
+    const found = this.repo(key);
+    const row = this.db.get<{ default_branch: string | null; url: string }>('SELECT default_branch, url FROM repos WHERE id = ?', [found.id])!;
+    if (!row.default_branch) throw new HttpError(409, "The default branch isn't known yet: sync the repository");
+    return { ...found, base: row.default_branch, url: row.url };
+  }
+
+  /**
+   * A pushed branch's diff against the repo's default branch (three-dot: from the merge base, like a PR's). Nothing
+   * tells us when a branch moves (the sync reads no branches), so every view first asks the code host for the branch's
+   * head (GitHub: a conditional request, free while it is the cached one; GitLab: 1 request), and serves the cached diff
+   * when that is its head, the default branch is still the one it was compared with, and it is younger than
+   * BRANCH_TTL_MS (the default branch can absorb the branch's commits, moving the merge base, with the head unchanged).
+   * Otherwise the branch is compared again, and `refresh` always does (the head, then the comparison: 2 or 3 requests).
+   * One diff is kept per branch, replaced by each new one.
+   *
+   * As for PRs, a cached diff is served marked `stale` when the code host can't be asked (no token, rate limit, outage), not
+   * with `refresh`. A branch the code host doesn't have any more is a 404, whatever is cached.
+   */
+  async branchDiff(repoName: string, branch: string, refresh = false): Promise<Payload> {
+    if (!isBranchName(branch)) throw new HttpError(400, 'Invalid branch name');
+    const { sourceId, repo, base, url } = this.branchRepo(repoName);
+    if (branch === base) throw new HttpError(400, `${branch} is the default branch: there is nothing to compare it with`);
+    const key = `branch/${repo.key}/${branch}`;
+    const label = `${repo.key}~${branch}`;
+    const entry = this.safely('lookup', () => this.cache.branchEntry(key), null);
+    const current = !refresh && entry && entry.baseRef === base && this.now() - entry.fetchedAt < BRANCH_TTL_MS ? entry : null;
+
+    const fetched = this.once(`${key}\n${refresh}`, () =>
+      this.fetching(sourceId, label, async (source, signal) => {
+        const host = HOSTS[source.kind];
+        const notFound = (what: string) => (err: unknown) => {
+          if (err instanceof SourceError && err.kind === 'not-found') throw new HttpError(404, what);
+          throw err;
+        };
+        const head = await source.branchHead(repo, branch, current?.oid ?? null, signal).catch(notFound(`Branch ${branch} not found on ${host}`));
+        if (current && head === current.oid) {
+          const hit = this.cached(current.key);
+          if (hit) return hit;
+        }
+        // The branch was there a moment ago: this is a default branch gone since the last sync, or one with no history in common.
+        const compared = await source
+          .compare(repo, base, head, signal)
+          .catch(notFound(`Can't compare ${branch} with ${base} on ${host}: ${base} isn't a branch there (renamed since the last sync?), or they have no history in common`));
+        const diff: Diff = {
+          kind: 'branch', repo: repo.key, number: null, branch, baseRef: base, title: branch, baseOid: compared.baseOid, headOid: compared.headOid,
+          files: compared.files, totalFiles: compared.totalFiles, additions: compared.additions, deletions: compared.deletions,
+          fetchedAt: new Date(this.now()).toISOString(), url: PROVIDERS[source.kind].link.compare(url, base, branch),
+        };
+        const stored = { key, kind: 'branch' as const, repo: repo.key, oid: compared.headOid, baseRef: base, baseOid: compared.baseOid, fetchedAt: this.now() };
+        return this.store(stored, JSON.stringify(diff));
+      }),
+    );
+    if (refresh || !entry || entry.baseRef !== base) return fetched;
+    return fetched.catch((err: unknown) => this.staleCopy(err, entry.key, label));
+  }
+
+  /**
+   * The repo's branches as the code host has them (at most BRANCH_LIST_LIMIT, newest first, the default branch left
+   * out), the newest synced PR from each of them (same-repo PRs, of any state) noted. The code host's list is kept for
+   * BRANCH_LIST_TTL_MS per repo and name filter (`q`, a substring); `refresh` asks again. The PRs are read fresh each
+   * time: they come from the sync, not the code host.
+   */
+  async branchList(repoName: string, q: string | null, refresh = false): Promise<BranchListResponse> {
+    const query = q?.trim() || null;
+    if (query && (query.length > MAX_BRANCH_CHARS || /[\x00-\x1f\x7f]/.test(query))) throw new HttpError(400, 'Invalid q');
+    const { id, sourceId, repo, base } = this.branchRepo(repoName);
+    const key = `${repo.key}\n${query ?? ''}`;
+    let listed = this.branchLists.get(key);
+    if (!listed || refresh || this.now() - listed.at >= BRANCH_LIST_TTL_MS) {
+      listed = await this.once(`branches/${key}\n${refresh}`, () =>
+        this.fetching(sourceId, `${repo.key} branches`, async (source, signal) => {
+          const { items, more } = await source.branches(repo, query, BRANCH_LIST_LIMIT + 1, signal);
+          return { at: this.now(), refs: items, more };
+        }),
+      );
+      // Re-inserted, so that the map's order is the order of last use.
+      this.branchLists.delete(key);
+      this.branchLists.set(key, listed);
+      for (const oldest of this.branchLists.keys()) {
+        if (this.branchLists.size <= MAX_BRANCH_LISTS) break;
+        this.branchLists.delete(oldest);
+      }
+    }
+    const refs = listed.refs.filter((b) => b.name !== base);
+    const prs = new Map<string, NonNullable<BranchSummary['pr']>>();
+    // Ascending, so that the newest PR from a branch is the one left.
+    for (const pr of this.db.all<{ head_ref: string; number: number; state: 'open' | 'merged' | 'closed'; title: string }>(
+      `SELECT head_ref, number, state, title FROM pull_requests
+       WHERE repo_id = ? AND cross_repo = 0 AND head_ref IN (SELECT value FROM json_each(?)) ORDER BY number`,
+      [id, JSON.stringify(refs.map((b) => b.name))],
+    )) {
+      prs.set(pr.head_ref, { number: pr.number, state: pr.state, title: pr.title });
+    }
+    const items = refs.slice(0, BRANCH_LIST_LIMIT).map((b) => ({ name: b.name, headOid: b.headOid, committedAt: b.committedAt, pr: prs.get(b.name) ?? null }));
+    return { items, defaultBranch: base, more: listed.more || refs.length > BRANCH_LIST_LIMIT };
   }
 
   // ---------------------------------------------------------------------------

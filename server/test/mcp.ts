@@ -8,6 +8,7 @@ import { createAgent } from '../db/agents';
 import type { Db } from '../db/db';
 import { DiffCache } from '../diff/cache';
 import { DiffService, type DiffSources } from '../diff/service';
+import { newestFirst } from '../provider/branches';
 import { SourceError } from '../provider/errors';
 import type { CommitDiff, DiffSource, PrRevision } from '../provider/types';
 import { SyncManager } from '../sync/manager';
@@ -30,23 +31,43 @@ export function addedFile(path: string, lines: string[], over: Partial<DiffFile>
 }
 
 /**
- * What the fake code host serves, by repo key: PR revisions and files, commits and file contents. `down` makes every
- * request fail as a missing token does.
+ * A branch of the fake code host: its head, and its comparison with the default branch (`baseOid` is the merge base,
+ * `files` what a compare lists). The default branch is one too, when a test wants it listed; a comparison of a branch
+ * is found by its head.
+ */
+export interface FakeBranch {
+  headOid: string;
+  baseOid: string;
+  files: DiffFile[];
+  /** The head commit's committer date (ISO, UTC); null for a host that doesn't say. Default: none. */
+  committedAt?: string | null;
+}
+
+/**
+ * What the fake code host serves, by repo key: PR revisions and files, commits, branches and file contents. `down` makes
+ * every request fail as a missing token does.
  */
 export interface FakeCode {
   prs: Map<string, { headOid: string; baseOid: string; files: DiffFile[] }>;
   commits: Map<string, CommitDiff>;
+  /** By branchKey: what a branch's head is and what comparing it with the default branch gives. */
+  branches: Map<string, FakeBranch>;
   blobs: Map<string, string>;
   down: string | null;
-  /** Requests made, as "pr alice/app#2", "commit …", "blob alice/app@<oid>:<path>". */
+  /**
+   * Requests made, as "pr alice/app#2", "commit …", "blob alice/app@<oid>:<path>", "branch alice/app~feature/x" (its
+   * head), "compare alice/app~feature/x" and "branches alice/app" (with the filter, if any, after a space).
+   */
   requests: string[];
 }
 
 export const prKey = (repo: string, n: number) => `${repo}#${n}`;
+/** Repo keys have no '~' and git forbids it in a branch name: the same form the web app's diff ids use. */
+export const branchKey = (repo: string, branch: string) => `${repo}~${branch}`;
 export const blobKey = (repo: string, oid: string, path: string) => `${repo}@${oid}:${path}`;
 
 export function fakeCode(): { code: FakeCode; sources: DiffSources } {
-  const code: FakeCode = { prs: new Map(), commits: new Map(), blobs: new Map(), down: null, requests: [] };
+  const code: FakeCode = { prs: new Map(), commits: new Map(), branches: new Map(), blobs: new Map(), down: null, requests: [] };
   const missing = (what: string) => new SourceError('not-found', `${what} not found`, { status: 404 });
   const source: DiffSource = {
     kind: 'github',
@@ -57,15 +78,29 @@ export function fakeCode(): { code: FakeCode; sources: DiffSources } {
     authHint: 'check the token',
     maxFiles: 3000,
     prHeadIs: async () => null,
-    // Branch reviews: TODO(branch-review) fakes for the MCP branch tools.
-    branchHead: async () => {
-      throw new Error('not implemented');
+    async branchHead(repo, branch): Promise<string> {
+      code.requests.push(`branch ${branchKey(repo.key, branch)}`);
+      const found = code.branches.get(branchKey(repo.key, branch));
+      if (!found) throw missing(`branch ${branch}`);
+      return found.headOid;
     },
-    compare: async () => {
-      throw new Error('not implemented');
+    async compare(repo, _base, head) {
+      const hit = [...code.branches].find(([key, b]) => key.startsWith(`${repo.key}~`) && b.headOid === head);
+      code.requests.push(`compare ${hit ? hit[0] : `${repo.key}@${head}`}`);
+      if (!hit) throw missing(`commit ${head}`);
+      const { baseOid, files } = hit[1];
+      return {
+        baseOid, headOid: head, files, totalFiles: files.length, additions: files.reduce((n, f) => n + f.additions, 0), deletions: files.reduce((n, f) => n + f.deletions, 0),
+      };
     },
-    branches: async () => {
-      throw new Error('not implemented');
+    async branches(repo, query, limit) {
+      code.requests.push(`branches ${repo.key}${query ? ` ${query}` : ''}`);
+      const all = [...code.branches]
+        .filter(([key]) => key.startsWith(`${repo.key}~`))
+        .map(([key, b]) => ({ name: key.slice(repo.key.length + 1), headOid: b.headOid, committedAt: b.committedAt ?? null }))
+        .filter((b) => !query || b.name.toLowerCase().includes(query.toLowerCase()))
+        .sort(newestFirst);
+      return { items: all.slice(0, limit), more: all.length > limit };
     },
     async prRevision(repo, number): Promise<PrRevision> {
       code.requests.push(`pr ${repo.key}#${number}`);
@@ -170,4 +205,12 @@ export function mcpHarness(opts: McpHarnessOptions = {}) {
 /** The PR diff a harness's fake host serves for `alice/app#n`. */
 export function servePr(code: FakeCode, repo: string, n: number, headOid: string, baseOid: string, files: DiffFile[]): void {
   code.prs.set(prKey(repo, n), { headOid, baseOid, files });
+}
+
+/**
+ * A branch the harness's fake host has, at `headOid`, that compares with the default branch as `baseOid` (the merge base)
+ * and `files`. Calling it again is a push (or a moved merge base).
+ */
+export function serveBranch(code: FakeCode, repo: string, branch: string, headOid: string, baseOid: string, files: DiffFile[], committedAt: string | null = null): void {
+  code.branches.set(branchKey(repo, branch), { headOid, baseOid, files, committedAt });
 }

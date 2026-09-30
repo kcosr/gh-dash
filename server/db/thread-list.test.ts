@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { Principal, ThreadAnchor } from '../../shared/api';
 import { addManualRepo, GITLAB_HOST, seedDb, seedGitLab } from '../test/seed';
-import { createThread, addComment, getPrincipal, getThread, SELF_PRINCIPAL_ID, setThreadStatus, type ThreadTarget } from './comments';
+import { createThread, addComment, getPrincipal, getThread, SELF_PRINCIPAL_ID, setThreadStatus, type ThreadTarget, viewOfThread } from './comments';
 import type { Db } from './db';
 import { loadQueryCtx, type QueryCtx, type Scope } from './filters';
 import type { Page } from './lists';
@@ -66,8 +66,9 @@ describe('thread list', () => {
     expect(ids(res)).toEqual([a.id, b.id, c.id]);
     expect(res).toMatchObject({ nextCursor: null, total: 3 });
     for (const item of res.items) {
-      const { targetTitle, prState, targetUrl, earlierPush, ...thread } = item;
+      const { targetTitle, prState, targetUrl, earlierPush, view, ...thread } = item;
       expect(thread).toEqual(getThread(db, item.id));
+      expect(view).toEqual(thread.kind === 'pr' ? { kind: 'pr', number: thread.number } : { kind: 'commit', oid: thread.commitOid });
     }
     // Comments come with their authors, oldest first.
     expect(res.items[0]!.comments.map((m) => [m.author.name, m.body])).toEqual([['You', 'First'], ['Reviewer', 'A reply']]);
@@ -472,5 +473,24 @@ describe('branch threads in the list', () => {
     expect(ids(list({ target: { commit: HEAD.slice(0, 7) } }))).toEqual([onCommit.id]);
     // Counts follow the target.
     expect(list({ target: { pr: 2 } })).toMatchObject({ total: 3, counts: { open: 3, resolved: 0 } });
+    // Each opens where it is shown: the branch thread of #1's line of work in #1, the branch's review only its current group.
+    const views = new Map(list({}, { repos: ['app'] }).items.map((i) => [i.id, i.view]));
+    expect([before, onOne, onTwo, onBranch, onCommit].map((t) => views.get(t.id))).toEqual([
+      { kind: 'pr', number: 1 },
+      { kind: 'pr', number: 1 },
+      { kind: 'pr', number: 2 },
+      { kind: 'branch', branch: 'feature' },
+      { kind: 'commit', oid: HEAD },
+    ]);
+    expect(viewOfThread(db, before.id)).toEqual({ kind: 'pr', number: 1 });
+    expect(viewOfThread(db, onBranch.id)).toEqual({ kind: 'branch', branch: 'feature' });
+    expect(viewOfThread(db, 9999)).toBeNull();
+    // Made at #1's merge, to the millisecond: still its line of work; a millisecond later, the next one's.
+    const atMerge = createThread(db, branch('alice/app', 'feature'), { commitOid: HEAD, baseOid: BASE, anchor: general, body: 'at the merge' }, me, '2026-09-21T10:00:00.000Z');
+    const after = createThread(db, branch('alice/app', 'feature'), { commitOid: HEAD, baseOid: BASE, anchor: general, body: 'after' }, me, '2026-09-21T10:00:00.001Z');
+    expect([viewOfThread(db, atMerge.id), viewOfThread(db, after.id)]).toEqual([{ kind: 'pr', number: 1 }, { kind: 'branch', branch: 'feature' }]);
+    // A merge the sync no longer holds: the branch's review is all there is to open.
+    db.run('UPDATE pull_requests SET cross_repo = 1 WHERE id = ?', [pullId(1)]);
+    expect(viewOfThread(db, before.id)).toEqual({ kind: 'branch', branch: 'feature' });
   });
 });

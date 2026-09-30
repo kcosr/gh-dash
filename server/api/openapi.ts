@@ -400,6 +400,16 @@ const schemas: Record<string, Schema> = {
           "(the repository's page while the default branch isn't known)",
       ),
       earlierPush: { ...bool, description: "A PR thread made on an earlier push than the PR's current head (false for branches and commits, or when the head isn't known)" },
+      view: {
+        oneOf: [
+          obj({ kind: enumOf('pr'), number: int() }),
+          obj({ kind: enumOf('branch'), branch: str() }),
+          obj({ kind: enumOf('commit'), oid: str() }),
+        ],
+        description:
+          'The diff to open the thread at: its own PR, branch or commit, except a branch thread made no later than a merge of its branch (an earlier line of work), ' +
+          'which the merged PR that ended that line of work shows, while the sync holds it',
+      },
     })],
   },
   NewPrThread: newThread('pr'),

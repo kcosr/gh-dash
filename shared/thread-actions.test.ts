@@ -187,7 +187,7 @@ describe('thread actions', () => {
     const qc = new QueryClient();
     const unresolved = qk.threadList({ status: 'open' });
     const resolved = qk.threadList({ status: 'resolved' });
-    const item = { ...thread(1), targetTitle: null, prState: null, targetUrl: 'u', earlierPush: false };
+    const item = { ...thread(1), targetTitle: null, prState: null, targetUrl: 'u', earlierPush: false, view: { kind: 'pr' as const, number: 2 } };
     // Resolved was visited first (empty), then Unresolved; both answers are fresh.
     qc.setQueryData<ThreadListResponse>(resolved, { items: [], total: 0, nextCursor: null, counts: { open: 1, resolved: 0 } });
     qc.setQueryData<ThreadListResponse>(unresolved, { items: [item], total: 1, nextCursor: null, counts: { open: 1, resolved: 0 } });

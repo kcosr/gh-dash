@@ -378,8 +378,8 @@ describe('comment threads API', () => {
     expect(Object.keys(body.properties.counts!.properties!)).toEqual(['open', 'resolved']);
     const item = doc.components.schemas.ThreadListItem as unknown as { allOf: [{ $ref: string }, { properties: Record<string, unknown>; required: string[] }] };
     expect(item.allOf[0]).toEqual({ $ref: '#/components/schemas/CommentThread' });
-    expect(Object.keys(item.allOf[1].properties)).toEqual(['targetTitle', 'prState', 'targetUrl', 'earlierPush']);
-    expect(item.allOf[1].required).toEqual(['targetTitle', 'prState', 'targetUrl', 'earlierPush']);
+    expect(Object.keys(item.allOf[1].properties)).toEqual(['targetTitle', 'prState', 'targetUrl', 'earlierPush', 'view']);
+    expect(item.allOf[1].required).toEqual(['targetTitle', 'prState', 'targetUrl', 'earlierPush', 'view']);
     expect(await (await makeApp().app.request('/api/docs')).text()).toContain('/api/v1/threads');
   });
 
@@ -580,9 +580,11 @@ describe('GET /threads', () => {
     ]);
     // The item is the per-target thread, plus what it is on.
     const perTarget = (await app.json<{ items: CommentThread[] }>('GET', '/prs/app/2/threads')).body.items;
-    const { targetTitle, prState, targetUrl, earlierPush, ...thread } = res.body.items.find((t) => t.id === ids.line)!;
+    const { targetTitle, prState, targetUrl, earlierPush, view, ...thread } = res.body.items.find((t) => t.id === ids.line)!;
     expect(thread).toEqual(perTarget.find((t) => t.id === ids.line));
-    expect({ targetTitle, prState, targetUrl, earlierPush }).toEqual({ targetTitle: 'Add parser', prState: 'open', targetUrl: 'https://github.com/alice/x/pull/2', earlierPush: true });
+    expect({ targetTitle, prState, targetUrl, earlierPush, view }).toEqual({
+      targetTitle: 'Add parser', prState: 'open', targetUrl: 'https://github.com/alice/x/pull/2', earlierPush: true, view: { kind: 'pr', number: 2 },
+    });
   });
 
   it('follows the per-thread routes: resolving, replying and deleting', async () => {

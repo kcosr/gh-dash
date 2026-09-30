@@ -1,4 +1,4 @@
-import type { CommentEventKind, CommentThread, Principal, ThreadAnchor, ThreadComment, ThreadStatus } from '../../shared/api';
+import type { CommentEventKind, CommentThread, Principal, ThreadAnchor, ThreadComment, ThreadStatus, ThreadView } from '../../shared/api';
 import { commentExcerpt } from '../../shared/comment-markdown';
 import type { Db } from './db';
 import { repoKeySql } from './repo-key';
@@ -168,6 +168,32 @@ export function prGroupSql(t: string, p: string): string {
  */
 export const prViewSql = (t: string, p: string): string =>
   `(${t}.repo_id = ${p}.repo_id AND ${t}.pr_number = ${p}.number) OR (${prGroupSql(t, p)})`;
+
+/**
+ * SQL: the number of the merged PR whose view shows branch thread `t` (an alias of comment_threads) of an earlier line of
+ * work: the first merge of its branch the thread was made no later than, the end of the group it is in (prGroupSql puts
+ * it in that PR's). NULL for a branch thread of the current group (the branch's review shows it), and for PR and
+ * commit threads, which their own targets show.
+ */
+export const endedByPrSql = (t: string): string =>
+  `(SELECT mp.number ${mergesOf(`${t}.repo_id`, `${t}.branch`)} AND ${t}.pr_number IS NULL AND ${t}.created_at <= ${asThreadTime('mp.merged_at')}` +
+  ' ORDER BY mp.merged_at, mp.number LIMIT 1)';
+
+/** Which diff shows a thread, given its row and endedByPrSql's answer for it (see ThreadListItem.view). */
+export function threadView(t: Pick<ThreadRow, 'pr_number' | 'branch' | 'commit_oid'>, endedByPr: number | null): ThreadView {
+  if (t.pr_number !== null) return { kind: 'pr', number: t.pr_number };
+  if (t.branch !== null) return endedByPr === null ? { kind: 'branch', branch: t.branch } : { kind: 'pr', number: endedByPr };
+  return { kind: 'commit', oid: t.commit_oid };
+}
+
+/** Which diff shows thread `id` (see ThreadListItem.view); null when there is no such thread. */
+export function viewOfThread(db: Db, id: number): ThreadView | null {
+  const row = db.get<Pick<ThreadRow, 'pr_number' | 'branch' | 'commit_oid'> & { ended_by_pr: number | null }>(
+    `SELECT t.pr_number, t.branch, t.commit_oid, ${endedByPrSql('t')} AS ended_by_pr FROM comment_threads t WHERE t.id = ?`,
+    [id],
+  );
+  return row ? threadView(row, row.ended_by_pr) : null;
+}
 
 /** The ids of the threads in the branch group of PR number ?2 of repo ?1: none when the sync doesn't hold the PR. */
 const PR_GROUP_IDS = `SELECT g.id FROM pull_requests gp JOIN comment_threads g ON ${prGroupSql('g', 'gp')} WHERE gp.repo_id = ?1 AND gp.number = ?2`;

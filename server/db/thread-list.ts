@@ -1,6 +1,6 @@
 import type { PrState, ThreadKindFilter, ThreadListItem, ThreadSort, ThreadStatus, ThreadStatusFilter } from '../../shared/api';
 import { PROVIDERS } from '../../shared/provider';
-import { branchGroupSql, hydrate, prGroupSql, SELF_PRINCIPAL_ID, type ThreadRow } from './comments';
+import { branchGroupSql, endedByPrSql, hydrate, prGroupSql, SELF_PRINCIPAL_ID, threadView, type ThreadRow } from './comments';
 import type { Db } from './db';
 import { addRepoScope, likeContains, type QueryCtx, type Scope, Where } from './filters';
 import type { CursorKey, Page } from './lists';
@@ -42,6 +42,8 @@ interface ThreadListRow extends ThreadRow {
   target_url: string | null;
   pr_state: PrState | null;
   pr_head_oid: string | null;
+  /** For a branch thread of an earlier line of work: the merged PR that shows it (endedByPrSql). */
+  ended_by_pr: number | null;
   repo_url: string;
   /** What a branch thread's compare link is against; null (or empty) while the sync doesn't know it. */
   default_branch: string | null;
@@ -68,7 +70,7 @@ export const prCommitHeadlineSql = (alias: string) =>
 const SELECT =
   `t.*, ${repoKeySql('r')} AS repo, r.url AS repo_url, r.default_branch AS default_branch, s.kind AS source_kind, ` +
   `COALESCE(p.title, c.headline, ${prCommitHeadlineSql('t')}) AS target_title, COALESCE(NULLIF(p.url, ''), NULLIF(c.url, '')) AS target_url, ` +
-  'p.state AS pr_state, p.head_oid AS pr_head_oid';
+  `p.state AS pr_state, p.head_oid AS pr_head_oid, CASE WHEN t.pr_number IS NULL AND t.branch IS NOT NULL THEN ${endedByPrSql('t')} END AS ended_by_pr`;
 
 // Threads by kind, as hydrate derives it: a PR number makes a PR thread, else a branch a branch thread.
 const KIND_SQL: Record<Exclude<ThreadKindFilter, 'all'>, string> = {
@@ -171,6 +173,7 @@ export function listThreadItems(db: Db, ctx: QueryCtx, scope: Scope, f: ThreadFi
       prState: row.pr_state,
       targetUrl: row.target_url ?? builtUrl(row),
       earlierPush: row.pr_number !== null && row.pr_head_oid !== null && row.pr_head_oid !== row.commit_oid,
+      view: threadView(row, row.ended_by_pr),
     };
   });
   return { items, nextCursor: hasMore ? [last!.updated_at, last!.id] : null, total, counts };

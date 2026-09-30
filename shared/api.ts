@@ -1077,7 +1077,19 @@ export interface ThreadListItem extends CommentThread {
    * the sync doesn't know, or when the PR's head isn't known).
    */
   earlierPush: boolean;
+  /**
+   * The diff to open the thread at: its own PR, branch or commit, except a branch thread made no later than a merge of
+   * its branch (an earlier line of work), which the merged PR that ended that line of work shows, while the sync holds it.
+   */
+  view: ThreadView;
 }
+
+/**
+ * Which diff shows a thread (ThreadListItem.view): the PR, branch or commit to open it at. The branch's review shows only
+ * its current group ("Branch groups"), so a branch thread of an earlier line of work is shown by the merged PR that
+ * ended it.
+ */
+export type ThreadView = { kind: 'pr'; number: number } | { kind: 'branch'; branch: string } | { kind: 'commit'; oid: string };
 
 export interface ThreadListResponse extends ListResponse<ThreadListItem> {
   /** Threads per status in the same scope and filters, ignoring `status` (the status control's counts). */

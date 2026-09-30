@@ -829,7 +829,11 @@ export interface CommentActivity {
   side: CommentSide | null;
   startLine: number | null;
   endLine: number | null;
-  /** The comment's text for comment events, the thread's first comment for thread events: plain, at most 280 chars. */
+  /**
+   * The comment's text for comment events, the thread's first comment for thread events: plain, at most 280 chars.
+   * null once that comment or its thread is deleted (and on the delete events): the log keeps what happened, not what
+   * deleted comments said.
+   */
   excerpt: string | null;
 }
 

@@ -391,7 +391,7 @@ const schemas: Record<string, Schema> = {
     side: nullable(enumOf('old', 'new')),
     startLine: nullable(int()),
     endLine: nullable(int()),
-    excerpt: nullable(str("Plain text, at most 280 characters: the comment's (for comment events) or the thread's first comment's (thread events)")),
+    excerpt: nullable(str("Plain text, at most 280 characters: the comment's (for comment events) or the thread's first comment's (thread events). null once that comment or its thread is deleted, and on the delete events")),
   }),
   Agent: obj({
     id: int("The agent's principal id (comments' author.id)"),

@@ -4,7 +4,7 @@ import { activityCsv } from '../format/csv';
 import { eventsMarkdown } from '../format/markdown';
 import { seedDb, seedGitLab } from '../test/seed';
 import { createAgent } from './agents';
-import { addComment, createThread, deleteThread, getPrincipal, SELF_PRINCIPAL_ID, setThreadStatus, type ThreadTarget } from './comments';
+import { addComment, createThread, deleteComment, deleteThread, getPrincipal, SELF_PRINCIPAL_ID, setThreadStatus, type ThreadTarget } from './comments';
 import type { Db } from './db';
 import { loadQueryCtx, type Scope } from './filters';
 import { listActivity } from './lists';
@@ -63,8 +63,9 @@ describe('comment events in the activity feed', () => {
     });
     expect(items[2]).toMatchObject({ actor: { name: 'Claude', isMe: false }, comment: { by: claude, excerpt: 'Why two?' } });
     // The commit thread is gone; its events still say what it was on.
-    expect(items[0]).toMatchObject({ comment: { live: false, target: { kind: 'commit', oid: C3, title: 'Refactor parser module' }, path: null, excerpt: 'Nit' } });
-    expect(items[1]).toMatchObject({ comment: { live: false } });
+    // What was said went with it.
+    expect(items[0]).toMatchObject({ comment: { live: false, target: { kind: 'commit', oid: C3, title: 'Refactor parser module' }, path: null, excerpt: null } });
+    expect(items[1]).toMatchObject({ comment: { live: false, excerpt: null } });
   });
 
   it("titles a commit the sync doesn't hold from a synced PR that lists it, else leaves it null", () => {
@@ -165,6 +166,25 @@ describe('comment events in the activity feed', () => {
     expect(csv).toContain(`${at(21)},comment,resolved,alice/app,Claude,Why two?,#2,`);
     // A formula-looking comment is kept from being evaluated, as every other title is.
     expect(csv).toContain(`${at(22)},comment,thread_opened,alice/app,Claude,'=cmd,c300000,`);
+  });
+
+  it('reads sensibly in the exports once the words are gone', () => {
+    const line = { path: 'src/a.ts', side: 'new' as const, startLine: 3, endLine: 3, snippet: 'a' };
+    const t = open({ repoId: app, kind: 'pr', number: 2 }, 'Why?', me, at(20), line);
+    const reply = addComment(db, t.id, claude, 'Secret', at(21))!.comments[1]!;
+    deleteComment(db, reply.id, claude, at(22));
+    const gone = open({ repoId: app, kind: 'commit', oid: C3 }, 'Also secret', claude, at(23));
+    deleteThread(db, gone.id, me, at(24));
+    const events = comments().items;
+    const md = eventsMarkdown('Activity', events, { tz: 'UTC', now: Date.parse(at(29)), from: Date.parse(at(1)), to: Date.parse(at(29)) });
+    expect(md).not.toContain('ecret');
+    expect(md).toContain('- 10:00 · **Claude** deleted a comment on alice/app#2 (Add parser), src/a.ts:3\n');
+    expect(md).toContain('- 10:00 · **Claude** replied to a thread on alice/app#2 (Add parser), src/a.ts:3\n');
+    expect(md).toContain('- 10:00 · **You** deleted a thread on alice/app@c300000 (Refactor parser module)\n');
+    expect(md).toContain('- 10:00 · **You** opened a thread on alice/app#2 (Add parser), src/a.ts:3: Why?\n');
+    const csv = activityCsv(events);
+    expect(csv).not.toContain('ecret');
+    expect(csv.split('\r\n')).toContain(`${at(22)},comment,comment_deleted,alice/app,Claude,,#2,`);
   });
 
   it('leaves the insights (stats) as they were', () => {

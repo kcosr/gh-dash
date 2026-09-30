@@ -3,7 +3,7 @@ import type { Principal, ThreadAnchor } from '../../shared/api';
 import { seedDb } from '../test/seed';
 import { createAgent } from './agents';
 import { commentEventsAfter, lastCommentEventId } from './comment-events';
-import { addComment, createThread, deleteThread, getPrincipal, SELF_PRINCIPAL_ID, setThreadStatus, type ThreadTarget } from './comments';
+import { addComment, createThread, deleteComment, deleteThread, getPrincipal, SELF_PRINCIPAL_ID, setThreadStatus, type ThreadTarget } from './comments';
 import type { Db } from './db';
 
 const HEAD = 'a'.repeat(40);
@@ -68,9 +68,16 @@ describe('comment events after a cursor', () => {
     expect(commentEventsAfter(db, 0)).toHaveLength(5);
   });
 
-  it('says when the thread is gone', () => {
+  it('says when the thread is gone, and no longer what deleted comments said', () => {
     const t = open({ repoId: app, kind: 'pr', number: 2 }, 'Why?', claude);
+    const reply = addComment(db, t.id, me, 'Oops, a secret')!.comments[1]!;
+    deleteComment(db, reply.id, me);
+    expect(commentEventsAfter(db, 0).map((e) => [e.kind, e.excerpt, e.threadStatus])).toEqual([
+      ['thread_opened', 'Why?', 'open'], ['replied', null, 'open'], ['comment_deleted', null, 'open'],
+    ]);
     deleteThread(db, t.id, me);
-    expect(commentEventsAfter(db, 0).map((e) => [e.kind, e.threadStatus])).toEqual([['thread_opened', null], ['thread_deleted', null]]);
+    expect(commentEventsAfter(db, 0).map((e) => [e.kind, e.excerpt, e.threadStatus])).toEqual([
+      ['thread_opened', null, null], ['replied', null, null], ['comment_deleted', null, null], ['thread_deleted', null, null],
+    ]);
   });
 });

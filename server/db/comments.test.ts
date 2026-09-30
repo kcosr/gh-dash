@@ -210,7 +210,6 @@ describe('comment event log', () => {
     setThreadStatus(db, t.id, 'resolved', agent, T1);
     setThreadStatus(db, t.id, 'resolved', me, T1);
     setThreadStatus(db, t.id, 'open', me, T1);
-    deleteComment(db, reply, me, T1);
     expect(brief()).toEqual([
       ['thread_opened', me.id, first, 'Why two?'],
       ['replied', agent.id, reply, 'Because.'],
@@ -218,8 +217,16 @@ describe('comment event log', () => {
       // Status events carry the thread's first comment; resolving a resolved thread records nothing.
       ['resolved', agent.id, null, 'Why two?'],
       ['reopened', me.id, null, 'Why two?'],
-      // A deleted comment's words are kept as they were when it went.
-      ['comment_deleted', me.id, reply, 'Because of b.'],
+    ]);
+    deleteComment(db, reply, me, T1);
+    // Who deleted what, where and when stays; the deleted comment's words go from every event of it.
+    expect(brief()).toEqual([
+      ['thread_opened', me.id, first, 'Why two?'],
+      ['replied', agent.id, reply, null],
+      ['edited', agent.id, reply, null],
+      ['resolved', agent.id, null, 'Why two?'],
+      ['reopened', me.id, null, 'Why two?'],
+      ['comment_deleted', me.id, reply, null],
     ]);
     const log = events();
     expect(log.map((e) => e.at)).toEqual([T0, T1, T1, T1, T1, T1]);
@@ -227,22 +234,33 @@ describe('comment event log', () => {
     expect(log.map((e) => e.id)).toEqual([...log.map((e) => e.id)].sort((a, b) => a - b));
   });
 
-  it('records one thread_deleted for a thread, however it goes, and keeps the events once it is gone', () => {
+  it('records one thread_deleted for a thread, however it goes, and keeps the events once it is gone, without their words', () => {
     const a = open(commit(), general, 'Nice', agent, T0);
     addComment(db, a.id, me, 'Thanks', T0);
     const b = open(pr(), { ...general, path: 'src/b.ts' }, 'Rename?', me, T0);
+    setThreadStatus(db, b.id, 'resolved', me, T0);
+    const kept = open(pr(), general, 'Stays', me, T0);
     deleteComment(db, a.comments[0]!.id, agent, T1);
     deleteThread(db, b.id, me, T1);
     expect(deleteThread(db, b.id, me, T1)).toBe(false);
     expect(deleteComment(db, a.comments[0]!.id, me)).toBeNull();
     const gone = events().filter((e) => e.kind === 'thread_deleted');
     expect(gone.map((e) => [e.thread_id, e.actor_id, e.comment_id, e.excerpt, e.pr_number, e.commit_oid, e.path])).toEqual([
-      [a.id, agent.id, null, 'Nice', null, COMMIT, null],
-      [b.id, me.id, null, 'Rename?', 2, HEAD, 'src/b.ts'],
+      [a.id, agent.id, null, null, null, COMMIT, null],
+      [b.id, me.id, null, null, 2, HEAD, 'src/b.ts'],
     ]);
     expect(events().filter((e) => e.kind === 'comment_deleted')).toEqual([]);
     expect(getThread(db, a.id)).toBeNull();
-    expect(events()).toHaveLength(5);
+    // Every event of a deleted thread has lost its text; another thread's keep theirs.
+    expect(brief()).toEqual([
+      ['thread_opened', agent.id, a.comments[0]!.id, null],
+      ['replied', me.id, expect.any(Number), null],
+      ['thread_opened', me.id, b.comments[0]!.id, null],
+      ['resolved', me.id, null, null],
+      ['thread_opened', me.id, kept.comments[0]!.id, 'Stays'],
+      ['thread_deleted', agent.id, null, null],
+      ['thread_deleted', me.id, null, null],
+    ]);
     // A removed repository takes its events along.
     db.run('DELETE FROM repos WHERE id = ?', [app]);
     expect(events()).toEqual([]);

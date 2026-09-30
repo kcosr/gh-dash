@@ -228,6 +228,9 @@ export function editComment(db: Db, id: number, body: string, actor: Principal, 
 /**
  * Deletes a comment. The first comment is the thread's opening statement: deleting it deletes the whole thread,
  * replies included (thread null), rather than leaving replies to nothing. null when there is no such comment.
+ *
+ * Deleted words go from the event log too: the log keeps who deleted what, where and when, but no event of the comment
+ * (its reply, its edits, the delete) keeps its text.
  */
 export function deleteComment(db: Db, id: number, actor: Principal, now = nowIso()): { thread: CommentThread | null } | null {
   const ref = getCommentRef(db, id);
@@ -237,8 +240,9 @@ export function deleteComment(db: Db, id: number, actor: Principal, now = nowIso
     return { thread: null };
   }
   db.tx(() => {
-    const body = db.get<{ body: string }>('SELECT body FROM comments WHERE id = ?', [id])!.body;
-    logEvent(db, actor, 'comment_deleted', ref.threadId, id, body, now);
+    logEvent(db, actor, 'comment_deleted', ref.threadId, id, null, now);
+    // By thread first: comment_events_thread finds them.
+    db.run('UPDATE comment_events SET excerpt = NULL WHERE thread_id = ? AND comment_id = ?', [ref.threadId, id]);
     db.run('DELETE FROM comments WHERE id = ?', [id]);
     touch(db, ref.threadId, now);
   });
@@ -261,11 +265,15 @@ export function setThreadStatus(db: Db, id: number, status: ThreadStatus, actor:
   return getThread(db, id);
 }
 
-/** Deletes a thread and its comments, as `actor`; false when it doesn't exist. */
+/**
+ * Deletes a thread and its comments, as `actor`; false when it doesn't exist. Every event of the thread loses its text
+ * (as deleteComment's do): the log keeps what happened, not what was said.
+ */
 export function deleteThread(db: Db, id: number, actor: Principal, now = nowIso()): boolean {
   return db.tx(() => {
     if (!db.get('SELECT 1 FROM comment_threads WHERE id = ?', [id])) return false;
-    logEvent(db, actor, 'thread_deleted', id, null, firstBody(db, id), now);
+    logEvent(db, actor, 'thread_deleted', id, null, null, now);
+    db.run('UPDATE comment_events SET excerpt = NULL WHERE thread_id = ?', [id]);
     return db.run('DELETE FROM comment_threads WHERE id = ?', [id]).changes > 0;
   });
 }

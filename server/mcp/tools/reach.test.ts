@@ -340,6 +340,26 @@ describe('wait_for_reply, waiting', () => {
     await h.userReplies(h.gh.id, 'Out of reach');
     expect(await waiting).toEqual({ events: [], cursor });
   });
+
+  it("starts, without after, where the log ends within reach: what happens out of reach doesn't move the cursor", async () => {
+    const h = setup();
+    const within = (host: 'github.com' | typeof GITLAB_HOST) =>
+      h.db.get<{ id: number }>('SELECT max(ce.id) AS id FROM comment_events ce JOIN repos r ON r.id = ce.repo_id JOIN sources s ON s.id = r.source_id WHERE s.host = ?', [host])!.id;
+    const ghCursor = within('github.com');
+    // The GitLab thread was opened after the GitHub one: the log's end is out of reach for the GitHub-only agent.
+    expect(ghCursor).toBeLessThan(within(GITLAB_HOST));
+    expect(await h.okAs('gh', 'wait_for_reply', { timeout_s: 1 })).toEqual({ events: [], cursor: ghCursor });
+    await h.userReplies(h.gl.id, 'Out of reach');
+    comments.createPrThread(h.deps, h.self, GL, 3, { commitOid: HEAD, body: 'Also out of reach' });
+    expect(await h.okAs('gh', 'wait_for_reply', { timeout_s: 1 })).toEqual({ events: [], cursor: ghCursor });
+    // The one reaching every source starts at the log's very end.
+    const end = h.db.get<{ id: number }>('SELECT max(id) AS id FROM comment_events')!.id;
+    expect(await h.okAs('all', 'wait_for_reply', { timeout_s: 1 })).toEqual({ events: [], cursor: end });
+    // Left with no source, it starts at 0, whatever happens.
+    removeSource(h.db, h.gitlab);
+    await h.userReplies(h.gh.id, 'Still out of reach');
+    expect(await h.okAs('gl', 'wait_for_reply', { timeout_s: 1 })).toEqual({ events: [], cursor: 0 });
+  });
 });
 
 describe('sources added and deleted', () => {

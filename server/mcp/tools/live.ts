@@ -118,7 +118,8 @@ export const waitForReply = readTool({
       threadStatus: e.threadStatus ?? 'deleted',
     });
 
-    const cursor = args.after ?? lastCommentEventId(db);
+    // Without `after`, from the end of the log within reach: a limited agent's cursor never moves with other sources' events.
+    const cursor = args.after ?? lastCommentEventId(db, sources ?? undefined);
     const deadline = Date.now() + args.timeout_s * 1000;
     for (;;) {
       // Listen first, then look: whatever lands in between wakes the wait.

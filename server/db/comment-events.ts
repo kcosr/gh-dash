@@ -77,9 +77,17 @@ const GROUPED_EVENTS =
       COALESCE(th.created_at, (SELECT f.at FROM comment_events f WHERE f.thread_id = e.thread_id ORDER BY f.id LIMIT 1)) AS created_at
     FROM comment_events e LEFT JOIN comment_threads th ON th.id = e.thread_id)`;
 
-/** The newest event's id (0 when there is none): "from now on" as a cursor. */
-export function lastCommentEventId(db: Db): number {
-  return db.get<{ id: number | null }>('SELECT max(id) AS id FROM comment_events')?.id ?? 0;
+/** The newest event's id (0 when there is none), in repos on `sourceIds` if given (none: 0): "from now on" as a cursor. */
+export function lastCommentEventId(db: Db, sourceIds?: readonly number[]): number {
+  if (!sourceIds) return db.get<{ id: number | null }>('SELECT max(id) AS id FROM comment_events')?.id ?? 0;
+  // An agent's reach: the log's end as far as it can see, so a wait that starts there and times out hands back a cursor
+  // that doesn't move with what happens on other sources.
+  return (
+    db.get<{ id: number | null }>(
+      'SELECT max(ce.id) AS id FROM comment_events ce JOIN repos r ON r.id = ce.repo_id WHERE r.source_id IN (SELECT value FROM json_each(?))',
+      [JSON.stringify(sourceIds)],
+    )?.id ?? 0
+  );
 }
 
 /**

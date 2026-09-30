@@ -3,6 +3,7 @@
 
 import { z } from 'zod';
 import type { Principal, ProviderKind } from '../../shared/api';
+import { isBranchName, MAX_BRANCH_CHARS } from '../../shared/branch';
 import { branchRef } from '../../shared/comment-markdown';
 import { refText } from '../../shared/provider';
 
@@ -46,6 +47,13 @@ export const commitArg = z
   .regex(/^[0-9a-f]{7,64}$/i, 'expected a commit SHA (7 to 64 hex characters)')
   .transform((s) => s.toLowerCase())
   .describe('Commit SHA (full, or at least 7 characters)');
+export const branchArg = z
+  .string()
+  .min(1)
+  .max(MAX_BRANCH_CHARS)
+  .transform((s) => s.replace(/^refs\/heads\//, ''))
+  .refine(isBranchName, 'expected a git branch name, as on the remote')
+  .describe('Branch name as on the remote (`git branch --show-current`); pushed, and not the default branch');
 export const idArg = (what: string) => z.number().int().min(1).max(2 ** 53 - 1).describe(what);
 export const bodyArg = z
   .string()

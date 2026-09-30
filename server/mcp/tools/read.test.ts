@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { createThread, getPrincipal, SELF_PRINCIPAL_ID } from '../../db/comments';
 import { ensureSource } from '../../db/sources';
 import { upsertPr } from '../../db/write';
-import { addedFile, commitDiff, mcpHarness, servePr, sha } from '../../test/mcp';
+import * as comments from '../../services/comments';
+import { addedFile, commitDiff, mcpHarness, serveBranch, servePr, sha } from '../../test/mcp';
 import { actor, addManualRepo, GITLAB_HOST, prRecord, seedDb, seedGitLab } from '../../test/seed';
 
 const HEAD = sha('a');
@@ -165,7 +166,22 @@ describe('find_pr', () => {
     expect(found.items.map((p: { number: number; match: string }) => [p.number, p.match])).toEqual([[5, 'branch'], [6, 'branch']]);
     expect(found.items[0]).toMatchObject({ ref: 'alice/app#5', state: 'open', author: 'carol', headOid: sha('e') });
     expect((await h.ok('find_pr', { repo: 'alice/app', branch: 'refs/heads/topic/x' })).items).toHaveLength(2);
+    expect(found.note).toBeUndefined();
     expect((await h.ok('find_pr', { repo: 'alice/app', branch: 'nope' })).items).toEqual([]);
+  });
+
+  it('points a branch with no PR to get_branch and add_comment, unless it is the default branch or no branch name', async () => {
+    const h = setup();
+    const none = await h.ok('find_pr', { repo: 'alice/app', branch: 'refs/heads/new/work' });
+    expect(none).toEqual({
+      items: [],
+      note: "No pull request from new/work in gh-dash. If it's pushed, get_branch reads it and add_comment with branch comments on it " +
+        '(shared with a PR opened from it later); if it only exists locally, push it first.',
+    });
+    // Nothing to suggest for the default branch (branches are compared against it), a name git refuses, or a search by commit.
+    expect(await h.ok('find_pr', { repo: 'alice/app', branch: 'main' })).toEqual({ items: [] });
+    expect(await h.ok('find_pr', { repo: 'alice/app', branch: 'a..b' })).toEqual({ items: [] });
+    expect(await h.ok('find_pr', { repo: 'alice/app', commit: sha('7') })).toEqual({ items: [] });
   });
 
   it('finds PRs by a commit: their head, one of theirs, or what they were squashed as; short SHAs too', async () => {
@@ -213,6 +229,162 @@ describe('get_pr', () => {
     expect(mr.baseOid).toBeUndefined();
     expect(mr.note).toContain('No GitLab token');
     expect(await h.fails('get_pr', { repo: 'alice/app', number: 99 })).toBe('Pull request not found');
+  });
+});
+
+describe('list_branches', () => {
+  const at = (h: ReturnType<typeof mcpHarness>) => {
+    serveBranch(h.code, 'alice/app', 'topic/x', sha('1'), BASE, [], '2026-09-28T10:00:00Z');
+    serveBranch(h.code, 'alice/app', 'feature', sha('2'), BASE, [], '2026-09-29T10:00:00Z');
+    serveBranch(h.code, 'alice/app', 'old', sha('3'), BASE, [], '2026-09-01T10:00:00Z');
+    serveBranch(h.code, 'alice/app', 'undated', sha('4'), BASE, []);
+    serveBranch(h.code, 'alice/app', 'main', sha('5'), BASE, [], '2026-09-30T10:00:00Z');
+    // Another repo's branches aren't this one's.
+    serveBranch(h.code, 'alice/secret', 'other', sha('6'), BASE, []);
+    h.db.run("UPDATE pull_requests SET cross_repo = 0 WHERE repo_id = (SELECT id FROM repos WHERE key = 'alice/app') AND number IN (2, 3)");
+    return h;
+  };
+
+  it("lists the code host's branches newest first, compactly, with the newest PR from each, and not the default branch", async () => {
+    const h = at(mcpHarness());
+    const out = await h.ok('list_branches', { repo: 'alice/app' });
+    expect(out).toEqual({
+      defaultBranch: 'main',
+      items: [
+        // PRs 1, 2 and 3 are all from "feature": the newest is 3 (the seed's closed one).
+        { name: 'feature', headOid: sha('2'), committedAt: '2026-09-29T10:00:00Z', pr: { number: 3, ref: 'alice/app#3', state: 'closed', title: 'PR 3' } },
+        { name: 'topic/x', headOid: sha('1'), committedAt: '2026-09-28T10:00:00Z' },
+        { name: 'old', headOid: sha('3'), committedAt: '2026-09-01T10:00:00Z' },
+        { name: 'undated', headOid: sha('4') },
+      ],
+    });
+    expect(h.code.requests).toEqual(['branches alice/app']);
+  });
+
+  it('filters by name, cuts to a limit, and says when there are more', async () => {
+    const h = at(mcpHarness());
+    expect((await h.ok('list_branches', { repo: 'app', query: 'X' })).items.map((b: { name: string }) => b.name)).toEqual(['topic/x']);
+    expect(h.code.requests).toContain('branches alice/app X');
+    const cut = await h.ok('list_branches', { repo: 'alice/app', limit: 2 });
+    expect(cut.items.map((b: { name: string }) => b.name)).toEqual(['feature', 'topic/x']);
+    expect(cut.more).toBe(true);
+    expect((await h.ok('list_branches', { repo: 'alice/app', limit: 4 })).more).toBeUndefined();
+    expect((await h.ok('list_branches', { repo: 'alice/app', query: 'nothing' })).items).toEqual([]);
+  });
+
+  it("words a GitLab project's PRs as its merge requests, and says when the code host can't be asked or the repo isn't tracked", async () => {
+    const h = mcpHarness({ db: withGitLab() });
+    const key = `${GITLAB_HOST}/platform/app`;
+    serveBranch(h.code, key, 'rework', sha('7'), BASE, []);
+    h.db.run("UPDATE pull_requests SET head_ref = 'rework', cross_repo = 0 WHERE repo_id = (SELECT id FROM repos WHERE key = ?) AND number = 2", [key]);
+    expect((await h.ok('list_branches', { repo: key })).items).toEqual([
+      { name: 'rework', headOid: sha('7'), pr: { number: 2, ref: `${GITLAB_HOST}/platform/app!2`, state: 'open', title: 'Rework config' } },
+    ]);
+    h.code.down = 'No GitLab token';
+    expect(await h.fails('list_branches', { repo: key, query: 'other' })).toContain('No GitLab token');
+    expect(await h.fails('list_branches', { repo: 'alice/nope' })).toContain("alice/nope isn't tracked");
+  });
+});
+
+describe('get_branch', () => {
+  const BHEAD = sha('d');
+  /** topic/x of alice/app at BHEAD over BASE, with two changed files. */
+  function setup() {
+    const h = mcpHarness();
+    serveBranch(h.code, 'alice/app', 'topic/x', BHEAD, BASE, [addedFile('src/a.ts', ['x']), addedFile('src/b.ts', ['y'], { previousPath: 'src/old.ts', status: 'renamed' })]);
+    return h;
+  }
+
+  it("gives the branch's revisions, fetch name, compare link and files from its diff", async () => {
+    const h = setup();
+    expect(await h.ok('get_branch', { repo: 'app', branch: 'topic/x' })).toEqual({
+      repo: 'alice/app', name: 'topic/x', ref: 'alice/app branch topic/x', baseRef: 'main', url: 'https://github.com/alice/app/compare/main...topic/x',
+      fetch: 'topic/x', headOid: BHEAD, baseOid: BASE, comments: { threads: 0, unresolved: 0 },
+      files: [
+        { path: 'src/a.ts', status: 'modified', additions: 1, deletions: 0 },
+        { path: 'src/b.ts', previousPath: 'src/old.ts', status: 'renamed', additions: 1, deletions: 0 },
+      ],
+    });
+    expect(h.code.requests).toEqual(['branch alice/app~topic/x', 'compare alice/app~topic/x']);
+  });
+
+  it('names the newest PR from it that is synced, and counts the threads its review shows', async () => {
+    const h = setup();
+    const app = h.db.get<{ id: number }>("SELECT id FROM repos WHERE key = 'alice/app'")!.id;
+    upsertPr(h.db, app, prRecord(5, { state: 'open', createdAt: '2026-09-26T00:00:00Z', headRef: 'topic/x', title: 'Topic', crossRepo: false }));
+    // From a fork of the same branch name: not this branch's.
+    upsertPr(h.db, app, prRecord(6, { state: 'open', createdAt: '2026-09-27T00:00:00Z', headRef: 'topic/x', title: 'Fork topic', crossRepo: true }));
+    const deps = { db: h.db, bus: h.bus };
+    const self = getPrincipal(h.db, SELF_PRINCIPAL_ID)!;
+    const resolved = comments.createBranchThread(deps, self, 'alice/app', 'topic/x', { commitOid: BHEAD, body: 'On the branch' });
+    comments.setThreadStatus(deps, self, resolved.id, 'resolved');
+    comments.createBranchThread(deps, self, 'alice/app', 'topic/x', { commitOid: BHEAD, body: 'Still open' });
+    comments.createPrThread(deps, self, 'alice/app', 5, { commitOid: BHEAD, body: 'On the PR' });
+    comments.createPrThread(deps, self, 'alice/app', 6, { commitOid: BHEAD, body: "On the fork's PR" });
+    comments.createBranchThread(deps, self, 'alice/app', 'other', { commitOid: BHEAD, body: 'Another branch' });
+    expect(await h.ok('get_branch', { repo: 'alice/app', branch: 'topic/x' })).toMatchObject({
+      pr: { number: 5, ref: 'alice/app#5', state: 'open', title: 'Topic' }, comments: { threads: 3, unresolved: 2 },
+    });
+    // A branch nobody has written on or opened a PR from.
+    serveBranch(h.code, 'alice/app', 'quiet', sha('8'), BASE, []);
+    const quiet = await h.ok('get_branch', { repo: 'alice/app', branch: 'quiet' });
+    expect(quiet.pr).toBeUndefined();
+    expect(quiet.comments).toEqual({ threads: 0, unresolved: 0 });
+  });
+
+  it('lists 300 files and counts the rest', async () => {
+    const h = setup();
+    serveBranch(h.code, 'alice/app', 'big', sha('9'), BASE, Array.from({ length: 302 }, (_, i) => addedFile(`f${i}.ts`, ['x'])));
+    const big = await h.ok('get_branch', { repo: 'alice/app', branch: 'big' });
+    expect(big.files).toHaveLength(300);
+    expect(big.moreFiles).toBe(2);
+    expect((await h.ok('get_branch', { repo: 'alice/app', branch: 'topic/x' })).moreFiles).toBeUndefined();
+  });
+
+  it("notes a stale diff (the host couldn't be asked), and serves what it has", async () => {
+    const h = setup();
+    await h.ok('get_branch', { repo: 'alice/app', branch: 'topic/x' });
+    h.code.down = 'No GitHub token';
+    const stale = await h.ok('get_branch', { repo: 'alice/app', branch: 'topic/x' });
+    expect(stale).toMatchObject({ headOid: BHEAD, baseOid: BASE, files: [{ path: 'src/a.ts' }, { path: 'src/b.ts' }] });
+    expect(stale.note).toBe("The code host couldn't be asked: files and revisions are from gh-dash's cache and may be behind");
+  });
+
+  it("leaves the revisions and files out, with a note, when there's no diff: the rest is still given", async () => {
+    const h = mcpHarness({ db: withGitLab() });
+    const key = `${GITLAB_HOST}/platform/app`;
+    h.code.down = 'No GitLab token';
+    const out = await h.ok('get_branch', { repo: key, branch: 'topic/x' });
+    expect(out).toMatchObject({
+      repo: key, name: 'topic/x', ref: `${key} branch topic/x`, baseRef: 'main', url: `https://${GITLAB_HOST}/platform/app/-/compare/main...topic/x`, fetch: 'topic/x',
+      comments: { threads: 0, unresolved: 0 },
+    });
+    for (const field of ['headOid', 'baseOid', 'files']) expect(out[field], field).toBeUndefined();
+    expect(out.note).toContain('No diff (No GitLab token');
+    expect(out.note).toContain('headOid, baseOid and files are left out');
+  });
+
+  it('says to push a branch the host has not got, in a note beside what gh-dash knows of it', async () => {
+    const h = setup();
+    const app = h.db.get<{ id: number }>("SELECT id FROM repos WHERE key = 'alice/app'")!.id;
+    upsertPr(h.db, app, prRecord(7, { state: 'merged', createdAt: '2026-09-20T00:00:00Z', mergedAt: '2026-09-21T00:00:00Z', headRef: 'gone', title: 'Gone', crossRepo: false }));
+    const out = await h.ok('get_branch', { repo: 'alice/app', branch: 'gone' });
+    expect(out.note).toBe("No diff (Branch gone not found on GitHub: if it's local, push it first; else check the name): headOid, baseOid and files are left out");
+    expect(out.pr).toEqual({ number: 7, ref: 'alice/app#7', state: 'merged', title: 'Gone' });
+    expect(out.headOid).toBeUndefined();
+  });
+
+  it('refuses the default branch and bad names, and says when the repo or its default branch is not known', async () => {
+    const h = setup();
+    expect(await h.fails('get_branch', { repo: 'alice/app', branch: 'main' })).toBe('main is the default branch: there is nothing to compare it with');
+    expect(await h.fails('get_branch', { repo: 'alice/app', branch: 'a:b' })).toContain('expected a git branch name');
+    expect(await h.fails('get_branch', { repo: 'alice/app' })).toContain('branch');
+    expect(await h.fails('get_branch', { repo: 'alice/nope', branch: 'x' })).toContain("alice/nope isn't tracked");
+    h.db.run("UPDATE repos SET default_branch = NULL WHERE key = 'alice/app'");
+    const out = await h.ok('get_branch', { repo: 'alice/app', branch: 'topic/x' });
+    expect(out.note).toContain("The default branch isn't known yet");
+    expect(out.baseRef).toBeUndefined();
+    expect(out.url).toBeUndefined();
   });
 });
 

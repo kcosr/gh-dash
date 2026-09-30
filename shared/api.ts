@@ -426,6 +426,11 @@ export interface InstanceInfo {
    * null when nothing listens on the network (desktop app with the local API off). Links to /api/docs etc. use it.
    */
   apiUrl: string | null;
+  /**
+   * Where agents reach MCP: `<apiUrl>/mcp` on a headless server; in the desktop app its Local API's while that serves
+   * MCP (which it may do with the REST API off, apiUrl then null). null when nothing serves it.
+   */
+  mcpUrl: string | null;
   auth: { password: boolean; apiKey: boolean };
   /** config.json path (whether or not it exists); null when config files are disabled. */
   configPath: string | null;
@@ -808,6 +813,11 @@ export interface Agent {
   createdAt: string;
   lastUsedAt: string | null;
   revokedAt: string | null;
+  /**
+   * The built-in agent, "Agent": who MCP requests without a token act as while the desktop app doesn't require agent
+   * tokens. It has no token (no prefix, nothing to regenerate or revoke), and is listed once it has done something.
+   */
+  builtIn: boolean;
 }
 
 /** What happened to a comment or thread (the comment event log, shown in Activity as type 'comment'). */

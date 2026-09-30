@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { createAgent, findAgent, getAgent, listAgents, principalForToken, regenerateAgentToken, revokeAgent } from './agents';
+import { BUILT_IN_AGENT, builtInAgent, createAgent, findAgent, getAgent, listAgents, principalForToken, regenerateAgentToken, revokeAgent } from './agents';
 import { type Db, openDb } from './db';
+import { seedDb } from '../test/seed';
 
 const T0 = '2026-09-29T10:00:00.000Z';
 const T1 = '2026-09-29T11:00:00.000Z';
@@ -22,7 +23,7 @@ describe('agents', () => {
   it('makes an agent with a token shown once: only its hash and first characters are kept', () => {
     const { agent, token } = createAgent(db, '  Claude  ', T0);
     expect(token).toMatch(/^ghd_[A-Za-z0-9_-]{43}$/);
-    expect(agent).toEqual({ id: 2, name: 'Claude', tokenPrefix: token.slice(0, 8), createdAt: T0, lastUsedAt: null, revokedAt: null });
+    expect(agent).toEqual({ id: 2, name: 'Claude', tokenPrefix: token.slice(0, 8), createdAt: T0, lastUsedAt: null, revokedAt: null, builtIn: false });
     expect(stored(agent.id)).toEqual({ token_hash: createHash('sha256').update(token).digest('hex'), prefix: token.slice(0, 8), last_used_at: null, revoked_at: null });
     expect(JSON.stringify(db.all('SELECT * FROM agent_tokens'))).not.toContain(token);
     expect(db.get('SELECT id, kind, name FROM principals WHERE id = ?', [agent.id])).toEqual({ id: agent.id, kind: 'agent', name: 'Claude' });
@@ -99,5 +100,59 @@ describe('agents', () => {
     expect(db.get<{ n: number }>('SELECT count(*) AS n FROM agent_tokens')!.n).toBe(1);
     expect(regenerateAgentToken(db, 99)).toBeNull();
     expect(regenerateAgentToken(db, 1)).toBeNull();
+  });
+
+  it('takes a token the user chose: 24–256 printable ASCII characters, at most 4 of them kept to tell it apart', () => {
+    const mine = 'correct-horse-battery-staple!';
+    const { agent, token } = createAgent(db, 'Claude', T0, mine);
+    expect(token).toBe(mine);
+    expect(agent.tokenPrefix).toBe('corr');
+    expect(stored(agent.id)).toMatchObject({ token_hash: createHash('sha256').update(mine).digest('hex'), prefix: 'corr' });
+    expect(principalForToken(db, mine)).toMatchObject({ id: agent.id, name: 'Claude' });
+    // One shaped like a generated token keeps a generated one's prefix (`ghd_` and 4 more).
+    const shaped = `ghd_${'A'.repeat(43)}`;
+    expect(createAgent(db, 'Codex', T0, shaped).agent.tokenPrefix).toBe('ghd_AAAA');
+    // Regenerating with a chosen token.
+    const next = regenerateAgentToken(db, agent.id, T1, 'another-long-enough-token-000')!;
+    expect(next.agent.tokenPrefix).toBe('anot');
+    expect(principalForToken(db, mine)).toBeNull();
+    expect(principalForToken(db, 'another-long-enough-token-000')).toMatchObject({ id: agent.id });
+  });
+
+  it("refuses a chosen token of the wrong shape, or another agent's", () => {
+    for (const bad of ['y'.repeat(23), 'y'.repeat(257), 'has a space in the middle of it', 'tab\tin-the-middle-of-it-000', 'ünïcode-in-a-long-token-000', '']) {
+      expect(() => createAgent(db, 'Claude', T0, bad), JSON.stringify(bad)).toThrow(/24 to 256|printable ASCII/);
+    }
+    const taken = 'a-token-another-agent-has-000';
+    const { agent } = createAgent(db, 'Claude', T0, taken);
+    expect(() => createAgent(db, 'Codex', T0, taken)).toThrow("That token is already another agent's");
+    expect(listAgents(db).map((a) => a.name)).toEqual(['Claude']);
+    const codex = createAgent(db, 'Codex', T0).agent;
+    expect(() => regenerateAgentToken(db, codex.id, T1, taken)).toThrow("That token is already another agent's");
+    // Its own current token is no other agent's.
+    expect(regenerateAgentToken(db, agent.id, T1, taken)!.token).toBe(taken);
+  });
+
+  it('has a built-in agent, made once when needed, listed once it has done something, with no token to change', () => {
+    db = seedDb();
+    createAgent(db, 'Claude', T0);
+    const agent = builtInAgent(db, T0);
+    expect(agent).toMatchObject({ kind: 'agent', name: BUILT_IN_AGENT });
+    expect(builtInAgent(db)).toEqual(agent);
+    expect(listAgents(db).map((a) => a.name)).toEqual(['Claude']);
+    db.run(
+      `INSERT INTO comment_events (at, actor_id, kind, repo_id, commit_oid, thread_id) VALUES (?, ?, 'thread_opened', (SELECT id FROM repos LIMIT 1), ?, 1)`,
+      [T1, agent.id, 'a'.repeat(40)],
+    );
+    expect(listAgents(db).map((a) => [a.name, a.builtIn])).toEqual([['Claude', false], [BUILT_IN_AGENT, true]]);
+    expect(getAgent(db, agent.id)).toMatchObject({ name: BUILT_IN_AGENT, builtIn: true, tokenPrefix: null, revokedAt: null });
+    expect(() => regenerateAgentToken(db, agent.id)).toThrow(/built in/);
+    expect(() => revokeAgent(db, agent.id)).toThrow(/built in/);
+    expect(() => createAgent(db, ' AGENT ')).toThrow(/built-in agent/);
+  });
+
+  it("names the built-in agent otherwise when an older agent already has its name", () => {
+    db.run(`INSERT INTO principals (kind, name, created_at) VALUES ('agent', 'Agent', ?)`, [T0]);
+    expect(builtInAgent(db).name).toBe('Agent (no token)');
   });
 });

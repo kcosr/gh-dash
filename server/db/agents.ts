@@ -2,19 +2,32 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { Agent, Principal } from '../../shared/api';
 import { HttpError } from '../lib/errors';
 import type { Db } from './db';
+import { getMeta, setMeta } from './meta';
 
 /**
  * Agents: principals of kind 'agent', each with one token for MCP. A token is `ghd_` and 32 random bytes (base64url),
- * shown once when made; only its sha256 and its first characters are stored. Agents are made, get a new token and are
- * revoked by the desktop app (main, over IPC) or the headless `agents` command, never over HTTP. Revoking keeps the
- * principal: its comments stay attributed to it.
+ * or one the user chose (24–256 printable ASCII characters, no spaces), shown once when made; only its sha256 and its
+ * first characters are stored. Agents are made, get a new token and are revoked by the desktop app (main, over IPC) or
+ * the headless `agents` command, never over HTTP. Revoking keeps the principal: its comments stay attributed to it.
+ *
+ * One agent is built in: "Agent", which MCP requests without a token act as while the desktop app doesn't require
+ * tokens. It has no token of its own, its name is reserved, it is made the first time it's needed and listed once it
+ * has done something.
  */
 
 const TOKEN_PREFIX = 'ghd_';
-/** `ghd_` + base64url of 32 bytes (43 characters, no padding). */
+/** `ghd_` + base64url of 32 bytes (43 characters, no padding): what gh-dash generates. */
 const TOKEN_SHAPE = /^ghd_[A-Za-z0-9_-]{43}$/;
-/** How many of the token's first characters are kept, to tell tokens apart. */
+/** Any token an agent may have: printable ASCII without spaces (it goes in an Authorization header). */
+const TOKEN_CHARS = /^[\x21-\x7e]+$/;
+export const TOKEN_MIN = 24;
+export const TOKEN_MAX = 256;
+/** How many of a generated token's first characters are kept, to tell tokens apart (`ghd_` and 4 random ones). */
 const PREFIX_CHARS = 8;
+/** Of a token the user chose, at most this many: little enough to give nothing away. */
+const CHOSEN_PREFIX_CHARS = 4;
+/** The built-in agent's name, reserved. */
+export const BUILT_IN_AGENT = 'Agent';
 /** last_used_at is written at most this often (a request per tool call shouldn't mean a write per call). */
 const LAST_USED_EVERY_MS = 60_000;
 const MAX_NAME_CHARS = 64;
@@ -26,9 +39,13 @@ interface AgentRow {
   prefix: string | null;
   last_used_at: string | null;
   revoked_at: string | null;
+  built_in: number;
 }
 
-const AGENT_SELECT = `SELECT p.id, p.name, p.created_at, t.prefix, t.last_used_at, t.revoked_at
+/** The built-in agent's principal id, once made (meta `builtInAgentId`). */
+const BUILT_IN_ID = `(SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'builtInAgentId')`;
+
+const AGENT_SELECT = `SELECT p.id, p.name, p.created_at, t.prefix, t.last_used_at, t.revoked_at, p.id IS ${BUILT_IN_ID} AS built_in
   FROM principals p LEFT JOIN agent_tokens t ON t.principal_id = p.id WHERE p.kind = 'agent'`;
 
 const toAgent = (r: AgentRow): Agent => ({
@@ -38,21 +55,71 @@ const toAgent = (r: AgentRow): Agent => ({
   createdAt: r.created_at,
   lastUsedAt: r.last_used_at,
   revokedAt: r.revoked_at,
+  builtIn: !!r.built_in,
 });
 
 const nowIso = () => new Date().toISOString();
 const hashToken = (token: string) => createHash('sha256').update(token).digest('hex');
 
-/** A new token, and what is stored of it. */
-function newToken(): { token: string; hash: string; prefix: string } {
-  const token = `${TOKEN_PREFIX}${randomBytes(32).toString('base64url')}`;
-  return { token, hash: hashToken(token), prefix: token.slice(0, PREFIX_CHARS) };
+/**
+ * A token the user chose: 24–256 printable ASCII characters without spaces (it travels in an Authorization header).
+ * 400 otherwise. Its uniqueness is checked where it is stored.
+ */
+export function agentToken(input: unknown): string {
+  if (typeof input !== 'string') throw new HttpError(400, 'An agent token is text');
+  if (input.length < TOKEN_MIN || input.length > TOKEN_MAX) throw new HttpError(400, `An agent token has ${TOKEN_MIN} to ${TOKEN_MAX} characters`);
+  if (!TOKEN_CHARS.test(input)) throw new HttpError(400, 'An agent token is printable ASCII without spaces (it goes in an Authorization header)');
+  return input;
 }
 
-/** Every agent, revoked ones included, oldest first. */
-export function listAgents(db: Db): Agent[] {
-  return db.all<AgentRow>(`${AGENT_SELECT} ORDER BY p.id`).map(toAgent);
+/**
+ * A token to store: the one given (checked) or a new one, its hash, and the characters kept to tell it apart: a
+ * generated token's first 8 (`ghd_` and 4 random ones), at most 4 of any other.
+ */
+function tokenToStore(given?: string | null): { token: string; hash: string; prefix: string } {
+  const token = given == null ? `${TOKEN_PREFIX}${randomBytes(32).toString('base64url')}` : agentToken(given);
+  const prefix = TOKEN_SHAPE.test(token) ? token.slice(0, PREFIX_CHARS) : token.slice(0, CHOSEN_PREFIX_CHARS);
+  return { token, hash: hashToken(token), prefix };
 }
+
+/** Refuses a token another agent already has (by its hash; there is nothing else to compare). */
+function ensureTokenFree(db: Db, hash: string, owner: number | null): void {
+  const other = db.get<{ principal_id: number }>('SELECT principal_id FROM agent_tokens WHERE token_hash = ?', [hash]);
+  if (other && other.principal_id !== owner) throw new HttpError(409, "That token is already another agent's");
+}
+
+/**
+ * Every agent, revoked ones included, oldest first. The built-in agent only once it has done something (a comment, a
+ * status change): before, there is nothing of it to show.
+ */
+export function listAgents(db: Db): Agent[] {
+  return db.all<AgentRow>(`${AGENT_SELECT} AND (p.id IS NOT ${BUILT_IN_ID} OR EXISTS (SELECT 1 FROM comment_events WHERE actor_id = p.id)) ORDER BY p.id`).map(toAgent);
+}
+
+/**
+ * The built-in agent (see above), made the first time it is needed. Named "Agent"; a database that already has a
+ * user's agent of that name (from before the name was reserved) calls it "Agent (no token)".
+ */
+export function builtInAgent(db: Db, now = nowIso()): Principal {
+  const byId = () => {
+    const id = getMeta(db, 'builtInAgentId');
+    const row = id === null ? undefined : db.get<{ id: number; name: string }>(`SELECT id, name FROM principals WHERE id = ? AND kind = 'agent'`, [id]);
+    return row ? { id: row.id, kind: 'agent' as const, name: row.name } : null;
+  };
+  const known = byId();
+  if (known) return known;
+  return db.tx(() => {
+    const again = byId();
+    if (again) return again;
+    const name = agentByName(db, BUILT_IN_AGENT) ? `${BUILT_IN_AGENT} (no token)` : BUILT_IN_AGENT;
+    const id = db.run(`INSERT INTO principals (kind, name, created_at) VALUES ('agent', ?, ?)`, [name, now]).lastInsertRowid;
+    setMeta(db, 'builtInAgentId', id);
+    return { id, kind: 'agent', name };
+  });
+}
+
+const notForBuiltIn = (a: Agent) =>
+  new HttpError(400, `${a.name} is built in: it has no token (MCP requests without one act as it, while gh-dash doesn't require agent tokens)`);
 
 export function getAgent(db: Db, id: number): Agent | null {
   const row = db.get<AgentRow>(`${AGENT_SELECT} AND p.id = ?`, [id]);
@@ -82,6 +149,9 @@ export function agentName(input: string): string {
   if (Array.from(name).length > MAX_NAME_CHARS) throw new HttpError(400, `An agent's name has at most ${MAX_NAME_CHARS} characters`);
   if (/[\u0000-\u001f\u007f]/.test(name)) throw new HttpError(400, "An agent's name can't hold control characters");
   if (name.toLowerCase() === 'you') throw new HttpError(400, '"You" is the dashboard user; give the agent another name');
+  if (name.toLowerCase() === BUILT_IN_AGENT.toLowerCase()) {
+    throw new HttpError(400, `"${BUILT_IN_AGENT}" is the built-in agent (requests without a token); give yours another name`);
+  }
   return name;
 }
 
@@ -89,13 +159,14 @@ export function agentName(input: string): string {
  * Makes an agent and its first token. The token is returned once, here: it can't be read back later. 409 when an agent
  * already has the name (any case), revoked or not: give it a new token instead.
  */
-export function createAgent(db: Db, nameInput: string, now = nowIso()): { agent: Agent; token: string } {
+export function createAgent(db: Db, nameInput: string, now = nowIso(), chosenToken?: string | null): { agent: Agent; token: string } {
   const name = agentName(nameInput);
-  const { token, hash, prefix } = newToken();
+  const { token, hash, prefix } = tokenToStore(chosenToken);
   const taken = (existing: Agent) => new HttpError(409, `There is already an agent called ${existing.name} (id ${existing.id}); regenerate its token instead`);
   const id = db.tx(() => {
     const existing = agentByName(db, name);
     if (existing) throw taken(existing);
+    ensureTokenFree(db, hash, null);
     let principal: number;
     try {
       principal = db.run(`INSERT INTO principals (kind, name, created_at) VALUES ('agent', ?, ?)`, [name, now]).lastInsertRowid;
@@ -111,13 +182,16 @@ export function createAgent(db: Db, nameInput: string, now = nowIso()): { agent:
 }
 
 /**
- * A new token for an agent, revoked or not: the old one stops working at once and the agent is active again, not yet
- * used. null when there is no such agent.
+ * A new token for an agent, revoked or not (generated, or the one given): the old one stops working at once and the
+ * agent is active again, not yet used. null when there is no such agent; 400 for the built-in one.
  */
-export function regenerateAgentToken(db: Db, id: number, now = nowIso()): { agent: Agent; token: string } | null {
-  const { token, hash, prefix } = newToken();
+export function regenerateAgentToken(db: Db, id: number, now = nowIso(), chosenToken?: string | null): { agent: Agent; token: string } | null {
+  const { token, hash, prefix } = tokenToStore(chosenToken);
   const done = db.tx(() => {
-    if (!getAgent(db, id)) return false;
+    const agent = getAgent(db, id);
+    if (!agent) return false;
+    if (agent.builtIn) throw notForBuiltIn(agent);
+    ensureTokenFree(db, hash, id);
     db.run(
       `INSERT INTO agent_tokens (principal_id, token_hash, prefix, created_at) VALUES (?, ?, ?, ?)
        ON CONFLICT (principal_id) DO UPDATE SET token_hash = excluded.token_hash, prefix = excluded.prefix, created_at = excluded.created_at,
@@ -131,7 +205,9 @@ export function regenerateAgentToken(db: Db, id: number, now = nowIso()): { agen
 
 /** Revokes an agent's token (at once; its comments stay). Revoking a revoked agent changes nothing. null when there is no such agent. */
 export function revokeAgent(db: Db, id: number, now = nowIso()): Agent | null {
-  if (!getAgent(db, id)) return null;
+  const agent = getAgent(db, id);
+  if (!agent) return null;
+  if (agent.builtIn) throw notForBuiltIn(agent);
   db.run('UPDATE agent_tokens SET revoked_at = ? WHERE principal_id = ? AND revoked_at IS NULL', [now, id]);
   return getAgent(db, id);
 }
@@ -142,7 +218,7 @@ export function revokeAgent(db: Db, id: number, now = nowIso()): Agent | null {
  * all the same. Marks the token used, at most once a minute. `now` is in ms (the others here take ISO strings).
  */
 export function principalForToken(db: Db, token: string, now = Date.now()): Principal | null {
-  if (!TOKEN_SHAPE.test(token)) return null;
+  if (token.length < TOKEN_MIN || token.length > TOKEN_MAX || !TOKEN_CHARS.test(token)) return null;
   const hash = hashToken(token);
   const row = db.get<{ token_hash: string; principal_id: number; name: string; last_used_at: string | null; revoked_at: string | null }>(
     `SELECT t.token_hash, t.principal_id, p.name, t.last_used_at, t.revoked_at

@@ -1340,6 +1340,7 @@ describe('account and instance', () => {
       version: config.version,
       desktop: false,
       apiUrl: 'http://127.0.0.1:4790',
+      mcpUrl: 'http://127.0.0.1:4790/mcp',
       auth: { password: false, apiKey: true },
       configPath: null,
       settings: {

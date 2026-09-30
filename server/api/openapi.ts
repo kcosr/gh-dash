@@ -397,10 +397,11 @@ const schemas: Record<string, Schema> = {
   Agent: obj({
     id: int("The agent's principal id (comments' author.id)"),
     name: str(),
-    tokenPrefix: nullable(str("The token's first 8 characters, to tell tokens apart; null once revoked")),
+    tokenPrefix: nullable(str("The token's first characters, to tell tokens apart (8 of a generated one, at most 4 of one the user chose); null once revoked, and for the built-in agent")),
     createdAt: dateTime,
     lastUsedAt: { ...nullable(dateTime), description: 'Last MCP request with the token (updated at most once a minute)' },
     revokedAt: nullable(dateTime),
+    builtIn: { ...bool, description: 'The built-in agent "Agent" (desktop app, MCP without tokens): no token of its own' },
   }),
 };
 

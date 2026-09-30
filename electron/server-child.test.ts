@@ -55,7 +55,7 @@ afterEach(() => vi.useRealTimers());
 async function startRunning() {
   const started = child.start();
   await flush();
-  procs.at(-1)!.reply({ type: 'ready', apiUrl: null });
+  procs.at(-1)!.reply({ type: 'ready', apiUrl: null, mcpUrl: null });
   expect(await started).toEqual({ ok: true, apiUrl: null });
 }
 
@@ -70,7 +70,7 @@ describe('ServerChild', () => {
     await vi.advanceTimersByTimeAsync(1);
     await flush();
     expect(fork).toHaveBeenCalledTimes(2);
-    procs[1]!.reply({ type: 'ready', apiUrl: null });
+    procs[1]!.reply({ type: 'ready', apiUrl: null, mcpUrl: null });
     expect(await child.whenSettled()).toBe('running');
   });
 
@@ -82,7 +82,7 @@ describe('ServerChild', () => {
     const restarted = child.restart();
     await flush();
     expect(fork).toHaveBeenCalledTimes(2);
-    procs[1]!.reply({ type: 'ready', apiUrl: null });
+    procs[1]!.reply({ type: 'ready', apiUrl: null, mcpUrl: null });
     expect(await restarted).toMatchObject({ ok: true });
     // The old recovery would have fired by now.
     await vi.advanceTimersByTimeAsync(30_000);
@@ -115,7 +115,7 @@ describe('ServerChild', () => {
     expect(await first).toEqual({ ok: false, message: 'database is locked' });
     const second = child.start();
     await flush();
-    procs[1]!.reply({ type: 'ready', apiUrl: null });
+    procs[1]!.reply({ type: 'ready', apiUrl: null, mcpUrl: null });
     await second;
     const token = child.sendSetToken('gh', null);
     procs[0]!.exit(1);
@@ -163,7 +163,7 @@ describe('ServerChild', () => {
   it("sends the agents' requests and hands back the agent, with its token when there is one", async () => {
     await startRunning();
     const proc = procs[0]!;
-    const agent = { id: 2, name: 'Claude', tokenPrefix: 'ghd_abcd', createdAt: 'x', lastUsedAt: null, revokedAt: null };
+    const agent = { id: 2, name: 'Claude', tokenPrefix: 'ghd_abcd', createdAt: 'x', lastUsedAt: null, revokedAt: null, builtIn: false };
     const added = child.addAgent('Claude');
     const regenerated = child.regenerateAgentToken(2);
     const revoked = child.revokeAgent(2);
@@ -188,6 +188,28 @@ describe('ServerChild', () => {
     expect(await revoked).toMatchObject({ id: 2, revokedAt: 'y' });
     await expect(taken).rejects.toThrow('There is already an agent called Claude');
     await expect(tokenless).rejects.toThrow('The gh-dash server answered without a token.');
+  });
+
+  it('passes a token the user chose to the child with the request, and nothing when there is none', async () => {
+    await startRunning();
+    const proc = procs[0]!;
+    void child.addAgent('Claude', 'my-own-agent-token-0123456789');
+    void child.regenerateAgentToken(2, 'another-token-of-mine-98765');
+    void child.addAgent('Codex', null);
+    await flush();
+    expect(proc.sent.map((m) => { const { id: _id, ...rest } = m as { id: number }; return rest; })).toEqual([
+      { type: 'add-agent', name: 'Claude', token: 'my-own-agent-token-0123456789' },
+      { type: 'regenerate-agent-token', agent: 2, token: 'another-token-of-mine-98765' },
+      { type: 'add-agent', name: 'Codex' },
+    ]);
+  });
+
+  it('keeps the MCP URL the child reports as ready, apart from the REST API URL', async () => {
+    const started = child.start();
+    await flush();
+    procs.at(-1)!.reply({ type: 'ready', apiUrl: null, mcpUrl: 'http://127.0.0.1:4780/mcp' });
+    expect(await started).toMatchObject({ ok: true, apiUrl: null });
+    expect([child.apiUrl, child.mcpUrl]).toEqual([null, 'http://127.0.0.1:4780/mcp']);
   });
 
   it('rejects a request the child answers with the wrong type, or not at all', async () => {

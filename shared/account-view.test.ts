@@ -117,7 +117,9 @@ describe('instance settings', () => {
 });
 
 describe('desktop instance form', () => {
-  const cfg: DesktopConfig = { dataDir: '/data', listen: false, network: false, port: 4780, allowedHosts: [], apiKeySet: false, passwordSet: false };
+  const cfg: DesktopConfig = {
+    dataDir: '/data', listen: false, restApi: true, mcp: true, mcpRequireTokens: true, network: false, port: 4780, allowedHosts: [], apiKeySet: false, passwordSet: false,
+  };
 
   it('sends only what changed', () => {
     const f = instanceForm(cfg);

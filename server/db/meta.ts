@@ -49,6 +49,8 @@ interface MetaTypes {
   /** When the last full (all repositories) sync finished: the schedule counts from it, not from single-repo runs. */
   lastFullSyncAt: string;
   sessionSecret: string;
+  /** The built-in agent's principal id (db/agents.ts builtInAgent), once made. */
+  builtInAgentId: number;
 }
 
 export function getMeta<K extends keyof MetaTypes>(db: Db, key: K): MetaTypes[K] | null {

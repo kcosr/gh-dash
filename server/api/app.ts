@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { CommentBus } from '../comments/bus';
 import type { Config } from '../config';
-import { principalForToken } from '../db/agents';
+import { builtInAgent, principalForToken } from '../db/agents';
 import type { Db } from '../db/db';
 import type { DiffService } from '../diff/service';
 import { GitHubDiffSources } from '../github/diff-source';
@@ -47,8 +47,10 @@ export interface AppDeps {
    * DESKTOP_SECRET_HEADER with this secret, and password/API-key auth doesn't apply (there is one local user).
    */
   transport?: AppTransport;
-  /** Desktop transport: the Local API's URL while its TCP listener runs, else null (GET /instance apiUrl). */
+  /** Desktop transport: the Local API's URL while its TCP listener serves the REST API, else null (GET /instance apiUrl). */
   localApiUrl?: () => string | null;
+  /** Desktop transport: the Local API's MCP URL while it serves MCP, else null (GET /instance mcpUrl). */
+  localMcpUrl?: () => string | null;
   /** Adding repositories (lookups and candidates on any source); by default over `tokens`, `sources` and `sync`. */
   tracking?: Tracking;
   /**
@@ -88,17 +90,30 @@ export function createApp(input: AppDeps): Hono {
   app.use('*', bodyLimit({ maxSize: 1024 * 1024, onError: (c) => c.json({ error: 'Request body too large (max 1 MB)' }, 413) }));
   // Inert on the desktop socket (app:// fetches send no Origin), kept there as defence in depth.
   app.use('*', sameOriginWrites);
+  // What the TCP listener serves: all of it on a headless server; the desktop app's Local API has a switch for the REST
+  // API and one for MCP. /api/health always. The desktop socket serves the REST API to the app's windows, never MCP.
+  const tcp = transport.kind === 'tcp';
+  const rest = !tcp || config.restApi;
   // The desktop app has one local user: the secret is its authentication.
-  if (transport.kind === 'tcp') installAuth(app, deps.db, config);
+  if (tcp && rest) installAuth(app, deps.db, config);
 
-  // Agents: its own auth (an agent token), exempt from installAuth's. Only network listeners serve it.
-  if (transport.kind === 'tcp') {
-    installMcp(app, { core: createMcpCore({ ...deps, bus: deps.bus! }), principalFor: (token) => principalForToken(deps.db, token) });
+  // Agents: its own auth (an agent token, or none as the built-in agent where allowed), exempt from installAuth's.
+  if (tcp && config.mcp) {
+    installMcp(app, {
+      core: createMcpCore({ ...deps, bus: deps.bus! }),
+      principalFor: (token) => principalForToken(deps.db, token),
+      withoutToken: config.mcpRequireTokens ? undefined : () => builtInAgent(deps.db),
+    });
   } else {
-    refuseMcp(app);
+    refuseMcp(app, tcp ? 'MCP is off on this port; turn on "MCP for agents" in gh-dash Settings → Instance' : undefined);
   }
 
   app.get('/api/health', (c) => c.json({ ok: true, version: config.version }));
+  if (!rest) {
+    // Nothing else: no API, docs, web app or sign-in on this port.
+    app.all('*', (c) => c.json({ error: 'The REST API is off on this port; turn it on in gh-dash Settings → Instance (Local API)' }, 404));
+    return app;
+  }
   app.route('/api/v1', systemRoutes(deps));
   app.route('/api/v1', repoRoutes(deps));
   app.route('/api/v1', listRoutes(deps));

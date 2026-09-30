@@ -88,7 +88,7 @@ beforeEach(async () => {
     const proc = new LoopbackProc();
     const post = (message: ServerToMain) => setImmediate(() => proc.emit('message', message));
     proc.handle = mainMessageHandler(server, post, () => proc.emit('exit', 0));
-    post({ type: 'ready', apiUrl: null });
+    post({ type: 'ready', apiUrl: null, mcpUrl: null });
     return proc;
   });
   child = new ServerChild({ script: 'desktop.mjs', env: () => ({}), log: () => {} });

@@ -79,18 +79,24 @@ export type MainToServer =
   | { type: 'delete-source'; id: number; source: string }
   /** Start the source's sync now, or after the one running (a source just added). Answered with `sync-started`. */
   | { type: 'sync-source'; id: number; source: string }
-  /** Make an agent (MCP) called `name`, with its first token. Answered with `agent-result` (the token). */
-  | { type: 'add-agent'; id: number; name: string }
-  /** A new token for the agent with principal id `agent`; the old one stops working. Answered with `agent-result` (the token). */
-  | { type: 'regenerate-agent-token'; id: number; agent: number }
+  /**
+   * Make an agent (MCP) called `name`, with its first token: `token` when the user chose one (checked there), else a
+   * generated one. Answered with `agent-result` (the token).
+   */
+  | { type: 'add-agent'; id: number; name: string; token?: string | null }
+  /** A new token for the agent with principal id `agent` (`token`, or generated); the old one stops working. Answered with `agent-result` (the token). */
+  | { type: 'regenerate-agent-token'; id: number; agent: number; token?: string | null }
   /** Revoke the agent's token; its comments stay. Answered with `agent-result` (no token). */
   | { type: 'revoke-agent'; id: number; agent: number }
   /** Close the listeners and databases, then exit 0. */
   | { type: 'shutdown' };
 
 export type ServerToMain =
-  /** Listening: the app:// transport is ready. `apiUrl` is the TCP listener's local URL, if one is enabled. */
-  | { type: 'ready'; apiUrl: string | null }
+  /**
+   * Listening: the app:// transport is ready. `apiUrl`: the TCP listener's local URL while it serves the REST API;
+   * `mcpUrl`: its MCP endpoint while it serves MCP.
+   */
+  | { type: 'ready'; apiUrl: string | null; mcpUrl: string | null }
   /**
    * Result of set-token after validating the token: github.com's AccountStatus, or the GitLab source's SourceAccount
    * when set-token named one. `ok` is false when the token was rejected (bad credentials, network failure); main only
@@ -129,8 +135,20 @@ export type SecureStorage = 'available' | 'unavailable';
 export interface DesktopConfig {
   /** Folder holding gh-dash.db and gh-dash-cache.db. */
   dataDir: string;
-  /** Local API: also listen on TCP so browsers, curl and scripts can use the API. Off by default. */
+  /** Local API: also listen on TCP (a port on this computer), for what the switches below turn on. Off by default. */
   listen: boolean;
+  /**
+   * The REST API on that port (the API, its docs, the dashboard in a browser); on by default. `network`,
+   * `allowedHosts`, the password and the API key are its settings: without it the port serves 127.0.0.1 only.
+   */
+  restApi: boolean;
+  /** MCP (/mcp) on that port, for agents; on by default. */
+  mcp: boolean;
+  /**
+   * /mcp needs an agent's token (default). Off: a request without one acts as the built-in agent "Agent"; only while
+   * the port serves this computer alone (not with `network`).
+   */
+  mcpRequireTokens: boolean;
   /** true = all interfaces (0.0.0.0, other devices on the network; requires a password); false = 127.0.0.1 only. */
   network: boolean;
   port: number;
@@ -144,6 +162,9 @@ export interface DesktopConfig {
 export interface DesktopConfigPatch {
   dataDir?: string;
   listen?: boolean;
+  restApi?: boolean;
+  mcp?: boolean;
+  mcpRequireTokens?: boolean;
   network?: boolean;
   port?: number;
   allowedHosts?: string[];
@@ -161,8 +182,10 @@ export interface DesktopState {
   secureStorage: SecureStorage;
   /** A pasted token is stored in the OS keychain. */
   tokenRemembered: boolean;
-  /** Local API URL when the listener is on and running. */
+  /** Local API URL when the listener is on and running, and serves the REST API. */
   apiUrl: string | null;
+  /** Its MCP endpoint (`<url>/mcp`) when it serves MCP. */
+  mcpUrl: string | null;
   /** Last server start error (config problem, port in use...), shown in Settings. */
   serverError: string | null;
   /** The GitLab sources in config.json (the app adds them in Settings → Sources). */
@@ -216,6 +239,8 @@ export interface DesktopSourceResult {
 export interface DesktopAgentToken {
   agent: Agent;
   token: string;
+  /** addAgent turned MCP on (the Local API was off, or its MCP switch), so the agent can connect. */
+  enabledMcp?: boolean;
 }
 
 export interface DesktopTokenResult {
@@ -268,12 +293,23 @@ export interface DesktopBridge {
    */
   chooseTokenFile(url: string): Promise<string | null>;
   /**
-   * Makes an agent (MCP; Settings → Agents) and its token. The token is in the answer once and never again: show it with
-   * the MCP URL (the Local API's, `<apiUrl>/mcp`) and the agent's config. A name another agent has is refused.
+   * Makes an agent (MCP; Settings → Agents) and its token (`token`, one the user chose, else generated). The token is
+   * in the answer once and never again: show it with the MCP URL (DesktopState.mcpUrl) and the agent's config. A name
+   * another agent has is refused. With MCP off on the Local API, it turns it on too (see enableMcp): the answer's
+   * `enabledMcp` says so.
    */
-  addAgent(name: string): Promise<DesktopAgentToken>;
-  /** A new token for an agent (by its id), revoked or not; the old token stops working at once. Shown once, like addAgent's. */
-  regenerateAgentToken(id: number): Promise<DesktopAgentToken>;
+  addAgent(name: string, token?: string): Promise<DesktopAgentToken>;
+  /**
+   * A new token for an agent (by its id), revoked or not; the old token stops working at once. Shown once, like
+   * addAgent's. `token`: one the user chose (24–256 printable ASCII characters without spaces, no other agent's), else
+   * generated; it travels only in this call.
+   */
+  regenerateAgentToken(id: number, token?: string): Promise<DesktopAgentToken>;
+  /**
+   * "Turn on MCP" (Settings → Agents): the Local API on (if it wasn't) and its MCP switch on; the REST API as it was
+   * (off, if the Local API was). Restarts the server when that changes anything.
+   */
+  enableMcp(): Promise<DesktopState>;
   /** Revokes an agent's token at once; the agent and its comments stay (GET /agents lists it as revoked). */
   revokeAgent(id: number): Promise<Agent>;
 }
@@ -298,6 +334,7 @@ export const DESKTOP_IPC = {
   addAgent: 'gh-dash:add-agent',
   regenerateAgentToken: 'gh-dash:regenerate-agent-token',
   revokeAgent: 'gh-dash:revoke-agent',
+  enableMcp: 'gh-dash:enable-mcp',
 } as const;
 
 declare global {

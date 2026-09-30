@@ -258,7 +258,7 @@ describe('OpenAPI', () => {
     expect(Object.keys(schemas.CommentActivity!.properties!)).toEqual([
       'eventId', 'threadId', 'commentId', 'live', 'by', 'target', 'commitOid', 'path', 'side', 'startLine', 'endLine', 'excerpt',
     ]);
-    expect(Object.keys(schemas.Agent!.properties!)).toEqual(['id', 'name', 'tokenPrefix', 'createdAt', 'lastUsedAt', 'revokedAt']);
+    expect(Object.keys(schemas.Agent!.properties!)).toEqual(['id', 'name', 'tokenPrefix', 'createdAt', 'lastUsedAt', 'revokedAt', 'builtIn']);
     expect(schemas.CommentThread!.properties).toHaveProperty('resolvedBy');
     const types = doc.paths['/api/v1/activity']!.get!.parameters!.find((p) => p.name === 'types')!;
     expect(types.description).toContain('comment');

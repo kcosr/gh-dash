@@ -16,9 +16,17 @@ beforeEach(() => {
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
 async function run(...args: string[]) {
+  return runWith(null, ...args);
+}
+/** With `stdin` piped in (null: none, and reading it would fail). */
+async function runWith(stdin: string | null, ...args: string[]) {
   const out: string[] = [];
   const err: string[] = [];
-  const code = await runAgentsCommand(args, { out: (l) => out.push(l), err: (l) => err.push(l), env });
+  const read = async () => {
+    if (stdin === null) throw new Error('stdin was read');
+    return stdin;
+  };
+  const code = await runAgentsCommand(args, { out: (l) => out.push(l), err: (l) => err.push(l), env, stdin: read });
   return { code, out: out.join('\n'), err: err.join('\n') };
 }
 const tokenIn = (text: string) => /Token \(shown once, keep it somewhere safe\): (ghd_[A-Za-z0-9_-]{43})$/m.exec(text)?.[1];
@@ -101,6 +109,45 @@ describe('gh-dash agents', () => {
     }
     expect(await run('--help')).toMatchObject({ code: 0, out: expect.stringContaining('Usage: gh-dash agents <command>'), err: '' });
     expect((await run('list')).out).not.toContain('--help');
+  });
+
+  it('takes a token of your own from stdin (--token-stdin), never from the command line', async () => {
+    const mine = 'my-own-agent-token-0123456789';
+    const { code, out } = await runWith(`${mine}\nignored second line\n`, 'add', 'Claude', '--token-stdin');
+    expect(code).toBe(0);
+    expect(out).toContain(`Token (shown once, keep it somewhere safe): ${mine}`);
+    expect(principal(mine)).toMatchObject({ id: 2, name: 'Claude' });
+    expect((await run('list')).out).toMatch(/^2 +Claude +my-o… /m);
+    const next = 'another-token-of-mine-98765';
+    expect((await runWith(`${next}\r\n`, 'regenerate', 'claude', '--token-stdin')).code).toBe(0);
+    expect(principal(mine)).toBeNull();
+    expect(principal(next)).toMatchObject({ id: 2 });
+    // Checked, and never another agent's.
+    expect(await runWith('short\n', 'add', 'Codex', '--token-stdin')).toMatchObject({ code: 1, err: expect.stringContaining('24 to 256') });
+    expect(await runWith(`${next}\n`, 'add', 'Codex', '--token-stdin')).toMatchObject({ code: 1, err: "gh-dash: That token is already another agent's" });
+    expect(await runWith('', 'add', 'Codex', '--token-stdin')).toMatchObject({ code: 1, err: 'gh-dash: --token-stdin: no token on stdin' });
+    // Not on the command line, and only with add or regenerate.
+    for (const args of [['add', 'Codex', '--token', mine], ['add', 'Codex', `--token=${mine}`], ['list', '--token-stdin'], ['revoke', 'claude', '--token-stdin']]) {
+      const res = await run(...args);
+      expect([args, res.code]).toEqual([args, 2]);
+      expect(res.err).not.toContain(`${mine} `);
+    }
+    expect((await run('add', 'Codex', '--token', mine)).err).toContain('Never put a token on the command line');
+    // Without the flag, stdin isn't read at all.
+    expect((await run('add', 'Codex')).code).toBe(0);
+  });
+
+  it('shows the built-in agent in the list, once it has written, without a token', async () => {
+    const db = openDb(join(dir, 'dash.db'));
+    try {
+      const { builtInAgent } = await import('./db/agents');
+      const agent = builtInAgent(db);
+      db.run('PRAGMA foreign_keys = OFF');
+      db.run(`INSERT INTO comment_events (at, actor_id, kind, repo_id, commit_oid, thread_id) VALUES ('2026-09-30T00:00:00.000Z', ?, 'resolved', 1, ?, 1)`, [agent.id, 'a'.repeat(40)]);
+    } finally {
+      db.close();
+    }
+    expect((await run('list')).out).toMatch(/^2 +Agent +- +\S+ +never +built in \(no token\)$/m);
   });
 
   it('reports a config it cannot read', async () => {

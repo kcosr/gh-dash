@@ -34,9 +34,9 @@ const fakeChild = () => {
   /** Every set-token the child got, in order (setToken and sendSetToken both send one). */
   const sent: [TokenChoice | null, string | null | undefined][] = [];
   const send = (choice: TokenChoice | null, token?: string | null) => (sent.push([choice, token]), validate(choice, token));
-  const agent = (id: number, name = 'Claude'): Agent => ({ id, name, tokenPrefix: 'ghd_abcd', createdAt: 'x', lastUsedAt: null, revokedAt: null });
+  const agent = (id: number, name = 'Claude'): Agent => ({ id, name, tokenPrefix: 'ghd_abcd', createdAt: 'x', lastUsedAt: null, revokedAt: null, builtIn: false });
   return {
-    status: 'running', apiUrl: null as string | null, lastError: null as string | null, sent, setToken: vi.fn(send), sendSetToken: vi.fn(send),
+    status: 'running', apiUrl: null as string | null, mcpUrl: null as string | null, lastError: null as string | null, sent, setToken: vi.fn(send), sendSetToken: vi.fn(send),
     addAgent: vi.fn(async (name: string) => ({ agent: agent(2, name), token: 'ghd_secret1' })),
     regenerateAgentToken: vi.fn(async (id: number) => ({ agent: agent(id), token: 'ghd_secret2' })),
     revokeAgent: vi.fn(async (id: number) => ({ ...agent(id), tokenPrefix: null, revokedAt: 'y' })),
@@ -182,17 +182,68 @@ describe('agents', () => {
   it("asks the child and hands the token back once, logging only the agent's name", async () => {
     const lines: string[] = [];
     desktop = new Desktop({ child: child as unknown as ServerChild, tokens: tokens as unknown as TokenStore, configPath, dataDir: join(dir, 'data'), version: '1', restart, log: (l) => lines.push(l) });
+    // The Local API serves MCP already: nothing else to do.
+    writeFileSync(configPath, JSON.stringify({ listen: true }));
     expect(await desktop.addAgent('Claude')).toEqual({ agent: expect.objectContaining({ id: 2, name: 'Claude' }), token: 'ghd_secret1' });
     expect(await desktop.regenerateAgentToken(2)).toMatchObject({ agent: { id: 2 }, token: 'ghd_secret2' });
     expect(await desktop.revokeAgent(2)).toMatchObject({ id: 2, tokenPrefix: null, revokedAt: 'y' });
-    expect(child.addAgent).toHaveBeenCalledWith('Claude');
-    expect(child.regenerateAgentToken).toHaveBeenCalledWith(2);
+    expect(child.addAgent).toHaveBeenCalledWith('Claude', undefined);
+    expect(child.regenerateAgentToken).toHaveBeenCalledWith(2, undefined);
     expect(child.revokeAgent).toHaveBeenCalledWith(2);
     expect(lines).toEqual(['[agents] added Claude (id 2)', '[agents] new token for Claude (id 2)', '[agents] revoked Claude (id 2)']);
     expect(lines.join('\n')).not.toContain('ghd_secret');
     // Nothing touches config.json or restarts the server.
-    expect(existsSync(configPath)).toBe(false);
+    expect(readConfig()).toEqual({ listen: true });
     expect(restart).not.toHaveBeenCalled();
+  });
+
+  it('turns MCP on for a new agent when the Local API is off (for agents alone) or its MCP is, and says so', async () => {
+    restart.mockImplementation(async () => {
+      const cfg = readConfig();
+      child.mcpUrl = cfg.listen && cfg.mcp !== false ? 'http://127.0.0.1:4780/mcp' : null;
+      return { ok: true, apiUrl: null };
+    });
+    // Off: the port comes on for agents alone, after the agent is made.
+    const made = await desktop.addAgent('Claude');
+    expect(made).toMatchObject({ agent: { name: 'Claude' }, token: 'ghd_secret1', enabledMcp: true });
+    expect(readConfig()).toEqual({ listen: true, restApi: false, mcp: true });
+    expect(restart).toHaveBeenCalledTimes(1);
+    expect(child.addAgent.mock.invocationCallOrder[0]).toBeLessThan(restart.mock.invocationCallOrder[0]!);
+    // On with MCP off: MCP comes on, the REST API stays as it was.
+    writeFileSync(configPath, JSON.stringify({ listen: true, mcp: false, password: 'longenough' }));
+    expect(await desktop.addAgent('Codex')).toMatchObject({ enabledMcp: true });
+    expect(readConfig()).toEqual({ listen: true, mcp: true, password: 'longenough' });
+    // Already served: nothing changes.
+    expect(await desktop.addAgent('Other')).not.toHaveProperty('enabledMcp');
+    expect(restart).toHaveBeenCalledTimes(2);
+  });
+
+  it('"Turn on MCP": the port for agents alone when it was off, MCP alone when it was on; nothing when it is served', async () => {
+    restart.mockImplementation(async () => ({ ok: true, apiUrl: null }));
+    await desktop.enableMcp();
+    expect(readConfig()).toEqual({ listen: true, restApi: false, mcp: true });
+    writeFileSync(configPath, JSON.stringify({ listen: true, restApi: true, mcp: false }));
+    await desktop.enableMcp();
+    expect(readConfig()).toEqual({ listen: true, restApi: true, mcp: true });
+    await desktop.enableMcp();
+    expect(restart).toHaveBeenCalledTimes(2);
+  });
+
+  it('passes a token the user chose to the child, after checking its shape, and never logs it', async () => {
+    const lines: string[] = [];
+    desktop = new Desktop({ child: child as unknown as ServerChild, tokens: tokens as unknown as TokenStore, configPath, dataDir: join(dir, 'data'), version: '1', restart, log: (l) => lines.push(l) });
+    writeFileSync(configPath, JSON.stringify({ listen: true }));
+    const mine = 'my-own-agent-token-0123456789';
+    await desktop.addAgent('Claude', mine);
+    await desktop.regenerateAgentToken(2, mine);
+    expect(child.addAgent).toHaveBeenCalledWith('Claude', mine);
+    expect(child.regenerateAgentToken).toHaveBeenCalledWith(2, mine);
+    expect(lines.join('\n')).not.toContain(mine);
+    for (const bad of ['short', 'has a space in it, somewhere here', 'tëst-token-with-accents-000', 'x'.repeat(257), 42]) {
+      expect(() => desktop.addAgent('Codex', bad), String(bad)).toThrow(ConfigInputError);
+      expect(() => desktop.regenerateAgentToken(2, bad), String(bad)).toThrow(ConfigInputError);
+    }
+    expect(child.addAgent).toHaveBeenCalledTimes(1);
   });
 
   it("refuses what isn't a name or an id before asking the child, and passes its refusals on as the user's to read", async () => {

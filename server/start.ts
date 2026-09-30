@@ -53,8 +53,13 @@ export interface RunningServer {
    * config.sourceConfigs and config.glabPath. Throws on a bad config.json, and then nothing changes.
    */
   reloadSources(): SourceRuntime[];
-  /** The TCP listener's local URL (http://127.0.0.1:<port> even when bound to all interfaces); null without one. */
+  /**
+   * The TCP listener's local URL (http://127.0.0.1:<port> even when bound to all interfaces) while it serves the REST
+   * API; null without one, or with the desktop app's REST API switch off.
+   */
   apiUrl: string | null;
+  /** Its MCP endpoint (`<url>/mcp`) while it serves MCP; null otherwise. */
+  mcpUrl: string | null;
   /** The socket or pipe the desktop transport listens on; null without one. */
   socketPath: string | null;
   /** Stops the scheduler, then closes the listeners and databases. Idempotent. */
@@ -115,6 +120,7 @@ export async function startServer(opts: StartOptions): Promise<RunningServer> {
     const deps: AppDeps = { db, config, sync, diffs, tokens, sources, bus };
 
     let apiUrl: string | null = null;
+    let mcpUrl: string | null = null;
     let bound: string | null = null;
     if (opts.tcp ?? config.listen) {
       const server = createAdaptorServer({ fetch: createApp({ ...deps, transport: { kind: 'tcp' } }).fetch }) as Server;
@@ -122,11 +128,14 @@ export async function startServer(opts: StartOptions): Promise<RunningServer> {
       await listen(server, (done) => server.listen(config.port, config.host, done), hostPort(config.host, config.port));
       const { port } = server.address() as AddressInfo;
       bound = `http://${hostPort(config.host, port)}`;
-      apiUrl = localApiUrl(config.host, port);
+      // What the port serves (the desktop app's switches; a headless server serves both).
+      const url = localApiUrl(config.host, port);
+      apiUrl = config.restApi ? url : null;
+      mcpUrl = config.mcp ? `${url}/mcp` : null;
     }
     if (opts.socket) {
       const { path, secret } = opts.socket;
-      const app = createApp({ ...deps, transport: { kind: 'desktop', secret }, localApiUrl: () => apiUrl });
+      const app = createApp({ ...deps, transport: { kind: 'desktop', secret }, localApiUrl: () => apiUrl, localMcpUrl: () => mcpUrl });
       const server = createAdaptorServer({ fetch: app.fetch }) as Server;
       servers.push(server);
       removeStaleSocket(path);
@@ -162,7 +171,7 @@ export async function startServer(opts: StartOptions): Promise<RunningServer> {
 
     let closing: Promise<void> | null = null;
     return {
-      config, db, tokens, sources, sync, diffs, bus, reloadSources, apiUrl, socketPath,
+      config, db, tokens, sources, sync, diffs, bus, reloadSources, apiUrl, mcpUrl, socketPath,
       close: () =>
         (closing ??= (async () => {
           await sync.shutdown();

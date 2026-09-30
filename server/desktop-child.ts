@@ -72,11 +72,11 @@ export function mainMessageHandler(
       const result = await need('sync').startOrQueue({ source: msg.source });
       post({ type: 'sync-started', id: msg.id, result });
     } else if (msg.type === 'add-agent') {
-      const { agent, token } = createAgent(agentsDb(), String(msg.name));
+      const { agent, token } = createAgent(agentsDb(), String(msg.name), undefined, msg.token ?? null);
       agentChanged();
       post({ type: 'agent-result', id: msg.id, agent, token });
     } else if (msg.type === 'regenerate-agent-token') {
-      const made = regenerateAgentToken(agentsDb(), msg.agent);
+      const made = regenerateAgentToken(agentsDb(), msg.agent, undefined, msg.token ?? null);
       if (!made) throw noAgent(msg.agent);
       agentChanged();
       post({ type: 'agent-result', id: msg.id, agent: made.agent, token: made.token });
@@ -142,7 +142,7 @@ export async function runDesktopChild(
     setTimeout(() => exit(1), FATAL_EXIT_DELAY_MS);
     return null;
   }
-  post({ type: 'ready', apiUrl: server.apiUrl });
+  post({ type: 'ready', apiUrl: server.apiUrl, mcpUrl: server.mcpUrl });
   started(mainMessageHandler(server, post, exit));
   return server;
 }

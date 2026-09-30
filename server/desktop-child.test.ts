@@ -214,6 +214,22 @@ describe('main → server messages for agents', () => {
     expect(heard).toEqual([{ type: 'agents' }, { type: 'agents' }, { type: 'agents' }]);
   });
 
+  it('uses a token the user chose, checked there, and never tells anyone but main', async () => {
+    const { db, handle, posted } = setup();
+    const mine = 'my-own-agent-token-0123456789';
+    await handle({ type: 'add-agent', id: 1, name: 'Claude', token: mine });
+    expect(posted[0]).toMatchObject({ type: 'agent-result', id: 1, agent: { tokenPrefix: 'my-o' }, token: mine });
+    expect(principalForToken(db, mine)).toMatchObject({ name: 'Claude' });
+    await handle({ type: 'add-agent', id: 2, name: 'Codex', token: mine });
+    await handle({ type: 'add-agent', id: 3, name: 'Codex', token: 'too short' });
+    await handle({ type: 'regenerate-agent-token', id: 4, agent: 2, token: 'a-second-token-of-my-own-000' });
+    expect(posted.slice(1)).toEqual([
+      { type: 'request-failed', id: 2, message: "That token is already another agent's" },
+      { type: 'request-failed', id: 3, message: expect.stringContaining('24 to 256') },
+      expect.objectContaining({ type: 'agent-result', id: 4, token: 'a-second-token-of-my-own-000' }),
+    ]);
+  });
+
   it("answers request-failed with the reason, and changes nothing", async () => {
     const { handle, posted, heard } = setup();
     await handle({ type: 'add-agent', id: 1, name: 'Claude' });
@@ -271,7 +287,7 @@ describe('runDesktopChild', () => {
     expect(server.socketPath).toBe(env[DESKTOP_ENV.socket]);
     await vi.waitFor(() => expect(posted).toHaveLength(2));
     expect(posted).toEqual([
-      { type: 'ready', apiUrl: null },
+      { type: 'ready', apiUrl: null, mcpUrl: null },
       { type: 'token-result', id: 7, ok: true, account: expect.objectContaining({ source: 'none', choice: null }) },
     ]);
     send({ type: 'shutdown' });

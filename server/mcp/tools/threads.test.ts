@@ -241,4 +241,23 @@ describe('threads of a branch and of the PRs from it', () => {
     expect(ids(await h.ok('list_threads', { repo: 'alice/app', pr: 2 }))).toEqual([h.p2.id]);
     expect(ids(await h.ok('list_threads', { repo: 'alice/app', branch: 'feature' }))).toEqual([h.p2.id]);
   });
+
+  it('places a branch thread of an earlier line of work on the merged PR that shows it, and says so', async () => {
+    const h = group();
+    h.db.run("UPDATE comment_threads SET created_at = '2026-09-01T00:00:00.000Z' WHERE id = ?", [h.b1.id]);
+    h.db.run("UPDATE pull_requests SET state = 'merged', merged_at = '2026-09-02T12:00:00Z', closed_at = '2026-09-02T12:00:00Z' WHERE number = 3 AND repo_id = (SELECT id FROM repos WHERE key = 'alice/app')");
+    servePr(h.code, 'alice/app', 3, HEAD3, BASE, [addedFile('src/a.ts', ['zero', 'one', 'two'])]);
+    const listed = byId(await h.ok('list_threads', { repo: 'alice/app' }));
+    // Its own target is the branch, but the branch's review starts after the merge: PR 3's diff is where it is, and is read.
+    expect(listed.get(h.b1.id)).toMatchObject({
+      ref: 'alice/app branch feature', target: { kind: 'branch', branch: 'feature' }, shownIn: 'alice/app#3', placement: { kind: 'line', startLine: 3, endLine: 3, relocated: true },
+    });
+    expect(h.code.requests.filter((r) => r.startsWith('branch') || r.startsWith('compare'))).toEqual([]);
+    expect(await h.ok('get_thread', { id: h.b1.id })).toMatchObject({ shownIn: 'alice/app#3', placement: { kind: 'line', startLine: 3, relocated: true } });
+    // Threads of the current line of work, and PR and commit threads, are shown where they are made.
+    for (const t of [h.p2, h.p3, h.o, h.c]) expect(listed.get(t.id)!.shownIn, `thread ${t.id}`).toBeUndefined();
+    // The merged PR's own list has it too, on its diff, and the branch's review no longer does.
+    expect(byId(await h.ok('list_threads', { repo: 'alice/app', pr: 3 })).get(h.b1.id)).toMatchObject({ shownIn: 'alice/app#3', placement: { kind: 'line', startLine: 3 } });
+    expect(ids(await h.ok('list_threads', { repo: 'alice/app', branch: 'feature' }))).not.toContain(h.b1.id);
+  });
 });

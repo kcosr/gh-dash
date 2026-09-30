@@ -295,4 +295,27 @@ describe('show', () => {
     expect(await h.fails('show', { repo: 'alice/app', branch: 'main' })).toBe('main is the default branch: branches are compared against it');
     expect(await h.fails('show', { repo: 'alice/app', branch: '-x' })).toContain('expected a git branch name');
   });
+
+  it("shows a branch thread of an earlier line of work on the merged PR that ended it, where the user finds it", async () => {
+    const h = setup();
+    const app = "(SELECT id FROM repos WHERE key = 'alice/app')";
+    const seen: StreamMessage[] = [];
+    h.bus.subscribe((m) => seen.push(m), { window: true });
+    // PR 1 (merged) is from branch fix/login of this repo: the thread made before its merge is in its line of work, not the next.
+    h.db.run(`UPDATE pull_requests SET head_ref = 'fix/login', cross_repo = 0, merged_at = '2026-09-10T00:00:00Z' WHERE repo_id = ${app} AND number = 1`);
+    const before = comments.createBranchThread(h.deps, h.agent, 'alice/app', 'fix/login', { commitOid: HEAD, path: 'src/a.ts', body: 'Before the merge' });
+    h.db.run("UPDATE comment_threads SET created_at = '2026-09-09T00:00:00.000Z' WHERE id = ?", [before.id]);
+    const after = comments.createBranchThread(h.deps, h.agent, 'alice/app', 'fix/login', { commitOid: HEAD, body: 'After the merge' });
+    expect(await h.ok('show', { thread_id: before.id })).toEqual({ windows: 1 });
+    expect(await h.ok('show', { thread_id: after.id })).toEqual({ windows: 1 });
+    const shown = seen.filter((m) => m.type === 'show').map((m) => m.type === 'show' && m.target);
+    expect(shown).toEqual([
+      { repo: 'alice/app', pr: 1, threadId: before.id, path: 'src/a.ts' },
+      { repo: 'alice/app', branch: 'fix/login', threadId: after.id },
+    ]);
+    // Until the sync says PR 1 is from this repo, its merge ends nothing: the branch's review shows both.
+    h.db.run(`UPDATE pull_requests SET cross_repo = NULL WHERE repo_id = ${app} AND number = 1`);
+    expect(await h.ok('show', { thread_id: before.id })).toEqual({ windows: 1 });
+    expect(seen.filter((m) => m.type === 'show').at(-1)).toMatchObject({ target: { repo: 'alice/app', branch: 'fix/login', threadId: before.id } });
+  });
 });

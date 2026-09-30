@@ -41,6 +41,7 @@ export function sortAgents(list: readonly Agent[]): Agent[] {
 export function agentNameProblem(name: string, taken: readonly Pick<Agent, 'name'>[]): string | null {
   const n = name.trim();
   if (!n) return 'Give it a name';
+  if (/^\d+$/.test(n)) return 'Not only digits (those are ids)';
   if (Array.from(n).length > 64) return 'At most 64 characters';
   if (n.toLowerCase() === 'you') return '“You” is you: give the agent another name';
   if (taken.some((a) => a.name.toLowerCase() === n.toLowerCase())) return 'An agent has that name: give it a new token instead';

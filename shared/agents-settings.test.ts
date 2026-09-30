@@ -38,6 +38,8 @@ describe('Settings → Agents', () => {
     expect(agentNameProblem('YOU', list)).toBe('“You” is you: give the agent another name');
     expect(agentNameProblem('x'.repeat(65), list)).toBe('At most 64 characters');
     expect(agentNameProblem('x'.repeat(64), list)).toBeNull();
+    expect(agentNameProblem('42', list)).toBe('Not only digits (those are ids)');
+    expect(agentNameProblem('R2D2', list)).toBeNull();
     expect(agentNameProblem(' Codex ', list)).toBeNull();
   });
 });

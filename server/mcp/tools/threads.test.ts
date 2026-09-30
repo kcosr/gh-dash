@@ -260,4 +260,21 @@ describe('threads of a branch and of the PRs from it', () => {
     expect(byId(await h.ok('list_threads', { repo: 'alice/app', pr: 3 })).get(h.b1.id)).toMatchObject({ shownIn: 'alice/app#3', placement: { kind: 'line', startLine: 3 } });
     expect(ids(await h.ok('list_threads', { repo: 'alice/app', branch: 'feature' }))).not.toContain(h.b1.id);
   });
+
+  it("names the diff a scoped list placed a thread on, not the one that shows it elsewhere", async () => {
+    const h = group();
+    const app = "(SELECT id FROM repos WHERE key = 'alice/app')";
+    // PR 2 was closed, then PR 3 merged: the branch thread made before both is in each one's line of work, and shown in 3's.
+    h.db.run("UPDATE comment_threads SET created_at = '2026-09-01T00:00:00.000Z' WHERE id = ?", [h.b1.id]);
+    h.db.run(`UPDATE pull_requests SET state = 'closed', closed_at = '2026-09-01T12:00:00Z' WHERE repo_id = ${app} AND number = 2`);
+    h.db.run(`UPDATE pull_requests SET state = 'merged', merged_at = '2026-09-02T12:00:00Z', closed_at = '2026-09-02T12:00:00Z' WHERE repo_id = ${app} AND number = 3`);
+    servePr(h.code, 'alice/app', 3, HEAD3, BASE, [addedFile('src/a.ts', ['zero', 'one', 'two'])]);
+    // Listed with PR 2: on PR 2's diff (line 2), and named so; PR 3's diff has it on line 3.
+    expect(byId(await h.ok('list_threads', { repo: 'alice/app', pr: 2 })).get(h.b1.id)).toMatchObject({ shownIn: 'alice/app#2', placement: { kind: 'line', startLine: 2 } });
+    expect(byId(await h.ok('list_threads', { repo: 'alice/app', pr: 3 })).get(h.b1.id)).toMatchObject({ shownIn: 'alice/app#3', placement: { kind: 'line', startLine: 3 } });
+    // Unscoped, each is where it is shown.
+    expect(byId(await h.ok('list_threads', { repo: 'alice/app' })).get(h.b1.id)).toMatchObject({ shownIn: 'alice/app#3', placement: { kind: 'line', startLine: 3 } });
+    // A PR's own thread listed with the PR is on it, and says nothing more.
+    expect(byId(await h.ok('list_threads', { repo: 'alice/app', pr: 2 })).get(h.p2.id)!.shownIn).toBeUndefined();
+  });
 });

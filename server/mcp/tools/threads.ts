@@ -1,6 +1,7 @@
 // list_threads, get_thread: gh-dash's comment threads on PRs, branches and commits, placed on the current diff.
 
 import { z } from 'zod';
+import type { ThreadView } from '../../../shared/api';
 import { decodeCursor, encodeCursor } from '../../api/scope';
 import { SELF_PRINCIPAL_ID, viewOfThread } from '../../db/comments';
 import { listThreadItems, type ThreadFilter } from '../../db/thread-list';
@@ -93,6 +94,9 @@ export const listThreads = readTool({
           ? { repo: ref.key, kind: 'branch', branch: args.branch }
           : undefined;
     const placements = await placeThreads(deps, res.items, signal, { against });
+    // What `shownIn` names is where each is placed: the listed PR or branch for all but commit threads (a thread its merged
+    // PR shows may be shared with a PR closed before that merge, whose diff differs), else the thread's own view.
+    const shownOn: ThreadView | undefined = against && (against.kind === 'pr' ? { kind: 'pr', number: against.number } : { kind: 'branch', branch: against.branch });
     const kindOf = repoKinds(db);
     return {
       items: res.items.map((t) =>
@@ -100,7 +104,7 @@ export const listThreads = readTool({
           kind: kindOf(t.repo),
           title: t.targetTitle,
           placement: placements.get(t.id)!,
-          view: t.view,
+          view: shownOn && t.kind !== 'commit' ? shownOn : t.view,
           comments: args.include_comments,
           snippetChars: LIST_SNIPPET_CHARS,
         }),

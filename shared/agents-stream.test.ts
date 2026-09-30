@@ -111,7 +111,7 @@ describe('the stream: server-sent events', () => {
     const got: string[] = [];
     let reconnects = 0;
     const ctl = new AbortController();
-    const run = runStream({ onMessage: (m) => got.push(m.type), onReconnect: () => { reconnects++; } }, ctl.signal, fetchFn as typeof fetch);
+    const run = runStream({ onMessage: (m) => got.push(m.type), onReconnect: () => { reconnects++; } }, ctl.signal, { fetch: fetchFn as typeof fetch });
     await vi.advanceTimersByTimeAsync(10_000);
     expect(fetchFn.mock.calls[0]![0]).toBe(STREAM_URL);
     expect(got).toEqual(['agents', 'comments']);
@@ -122,13 +122,34 @@ describe('the stream: server-sent events', () => {
     vi.useRealTimers();
   });
 
+  it('counts the first connection as a reconnect when resumed (a tab back from the background)', async () => {
+    const enc = new TextEncoder();
+    // A stream that stays open until the request is aborted, as fetch's does.
+    const fetchFn = vi.fn(async (_url: string, init: RequestInit) => new Response(new ReadableStream({
+      start(c) {
+        c.enqueue(enc.encode(': ping\n\n'));
+        init.signal!.addEventListener('abort', () => c.error(new DOMException('Aborted', 'AbortError')));
+      },
+    }), { status: 200, headers: { 'content-type': 'text/event-stream' } }));
+    const seen: boolean[] = [];
+    for (const resumed of [false, true]) {
+      const ctl = new AbortController();
+      const run = runStream({ onMessage: () => {}, onReconnect: () => { seen.push(resumed); } }, ctl.signal, { resumed, fetch: fetchFn as typeof fetch });
+      await new Promise((r) => setTimeout(r, 20));
+      ctl.abort();
+      await run;
+    }
+    expect(seen).toEqual([true]);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+  });
+
   it("leaves a server without the stream alone for a while (an older one's 404, or its app page)", async () => {
     vi.useFakeTimers();
     const fetchFn = vi.fn()
       .mockResolvedValueOnce(new Response('<!doctype html>', { status: 200, headers: { 'content-type': 'text/html' } }))
       .mockResolvedValue(new Response('{"error":"Not found"}', { status: 404 }));
     const ctl = new AbortController();
-    const run = runStream({ onMessage: () => {}, onReconnect: () => {} }, ctl.signal, fetchFn as typeof fetch);
+    const run = runStream({ onMessage: () => {}, onReconnect: () => {} }, ctl.signal, { fetch: fetchFn as typeof fetch });
     await vi.advanceTimersByTimeAsync(4 * 60_000);
     expect(fetchFn).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(2 * 60_000);

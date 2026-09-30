@@ -83,10 +83,14 @@ export interface StreamHandlers {
   onReconnect: () => void;
 }
 
-/** Keep a connection to the stream until `signal` aborts. */
-export async function runStream(handlers: StreamHandlers, signal: AbortSignal, fetchFn: typeof fetch = fetch): Promise<void> {
+/**
+ * Keep a connection to the stream until `signal` aborts. `resumed`: an earlier connection was let go (a tab in the
+ * background), so the first one is a reconnect too.
+ */
+export async function runStream(handlers: StreamHandlers, signal: AbortSignal, opts: { resumed?: boolean; fetch?: typeof fetch } = {}): Promise<void> {
+  const fetchFn = opts.fetch ?? fetch;
   let attempt = 0;
-  let connected = false;
+  let connected = !!opts.resumed;
   const wait = (ms: number) => new Promise<void>((resolve) => {
     const t = setTimeout(resolve, ms);
     signal.addEventListener('abort', () => { clearTimeout(t); resolve(); }, { once: true });
@@ -131,15 +135,43 @@ export function applyStreamMessage(qc: QueryClient, msg: StreamMessage): void {
   for (const queryKey of streamInvalidations(msg)) void qc.invalidateQueries({ queryKey });
 }
 
-/** Mount once per window (the shell). `onShow`: an agent's `show`, for the chip. */
+/** How long a browser tab stays connected in the background before it lets go of its connection. */
+export const HIDDEN_MS = 60_000;
+
+/**
+ * Mount once per window (the shell). `onShow`: an agent's `show`, for the chip. A browser tab left in the background
+ * lets go of its connection after a minute (a browser has six per server over HTTP/1.1, and each tab would hold one),
+ * and catches up when it's shown again. The desktop app's window keeps it: its requests don't use the network.
+ */
 export function useStream(onShow: (msg: Extract<StreamMessage, { type: 'show' }>) => void): void {
   const qc = useQueryClient();
   useEffect(() => {
-    const ctl = new AbortController();
-    void runStream({
+    let ctl: AbortController | null = null;
+    let ran = false;
+    let timer = 0;
+    const handlers: StreamHandlers = {
       onMessage: (msg) => (msg.type === 'show' ? onShow(msg) : applyStreamMessage(qc, msg)),
       onReconnect: () => void qc.invalidateQueries({ predicate: (q) => missedByStream(q.queryKey) }),
-    }, ctl.signal);
-    return () => ctl.abort();
+    };
+    const start = () => {
+      if (ctl) return;
+      ctl = new AbortController();
+      void runStream(handlers, ctl.signal, { resumed: ran });
+      ran = true;
+    };
+    const stop = () => { ctl?.abort(); ctl = null; };
+    const keep = !!window.ghDashDesktop;
+    const onVisibility = () => {
+      clearTimeout(timer);
+      if (document.visibilityState === 'visible') start();
+      else if (!keep) timer = window.setTimeout(stop, HIDDEN_MS);
+    };
+    start();
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener('visibilitychange', onVisibility);
+      stop();
+    };
   }, [qc, onShow]);
 }

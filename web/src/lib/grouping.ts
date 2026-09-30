@@ -232,8 +232,8 @@ export function commentSummary(events: readonly Pick<CommentEvent, 'kind' | 'com
   const per = new Map<CommentEventKind, Set<number>>();
   for (const e of events) {
     const set = per.get(e.kind) ?? new Set<number>();
-    // Edits and deletions count comments; the rest count threads (a thread replied to twice is one).
-    set.add(KIND_WORDS[e.kind].noun === 'comment' ? e.comment.eventId : e.comment.threadId);
+    // Edits and deletions count comments (one edited twice is one), the rest threads (one replied to twice is one).
+    set.add(KIND_WORDS[e.kind].noun === 'comment' ? e.comment.commentId ?? -e.comment.eventId : e.comment.threadId);
     per.set(e.kind, set);
   }
   const kinds = KIND_ORDER.filter((k) => per.has(k));

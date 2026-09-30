@@ -817,6 +817,8 @@ export type CommentEventKind = 'thread_opened' | 'replied' | 'edited' | 'comment
 export interface CommentActivity {
   eventId: number;
   threadId: number;
+  /** The comment it is about (its first, for thread_opened); null for resolved, reopened and thread_deleted. */
+  commentId: number | null;
   /** False once the thread is deleted. */
   live: boolean;
   /** Who did it (also the event's `actor`, as a name without a login: `isMe` for you, an agent otherwise). */

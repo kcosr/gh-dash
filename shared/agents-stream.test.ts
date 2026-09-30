@@ -6,8 +6,9 @@ import {
   STREAM_URL, applyStreamMessage, missedByStream, parseStreamMessage, retryDelay, runStream, sseParser, streamInvalidations,
 } from '../web/src/api/stream';
 import {
-  FOLLOW_KEY, MAX_CHIPS, addChip, getFollowAgents, setFollowAgents, showDiffId, showPatch, showPhrase, showWhat,
+  FOLLOW_KEY, MAX_CHIPS, addChip, getFollowAgents, noteShow, openShown, setFollowAgents, showDiffId, showPatch, showPhrase, showWhat,
 } from '../web/src/lib/show';
+import type { OpenDeps, OpenPlace } from '../web/src/lib/show';
 import type { ShowChip } from '../web/src/lib/show';
 import { parseUrlState, patchSearch } from '../web/src/lib/urlState';
 
@@ -143,6 +144,57 @@ describe('the stream: server-sent events', () => {
     expect(fetchFn).toHaveBeenCalledTimes(2);
   });
 
+  it("doesn't pile up abort listeners over a long outage (one per wait, gone when the wait ends)", async () => {
+    vi.useFakeTimers();
+    const fetchFn = vi.fn(async () => { throw new TypeError('Failed to fetch'); });
+    const ctl = new AbortController();
+    // Abort listeners on the signal: added less removed.
+    let listening = 0;
+    const add = ctl.signal.addEventListener.bind(ctl.signal);
+    const remove = ctl.signal.removeEventListener.bind(ctl.signal);
+    ctl.signal.addEventListener = ((type: string, fn: EventListener, o?: AddEventListenerOptions) => { if (type === 'abort') listening++; add(type, fn, o); }) as typeof ctl.signal.addEventListener;
+    ctl.signal.removeEventListener = ((type: string, fn: EventListener) => { if (type === 'abort') listening--; remove(type, fn); }) as typeof ctl.signal.removeEventListener;
+    const run = runStream({ onMessage: () => {}, onReconnect: () => {} }, ctl.signal, { fetch: fetchFn as unknown as typeof fetch });
+    await vi.advanceTimersByTimeAsync(24 * 30_000);
+    expect(fetchFn.mock.calls.length).toBeGreaterThan(24);
+    expect(listening).toBeLessThanOrEqual(1);
+    ctl.abort();
+    await run;
+    expect(listening).toBe(0);
+    vi.useRealTimers();
+  });
+
+  it('retries a busy server (503) like a gateway error, after its Retry-After when longer', async () => {
+    expect(retryDelay(0, 503)).toBe(1000);
+    expect(retryDelay(2, 503)).toBe(4000);
+    expect(retryDelay(0, 503, 20)).toBe(20_000);
+    expect(retryDelay(4, 503, 2)).toBe(16_000);
+    // Never longer than a 4xx's wait.
+    expect(retryDelay(0, 503, 3600)).toBe(5 * 60_000);
+    vi.useFakeTimers();
+    const enc = new TextEncoder();
+    const fetchFn = vi.fn()
+      .mockResolvedValueOnce(new Response('{"error":"Too many streams"}', { status: 503, headers: { 'retry-after': '5' } }))
+      .mockImplementationOnce(async (_url: string, init: RequestInit) => new Response(new ReadableStream({
+        start(c) {
+          c.enqueue(enc.encode('data: {"type":"agents"}\n\n'));
+          init.signal!.addEventListener('abort', () => c.error(new DOMException('Aborted', 'AbortError')));
+        },
+      }), { status: 200, headers: { 'content-type': 'text/event-stream' } }))
+      .mockImplementation(hang);
+    const got: string[] = [];
+    const ctl = new AbortController();
+    const run = runStream({ onMessage: (m) => got.push(m.type), onReconnect: () => {} }, ctl.signal, { fetch: fetchFn as typeof fetch });
+    await vi.advanceTimersByTimeAsync(4_900);
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(got).toEqual(['agents']);
+    ctl.abort();
+    await run;
+    vi.useRealTimers();
+  });
+
   it("leaves a server without the stream alone for a while (an older one's 404, or its app page)", async () => {
     vi.useFakeTimers();
     const fetchFn = vi.fn()
@@ -230,5 +282,95 @@ describe('show: following agents', () => {
     vi.stubGlobal('localStorage', { getItem: () => { throw new Error('denied'); }, setItem: () => { throw new Error('denied'); }, removeItem: () => {} });
     expect(() => setFollowAgents(true)).not.toThrow();
     expect(getFollowAgents()).toBe(false);
+  });
+});
+
+describe('show: opening, and giving up when superseded', () => {
+  /** A window at `search` on `pathname`; the threads refetch waits until `release()`. */
+  function windowAt(search: string, pathname = '/comments') {
+    let at = { pathname, search };
+    const place = (): OpenPlace => ({ s: parseUrlState(at.search, 'comments'), ...at });
+    const releases: (() => void)[] = [];
+    const d: OpenDeps & { go: (search: string, pathname?: string) => void; release: () => Promise<void> } = {
+      place,
+      set: vi.fn((patch) => { at = { ...at, search: patchSearch(at.search, 'comments', patch) }; }),
+      navigate: vi.fn(),
+      refetchThreads: vi.fn(() => new Promise<void>((r) => releases.push(r))),
+      nudge: vi.fn(),
+      go: (next, p = at.pathname) => { at = { pathname: p, search: next }; },
+      release: async () => { releases.shift()?.(); await new Promise((r) => setTimeout(r, 0)); },
+    };
+    return d;
+  }
+  const OPEN = '?diff=alice/app%237&thread=1';
+
+  it('opens another diff at once, and the one already open after refetching its threads (then goes there again)', async () => {
+    const d = windowAt('?status=all');
+    expect(await openShown(d, { repo: 'alice/app', pr: 7, threadId: 5 })).toBe(true);
+    expect(d.set).toHaveBeenCalledWith({ diff: 'alice/app#7', thread: 5, file: null, only: null });
+    expect(d.refetchThreads).not.toHaveBeenCalled();
+    const e = windowAt(OPEN);
+    const p = openShown(e, { repo: 'alice/app', pr: 7, threadId: 5 });
+    expect(e.set).not.toHaveBeenCalled();
+    await e.release();
+    expect(await p).toBe(true);
+    expect(e.refetchThreads).toHaveBeenCalledWith('alice/app#7');
+    expect(e.set).toHaveBeenCalledWith({ diff: 'alice/app#7', thread: 5, file: null, only: null });
+    expect(e.nudge).toHaveBeenCalledTimes(1);
+    // A repo alone: its page, in the context.
+    const f = windowAt('?source=github.com&state=open', '/prs');
+    expect(await openShown(f, { repo: 'alice/app' })).toBe(true);
+    expect(f.navigate).toHaveBeenCalledWith('/repos/alice/app?source=github.com');
+  });
+
+  it('gives up when the window moved on during the wait (not when the diff only reported its file)', async () => {
+    const d = windowAt(OPEN);
+    const p = openShown(d, { repo: 'alice/app', pr: 7, threadId: 5 });
+    d.go('?diff=alice/app%239');
+    await d.release();
+    expect(await p).toBe(false);
+    expect(d.set).not.toHaveBeenCalled();
+    const e = windowAt(OPEN, '/comments');
+    const q = openShown(e, { repo: 'alice/app', pr: 7, threadId: 5 });
+    e.go(OPEN, '/activity');
+    await e.release();
+    expect(await q).toBe(false);
+    // The diff reporting the file in view as it scrolls is not moving on.
+    const f = windowAt(OPEN);
+    const r = openShown(f, { repo: 'alice/app', pr: 7, threadId: 5 });
+    f.go(`${OPEN}&file=src/a.ts`);
+    await f.release();
+    expect(await r).toBe(true);
+  });
+
+  it('gives way to a newer open', async () => {
+    const d = windowAt(OPEN);
+    const older = openShown(d, { repo: 'alice/app', pr: 7, threadId: 5 });
+    const newer = openShown(d, { repo: 'alice/app', pr: 8, threadId: 6 });
+    expect(await newer).toBe(true);
+    await d.release();
+    expect(await older).toBe(false);
+    expect(d.set).toHaveBeenCalledTimes(1);
+    expect(d.set).toHaveBeenCalledWith({ diff: 'alice/app#8', thread: 6, file: null, only: null });
+  });
+
+  it('asks again whether it may open automatically, and gives way to a newer show, after the wait', async () => {
+    let may = true;
+    const d = windowAt(OPEN);
+    const p = openShown(d, { repo: 'alice/app', pr: 7, threadId: 5 }, () => may);
+    may = false; // you started typing, or turned following off
+    await d.release();
+    expect(await p).toBe(false);
+    may = true;
+    const q = openShown(d, { repo: 'alice/app', pr: 7, threadId: 5 }, () => may);
+    noteShow(); // another show came, offered as a chip
+    await d.release();
+    expect(await q).toBe(false);
+    expect(d.set).not.toHaveBeenCalled();
+    // An Open you clicked isn't cancelled by a chip arriving meanwhile.
+    const r = openShown(d, { repo: 'alice/app', pr: 7, threadId: 5 });
+    noteShow();
+    await d.release();
+    expect(await r).toBe(true);
   });
 });

@@ -70,11 +70,38 @@ export function sseParser(onData: (data: string) => void): (chunk: string) => vo
 
 /**
  * How long to wait before connecting again: after an error answer that won't change soon (no stream on this server,
- * signed out) a long while; after a dropped connection, a network error or a gateway's 5xx, 1 s doubling to 30 s.
+ * signed out) a long while; after a dropped connection, a network error or a 5xx (a gateway, or a server with too
+ * many streams open), 1 s doubling to 30 s, or the answer's Retry-After (seconds) when that is longer, up to the
+ * long wait.
  */
-export function retryDelay(attempt: number, status: number | null): number {
-  if (status !== null && status >= 400 && status < 500) return 5 * 60_000;
-  return Math.min(30_000, 1000 * 2 ** Math.max(0, attempt));
+export function retryDelay(attempt: number, status: number | null, retryAfter: number | null = null): number {
+  const long = 5 * 60_000;
+  if (status !== null && status >= 400 && status < 500) return long;
+  const backoff = Math.min(30_000, 1000 * 2 ** Math.max(0, attempt));
+  return retryAfter !== null && retryAfter > 0 ? Math.min(long, Math.max(backoff, retryAfter * 1000)) : backoff;
+}
+
+/** A Retry-After header's seconds (a date is read as the time until it); null when absent or unreadable. */
+function retryAfterOf(res: Response): number | null {
+  const v = res.headers.get('retry-after')?.trim();
+  if (!v) return null;
+  if (/^\d+$/.test(v)) return Number(v);
+  const t = Date.parse(v);
+  return Number.isFinite(t) ? Math.max(0, (t - Date.now()) / 1000) : null;
+}
+
+/** Resolves after `ms`, or at once when `signal` aborts (already or meanwhile); leaves no listener behind either way. */
+export function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve) => {
+    if (signal.aborted) return resolve();
+    const done = () => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal.addEventListener('abort', done, { once: true });
+  });
 }
 
 export interface StreamHandlers {
@@ -91,16 +118,14 @@ export async function runStream(handlers: StreamHandlers, signal: AbortSignal, o
   const fetchFn = opts.fetch ?? fetch;
   let attempt = 0;
   let connected = !!opts.resumed;
-  const wait = (ms: number) => new Promise<void>((resolve) => {
-    const t = setTimeout(resolve, ms);
-    signal.addEventListener('abort', () => { clearTimeout(t); resolve(); }, { once: true });
-  });
   while (!signal.aborted) {
     let status: number | null = null;
+    let retryAfter: number | null = null;
     let opened = 0;
     try {
       const res = await fetchFn(STREAM_URL, { credentials: 'same-origin', headers: { Accept: 'text/event-stream' }, cache: 'no-store', signal });
       status = res.status;
+      retryAfter = retryAfterOf(res);
       if (res.ok && res.body && (res.headers.get('content-type') ?? '').includes('text/event-stream')) {
         if (connected) handlers.onReconnect();
         connected = true;
@@ -126,7 +151,7 @@ export async function runStream(handlers: StreamHandlers, signal: AbortSignal, o
     }
     // Back off from the first try again, unless it closed at once (a proxy that won't keep it open).
     if (opened && Date.now() - opened > 10_000) attempt = 0;
-    await wait(retryDelay(attempt++, status));
+    await abortableDelay(retryDelay(attempt++, status, retryAfter), signal);
   }
 }
 

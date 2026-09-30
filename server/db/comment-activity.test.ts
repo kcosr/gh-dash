@@ -57,7 +57,7 @@ describe('comment events in the activity feed', () => {
       type: 'comment', kind: 'thread_opened', at: at(20), repo: 'alice/app',
       actor: { login: null, name: 'You', avatarUrl: null, isMe: true },
       comment: {
-        eventId: expect.any(Number), threadId: t.id, live: true, by: me, target: { kind: 'pr', number: 2, title: 'Add parser' }, commitOid: HEAD,
+        eventId: expect.any(Number), threadId: t.id, commentId: t.comments[0]!.id, live: true, by: me, target: { kind: 'pr', number: 2, title: 'Add parser' }, commitOid: HEAD,
         path: 'src/a.ts', side: 'new', startLine: 3, endLine: 4, excerpt: 'Why two?',
       },
     });
@@ -66,6 +66,9 @@ describe('comment events in the activity feed', () => {
     // What was said went with it.
     expect(items[0]).toMatchObject({ comment: { live: false, target: { kind: 'commit', oid: C3, title: 'Refactor parser module' }, path: null, excerpt: null } });
     expect(items[1]).toMatchObject({ comment: { live: false, excerpt: null } });
+    // The comment each is about: the reply's own, none for a status change or a deleted thread.
+    const reply = db.get<{ id: number }>('SELECT id FROM comments WHERE thread_id = ? ORDER BY id DESC LIMIT 1', [t.id])!.id;
+    expect(items.map((e) => e.type === 'comment' && e.comment.commentId)).toEqual([null, c.comments[0]!.id, null, reply, t.comments[0]!.id]);
   });
 
   it("titles a commit the sync doesn't hold from a synced PR that lists it, else leaves it null", () => {

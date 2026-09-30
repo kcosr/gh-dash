@@ -378,6 +378,7 @@ const schemas: Record<string, Schema> = {
   CommentActivity: obj({
     eventId: int(),
     threadId: int(),
+    commentId: nullable(int('The comment it is about (the first, for thread_opened); null for resolved, reopened and thread_deleted')),
     live: { ...bool, description: 'False once the thread is deleted' },
     by: ref('Principal'),
     target: {

@@ -70,10 +70,10 @@ function TokenPanel({ shown, url, onDone }: { shown: Shown; url: string; onDone:
         <pre className="code">{c.claude}</pre>
         <Copy text={c.claude} what="Command" />
       </div>
-      <h3>Codex <small>~/.codex/config.toml</small></h3>
+      <h3>Codex <small>adds it to ~/.codex/config.toml</small></h3>
       <div className="agent-snip">
-        <pre className="code">{c.codexToml}</pre>
-        <Copy text={c.codexToml} what="Config" />
+        <pre className="code">{c.codex}</pre>
+        <Copy text={c.codex} what="Command" />
       </div>
       <small className="muted">Codex reads the token from the environment it starts in:</small>
       <div className="agent-snip">

@@ -12,14 +12,15 @@ export const mcpUrl = (apiBase: string | null): string | null => apiLink(apiBase
 export const TOKEN_ENV = 'GH_DASH_AGENT_TOKEN';
 
 /**
- * What to paste to connect an agent. Claude Code: one command (the header carries the token; `--scope user` makes it
- * every project's, as gh-dash spans them). Codex: its config.toml entry reading the token from the environment, and
- * the line that sets it.
+ * What to paste to connect an agent (the lines the mcp-core lane checked with Claude Code 2.1 and Codex 0.155). Claude
+ * Code: one command, the token in its header; `-s user` makes it every project's (gh-dash spans them; the default is
+ * the project it's run in). Codex: its command names the variable the token is read from (it writes
+ * `[mcp_servers.gh-dash]` with `url` and `bearer_token_env_var` to ~/.codex/config.toml), and the line that sets it.
  */
-export function agentConfig(url: string, token: string): { claude: string; codexToml: string; codexEnv: string } {
+export function agentConfig(url: string, token: string): { claude: string; codex: string; codexEnv: string } {
   return {
-    claude: `claude mcp add --transport http --scope user gh-dash ${url} --header "Authorization: Bearer ${token}"`,
-    codexToml: `[mcp_servers.gh-dash]\nurl = "${url}"\nbearer_token_env_var = "${TOKEN_ENV}"`,
+    claude: `claude mcp add -s user --transport http gh-dash ${url} --header "Authorization: Bearer ${token}"`,
+    codex: `codex mcp add gh-dash --url ${url} --bearer-token-env-var ${TOKEN_ENV}`,
     codexEnv: `export ${TOKEN_ENV}=${token}`,
   };
 }

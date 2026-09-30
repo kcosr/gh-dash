@@ -14,10 +14,10 @@ describe('Settings → Agents', () => {
 
   it('gives ready-to-paste config for Claude Code and Codex', () => {
     const c = agentConfig('http://127.0.0.1:4780/mcp', 'ghd_secret');
-    expect(c.claude).toBe('claude mcp add --transport http --scope user gh-dash http://127.0.0.1:4780/mcp --header "Authorization: Bearer ghd_secret"');
+    expect(c.claude).toBe('claude mcp add -s user --transport http gh-dash http://127.0.0.1:4780/mcp --header "Authorization: Bearer ghd_secret"');
     // Codex names the variable, not the token.
-    expect(c.codexToml).toBe(`[mcp_servers.gh-dash]\nurl = "http://127.0.0.1:4780/mcp"\nbearer_token_env_var = "${TOKEN_ENV}"`);
-    expect(c.codexToml).not.toContain('ghd_secret');
+    expect(c.codex).toBe(`codex mcp add gh-dash --url http://127.0.0.1:4780/mcp --bearer-token-env-var ${TOKEN_ENV}`);
+    expect(c.codex).not.toContain('ghd_secret');
     expect(c.codexEnv).toBe(`export ${TOKEN_ENV}=ghd_secret`);
   });
 

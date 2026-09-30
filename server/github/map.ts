@@ -105,6 +105,7 @@ export function mapPullRequest(p: GqlPullRequest): PrRecord {
     headRef: p.headRefName,
     headOid: p.headRefOid,
     baseRef: p.baseRefName,
+    crossRepo: p.isCrossRepository,
     labels: mapLabels(p.labels),
     closingIssues: (p.closingIssuesReferences?.nodes ?? []).map((i) => ({
       number: i.number,

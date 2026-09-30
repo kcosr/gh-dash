@@ -102,7 +102,7 @@ function pr(number: number, state: PrRecord['state'], at: string): PrRecord {
     number, title: `PR ${number}`, body: '', state, isDraft: false, author: alice, mergedBy: state === 'merged' ? 'alice' : null,
     createdAt: at, updatedAt: at, mergedAt: state === 'merged' ? at : null, closedAt: state === 'open' ? null : at, activityAt: at,
     additions: 1, deletions: 0, changedFiles: 1, commitCount: 1, headRef: 'topic', headOid: sha(String(number)), baseRef: 'main',
-    labels: [], closingIssues: [], url: `https://code.example.com/pr/${number}`, commits: [],
+    crossRepo: false, labels: [], closingIssues: [], url: `https://code.example.com/pr/${number}`, commits: [],
     mergeCommitOid: null, squashCommitOid: null,
   };
 }

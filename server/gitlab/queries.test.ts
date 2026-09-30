@@ -46,6 +46,10 @@ describe('GitLab GraphQL documents against the fields known to be absent on 19.3
   it('reads the documents it means to check', () => {
     expect(documents.map(([name]) => name)).toEqual(expect.arrayContaining(['MERGE_REQUESTS', 'RECHECK_MERGE_REQUESTS', 'PROJECT_LOOKUP', 'MR_REVISION']));
     expect(names(queries.MERGE_REQUESTS).has('mergeCommitSha')).toBe(true);
+    // The fake instance answers whatever is asked: nothing else notices the fork check's fields going missing.
+    for (const document of [queries.MERGE_REQUESTS, queries.RECHECK_MERGE_REQUESTS]) {
+      expect(['sourceProjectId', 'targetProjectId'].map((field) => names(document).has(field))).toEqual([true, true]);
+    }
   });
 
   it.each([...documents, ['CREDENTIAL_CHECK', CREDENTIAL_CHECK]])('%s requests none of them', (_name, document) => {

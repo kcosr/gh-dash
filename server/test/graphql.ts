@@ -27,7 +27,7 @@ export function repoNode(key: string, over: Partial<RepoNode> = {}): RepoNode {
 export function prNode(key: string, number: number, title: string, at = '2026-09-25T10:00:00Z'): GqlPullRequest {
   return {
     number, title, body: '', state: 'MERGED', isDraft: false, url: `https://github.com/${key}/pull/${number}`, createdAt: at, updatedAt: at,
-    mergedAt: at, closedAt: at, additions: 1, deletions: 0, changedFiles: 1, headRefName: 'fix', headRefOid: 'a'.repeat(40), baseRefName: 'main',
+    mergedAt: at, closedAt: at, additions: 1, deletions: 0, changedFiles: 1, headRefName: 'fix', headRefOid: 'a'.repeat(40), baseRefName: 'main', isCrossRepository: false,
     author: { login: 'someone', avatarUrl: null }, mergedBy: { login: 'someone' }, labels: { nodes: [] }, closingIssuesReferences: { nodes: [] },
     commits: { totalCount: 0, nodes: [] },
   };

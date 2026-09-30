@@ -115,6 +115,10 @@ export interface GqlMergeRequest {
   closedAt: string | null;
   sourceBranch: string;
   targetBranch: string;
+  /** The project the source branch is in; null once that project (a fork) is deleted. */
+  sourceProjectId: number | null;
+  /** The project the MR is in. */
+  targetProjectId: number;
   diffHeadSha: string | null;
   commitCount: number | null;
   author: GqlUser | null;

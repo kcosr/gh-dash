@@ -5,6 +5,7 @@ import { GITHUB } from '../test/seed';
 import { ensureSource } from './sources';
 import {
   addManual,
+  JOIN_BRANCH_GROUP,
   linkCommitsToPrs,
   markReposRemoved,
   markUnavailable,
@@ -324,7 +325,7 @@ describe('linkCommitsToPrs', () => {
     return {
       number, title: `MR ${number}`, body: '', state: 'merged', isDraft: false, author: null, mergedBy: null, createdAt: at, updatedAt: at, mergedAt: at,
       closedAt: at, activityAt: at, additions: 0, deletions: 0, changedFiles: 0, commitCount: 0, headRef: 'topic', headOid: sha('f'), baseRef: 'main',
-      labels: [], closingIssues: [], url: 'u', commits: [], mergeCommitOid: null, squashCommitOid: null, ...over,
+      crossRepo: null, labels: [], closingIssues: [], url: 'u', commits: [], mergeCommitOid: null, squashCommitOid: null, ...over,
     };
   }
   const listed = (...cs: string[]) => cs.map((c) => ({ oid: sha(c), headline: c, committedAt: '2026-09-19T00:00:00Z', url: 'u', author: { login: null, name: null, email: null, avatarUrl: null } }));
@@ -367,5 +368,117 @@ describe('linkCommitsToPrs', () => {
     expect(db.get('SELECT merge_commit_oid, squash_commit_oid FROM pull_requests WHERE number = 1')).toEqual({ merge_commit_oid: sha('a'), squash_commit_oid: sha('b') });
     upsertPr(db, repo, pr(1));
     expect(db.get('SELECT merge_commit_oid, squash_commit_oid FROM pull_requests WHERE number = 1')).toEqual({ merge_commit_oid: null, squash_commit_oid: null });
+  });
+});
+
+describe('upsertPr: cross_repo and branch groups', () => {
+  const at = '2026-09-21T00:00:00Z';
+  const sha = (c: string) => c.repeat(40).slice(0, 40);
+  function pr(number: number, over: Partial<PrRecord> = {}): PrRecord {
+    return {
+      number, title: `PR ${number}`, body: '', state: 'open', isDraft: false, author: null, mergedBy: null, createdAt: at, updatedAt: at, mergedAt: null,
+      closedAt: null, activityAt: at, additions: 0, deletions: 0, changedFiles: 0, commitCount: 0, headRef: `topic-${number}`, headOid: sha('f'), baseRef: 'main',
+      crossRepo: null, labels: [], closingIssues: [], url: 'u', commits: [], mergeCommitOid: null, squashCommitOid: null, ...over,
+    };
+  }
+  function repos() {
+    const db = openDb(':memory:');
+    return { db, app: upsertOwned(db, GITHUB, rec('alice/app', 'R_app'), NOW), lib: upsertOwned(db, GITHUB, rec('alice/lib', 'R_lib'), NOW) };
+  }
+  const crossRepo = (db: Db, repoId: number, number: number) =>
+    db.get<{ cross_repo: number | null }>('SELECT cross_repo FROM pull_requests WHERE repo_id = ? AND number = ?', [repoId, number])!.cross_repo;
+  /** A thread as the comments code makes them (branch left to the caller); returns its id. */
+  const thread = (db: Db, repoId: number, prNumber: number | null, branch: string | null = null) =>
+    db.run(
+      `INSERT INTO comment_threads (repo_id, pr_number, commit_oid, branch, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
+      [repoId, prNumber, sha('a'), branch, at, at],
+    ).lastInsertRowid;
+  const branches = (db: Db) => db.all<{ id: number; branch: string | null }>('SELECT id, branch FROM comment_threads ORDER BY id').map((t) => t.branch);
+
+  it('stores 1 for a PR from a fork, 0 for one from the same repo and NULL while not known', () => {
+    const { db, app } = repos();
+    upsertPr(db, app, pr(1, { crossRepo: true }));
+    upsertPr(db, app, pr(2, { crossRepo: false }));
+    upsertPr(db, app, pr(3, { crossRepo: null }));
+    expect([1, 2, 3].map((n) => crossRepo(db, app, n))).toEqual([1, 0, null]);
+  });
+
+  it('takes the value a later record brings, but a record that does not know it leaves the stored one', () => {
+    const { db, app } = repos();
+    upsertPr(db, app, pr(1, { crossRepo: null }));
+    upsertPr(db, app, pr(1, { crossRepo: true }));
+    expect(crossRepo(db, app, 1)).toBe(1);
+    upsertPr(db, app, pr(1, { crossRepo: null, title: 'Renamed' }));
+    expect(crossRepo(db, app, 1)).toBe(1);
+    expect(db.get('SELECT title FROM pull_requests WHERE number = 1')).toEqual({ title: 'Renamed' });
+    upsertPr(db, app, pr(2, { crossRepo: false }));
+    upsertPr(db, app, pr(2, { crossRepo: null }));
+    expect(crossRepo(db, app, 2)).toBe(0);
+    upsertPr(db, app, pr(2, { crossRepo: false }));
+    expect(crossRepo(db, app, 2)).toBe(0);
+  });
+
+  it('gives the threads of a PR without a branch its head branch once the PR is known to be from this repo', () => {
+    const { db, app } = repos();
+    // Made before v9, or before the sync knew: no branch, until the PR says.
+    const [a, b] = [thread(db, app, 1), thread(db, app, 1)];
+    db.run(`INSERT INTO comment_events (at, actor_id, kind, repo_id, pr_number, commit_oid, thread_id) VALUES (?, 1, 'thread_opened', ?, 1, ?, ?)`, [at, app, sha('a'), a]);
+    upsertPr(db, app, pr(1, { headRef: 'feature/x', crossRepo: null }));
+    expect(branches(db)).toEqual([null, null]);
+    upsertPr(db, app, pr(1, { headRef: 'feature/x', crossRepo: false }));
+    expect(db.all('SELECT id, branch FROM comment_threads ORDER BY id')).toEqual([{ id: a, branch: 'feature/x' }, { id: b, branch: 'feature/x' }]);
+    // The event log keeps what it was written with.
+    expect(db.all('SELECT thread_id, branch FROM comment_events')).toEqual([{ thread_id: a, branch: null }]);
+    // A thread made later, without a branch (its PR's flag was unknown then), joins on the PR's next sync.
+    thread(db, app, 1);
+    upsertPr(db, app, pr(1, { headRef: 'feature/x', crossRepo: false }));
+    expect(branches(db)).toEqual(['feature/x', 'feature/x', 'feature/x']);
+  });
+
+  it('does it in the transaction of the upsert', () => {
+    const { db, app } = repos();
+    thread(db, app, 1);
+    expect(() => db.tx(() => {
+      upsertPr(db, app, pr(1, { crossRepo: false }));
+      expect(branches(db)).toEqual(['topic-1']);
+      throw new Error('rolled back');
+    })).toThrow('rolled back');
+    expect(branches(db)).toEqual([null]);
+    expect(db.get('SELECT 1 FROM pull_requests')).toBeUndefined();
+  });
+
+  it('leaves a PR from a fork, and a PR without a head branch, without one', () => {
+    const { db, app } = repos();
+    thread(db, app, 1);
+    thread(db, app, 2);
+    upsertPr(db, app, pr(1, { crossRepo: true }));
+    upsertPr(db, app, pr(2, { crossRepo: false, headRef: '' }));
+    expect(branches(db)).toEqual([null, null]);
+  });
+
+  it('never replaces a branch a thread has', () => {
+    const { db, app } = repos();
+    thread(db, app, 1, 'earlier-name');
+    thread(db, app, 1);
+    upsertPr(db, app, pr(1, { headRef: 'feature/x', crossRepo: false }));
+    expect(branches(db)).toEqual(['earlier-name', 'feature/x']);
+  });
+
+  it("leaves other PRs' threads, other repos' and threads that are not on a PR alone", () => {
+    const { db, app, lib } = repos();
+    thread(db, app, 2);
+    thread(db, lib, 1);
+    thread(db, app, null);
+    thread(db, app, null, 'a-branch');
+    upsertPr(db, app, pr(1, { headRef: 'feature/x', crossRepo: false }));
+    expect(branches(db)).toEqual([null, null, null, 'a-branch']);
+    upsertPr(db, lib, pr(1, { headRef: 'feature/y', crossRepo: false }));
+    expect(branches(db)).toEqual([null, 'feature/y', null, 'a-branch']);
+  });
+
+  it('searches the threads by the PR they are on, not the whole table', () => {
+    const { db } = repos();
+    const plan = db.all<{ detail: string }>(`EXPLAIN QUERY PLAN ${JOIN_BRANCH_GROUP}`, ['b', 1, 1]).map((r) => r.detail);
+    expect(plan).toEqual([expect.stringMatching(/^SEARCH comment_threads USING INDEX comment_threads_target \(repo_id=\? AND pr_number=\?\)$/)]);
   });
 });

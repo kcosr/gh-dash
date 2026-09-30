@@ -11,8 +11,11 @@ import type {
 } from './records';
 import { type SourceRef, sourceKey } from './sources';
 
-function upsertSql(table: string, columns: string[], conflict: string[]): string {
-  const updates = columns.filter((c) => !conflict.includes(c)).map((c) => `${c} = excluded.${c}`);
+/** `keep`: columns whose stored value stands when the new one is NULL (the writer doesn't know it, which says nothing). */
+function upsertSql(table: string, columns: string[], conflict: string[], keep: string[] = []): string {
+  const updates = columns
+    .filter((c) => !conflict.includes(c))
+    .map((c) => (keep.includes(c) ? `${c} = coalesce(excluded.${c}, ${table}.${c})` : `${c} = excluded.${c}`));
   return `INSERT INTO ${table} (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')})
     ON CONFLICT(${conflict.join(', ')}) DO UPDATE SET ${updates.join(', ')} RETURNING id`;
 }
@@ -206,27 +209,41 @@ const UPSERT_PR = upsertSql(
   [
     'repo_id', 'number', 'title', 'body', 'state', 'is_draft', ...actorCols('author'), 'merged_by', 'created_at', 'updated_at',
     'merged_at', 'closed_at', 'activity_at', 'additions', 'deletions', 'changed_files', 'commit_count', 'head_ref', 'base_ref',
-    'labels', 'closing_issues', 'url', 'head_oid', 'merge_commit_oid', 'squash_commit_oid',
+    'labels', 'closing_issues', 'url', 'head_oid', 'merge_commit_oid', 'squash_commit_oid', 'cross_repo',
   ],
   ['repo_id', 'number'],
+  // A PR never goes from known to unknown (PrRecord.crossRepo).
+  ['cross_repo'],
 );
 
+// A PR's threads made before v9, or before the sync knew its cross_repo, have no branch; once the PR is known to be from
+// this repo they join its head branch's group (shared/api.ts, "Branch groups"; schema.ts, BRANCHES). Only threads
+// without a branch: a thread's branch is never changed once set. Keyed like the threads are (repo and PR number, the
+// comment_threads_target index), so it reads this PR's threads and nothing else, on every sync of the PR. comment_events,
+// a log, keep the branch they were written with.
+export const JOIN_BRANCH_GROUP = 'UPDATE comment_threads SET branch = ? WHERE repo_id = ? AND pr_number = ? AND branch IS NULL';
+
 export function upsertPr(db: Db, repoId: number, p: PrRecord): boolean {
-  const isNew = !db.get('SELECT 1 FROM pull_requests WHERE repo_id = ? AND number = ?', [repoId, p.number]);
-  const { id } = db.get<{ id: number }>(UPSERT_PR, [
-    repoId, p.number, p.title, p.body, p.state, Number(p.isDraft), ...actorVals(p.author), p.mergedBy, p.createdAt, p.updatedAt,
-    p.mergedAt, p.closedAt, p.activityAt, p.additions, p.deletions, p.changedFiles, p.commitCount, p.headRef, p.baseRef,
-    JSON.stringify(p.labels), JSON.stringify(p.closingIssues), p.url, p.headOid, p.mergeCommitOid, p.squashCommitOid,
-  ])!;
-  db.run('DELETE FROM pr_commits WHERE pr_id = ?', [id]);
-  p.commits.forEach((c, i) => {
-    db.run(
-      `INSERT INTO pr_commits (pr_id, position, oid, headline, committed_at, url, author_login, author_name, author_email, author_avatar)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [id, i, c.oid, c.headline, c.committedAt, c.url, c.author.login, c.author.name, c.author.email, c.author.avatarUrl],
-    );
+  // One transaction, so a PR's row and its threads' branch never disagree; inside the sync's write transaction it joins that.
+  return db.tx(() => {
+    const isNew = !db.get('SELECT 1 FROM pull_requests WHERE repo_id = ? AND number = ?', [repoId, p.number]);
+    const { id } = db.get<{ id: number }>(UPSERT_PR, [
+      repoId, p.number, p.title, p.body, p.state, Number(p.isDraft), ...actorVals(p.author), p.mergedBy, p.createdAt, p.updatedAt,
+      p.mergedAt, p.closedAt, p.activityAt, p.additions, p.deletions, p.changedFiles, p.commitCount, p.headRef, p.baseRef,
+      JSON.stringify(p.labels), JSON.stringify(p.closingIssues), p.url, p.headOid, p.mergeCommitOid, p.squashCommitOid,
+      p.crossRepo === null ? null : Number(p.crossRepo),
+    ])!;
+    db.run('DELETE FROM pr_commits WHERE pr_id = ?', [id]);
+    p.commits.forEach((c, i) => {
+      db.run(
+        `INSERT INTO pr_commits (pr_id, position, oid, headline, committed_at, url, author_login, author_name, author_email, author_avatar)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [id, i, c.oid, c.headline, c.committedAt, c.url, c.author.login, c.author.name, c.author.email, c.author.avatarUrl],
+      );
+    });
+    if (p.crossRepo === false && p.headRef) db.run(JOIN_BRANCH_GROUP, [p.headRef, repoId, p.number]);
+    return isNew;
   });
-  return isNew;
 }
 
 const UPSERT_COMMIT = upsertSql(

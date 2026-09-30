@@ -454,7 +454,8 @@ function CommentLine({ e, diff, onOpen, quote = false, verb = false }: { e: Comm
     {!c.live && e.kind !== 'thread_deleted' && <span className="cm-gone">deleted</span>}
     {!quote && <time dateTime={e.at} title={fmtDateTime(e.at)}>{fmtTime(e.at)}</time>}
   </>;
-  if (quote && !c.excerpt && c.live) return null;
+  // A deleted comment keeps no words (the log drops them): the row's own words say it all.
+  if (quote && !c.excerpt) return null;
   const cls = quote ? `ev-desc cm-quote${c.live ? '' : ' gone'}` : `c-li cm-li${c.live ? '' : ' gone'}`;
   return c.live
     ? <button type="button" className={cls} data-diff={diff} title={title} onClick={() => onOpen(diff, c.threadId)}>{words}</button>

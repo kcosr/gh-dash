@@ -2,6 +2,7 @@
  * Settings → Agents: how an agent connects (the MCP URL, and ready-to-paste config for Claude Code and Codex) and how
  * each agent is described. Pure, so the view and the tests share it.
  */
+import { DELETED_AGENT_NAME } from '../../../shared/agents';
 import type { Agent, Source } from '../../../shared/api';
 import { apiLink } from './account';
 
@@ -34,12 +35,12 @@ export function shellArg(value: string): string {
   return /^[A-Za-z0-9_@%+=:,./-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-/** Agents in the order Settings lists them: active ones by name, the built-in one, then revoked ones (newest revoked first). */
+/** Agents in the order Settings lists them: active ones by name, the built-in one, then disabled ones (newest disabled first). */
 export function sortAgents(list: readonly Agent[]): Agent[] {
   return [...list].sort((a, b) =>
-    Number(!!a.revokedAt) - Number(!!b.revokedAt)
+    Number(!!a.disabledAt) - Number(!!b.disabledAt)
     || Number(!!a.builtIn) - Number(!!b.builtIn)
-    || (a.revokedAt && b.revokedAt ? b.revokedAt.localeCompare(a.revokedAt) : 0)
+    || (a.disabledAt && b.disabledAt ? b.disabledAt.localeCompare(a.disabledAt) : 0)
     || a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
     || a.id - b.id);
 }
@@ -62,7 +63,8 @@ export function agentTokenProblem(token: string): string | null {
 
 /**
  * A new agent's name: what's wrong with it, or null. The server's rules (server/db/agents.ts `agentName`), checked
- * here first; it has the last word. Names tell agents apart, in any case, revoked ones too.
+ * here first; it has the last word. Names tell agents apart, in any case, disabled ones too; a deleted agent's name is
+ * free, and names like the one it takes ("Deleted agent #4") are kept for them.
  */
 export function agentNameProblem(name: string, taken: readonly Pick<Agent, 'name'>[]): string | null {
   const n = name.trim();
@@ -71,6 +73,7 @@ export function agentNameProblem(name: string, taken: readonly Pick<Agent, 'name
   if (Array.from(n).length > 64) return 'At most 64 characters';
   if (n.toLowerCase() === 'you') return '“You” is you: give the agent another name';
   if (/^agent(?: \(no token\)(?: \d+)?)?$/i.test(n)) return 'That is the built-in agent’s name (requests without a token)';
+  if (DELETED_AGENT_NAME.test(n)) return 'Names like that are kept for deleted agents';
   if (taken.some((a) => a.name.toLowerCase() === n.toLowerCase())) return 'An agent has that name: give it a new token instead';
   return null;
 }
@@ -119,6 +122,6 @@ export function pickedSources(pick: SourcePick, known: readonly AgentSource[]): 
 export function agentsShown(list: readonly Agent[], builtInLive: boolean): Agent[] {
   const sorted = sortAgents(list);
   if (!builtInLive || sorted.some((a) => a.builtIn)) return sorted;
-  const builtIn: Agent = { id: 0, name: 'Agent', tokenPrefix: null, createdAt: '', lastUsedAt: null, revokedAt: null, builtIn: true, sources: null };
+  const builtIn: Agent = { id: 0, name: 'Agent', tokenPrefix: null, createdAt: '', lastUsedAt: null, disabledAt: null, builtIn: true, sources: null };
   return sortAgents([...sorted, builtIn]);
 }

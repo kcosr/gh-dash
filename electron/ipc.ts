@@ -84,10 +84,13 @@ export function registerIpc(desktop: Desktop, window: () => BrowserWindow | null
     const file = await pickFile('Locate the GitLab CLI (glab)', 'Use this glab', 'glab.exe');
     return file ? desktop.setGlabPath(file) : null;
   });
-  // Agents (MCP): the child makes and revokes them; the new token comes back here once, for the renderer to show.
+  // Agents (MCP): the child makes, changes and deletes them; the new token comes back here once, for the renderer to show.
   handle(DESKTOP_IPC.addAgent, (name, token, sources) => desktop.addAgent(name, token, sources));
   handle(DESKTOP_IPC.regenerateAgentToken, (id, token) => desktop.regenerateAgentToken(id, token));
-  handle(DESKTOP_IPC.revokeAgent, (id) => desktop.revokeAgent(id));
+  handle(DESKTOP_IPC.setAgentEnabled, (id, enabled) => desktop.setAgentEnabled(id, enabled));
+  handle(DESKTOP_IPC.agentFootprint, (id) => desktop.agentFootprint(id));
+  handle(DESKTOP_IPC.deleteAgent, (id) => desktop.deleteAgent(id));
+  handle(DESKTOP_IPC.keptAgentToken, (id) => desktop.keptAgentToken(id));
   handle(DESKTOP_IPC.setAgentSources, (id, sources) => desktop.setAgentSources(id, sources));
   handle(DESKTOP_IPC.enableMcp, () => desktop.enableMcp());
   // The picker names the host the file is for; main keeps the file for that host only.

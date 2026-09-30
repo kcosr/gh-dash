@@ -163,10 +163,10 @@ describe('ServerChild', () => {
   it("sends the agents' requests and hands back the agent, with its token when there is one", async () => {
     await startRunning();
     const proc = procs[0]!;
-    const agent = { id: 2, name: 'Claude', tokenPrefix: 'ghd_abcd', createdAt: 'x', lastUsedAt: null, revokedAt: null, builtIn: false, sources: null };
+    const agent = { id: 2, name: 'Claude', tokenPrefix: 'ghd_abcd', createdAt: 'x', lastUsedAt: null, disabledAt: null, builtIn: false, sources: null };
     const added = child.addAgent('Claude');
     const regenerated = child.regenerateAgentToken(2);
-    const revoked = child.revokeAgent(2);
+    const disabled = child.setAgentEnabled(2, false);
     const taken = child.addAgent('Claude');
     const tokenless = child.regenerateAgentToken(3);
     await flush();
@@ -174,20 +174,55 @@ describe('ServerChild', () => {
     expect(proc.sent).toEqual([
       { type: 'add-agent', id: a, name: 'Claude' },
       { type: 'regenerate-agent-token', id: g, agent: 2 },
-      { type: 'revoke-agent', id: r, agent: 2 },
+      { type: 'set-agent-enabled', id: r, agent: 2, enabled: false },
       { type: 'add-agent', id: t, name: 'Claude' },
       { type: 'regenerate-agent-token', id: n, agent: 3 },
     ]);
     proc.reply({ type: 'agent-result', id: a!, agent, token: 'ghd_first' });
     proc.reply({ type: 'agent-result', id: g!, agent, token: 'ghd_second' });
-    proc.reply({ type: 'agent-result', id: r!, agent: { ...agent, tokenPrefix: null, revokedAt: 'y' }, token: null });
+    proc.reply({ type: 'agent-result', id: r!, agent: { ...agent, disabledAt: 'y' }, token: null });
     proc.reply({ type: 'request-failed', id: t!, message: 'There is already an agent called Claude (id 2); regenerate its token instead' });
     proc.reply({ type: 'agent-result', id: n!, agent, token: null });
     expect(await added).toEqual({ agent, token: 'ghd_first' });
     expect(await regenerated).toEqual({ agent, token: 'ghd_second' });
-    expect(await revoked).toMatchObject({ id: 2, revokedAt: 'y' });
+    expect(await disabled).toMatchObject({ id: 2, tokenPrefix: 'ghd_abcd', disabledAt: 'y' });
     await expect(taken).rejects.toThrow('There is already an agent called Claude');
     await expect(tokenless).rejects.toThrow('The gh-dash server answered without a token.');
+  });
+
+  it('enables an agent, asks what one wrote and deletes one, handing back what the child says', async () => {
+    await startRunning();
+    const proc = procs[0]!;
+    const agent = { id: 2, name: 'Claude', tokenPrefix: 'ghd_abcd', createdAt: 'x', lastUsedAt: null, disabledAt: null, builtIn: false, sources: null };
+    const footprint = { comments: 12, threads: 5, openThreads: 3, opened: 4 };
+    const enabled = child.setAgentEnabled(2, true);
+    const asked = child.agentFootprint(2);
+    const deleted = child.deleteAgent(2);
+    const gone = child.deleteAgent(2);
+    const mixed = child.agentFootprint(3);
+    const checked = child.checkAgentToken(2, 'ab'.repeat(32));
+    await flush();
+    const [e, f, d, g, m, c] = proc.sent.map((x) => (x as { id: number }).id);
+    expect(proc.sent).toEqual([
+      { type: 'set-agent-enabled', id: e, agent: 2, enabled: true },
+      { type: 'agent-footprint', id: f, agent: 2 },
+      { type: 'delete-agent', id: d, agent: 2 },
+      { type: 'delete-agent', id: g, agent: 2 },
+      { type: 'agent-footprint', id: m, agent: 3 },
+      { type: 'check-agent-token', id: c, agent: 2, hash: 'ab'.repeat(32) },
+    ]);
+    proc.reply({ type: 'agent-token-checked', id: c!, matches: true });
+    expect(await checked).toBe(true);
+    proc.reply({ type: 'agent-deleted', id: d!, deleted: { id: 2, name: 'Claude', deletedAs: 'Deleted agent #2', footprint } });
+    proc.reply({ type: 'agent-footprint', id: f!, footprint });
+    proc.reply({ type: 'agent-result', id: e!, agent, token: null });
+    proc.reply({ type: 'request-failed', id: g!, message: 'There is no agent with id 2.' });
+    proc.reply({ type: 'agent-result', id: m!, agent, token: null });
+    expect(await enabled).toEqual(agent);
+    expect(await asked).toEqual(footprint);
+    expect(await deleted).toEqual({ id: 2, name: 'Claude', deletedAs: 'Deleted agent #2', footprint });
+    await expect(gone).rejects.toThrow('There is no agent with id 2.');
+    await expect(mixed).rejects.toThrow('The gh-dash server answered agent-result instead of agent-footprint.');
   });
 
   it('passes a token the user chose to the child with the request, and nothing when there is none', async () => {
@@ -207,7 +242,7 @@ describe('ServerChild', () => {
   it('sends the sources an agent may reach, for a new agent (none: every source) and one already there', async () => {
     await startRunning();
     const proc = procs[0]!;
-    const agent = { id: 2, name: 'Claude', tokenPrefix: 'ghd_abcd', createdAt: 'x', lastUsedAt: null, revokedAt: null, builtIn: false, sources: ['github.com'] };
+    const agent = { id: 2, name: 'Claude', tokenPrefix: 'ghd_abcd', createdAt: 'x', lastUsedAt: null, disabledAt: null, builtIn: false, sources: ['github.com'] };
     void child.addAgent('Claude', null, ['github.com']);
     void child.addAgent('Codex', null, null);
     const limited = child.setAgentSources(2, ['github.com']);

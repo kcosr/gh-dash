@@ -131,7 +131,8 @@ function run() {
     };
   };
 
-  // github.com's pasted token in github-token.enc (as before); each GitLab source's in tokens/<host>.enc.
+  // github.com's pasted token in github-token.enc (as before); each GitLab source's in tokens/<host>.enc; each agent's
+  // in agent-tokens/<id>.enc.
   const tokens = new TokenStores(userData, log);
   // Assigned right below; the callbacks only run once the child starts.
   let desktop!: Desktop;
@@ -148,6 +149,7 @@ function run() {
     child,
     tokens: tokens.github,
     sourceTokens: (host) => tokens.source(host),
+    agentTokens: (id) => tokens.agent(id),
     configPath,
     dataDir,
     version: app.getVersion(),

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { agentDeletionSentences, deletedAgentName, warningText } from './agents';
 import type { Agent } from './api';
 import {
   TOKEN_ENV, agentConfig, agentNameProblem, agentReach, agentsShown, agentTokenProblem, generateAgentToken, mcpUrl, pickedSources, pickOf, shellArg, sortAgents,
@@ -16,7 +17,7 @@ function sh(prelude: string, line: string): string {
 }
 
 const agent = (id: number, name: string, o: Partial<Agent> = {}): Agent =>
-  ({ id, name, tokenPrefix: 'ghd_abcd', createdAt: '2026-09-01T00:00:00.000Z', lastUsedAt: null, revokedAt: null, builtIn: false, sources: null, ...o });
+  ({ id, name, tokenPrefix: 'ghd_abcd', createdAt: '2026-09-01T00:00:00.000Z', lastUsedAt: null, disabledAt: null, builtIn: false, sources: null, ...o });
 
 describe('Settings → Agents', () => {
   it("serves MCP at the API's URL, /mcp; none when nothing listens", () => {
@@ -52,12 +53,12 @@ describe('Settings → Agents', () => {
     expect(shellArg("a'b")).toBe(`'a'\\''b'`);
   });
 
-  it('lists active agents by name, then revoked ones, newest revoked first', () => {
+  it('lists active agents by name, then disabled ones, newest disabled first', () => {
     const list = [
-      agent(1, 'codex', { revokedAt: '2026-09-02T00:00:00.000Z', tokenPrefix: null }),
+      agent(1, 'codex', { disabledAt: '2026-09-02T00:00:00.000Z' }),
       agent(2, 'Zed'),
       agent(3, 'claude'),
-      agent(4, 'old', { revokedAt: '2026-09-05T00:00:00.000Z', tokenPrefix: null }),
+      agent(4, 'old', { disabledAt: '2026-09-05T00:00:00.000Z' }),
     ];
     expect(sortAgents(list).map((a) => a.id)).toEqual([3, 2, 4, 1]);
     // The built-in agent after the ones you added.
@@ -76,6 +77,50 @@ describe('Settings → Agents', () => {
     expect(agentNameProblem(' Codex ', list)).toBeNull();
     for (const name of ['agent', 'Agent (no token)', 'agent (no token) 3']) expect(agentNameProblem(name, list), name).toMatch(/built-in agent/);
     expect(agentNameProblem('Agent Smith', list)).toBeNull();
+    for (const name of ['Deleted agent #4', ' deleted AGENT #12 ']) expect(agentNameProblem(name, list), name).toBe('Names like that are kept for deleted agents');
+    expect(agentNameProblem('Deleted agent', list)).toBeNull();
+  });
+
+  describe('deleting an agent: what the warning says', () => {
+    const say = (f: { comments: number; threads: number; openThreads: number; opened?: number }, disabled = false, done = false) =>
+      agentDeletionSentences({ id: 4, disabled }, { opened: 0, ...f }, done);
+
+    it('says how many comments stay, in how many threads, how many are open, and that its token stops', () => {
+      expect(deletedAgentName(4)).toBe('Deleted agent #4');
+      expect(say({ comments: 12, threads: 5, openThreads: 3, opened: 4 })).toEqual([
+        { text: 'Its 12 comments in 5 threads stay, shown as by “Deleted agent #4”.' },
+        { text: '3 of those threads are still open.', stress: true },
+        { text: 'Its token stops working now.' },
+        { text: "This can't be undone." },
+      ]);
+      expect(warningText(say({ comments: 12, threads: 5, openThreads: 1 }))).toBe(
+        "Its 12 comments in 5 threads stay, shown as by “Deleted agent #4”. 1 of those threads is still open. Its token stops working now. This can't be undone.",
+      );
+    });
+
+    it('leaves out open threads when there are none, and says it plainly for one comment, one thread, both or all', () => {
+      expect(warningText(say({ comments: 3, threads: 2, openThreads: 0 }))).toBe(
+        "Its 3 comments in 2 threads stay, shown as by “Deleted agent #4”. Its token stops working now. This can't be undone.",
+      );
+      expect(warningText(say({ comments: 1, threads: 1, openThreads: 1 }))).toBe(
+        "Its comment stays, shown as by “Deleted agent #4”. That thread is still open. Its token stops working now. This can't be undone.",
+      );
+      expect(say({ comments: 4, threads: 1, openThreads: 0 })[0]!.text).toBe('Its 4 comments in one thread stay, shown as by “Deleted agent #4”.');
+      expect(say({ comments: 4, threads: 2, openThreads: 2 })[1]).toEqual({ text: 'Both of those threads are still open.', stress: true });
+      expect(say({ comments: 9, threads: 6, openThreads: 6 })[1]).toEqual({ text: 'All 6 of those threads are still open.', stress: true });
+    });
+
+    it("says an agent that wrote nothing hasn't, and nothing is lost", () => {
+      expect(warningText(say({ comments: 0, threads: 0, openThreads: 0 }))).toBe("It hasn't written anything. Its token stops working now.");
+    });
+
+    it('says a disabled agent’s token goes with it, and, once done, what happened', () => {
+      expect(say({ comments: 0, threads: 0, openThreads: 0 }, true).at(-1)).toEqual({ text: 'Its token is deleted with it.' });
+      expect(warningText(say({ comments: 2, threads: 1, openThreads: 1 }, false, true))).toBe(
+        'Its 2 comments in one thread stay, shown as by “Deleted agent #4”. That thread is still open. Its token no longer works.',
+      );
+      expect(warningText(say({ comments: 0, threads: 0, openThreads: 0 }, true, true))).toBe("It hadn't written anything. Its token was deleted with it.");
+    });
   });
 
   it('generates tokens shaped like the server’s, and checks one the user typed as the server does', () => {
@@ -127,7 +172,7 @@ describe('Settings → Agents', () => {
     });
 
     it('lists the built-in agent while requests without a token act as it, before it has done anything too', () => {
-      const list = [agent(3, 'Claude'), agent(2, 'Codex', { revokedAt: '2026-09-02T00:00:00.000Z', tokenPrefix: null })];
+      const list = [agent(3, 'Claude'), agent(2, 'Codex', { disabledAt: '2026-09-02T00:00:00.000Z' })];
       expect(agentsShown(list, false).map((a) => a.name)).toEqual(['Claude', 'Codex']);
       const shown = agentsShown(list, true);
       expect(shown.map((a) => [a.id, a.name, a.builtIn, a.sources])).toEqual([[3, 'Claude', false, null], [0, 'Agent', true, null], [2, 'Codex', false, null]]);

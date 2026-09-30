@@ -30,8 +30,8 @@ The address is **`http://127.0.0.1:4780/mcp`**, using the Local API's port.
   turns it on for you if needed, and if the port was off it comes on for agents only.
 - **Server:** it's the server's own address followed by `/mcp`.
 
-A token works until you regenerate or revoke it, so an agent's setup never needs changing after a
-restart.
+A token works until you give the agent a new one, disable the agent or delete it, so an agent's
+setup never needs changing after a restart.
 
 ### 2. Add an agent
 
@@ -40,10 +40,11 @@ restart.
   also use a token of your own: 24–256 characters, no spaces, not used by another agent.
 - **Sources** is **All** by default. Pick **Only** and check the sources the agent may reach to
   limit it.
-- The token is shown **once**, together with setup lines ready to paste.
-- The button that says what an agent reaches (**All sources**, **GitHub only**…) changes that.
-  **New token…** replaces an agent's token. **Revoke…** removes the agent's access, but its comments
-  stay attributed to it.
+- The token is shown with setup lines ready to paste. The app keeps it, encrypted with the OS
+  keychain, so **Show token** shows it again later. See [Seeing a token again](#seeing-a-token-again).
+- Each agent's row has the button that says what it reaches (**All sources**, **GitHub only**…),
+  **Show token**, **New token…**, **Disable** and **Delete…**. See
+  [Disabling and deleting an agent](#disabling-and-deleting-an-agent).
 
 **Server:** use the `agents` command. It opens the same database as the server (`GH_DASH_DB`,
 `config.json`), whether or not the server is running.
@@ -54,12 +55,13 @@ node dist/server/index.mjs agents add Work --source gitlab.example.com   # this 
 node dist/server/index.mjs agents list                # with the sources each reaches
 node dist/server/index.mjs agents regenerate Claude
 node dist/server/index.mjs agents scope Claude --source github.com       # or --all
-node dist/server/index.mjs agents revoke Claude       # its comments stay
+node dist/server/index.mjs agents disable Claude      # until `agents enable Claude`
+node dist/server/index.mjs agents delete Claude       # says what it wrote; --yes to go ahead
 printf '%s\n' "$MY_TOKEN" | node dist/server/index.mjs agents add Codex --token-stdin   # a token of your own
 ```
 
 A token of your own is read from standard input, never from the command line, where other programs
-could see it.
+could see it. The command prints a token once: the server never keeps one, only its hash.
 
 ### 3. Register gh-dash with the agent
 
@@ -131,6 +133,57 @@ by whom.
 **The REST API isn't limited.** The Local API and a server's API (with their password or API key)
 are yours, so they reach everything. Only MCP is limited per agent.
 
+### Seeing a token again
+
+The desktop app keeps each token it makes, or that you give it, encrypted with the OS keychain (the
+macOS Keychain, Windows' DPAPI, or a keyring on Linux), as it does for a GitHub token you choose to
+remember. **Show token** in an agent's row shows it again, with the same setup lines, until you
+close it. It is only ever in the desktop app: never in gh-dash's database, the server, the logs or
+the REST API.
+
+The token stays kept while the agent is disabled. **New token…** replaces it, and deleting the
+agent removes it.
+
+Some tokens can't be shown again:
+- tokens made before gh-dash kept them;
+- tokens made on a Linux computer without a keyring, where there is nothing safe to keep them with.
+  They are shown once, when they are made, and the app says so.
+
+For these, **Show token** offers **New token…**, which makes one you can see again.
+
+### Disabling and deleting an agent
+
+In the desktop app, each agent's row in **Settings → Agents** has **New token…**, **Disable** (or
+**Enable**) and **Delete…**. On a server, use the `agents` command. Agents are changed only there,
+never over HTTP.
+
+**New token…** (`agents regenerate`) replaces the agent's token: the old one stops working at once.
+A disabled agent is enabled with its new token.
+
+**Disable** (`agents disable`) refuses the agent's token from its next request, until you enable it
+again. Nothing else changes: its token, sources and comments stay, and the list shows it as disabled.
+An agent using the token is told it is disabled in gh-dash. **Enable** (`agents enable`) lets the
+same token in again. If its token may have leaked, give it a new token instead of enabling it.
+Agents revoked in earlier versions show as disabled.
+
+**Delete…** (`agents delete`) removes the agent itself:
+- Its token stops working at once (the desktop app forgets it too), and it disappears from the list
+  and from `GET /api/v1/agents`.
+- Its comments stay, as do the threads it resolved and its events in Activity. Everywhere they
+  show (diffs, the Comments tab, Activity, Markdown exports, other agents), they read as by
+  **Deleted agent #4**, with the agent's id.
+- Its name is free again for a new agent. Names like "Deleted agent #4" are kept for deleted agents:
+  no agent can be given one.
+- It can't be undone.
+
+Before deleting, gh-dash says what the agent wrote: how many comments, in how many threads, and how
+many of those threads are still open. The desktop app asks you to confirm. `agents delete` prints
+the same summary and deletes an agent that has written nothing straight away. For one that has
+written something, it stops and asks you to run it again with `--yes`.
+
+Disabled agents can be deleted too. The built-in **Agent** (see *Running without tokens* below) can't
+be disabled or deleted: **Require agent tokens** decides whether requests without a token act as it.
+
 ## Using it
 
 A few prompts to start from:
@@ -183,7 +236,8 @@ branch's pull request.
 - **Running without tokens (desktop app).** Turn off **Require agent tokens** in Settings →
   Instance, and a request without a token writes as the built-in **Agent**. This is only allowed
   while the port serves this computer alone. Settings → Agents lists **Agent** then, so you can
-  choose its sources too.
+  choose its sources too. It has no token, so it can't be disabled or deleted: turn **Require agent
+  tokens** back on to stop it.
 - **Behind a reverse proxy**, see the [nginx example](../deploy/nginx.conf.example) for `/mcp` and
   the live updates at `/api/v1/stream`.
 

@@ -87,6 +87,12 @@ export const qk = {
 };
 
 /**
+ * What names the authors of comments (a diff's threads, the Comments list, Activity): asked for again once an agent is
+ * deleted, what it wrote then being by "Deleted agent #<id>".
+ */
+export const AUTHOR_KEYS: readonly QueryKey[] = [['threads'], ['thread-list'], ['activity']];
+
+/**
  * Queries a finished sync (or a settings change) should refetch. Diffs and file contents are fetched
  * from GitHub on demand, so a sync doesn't swap an open diff under the reader (the diff view has a
  * refresh); a PR or branch diff is revalidated when it's next opened (useDiff). A diff's threads are
@@ -347,8 +353,8 @@ export function useUnresolvedCount(q: ThreadListQuery) {
 }
 
 /**
- * The agents that may write comments through MCP (revoked ones too: their comments stay theirs), for Settings → Agents
- * and the Comments list's Author filter. A server without agents (older) reads as none.
+ * The agents that may write comments through MCP (disabled ones too; deleted ones aren't agents any more), for
+ * Settings → Agents and the Comments list's Author filter. A server without agents (older) reads as none.
  */
 export function useAgents() {
   return useQuery({

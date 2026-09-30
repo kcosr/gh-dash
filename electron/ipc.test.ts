@@ -34,7 +34,10 @@ beforeEach(() => {
     setTokenFile: vi.fn((path: string) => path),
     addAgent: vi.fn(async (name: string) => ({ agent: { id: 2, name }, token: 'ghd_x' })),
     regenerateAgentToken: vi.fn(async (id: number) => ({ agent: { id, name: 'Claude' }, token: 'ghd_y' })),
-    revokeAgent: vi.fn(async (id: number) => ({ id, name: 'Claude', revokedAt: 'x' })),
+    setAgentEnabled: vi.fn(async (id: number, enabled: boolean) => ({ id, name: 'Claude', disabledAt: enabled ? null : 'x' })),
+    agentFootprint: vi.fn(async () => ({ comments: 12, threads: 5, openThreads: 3, opened: 4 })),
+    deleteAgent: vi.fn(async (id: number) => ({ id, name: 'Claude', deletedAs: `Deleted agent #${id}`, footprint: { comments: 0, threads: 0, openThreads: 0, opened: 0 } })),
+    keptAgentToken: vi.fn(async (id: number) => (id === 2 ? 'ghd_kept' : null)),
     setAgentSources: vi.fn(async (id: number | 'built-in', sources: string[] | null) => ({ id: id === 'built-in' ? 5 : id, name: id === 'built-in' ? 'Agent' : 'Claude', sources })),
     enableMcp: vi.fn(async () => ({ mcpUrl: 'http://127.0.0.1:4780/mcp' })),
     tokenFileHost: vi.fn((url: unknown) => {
@@ -95,16 +98,50 @@ describe('the agents over IPC', () => {
   it("passes the renderer's arguments to Desktop and the new token back, once", async () => {
     expect(await invoke(DESKTOP_IPC.addAgent, 'Claude')).toEqual({ value: { agent: { id: 2, name: 'Claude' }, token: 'ghd_x' } });
     expect(await invoke(DESKTOP_IPC.regenerateAgentToken, 2)).toEqual({ value: { agent: { id: 2, name: 'Claude' }, token: 'ghd_y' } });
-    expect(await invoke(DESKTOP_IPC.revokeAgent, 2)).toEqual({ value: { id: 2, name: 'Claude', revokedAt: 'x' } });
     expect(desktop.addAgent).toHaveBeenCalledWith('Claude', undefined, undefined);
     expect(desktop.regenerateAgentToken).toHaveBeenCalledWith(2, undefined);
-    expect(desktop.revokeAgent).toHaveBeenCalledWith(2);
     desktop.addAgent.mockRejectedValueOnce(new ConfigInputError('There is already an agent called Claude (id 2); regenerate its token instead'));
     expect(await invoke(DESKTOP_IPC.addAgent, 'claude')).toEqual({ error: 'There is already an agent called Claude (id 2); regenerate its token instead' });
     expect(logs).toEqual([]);
     const fn = electron.handlers.get(DESKTOP_IPC.addAgent)!;
     expect(await fn({ sender: webContents, senderFrame: { parent: null, url: 'https://evil.example/' } }, 'Evil')).toEqual({ error: 'Not allowed.' });
     expect(desktop.addAgent).toHaveBeenCalledTimes(2);
+  });
+
+  it('disables and enables an agent, says what it wrote, and deletes it', async () => {
+    expect(await invoke(DESKTOP_IPC.setAgentEnabled, 2, false)).toEqual({ value: { id: 2, name: 'Claude', disabledAt: 'x' } });
+    expect(await invoke(DESKTOP_IPC.setAgentEnabled, 2, true)).toEqual({ value: { id: 2, name: 'Claude', disabledAt: null } });
+    expect(desktop.setAgentEnabled.mock.calls).toEqual([[2, false], [2, true]]);
+    expect(await invoke(DESKTOP_IPC.agentFootprint, 2)).toEqual({ value: { comments: 12, threads: 5, openThreads: 3, opened: 4 } });
+    expect(desktop.agentFootprint).toHaveBeenCalledWith(2);
+    expect(await invoke(DESKTOP_IPC.deleteAgent, 2)).toEqual({ value: expect.objectContaining({ id: 2, name: 'Claude', deletedAs: 'Deleted agent #2' }) });
+    expect(desktop.deleteAgent).toHaveBeenCalledWith(2);
+    // A refusal is the user's to read.
+    desktop.deleteAgent.mockRejectedValueOnce(new ConfigInputError('There is no agent with id 2.'));
+    expect(await invoke(DESKTOP_IPC.deleteAgent, 2)).toEqual({ error: 'There is no agent with id 2.' });
+    expect(logs).toEqual([]);
+    // Only from the app's own page.
+    const evil = { sender: webContents, senderFrame: { parent: null, url: 'https://evil.example/' } };
+    expect(await electron.handlers.get(DESKTOP_IPC.deleteAgent)!(evil, 3)).toEqual({ error: 'Not allowed.' });
+    expect(await electron.handlers.get(DESKTOP_IPC.setAgentEnabled)!(evil, 3, false)).toEqual({ error: 'Not allowed.' });
+    expect(await electron.handlers.get(DESKTOP_IPC.agentFootprint)!(evil, 3)).toEqual({ error: 'Not allowed.' });
+    expect(desktop.deleteAgent).toHaveBeenCalledTimes(2);
+    expect(desktop.setAgentEnabled).toHaveBeenCalledTimes(2);
+    expect(desktop.agentFootprint).toHaveBeenCalledTimes(1);
+  });
+
+  it("hands a kept token to the app's own page only, never logging it", async () => {
+    expect(await invoke(DESKTOP_IPC.keptAgentToken, 2)).toEqual({ value: 'ghd_kept' });
+    expect(await invoke(DESKTOP_IPC.keptAgentToken, 3)).toEqual({ value: null });
+    expect(desktop.keptAgentToken.mock.calls).toEqual([[2], [3]]);
+    desktop.keptAgentToken.mockRejectedValueOnce(new ConfigInputError('That is not an agent.'));
+    expect(await invoke(DESKTOP_IPC.keptAgentToken, 'x')).toEqual({ error: 'That is not an agent.' });
+    const fn = electron.handlers.get(DESKTOP_IPC.keptAgentToken)!;
+    for (const senderFrame of [{ parent: null, url: 'https://evil.example/' }, { parent: {}, url: 'app://gh-dash/' }]) {
+      expect(await fn({ sender: webContents, senderFrame }, 2)).toEqual({ error: 'Not allowed.' });
+    }
+    expect(desktop.keptAgentToken).toHaveBeenCalledTimes(3);
+    expect(logs.join('\n')).not.toContain('ghd_kept');
   });
 
   it('passes a token the user chose along, and turns MCP on', async () => {

@@ -108,6 +108,8 @@ folder, separate from a headless server's `~/.config/gh-dash`:
   (`data/gh-dash-cache.db`). You can pick another data folder in **Settings**. Picking a folder
   doesn't move an existing database: gh-dash uses the one in that folder, or starts a new one.
 - **Logs**, including the server's, are in `logs/main.log`.
+- **Agent tokens** the app keeps to show again ([Agents](agents.md#seeing-a-token-again)) are in
+  `agent-tokens/<id>.enc`, encrypted with the system keychain, like remembered tokens.
 - **Environment variables.** Unlike the headless server, the app ignores `HOST`, `PORT`,
   `GH_DASH_*` and the other configuration variables from its environment, so Settings always
   shows what's in effect. `GITHUB_TOKEN` still applies.

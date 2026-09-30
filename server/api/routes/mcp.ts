@@ -23,8 +23,8 @@ export const isMcpPath = (path: string): boolean => path === MCP_PATH || OAUTH_D
 
 export interface McpRouteOptions {
   core: McpCore;
-  /** The agent a token belongs to; null for an unknown or revoked token. */
-  principalFor: (token: string) => Principal | null;
+  /** The agent a token belongs to, and whether it is disabled (its token refused); null for a token no agent has. */
+  agentFor: (token: string) => { principal: Principal; disabled: boolean } | null;
   /**
    * Who a request without an Authorization header acts as, when tokens aren't required (the desktop app's built-in
    * agent); absent, such a request is refused. A request that sends a token still needs a valid one.
@@ -38,11 +38,12 @@ export interface McpRouteOptions {
 }
 
 const AUTH_HINT = 'send Authorization: Bearer <agent token> (gh-dash Settings → Agents, or the `agents` command)';
+const ENABLE_HINT = 'enable it in Settings → Agents, or with `agents enable <id|name>` on a server';
 
 const rpcError = (c: Context, status: 400 | 401 | 403 | 405 | 415, message: string, code = INVALID_REQUEST, data?: unknown) =>
   c.json(errorResponse(null, code, message, data), status);
 
-export function installMcp(app: Hono, { core, principalFor, withoutToken, sourcesFor }: McpRouteOptions): void {
+export function installMcp(app: Hono, { core, agentFor, withoutToken, sourcesFor }: McpRouteOptions): void {
   app.post(MCP_PATH, async (c) => {
     // A browser always sends Origin on a POST; agents' HTTP clients don't. Only a page of this very server may.
     const from = c.req.header('origin');
@@ -52,11 +53,14 @@ export function installMcp(app: Hono, { core, principalFor, withoutToken, source
     // empty or not: a bad or blank token is never taken for none.
     const header = c.req.header('authorization');
     const token = /^Bearer\s+(\S+)\s*$/i.exec(header ?? '')?.[1];
-    const principal = header === undefined && withoutToken ? withoutToken() : token ? principalFor(token) : null;
-    if (!principal) {
+    const found = header === undefined && withoutToken ? { principal: withoutToken(), disabled: false } : token ? agentFor(token) : null;
+    if (!found || found.disabled) {
       c.header('WWW-Authenticate', token ? 'Bearer realm="gh-dash", error="invalid_token"' : 'Bearer realm="gh-dash"');
-      return rpcError(c, 401, token ? `Unauthorized: unknown or revoked agent token; ${AUTH_HINT}` : `Unauthorized: ${AUTH_HINT}`);
+      // Whoever sends a disabled agent's token holds it: they may know whose it is, and what to do.
+      if (found) return rpcError(c, 401, `Unauthorized: the agent ${found.principal.name} is disabled in gh-dash; ${ENABLE_HINT}`);
+      return rpcError(c, 401, token ? `Unauthorized: unknown agent token; ${AUTH_HINT}` : `Unauthorized: ${AUTH_HINT}`);
     }
+    const { principal } = found;
 
     const type = c.req.header('content-type')?.split(';')[0]!.trim().toLowerCase();
     if (type !== 'application/json') return rpcError(c, 415, 'Unsupported Media Type: send application/json');

@@ -2,7 +2,8 @@
  * Pasted tokens remembered on this device, encrypted with the OS keychain through Electron's safeStorage (only the
  * async API: the sync one is deprecated in Electron 45). github.com's is <userData>/github-token.enc, as it always was;
  * each GitLab source's is <userData>/tokens/<host>.enc (design §8). Source hosts are [a-z0-9.-], so they are safe file
- * names.
+ * names. The MCP agents' tokens, kept so Settings → Agents can show them again, are <userData>/agent-tokens/<id>.enc,
+ * by the agent's principal id (Desktop checks one is still that agent's in the database before showing it).
  */
 import { safeStorage } from 'electron';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -100,6 +101,15 @@ export class TokenStores {
   ) {
     this.keychain = new Keychain(log);
     this.github = new TokenStore(join(dir, 'github-token.enc'), log, this.keychain);
+  }
+
+  /**
+   * The store for the token of the agent with principal id `id`: <dir>/agent-tokens/<id>.enc. Throws for anything but a
+   * positive integer.
+   */
+  agent(id: number): TokenStore {
+    if (!Number.isSafeInteger(id) || id <= 0) throw new Error(`Not an agent id: ${id}`);
+    return new TokenStore(join(this.dir, 'agent-tokens', `${id}.enc`), this.log, this.keychain);
   }
 
   /** The store for the GitLab source at `host`: <dir>/tokens/<host>.enc. Throws for anything but a host name. */

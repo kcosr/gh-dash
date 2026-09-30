@@ -3,7 +3,7 @@
 import { describe, expect, it } from 'vitest';
 import { DESKTOP_SECRET_HEADER } from '../../shared/desktop';
 import { upsertPr } from '../db/write';
-import { BUILT_IN_AGENT, builtInAgent, createAgent, listAgents, revokeAgent, setAgentSources } from '../db/agents';
+import { BUILT_IN_AGENT, builtInAgent, createAgent, listAgents, setAgentEnabled, setAgentSources } from '../db/agents';
 import { mcpHarness, sha } from '../test/mcp';
 import { actor, GITLAB_HOST, prRecord, seedGitLab } from '../test/seed';
 
@@ -87,8 +87,8 @@ describe('MCP without agent tokens', () => {
     expect(who.data).toMatchObject({ agent: { name: BUILT_IN_AGENT } });
     // With its own token, an agent is itself.
     expect((await h.call('whoami')).data).toMatchObject({ agent: { name: 'Claude' } });
-    // A bad, malformed, revoked or blank token is refused, never taken for none.
-    revokeAgent(h.db, h.other.id);
+    // A bad, malformed, disabled or blank token is refused, never taken for none.
+    setAgentEnabled(h.db, h.other.id, false);
     for (const authorization of ['Bearer ghd_nope', `Bearer ${h.otherToken}`, 'Basic abc', 'Bearer', '', '   ', 'Bearer   ']) {
       const res = await h.post(PING, { authorization });
       expect(res.status, authorization).toBe(401);

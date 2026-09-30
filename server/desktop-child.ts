@@ -1,6 +1,8 @@
 import { DESKTOP_ENV, type MainToServer, type ServerToMain } from '../shared/desktop';
 import { loadServerConfig } from './config';
-import { builtInAgent, createAgent, regenerateAgentToken, revokeAgent, setAgentSources } from './db/agents';
+import {
+  agentFootprint, agentTokenIs, builtInAgent, createAgent, deleteAgent, getAgent, regenerateAgentToken, setAgentEnabled, setAgentSources,
+} from './db/agents';
 import { deleteSource, testSourceDraft } from './services/sources';
 import { type RunningServer, startServer } from './start';
 
@@ -21,8 +23,11 @@ const FATAL_EXIT_DELAY_MS = 200;
  * - `reload-sources` re-reads config.json's sources and answers `sources-result`.
  * - `test-source` validates a draft source with a throwaway credential (`source-test-result`); `delete-source` removes
  *   an unconfigured source with its data (`source-deleted`); `sync-source` starts a source's sync (`sync-started`).
- * - `add-agent`, `regenerate-agent-token`, `revoke-agent` and `set-agent-sources` change the MCP agents (`agent-result`,
- *   with the new token for the first two), then tell open windows (an `agents` stream message).
+ * - `add-agent`, `regenerate-agent-token`, `set-agent-enabled` and `set-agent-sources` change the MCP agents
+ *   (`agent-result`, with the new token for the first two), and `delete-agent` deletes one (`agent-deleted`); then they
+ *   tell open windows (an `agents` stream message, saying which was deleted). `agent-footprint` says what one has
+ *   written, for the warning before deleting it; `check-agent-token` whether a token main kept (by its sha256) is still
+ *   the agent's.
  * - `shutdown` closes the listeners and databases, then exits 0.
  * A request that fails is answered with `request-failed` and the reason, so main never waits for nothing.
  */
@@ -40,7 +45,7 @@ export function mainMessageHandler(
     if (!server.db) throw new Error("This server can't manage agents");
     return server.db;
   };
-  const agentChanged = () => server.bus?.emit({ type: 'agents' });
+  const agentChanged = (deleted?: number) => server.bus?.emit(deleted === undefined ? { type: 'agents' } : { type: 'agents', deleted });
   const noAgent = (agent: number) => new Error(`There is no agent with id ${agent}.`);
   const handle = async (msg: MainToServer): Promise<void> => {
     if (msg.type === 'set-token' && msg.source !== undefined) {
@@ -80,11 +85,23 @@ export function mainMessageHandler(
       if (!made) throw noAgent(msg.agent);
       agentChanged();
       post({ type: 'agent-result', id: msg.id, agent: made.agent, token: made.token });
-    } else if (msg.type === 'revoke-agent') {
-      const agent = revokeAgent(agentsDb(), msg.agent);
+    } else if (msg.type === 'set-agent-enabled') {
+      const agent = setAgentEnabled(agentsDb(), msg.agent, msg.enabled === true);
       if (!agent) throw noAgent(msg.agent);
       agentChanged();
       post({ type: 'agent-result', id: msg.id, agent, token: null });
+    } else if (msg.type === 'agent-footprint') {
+      const db = agentsDb();
+      if (!getAgent(db, msg.agent)) throw noAgent(msg.agent);
+      post({ type: 'agent-footprint', id: msg.id, footprint: agentFootprint(db, msg.agent) });
+    } else if (msg.type === 'check-agent-token') {
+      const matches = typeof msg.hash === 'string' && /^[0-9a-f]{64}$/i.test(msg.hash) && agentTokenIs(agentsDb(), msg.agent, msg.hash);
+      post({ type: 'agent-token-checked', id: msg.id, matches });
+    } else if (msg.type === 'delete-agent') {
+      const deleted = deleteAgent(agentsDb(), msg.agent);
+      if (!deleted) throw noAgent(msg.agent);
+      agentChanged(deleted.id);
+      post({ type: 'agent-deleted', id: msg.id, deleted });
     } else if (msg.type === 'set-agent-sources') {
       const db = agentsDb();
       // The built-in agent is made the first time it's needed: limiting it before it has acted is such a time.

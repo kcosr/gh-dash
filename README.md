@@ -204,7 +204,8 @@ The whole guide, with Codex setup, the tools and the options, is in [Agents](doc
   configured otherwise.
 - **Tokens stay out of the database.** They come from the GitHub or GitLab CLI, an environment
   variable or a token file. The desktop app can also keep a pasted token, encrypted with your
-  system keychain. Agent tokens are stored only as a hash.
+  system keychain. Agent tokens are stored only as a hash; the desktop app also keeps them, encrypted
+  with the keychain, to show them again.
 - **Upgrades are one-way.** Some new versions upgrade the database, and older versions can't open it
   afterwards. Copy the data folder first if you might go back.
 - **The diff cache** holds diffs you've opened, up to 200 MB by default. It can be cleared at any

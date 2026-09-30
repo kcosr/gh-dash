@@ -1,15 +1,31 @@
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AccountStatus, Agent, SourceAccount, SourceCheck, TokenChoice } from '../shared/api';
 import type { SourceTestDraft } from '../shared/desktop';
 import { readConfigFile } from '../server/config-file';
+import { agentTokenIs, createAgent } from '../server/db/agents';
+import { openDb } from '../server/db/db';
 import { loadSources } from '../server/sources/config';
 import { ConfigInputError } from './config';
 import { Desktop } from './desktop';
 import type { ServerChild, StartResult } from './server-child';
-import type { TokenStore } from './token-store';
+import { type TokenStore, TokenStores } from './token-store';
+
+/** safeStorage stand-in (as token-store.test.ts): "encrypts" by reversing and prefixing, so a file never holds a token as is. */
+const safeStorage = vi.hoisted(() => ({
+  isAsyncEncryptionAvailable: vi.fn(async () => true),
+  getSelectedStorageBackend: vi.fn(() => 'gnome_libsecret'),
+  encryptStringAsync: vi.fn(async (text: string) => Buffer.from(`enc:${[...text].reverse().join('')}`)),
+  decryptStringAsync: vi.fn(async (data: Buffer) => {
+    const text = data.toString();
+    if (!text.startsWith('enc:')) throw new Error('bad data');
+    return { result: [...text.slice(4)].reverse().join(''), shouldReEncrypt: false };
+  }),
+}));
+vi.mock('electron', () => ({ safeStorage }));
 
 const account = (over: Partial<AccountStatus> = {}): AccountStatus => ({
   source: 'none', choice: null, locked: false, login: null, name: null, avatarUrl: null, dbLogin: null, mismatch: false, kind: null,
@@ -34,13 +50,16 @@ const fakeChild = () => {
   /** Every set-token the child got, in order (setToken and sendSetToken both send one). */
   const sent: [TokenChoice | null, string | null | undefined][] = [];
   const send = (choice: TokenChoice | null, token?: string | null) => (sent.push([choice, token]), validate(choice, token));
-  const agent = (id: number, name = 'Claude'): Agent => ({ id, name, tokenPrefix: 'ghd_abcd', createdAt: 'x', lastUsedAt: null, revokedAt: null, builtIn: false, sources: null });
+  const agent = (id: number, name = 'Claude'): Agent => ({ id, name, tokenPrefix: 'ghd_abcd', createdAt: 'x', lastUsedAt: null, disabledAt: null, builtIn: false, sources: null });
   return {
     status: 'running', apiUrl: null as string | null, mcpUrl: null as string | null, lastError: null as string | null, sent, setToken: vi.fn(send), sendSetToken: vi.fn(send),
     addAgent: vi.fn(async (name: string) => ({ agent: agent(2, name), token: 'ghd_secret1' })),
     regenerateAgentToken: vi.fn(async (id: number) => ({ agent: agent(id), token: 'ghd_secret2' })),
-    revokeAgent: vi.fn(async (id: number) => ({ ...agent(id), tokenPrefix: null, revokedAt: 'y' })),
+    setAgentEnabled: vi.fn(async (id: number, enabled: boolean) => ({ ...agent(id), disabledAt: enabled ? null : 'y' })),
+    agentFootprint: vi.fn(async () => ({ comments: 2, threads: 1, openThreads: 1, opened: 1 })),
+    deleteAgent: vi.fn(async (id: number) => ({ id, name: 'Claude', deletedAs: `Deleted agent #${id}`, footprint: { comments: 2, threads: 1, openThreads: 1, opened: 1 } })),
     setAgentSources: vi.fn(async (id: number | 'built-in', sources: string[] | null) => ({ ...agent(id === 'built-in' ? 5 : id, id === 'built-in' ? 'Agent' : 'Claude'), sources })),
+    checkAgentToken: vi.fn(async (_id: number, _hash: string) => false),
   };
 };
 function fakeTokens() {
@@ -185,13 +204,22 @@ describe('agents', () => {
     desktop = new Desktop({ child: child as unknown as ServerChild, tokens: tokens as unknown as TokenStore, configPath, dataDir: join(dir, 'data'), version: '1', restart, log: (l) => lines.push(l) });
     // The Local API serves MCP already: nothing else to do.
     writeFileSync(configPath, JSON.stringify({ listen: true }));
-    expect(await desktop.addAgent('Claude')).toEqual({ agent: expect.objectContaining({ id: 2, name: 'Claude' }), token: 'ghd_secret1' });
+    // Without a store for them, tokens aren't kept.
+    expect(await desktop.addAgent('Claude')).toEqual({ agent: expect.objectContaining({ id: 2, name: 'Claude' }), token: 'ghd_secret1', kept: false });
     expect(await desktop.regenerateAgentToken(2)).toMatchObject({ agent: { id: 2 }, token: 'ghd_secret2' });
-    expect(await desktop.revokeAgent(2)).toMatchObject({ id: 2, tokenPrefix: null, revokedAt: 'y' });
+    expect(await desktop.setAgentEnabled(2, false)).toMatchObject({ id: 2, tokenPrefix: 'ghd_abcd', disabledAt: 'y' });
+    expect(await desktop.setAgentEnabled(2, true)).toMatchObject({ id: 2, disabledAt: null });
+    expect(await desktop.agentFootprint(2)).toEqual({ comments: 2, threads: 1, openThreads: 1, opened: 1 });
+    expect(await desktop.deleteAgent(2)).toMatchObject({ id: 2, name: 'Claude', deletedAs: 'Deleted agent #2' });
     expect(child.addAgent).toHaveBeenCalledWith('Claude', undefined, null);
     expect(child.regenerateAgentToken).toHaveBeenCalledWith(2, undefined);
-    expect(child.revokeAgent).toHaveBeenCalledWith(2);
-    expect(lines).toEqual(['[agents] added Claude (id 2)', '[agents] new token for Claude (id 2)', '[agents] revoked Claude (id 2)']);
+    expect(child.setAgentEnabled.mock.calls).toEqual([[2, false], [2, true]]);
+    expect(child.agentFootprint).toHaveBeenCalledWith(2);
+    expect(child.deleteAgent).toHaveBeenCalledWith(2);
+    expect(lines).toEqual([
+      '[agents] added Claude (id 2)', '[agents] new token for Claude (id 2)', '[agents] disabled Claude (id 2)', '[agents] enabled Claude (id 2)',
+      '[agents] deleted Claude (id 2); its comments stay, as by Deleted agent #2',
+    ]);
     expect(lines.join('\n')).not.toContain('ghd_secret');
     // Nothing touches config.json or restarts the server.
     expect(readConfig()).toEqual({ listen: true });
@@ -278,7 +306,9 @@ describe('agents', () => {
     expect(() => desktop.addAgent('x'.repeat(201))).toThrow("That name is too long for an agent's.");
     for (const bad of ['2', 0, -1, 1.5, null]) {
       expect(() => desktop.regenerateAgentToken(bad), String(bad)).toThrow('That is not an agent.');
-      expect(() => desktop.revokeAgent(bad), String(bad)).toThrow('That is not an agent.');
+      expect(() => desktop.setAgentEnabled(bad, false), String(bad)).toThrow('That is not an agent.');
+      expect(() => desktop.agentFootprint(bad), String(bad)).toThrow('That is not an agent.');
+      expect(() => desktop.deleteAgent(bad), String(bad)).toThrow('That is not an agent.');
     }
     expect(child.addAgent).not.toHaveBeenCalled();
     child.addAgent.mockRejectedValueOnce(new Error('There is already an agent called Claude (id 2); regenerate its token instead'));
@@ -291,7 +321,7 @@ describe('agents', () => {
     const lines: string[] = [];
     desktop = new Desktop({ child: child as unknown as ServerChild, tokens: tokens as unknown as TokenStore, configPath, dataDir: join(dir, 'data'), version: '1', restart, log: (l) => lines.push(l) });
     writeFileSync(configPath, JSON.stringify({ listen: true }));
-    const work: Agent = { id: 2, name: 'Work', tokenPrefix: 'ghd_abcd', createdAt: 'x', lastUsedAt: null, revokedAt: null, builtIn: false, sources: ['gitlab.example.com'] };
+    const work: Agent = { id: 2, name: 'Work', tokenPrefix: 'ghd_abcd', createdAt: 'x', lastUsedAt: null, disabledAt: null, builtIn: false, sources: ['gitlab.example.com'] };
     child.addAgent.mockImplementationOnce(async () => ({ agent: work, token: 'ghd_secret1' }));
     expect(await desktop.addAgent('Work', undefined, [' GitLab.example.com '])).toMatchObject({ agent: { sources: ['gitlab.example.com'] } });
     expect(child.addAgent).toHaveBeenCalledWith('Work', undefined, ['gitlab.example.com']);
@@ -334,6 +364,133 @@ describe('agents', () => {
     await updating;
     await adding;
     expect(child.addAgent).toHaveBeenCalledOnce();
+  });
+});
+
+describe('kept agent tokens', () => {
+  const sha = (token: string) => createHash('sha256').update(token).digest('hex');
+  let userData: string;
+  let lines: string[];
+  /** A Desktop keeping agents' tokens in <userData>/agent-tokens, as main makes it. */
+  const keeping = () => {
+    const stores = new TokenStores(userData, (l) => lines.push(l));
+    return new Desktop({
+      child: child as unknown as ServerChild, tokens: tokens as unknown as TokenStore, agentTokens: (id) => stores.agent(id), configPath,
+      dataDir: join(dir, 'data'), version: '1', restart, log: (l) => lines.push(l),
+    });
+  };
+  const file = (id: number) => join(userData, 'agent-tokens', `${id}.enc`);
+  /** The child: agent `id`'s token in its database is `token`. */
+  const current = (id: number, token: string) => child.checkAgentToken.mockImplementation(async (i, hash) => i === id && hash === sha(token));
+  const made = (id: number, name: string, token: string) => ({
+    agent: { id, name, tokenPrefix: token.slice(0, 8), createdAt: 'x', lastUsedAt: null, disabledAt: null, builtIn: false, sources: null }, token,
+  });
+
+  beforeEach(() => {
+    userData = join(dir, 'userData');
+    lines = [];
+    safeStorage.getSelectedStorageBackend.mockReturnValue('gnome_libsecret');
+    // The Local API serves MCP already: nothing else to do.
+    writeFileSync(configPath, JSON.stringify({ listen: true }));
+  });
+
+  it("keeps a new agent's token, encrypted, and shows it again while it is still that agent's", async () => {
+    desktop = keeping();
+    expect(await desktop.addAgent('Claude')).toEqual({ agent: expect.objectContaining({ id: 2 }), token: 'ghd_secret1', kept: true });
+    expect(readFileSync(file(2), 'utf8')).not.toContain('ghd_secret1');
+    if (process.platform !== 'win32') expect(statSync(file(2)).mode & 0o777).toBe(0o600);
+    current(2, 'ghd_secret1');
+    expect(await desktop.keptAgentToken(2)).toBe('ghd_secret1');
+    // Only its hash went to the child, to check: never the token. It is never logged.
+    expect(child.checkAgentToken).toHaveBeenCalledWith(2, sha('ghd_secret1'));
+    expect(JSON.stringify(child.checkAgentToken.mock.calls)).not.toContain('ghd_secret1');
+    expect(lines.join('\n')).not.toContain('ghd_secret');
+    // A token of the user's own is kept the same way.
+    const mine = 'my-own-agent-token-0123456789';
+    child.addAgent.mockResolvedValueOnce(made(3, 'Codex', mine));
+    expect(await desktop.addAgent('Codex', mine)).toMatchObject({ kept: true });
+    current(3, mine);
+    expect(await desktop.keptAgentToken(3)).toBe(mine);
+  });
+
+  it('checks it by the hash the server keeps of it', async () => {
+    desktop = keeping();
+    const token = 'ghd_0123456789abcdefghijklmnopqrstuvwxyzABCDEFG';
+    child.addAgent.mockResolvedValueOnce(made(2, 'Claude', token));
+    await desktop.addAgent('Claude');
+    await desktop.keptAgentToken(2);
+    const db = openDb(':memory:');
+    try {
+      expect(createAgent(db, 'Claude', undefined, token).agent.id).toBe(2);
+      expect(agentTokenIs(db, 2, child.checkAgentToken.mock.calls[0]![1])).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('replaces it with a new token, keeps it while the agent is disabled, and removes it with the agent', async () => {
+    desktop = keeping();
+    await desktop.addAgent('Claude');
+    expect(await desktop.regenerateAgentToken(2)).toMatchObject({ token: 'ghd_secret2', kept: true });
+    current(2, 'ghd_secret2');
+    expect(await desktop.keptAgentToken(2)).toBe('ghd_secret2');
+    await desktop.setAgentEnabled(2, false);
+    expect(await desktop.keptAgentToken(2)).toBe('ghd_secret2');
+    await desktop.setAgentEnabled(2, true);
+    await desktop.deleteAgent(2);
+    expect(existsSync(file(2))).toBe(false);
+    child.checkAgentToken.mockClear();
+    expect(await desktop.keptAgentToken(2)).toBeNull();
+    expect(child.checkAgentToken).not.toHaveBeenCalled();
+    // A delete the child refuses leaves it.
+    await desktop.addAgent('Claude');
+    child.deleteAgent.mockRejectedValueOnce(new Error('There is no agent with id 2.'));
+    await expect(desktop.deleteAgent(2)).rejects.toThrow('There is no agent with id 2.');
+    expect(existsSync(file(2))).toBe(true);
+  });
+
+  it("shows none that isn't the agent's token in this database: kept for another data folder, or replaced by the command", async () => {
+    desktop = keeping();
+    await desktop.addAgent('Claude');
+    // Another database's agent 2, or this one's given another token since by `agents regenerate`.
+    current(2, 'ghd_another-database-token');
+    expect(await desktop.keptAgentToken(2)).toBeNull();
+    current(3, 'ghd_secret1');
+    expect(await desktop.keptAgentToken(2)).toBeNull();
+    // Nothing kept: an agent made before tokens were kept, or by the command.
+    expect(await desktop.keptAgentToken(7)).toBeNull();
+    for (const bad of ['2', 0, -1, 1.5, null]) expect(() => desktop.keptAgentToken(bad), String(bad)).toThrow('That is not an agent.');
+  });
+
+  it('keeps nothing without a real keychain (Linux basic_text): the token is shown once', async () => {
+    const original = process.platform;
+    Object.defineProperty(process, 'platform', { value: 'linux' });
+    try {
+      safeStorage.getSelectedStorageBackend.mockReturnValue('basic_text');
+      desktop = keeping();
+      expect(await desktop.addAgent('Claude')).toMatchObject({ token: 'ghd_secret1', kept: false });
+      expect(await desktop.regenerateAgentToken(2)).toMatchObject({ token: 'ghd_secret2', kept: false });
+      expect(existsSync(join(userData, 'agent-tokens'))).toBe(false);
+      current(2, 'ghd_secret2');
+      expect(await desktop.keptAgentToken(2)).toBeNull();
+    } finally {
+      Object.defineProperty(process, 'platform', { value: original });
+    }
+  });
+
+  it("drops the token it had when a new one can't be kept, never showing a stale one", async () => {
+    desktop = keeping();
+    await desktop.addAgent('Claude');
+    safeStorage.encryptStringAsync.mockRejectedValueOnce(new Error('keychain locked'));
+    expect(await desktop.regenerateAgentToken(2)).toMatchObject({ token: 'ghd_secret2', kept: false });
+    expect(existsSync(file(2))).toBe(false);
+    expect(lines).toContain('[agents] could not keep the token of Claude (id 2): keychain locked');
+    expect(lines.join('\n')).not.toContain('ghd_secret');
+  });
+
+  it('keeps nothing without a store for them', async () => {
+    expect(await desktop.addAgent('Claude')).toMatchObject({ kept: false });
+    expect(await desktop.keptAgentToken(2)).toBeNull();
   });
 });
 

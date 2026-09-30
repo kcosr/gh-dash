@@ -360,12 +360,12 @@ describe('migration to sources', () => {
     expect(counts(db)).toEqual({ ...before, meta: before.meta! - 2 });
     expect(db.all(`SELECT ${V5_REPO_COLS} FROM repos ORDER BY id`)).toEqual(oldRepos);
     for (const [t, rows] of Object.entries(children)) {
-      // New columns (NULL) aside, the child rows are the same.
-      const now = db.all<Record<string, unknown>>(`SELECT * FROM ${t} ORDER BY 1, 2`).map((r) => {
-        const { stars_count: _s, merge_commit_oid: _m, squash_commit_oid: _q, ...rest } = r;
-        return rest;
-      });
-      expect(now, t).toEqual(rows);
+      // New columns (NULL) aside, the child rows are the same. The columns are the ones the rows had before: later
+      // migrations add more (and a statement prepared before a migration may or may not report them, by Node version).
+      const now = db.all<Record<string, unknown>>(`SELECT * FROM ${t} ORDER BY 1, 2`);
+      const cols = Object.keys(rows[0] ?? {});
+      expect(now.map((r) => Object.fromEntries(cols.map((c) => [c, r[c]]))), t).toEqual(rows);
+      for (const r of now) for (const [c, v] of Object.entries(r)) if (!cols.includes(c)) expect(v, `${t}.${c}`).toBeNull();
     }
     expectFtsIntact(db);
     expect(db.all('PRAGMA foreign_key_check')).toEqual([]);

@@ -15,10 +15,10 @@ import type { LookupRecord, Page, RoundRequest, RoundResult, TrackedRepo } from 
 import { SyncManager } from '../sync/manager';
 import { runSync, type SyncRequest } from '../sync/sync';
 import { fakeGitHub, page, type Handler, type Reply } from '../test/github';
-import { commitNode, fakeGraphQL, issueNode, prNode, releaseNode, repoNode, starEdge } from '../test/graphql';
+import { branchNode, commitNode, fakeGraphQL, issueNode, prNode, releaseNode, repoNode, starEdge } from '../test/graphql';
 import { addManualRepo } from '../test/seed';
 import { supplyOf, testTokens } from '../test/tokens';
-import { mapCommit, mapIssue, mapPullRequest, mapRelease, mapStar } from './map';
+import { mapBranch, mapCommit, mapIssue, mapPullRequest, mapRelease, mapStar } from './map';
 import { GitHubSyncSource } from './sync-source';
 import { Tracking } from '../sync/tracking';
 import type { Connection, RepoDetailData } from './types';
@@ -310,7 +310,7 @@ describe('GitHubSyncSource asks what the sync asks', () => {
 // Rounds and rechecks: every REPO_DETAIL / RecheckItems request of a sync, replayed through the source.
 // ---------------------------------------------------------------------------
 
-const SECTIONS = ['commits', 'prs', 'issues', 'openPrs', 'openIssues', 'releases', 'stars'] as const;
+const SECTIONS = ['commits', 'prs', 'issues', 'openPrs', 'openIssues', 'releases', 'stars', 'branches'] as const;
 const cap = (s: string) => s[0]!.toUpperCase() + s.slice(1);
 
 /** The RoundRequest a REPO_DETAIL request stands for: its switched-on sections, at their cursors. */
@@ -328,7 +328,10 @@ function read(v: Record<string, any>) {
   return out;
 }
 
-/** What the GitHub-only sync read from a REPO_DETAIL answer, section by section, with the mappers it used. */
+/**
+ * What the GitHub-only sync read from a REPO_DETAIL answer, section by section, with the mappers it used; and the
+ * branches, which the sync lists since.
+ */
 function pagesOf(req: RoundRequest, r: NonNullable<RepoDetailData['repository']>): RoundResult {
   const pageOf = <N, T>(c: Connection<N>, map: (n: N) => T): Page<T> => ({ items: c.nodes.map(map), hasMore: c.pageInfo.hasNextPage, endCursor: c.pageInfo.endCursor });
   const out: RoundResult = {};
@@ -345,6 +348,10 @@ function pagesOf(req: RoundRequest, r: NonNullable<RepoDetailData['repository']>
   if (req.stars) {
     const c = r.stargazers!;
     out.stars = { items: c.edges.map(mapStar), hasMore: c.pageInfo.hasNextPage, endCursor: c.pageInfo.endCursor, totalCount: c.totalCount };
+  }
+  if (req.branches) {
+    const c = r.branches!;
+    out.branches = { items: c.nodes.flatMap((n) => mapBranch(n) ?? []), hasMore: c.pageInfo.hasNextPage, endCursor: c.pageInfo.endCursor };
   }
   return out;
 }
@@ -396,6 +403,7 @@ describe('GitHubSyncSource rounds and rechecks', () => {
     gql.state.commits[app] = ['e', 'd', 'c', 'b', 'a'].map((c, i) => commitNode(app, c, at(26 - i), c === 'b' ? 2 : null));
     gql.state.releases[app] = [releaseNode(app, 'v3', at(26), { isDraft: true }), releaseNode(app, 'v2', at(24)), releaseNode(app, 'v1', at(20))];
     gql.state.stars[app] = [starEdge('dave', at(25)), starEdge('carol', at(20)), starEdge('erin', at(10))];
+    gql.state.branches[app] = [branchNode('fix', 'b', at(23)), branchNode('main', 'e', at(22)), branchNode('topic', 'f', at(21), null)];
     gql.state.owned.push(repoNode(app, probe()));
     const db = openDb(':memory:');
     const w = wire(gql);
@@ -413,6 +421,8 @@ describe('GitHubSyncSource rounds and rechecks', () => {
     expect(await syncOn(db, w, {}, NOW + HOUR)).toMatchObject({ errors: [], newItems: 4 });
     const incremental = w.take();
     expect(incremental.filter((s) => s.op === 'RepoDetail').map((s) => [s.variables!.withStars, s.variables!.starsAfter])).toEqual([[true, null], [true, null], [true, '2']]);
+    // The push moved pushedAt: the branches are listed again, in the same rounds.
+    expect(incremental.filter((s) => s.op === 'RepoDetail').map((s) => [s.variables!.withBranches, s.variables!.branchesAfter])).toEqual([[true, null], [true, '2'], [false, null]]);
     expect(await replayRounds(db, w, incremental)).toBe(3);
 
     // Full: open items listed from the start too.
@@ -524,7 +534,7 @@ describe('GitHubSyncSource rounds and rechecks', () => {
     const res = await syncOn(openDb(':memory:'), w);
     expect(res.errors).toEqual([]);
     const rounds = w.sent.filter((s) => s.op === 'RepoDetail').map((s) => SECTIONS.filter((sec) => s.variables![`with${cap(sec)}`]));
-    expect(rounds).toEqual([['commits', 'prs', 'issues', 'releases', 'stars'], ['openPrs']]);
+    expect(rounds).toEqual([['commits', 'prs', 'issues', 'releases', 'stars', 'branches'], ['openPrs']]);
   });
 });
 

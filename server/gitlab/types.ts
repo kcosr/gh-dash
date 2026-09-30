@@ -302,7 +302,7 @@ export interface RestVersionFull extends RestVersion {
 /** A branch of `GET /repository/branches`: its head commit is all that is used. */
 export interface RestBranch {
   name: string;
-  commit: Pick<RestCommit, 'id' | 'committed_date'>;
+  commit: Pick<RestCommit, 'id' | 'committed_date' | 'author_name' | 'author_email'>;
 }
 
 /** `GET /repository/compare`: the files between two refs (commits and the rest of it aren't used). */

@@ -12,9 +12,9 @@ import type { GqlIssue, GqlProbe, GqlPullRequest, GqlRepo } from '../github/type
 import detailFixture from '../test/fixtures/repo-detail.json';
 import probesFixture from '../test/fixtures/repo-probes.json';
 import reposFixture from '../test/fixtures/viewer-repos.json';
-import { fakeGitHub as fakeApi } from '../test/github';
-import { fakeGraphQL, releaseNode, repoNode } from '../test/graphql';
-import { planRepo, runSync } from './sync';
+import { fakeGitHub as fakeApi, type Reply } from '../test/github';
+import { branchNode, fakeGraphQL, prNode, releaseNode, type RepoNode, repoNode } from '../test/graphql';
+import { planRepo, relistAge, runSync, type SyncRequest } from './sync';
 import { addManualRepo, setViewer } from '../test/seed';
 
 const viewerOf = (db: Db) => getSource(db, GITHUB_SOURCE_ID)!.viewer;
@@ -162,7 +162,7 @@ function fakeGitHub() {
           repository: {
             nameWithOwner: `${String(variables.owner)}/${String(variables.name)}`,
             pullRequests: conn(variables.owner === 'alice' ? [] : [{ ...fx.detail.repository.pullRequests.nodes[1], number: 40, title: `Theirs (${String(variables.name)})` }]),
-            issues: conn([]), openPrs: conn([]), openIssues: conn([]), releases: conn([]),
+            issues: conn([]), openPrs: conn([]), openIssues: conn([]), releases: conn([]), branches: conn([]),
             // Stargazers of another owner's repo are served, but must never be asked for.
             stargazers: variables.owner === 'alice'
               ? { totalCount: 0, pageInfo: conn([]).pageInfo, edges: [] }
@@ -197,6 +197,8 @@ describe('runSync', () => {
     expect(viewerOf(db)).toEqual({ id: 'U_alice', login: 'alice', name: 'Alice A', avatarUrl: 'https://avatars.example/alice', emails: [] });
     expect([count(db, 'repos'), count(db, 'commits'), count(db, 'pull_requests'), count(db, 'pr_commits'), count(db, 'issues'), count(db, 'releases'), count(db, 'stars')])
       .toEqual([2, 3, 2, 1, 2, 1, 2]);
+    // app's branches (corp, with no default branch, is empty), which aren't counted among the new items.
+    expect(db.all('SELECT name FROM branches ORDER BY name')).toEqual([{ name: 'fix' }, { name: 'main' }, { name: 'spike/search' }]);
     expect(db.all('SELECT headline, pr_number FROM commits ORDER BY committed_at')).toEqual([
       { headline: 'Upstream change', pr_number: null },
       { headline: 'Merge pull request #1 from alice/fix', pr_number: 1 },
@@ -752,18 +754,28 @@ describe('planRepo', () => {
   const probe: RepoProbe = { openPrs: 0, openIssues: 0, latestPrUpdatedAt: '2026-09-20T00:00:00Z', latestIssueUpdatedAt: null, releaseTags: ['v1'], latestStarredAt: '2026-09-01T00:00:00Z' };
   const state: SyncStateRow = {
     repo_id: 1, commits_pushed_at: '2026-09-25T00:00:00Z', commits_branch: 'main', commits_head: null, prs_hwm: '2026-09-20T00:00:00Z', issues_hwm: '2026-09-01T00:00:00Z',
-    releases_synced_at: '2026-09-27T00:00:00Z', stars_synced_at: '2026-09-27T00:00:00Z', stars_full_at: '2026-09-27T00:00:00Z', stars_count: 3, synced_at: '2026-09-27T00:00:00Z', last_error: null,
+    releases_synced_at: '2026-09-27T00:00:00Z', stars_synced_at: '2026-09-27T00:00:00Z', stars_full_at: '2026-09-27T00:00:00Z', stars_count: 3,
+    branches_pushed_at: '2026-09-25T00:00:00Z', branches_synced_at: '2026-09-27T00:00:00Z', branches_complete: 1, synced_at: '2026-09-27T00:00:00Z', last_error: null,
   };
-  const ctx = { full: false, syncStars: true, probesStars: true, includeForks: false, backfillStart: '2025-09-27T00:00:00Z', now: NOW, storedStars: { count: 3, latest: '2026-09-01T00:00:00Z' }, isKnownRelease: () => true };
-  const none = { commits: null, prs: null, issues: null, releases: null, stars: null };
+  const ctx = {
+    full: false, syncStars: true, probesStars: true, pushedAtCoversBranches: true, rateLimitLow: false, readInPart: false, includeForks: false,
+    backfillStart: '2025-09-27T00:00:00Z', now: NOW, storedStars: { count: 3, latest: '2026-09-01T00:00:00Z' }, isKnownRelease: () => true,
+  };
+  const none = { commits: null, prs: null, issues: null, releases: null, stars: null, branches: null };
 
   it('plans nothing when every probe matches the stored marks', () => {
     expect(planRepo(repo, probe, state, ctx)).toEqual(none);
   });
 
   it('plans everything from the backfill window on a first or full sync', () => {
-    const fresh = { ...state, commits_pushed_at: null, prs_hwm: null, issues_hwm: null, releases_synced_at: null, stars_synced_at: null, stars_full_at: null };
-    const all = { commits: { stopAtKnown: false }, prs: { stopBefore: ctx.backfillStart }, issues: { stopBefore: ctx.backfillStart }, releases: { stopAtKnown: false }, stars: { mode: 'full' } };
+    const fresh = {
+      ...state, commits_pushed_at: null, prs_hwm: null, issues_hwm: null, releases_synced_at: null, stars_synced_at: null, stars_full_at: null,
+      branches_pushed_at: null, branches_synced_at: null, branches_complete: null,
+    };
+    const all = {
+      commits: { stopAtKnown: false }, prs: { stopBefore: ctx.backfillStart }, issues: { stopBefore: ctx.backfillStart }, releases: { stopAtKnown: false }, stars: { mode: 'full' },
+      branches: { pushedAt: repo.pushedAt },
+    };
     expect(planRepo(repo, probe, fresh, ctx)).toEqual(all);
     expect(planRepo(repo, probe, state, { ...ctx, full: true })).toEqual(all);
   });
@@ -813,6 +825,7 @@ describe('planRepo', () => {
     const others = { ...ctx, syncStars: false };
     expect(planRepo(repo, probe, fresh, others)).toEqual({
       commits: { stopAtKnown: false }, prs: { stopBefore: ctx.backfillStart }, issues: { stopBefore: ctx.backfillStart }, releases: { stopAtKnown: false }, stars: null,
+      branches: null,
     });
     expect(planRepo(repo, null, state, { ...others, full: true }).stars).toBeNull();
   });
@@ -831,6 +844,68 @@ describe('planRepo', () => {
     // No head read (GitHub, or none found): the push time decides, as before.
     expect(planRepo(repo, probe, walked, ctx).commits).toBeNull();
     expect(planRepo({ ...repo, headOid: null, pushedAt: '2026-09-26T00:00:00Z' }, probe, walked, ctx).commits).toEqual({ stopAtKnown: true });
+  });
+
+  describe('branches', () => {
+    // `state` listed them at 2026-09-27T00:00:00Z, at the repo's pushedAt; NOW is twelve hours later.
+    const listing = { pushedAt: repo.pushedAt };
+    const unlisted = { ...state, branches_pushed_at: null, branches_synced_at: null, branches_complete: null };
+
+    it('lists them on a full sync, the first time, and when pushedAt moved, which a push to any branch moves (GitHub)', () => {
+      expect(planRepo(repo, probe, state, ctx).branches).toBeNull();
+      expect(planRepo(repo, probe, state, { ...ctx, full: true }).branches).toEqual(listing);
+      expect(planRepo(repo, probe, unlisted, ctx).branches).toEqual(listing);
+      // Recorded at the pushedAt the plan read: a push while they are listed moves it on, and they are listed again.
+      expect(planRepo({ ...repo, pushedAt: '2026-09-27T09:00:00Z' }, probe, state, ctx).branches).toEqual({ pushedAt: '2026-09-27T09:00:00Z' });
+      // The commits walk keeps its own marks, and a listing stopped at the cap is no reason to list sooner.
+      expect(planRepo(repo, probe, { ...state, commits_pushed_at: '2026-09-01T00:00:00Z' }, ctx).branches).toBeNull();
+      expect(planRepo(repo, probe, { ...state, branches_complete: 0 }, ctx).branches).toBeNull();
+    });
+
+    it("lists them every sync where pushedAt doesn't cover every branch (GitLab: the default branch's head commit)", () => {
+      const gitlab = { ...ctx, pushedAtCoversBranches: false };
+      expect(planRepo(repo, probe, state, gitlab).branches).toEqual(listing);
+      expect(planRepo({ ...repo, headOid: 'a'.repeat(40) }, probe, { ...state, commits_head: 'a'.repeat(40) }, gitlab).branches).toEqual(listing);
+    });
+
+    it('lists them again once the listing is a day old, less up to six hours by repo id', () => {
+      const listed = Date.parse(state.branches_synced_at!);
+      for (const id of [1, 2, 3, 40]) {
+        const s = { ...state, repo_id: id };
+        expect(planRepo(repo, probe, s, { ...ctx, now: listed + relistAge(id) - 1000 }).branches, `repo ${id}`).toBeNull();
+        expect(planRepo(repo, probe, s, { ...ctx, now: listed + relistAge(id) }).branches, `repo ${id}`).toEqual(listing);
+      }
+      // A dozen repos a first sync listed together come due over those six hours, at least a quarter of an hour apart.
+      const ages = Array.from({ length: 12 }, (_, i) => relistAge(i + 1)).sort((a, b) => a - b);
+      expect(ages[0]).toBeGreaterThan(18 * HOUR);
+      expect(ages.at(-1)).toBeLessThanOrEqual(24 * HOUR);
+      expect(Math.min(...ages.slice(1).map((a, i) => a - ages[i]!))).toBeGreaterThan(HOUR / 4);
+    });
+
+    it('lists an archived repo once, then on full syncs only', () => {
+      const archived = { ...repo, isArchived: true };
+      expect(planRepo(archived, probe, unlisted, ctx).branches).toEqual(listing);
+      expect(planRepo({ ...archived, pushedAt: '2026-09-27T09:00:00Z' }, probe, state, { ...ctx, now: NOW + 7 * 24 * HOUR }).branches).toBeNull();
+      expect(planRepo(archived, probe, state, { ...ctx, pushedAtCoversBranches: false }).branches).toBeNull();
+      expect(planRepo(archived, probe, state, { ...ctx, full: true }).branches).toEqual(listing);
+    });
+
+    it("skips forks unless forks are included, empty repositories, and repos read in part (whose code the token may not read)", () => {
+      const fork = { ...repo, isFork: true };
+      expect(planRepo(fork, probe, unlisted, ctx).branches).toBeNull();
+      expect(planRepo(fork, probe, unlisted, { ...ctx, full: true }).branches).toBeNull();
+      expect(planRepo(fork, probe, unlisted, { ...ctx, includeForks: true }).branches).toEqual(listing);
+      expect(planRepo({ ...repo, defaultBranch: null }, probe, unlisted, ctx).branches).toBeNull();
+      expect(planRepo(repo, null, unlisted, { ...ctx, readInPart: true, full: true }).branches).toBeNull();
+    });
+
+    it('wait while the rate limit runs low, whatever else says, and nothing else does', () => {
+      const low = { ...ctx, rateLimitLow: true };
+      const fresh = { ...unlisted, commits_pushed_at: null, prs_hwm: null, issues_hwm: null, releases_synced_at: null, stars_synced_at: null, stars_full_at: null };
+      expect(planRepo(repo, probe, fresh, low)).toEqual({ ...planRepo(repo, probe, fresh, ctx), branches: null });
+      expect(planRepo(repo, probe, state, { ...low, full: true }).branches).toBeNull();
+      expect(planRepo({ ...repo, pushedAt: '2026-09-27T09:00:00Z' }, probe, state, { ...low, pushedAtCoversBranches: false }).branches).toBeNull();
+    });
   });
 });
 
@@ -861,5 +936,226 @@ describe('releases', () => {
     gql.state.ops.length = 0;
     await sync(NOW + 2 * HOUR);
     expect(gql.state.ops.filter((op) => op.startsWith('RepoDetail'))).toEqual([]);
+  });
+});
+
+describe('branches', () => {
+  const app = 'alice/app';
+  const DAY = 24 * HOUR;
+  const SECTIONS = ['commits', 'prs', 'issues', 'openPrs', 'openIssues', 'releases', 'stars', 'branches'];
+  const at = (d: number, h = 9) => `2026-09-${String(d).padStart(2, '0')}T${String(h).padStart(2, '0')}:00:00Z`;
+  const sha = (c: string) => c.repeat(40).slice(0, 40);
+  const DENIED = 'Resource not accessible by personal access token';
+
+  /**
+   * alice/app, last pushed to on the 26th, with three branches (spike's author is no GitHub account), on the GraphQL
+   * fake answering as GitHub does. `rounds` are the RepoDetail requests: the repo, the sections switched on and the
+   * branches' cursor. Repos in `codeDenied` answer a round that reads their code (commits, branches) with FORBIDDEN.
+   */
+  function world(over: Partial<RepoNode> = {}) {
+    const gql = fakeGraphQL();
+    gql.state.strict = true;
+    gql.state.owned.push(repoNode(app, { pushedAt: at(26), ...over }));
+    gql.state.branches[app] = [branchNode('fix', 'b', at(24)), branchNode('main', 'a', at(26)), branchNode('spike', 'c', at(25), null)];
+    const rounds: { repo: string; sections: string[]; after: unknown }[] = [];
+    const codeDenied = new Set<string>();
+    const answer = gql.handler as (req: unknown) => Reply;
+    const api = fakeApi({
+      '/graphql': (req) => {
+        const { query, variables: v } = req.body as { query: string; variables: Record<string, unknown> };
+        if (!/query RepoDetail\b/.test(query)) return answer(req);
+        const repo = `${String(v.owner)}/${String(v.name)}`;
+        rounds.push({ repo, sections: SECTIONS.filter((sec) => v[`with${sec[0]!.toUpperCase()}${sec.slice(1)}`]), after: v.branchesAfter });
+        if (!codeDenied.has(repo)) return answer(req);
+        const code = v.withBranches ? 'branches' : v.withCommits ? 'defaultBranchRef' : null;
+        if (code) return { body: { data: null, errors: [{ type: 'FORBIDDEN', path: ['repository', code], message: DENIED }] } };
+        // The rest of the repository reads as ever: only its reads by node id carry the denied field.
+        const denied = gql.state.errors[`R_${repo}`];
+        delete gql.state.errors[`R_${repo}`];
+        try {
+          return answer(req);
+        } finally {
+          gql.state.errors[`R_${repo}`] = denied!;
+        }
+      },
+    });
+    const db = openDb(':memory:');
+    const last = { source: null as GitHubSyncSource | null };
+    const sync = (now: number, req: SyncRequest = {}, settings: Settings = DEFAULT_SETTINGS) => {
+      last.source = on(api.fetchImpl);
+      return runSync({ db, source: last.source, src: github(db), settings, now: () => now }, req);
+    };
+    const names = (key = app) =>
+      db.all<{ name: string }>('SELECT b.name FROM branches b JOIN repos r ON r.id = b.repo_id WHERE r.name_with_owner = ? ORDER BY b.name', [key]).map((b) => b.name);
+    const listing = (key = app) =>
+      db.get('SELECT branches_pushed_at, branches_synced_at, branches_complete FROM sync_state s JOIN repos r ON r.id = s.repo_id WHERE r.name_with_owner = ?', [key]);
+    const repoId = (key = app) => db.get<{ id: number }>('SELECT id FROM repos WHERE name_with_owner = ?', [key])!.id;
+    return { gql, db, sync, last, names, listing, repoId, codeDenied, take: () => rounds.splice(0) };
+  }
+
+  it('are listed with the first sync, in the round that reads the rest, with their head commit and its author', async () => {
+    const w = world();
+    expect(await w.sync(NOW)).toEqual({ repos: 1, newItems: 0, errors: [], forksSkipped: 0 });
+    expect(w.take()).toEqual([{ repo: app, sections: ['commits', 'prs', 'issues', 'releases', 'stars', 'branches'], after: null }]);
+    // The owned list, the probes and one round.
+    expect(w.last.source!.requests).toBe(3);
+    expect(w.db.all('SELECT name, head_oid, committed_at, author_login, author_name, author_email, first_seen_at FROM branches ORDER BY name')).toEqual([
+      { name: 'fix', head_oid: sha('b'), committed_at: at(24), author_login: 'someone', author_name: 'someone', author_email: 'someone@example.com', first_seen_at: '2026-09-27T12:00:00Z' },
+      { name: 'main', head_oid: sha('a'), committed_at: at(26), author_login: 'someone', author_name: 'someone', author_email: 'someone@example.com', first_seen_at: '2026-09-27T12:00:00Z' },
+      { name: 'spike', head_oid: sha('c'), committed_at: at(25), author_login: null, author_name: 'Nobody', author_email: 'nobody@example.com', first_seen_at: '2026-09-27T12:00:00Z' },
+    ]);
+    // At the pushedAt the plan read.
+    expect(w.listing()).toEqual({ branches_pushed_at: at(26), branches_synced_at: '2026-09-27T12:00:00Z', branches_complete: 1 });
+  });
+
+  it('ride the round a push brings anyway: still one request, which lists them again, keeping when each was first seen', async () => {
+    const w = world();
+    await w.sync(NOW);
+    w.take();
+    // Pushed to spike, and to a new branch; fix deleted.
+    w.gql.state.owned[0] = repoNode(app, { pushedAt: at(27, 11) });
+    w.gql.state.branches[app] = [branchNode('main', 'a', at(26)), branchNode('new', 'd', at(27, 10)), branchNode('spike', 'e', at(27, 11), null)];
+    expect(await w.sync(NOW + HOUR)).toMatchObject({ errors: [] });
+    // What the push costs without them (the list, the probes and a commits round): the listing adds no request.
+    expect(w.take()).toEqual([{ repo: app, sections: ['commits', 'branches'], after: null }]);
+    expect(w.last.source!.requests).toBe(3);
+    expect(w.db.all('SELECT name, substr(head_oid, 1, 1) AS head, first_seen_at FROM branches ORDER BY name')).toEqual([
+      { name: 'main', head: 'a', first_seen_at: '2026-09-27T12:00:00Z' },
+      { name: 'new', head: 'd', first_seen_at: '2026-09-27T13:00:00Z' },
+      { name: 'spike', head: 'e', first_seen_at: '2026-09-27T12:00:00Z' },
+    ]);
+    expect(w.listing()).toEqual({ branches_pushed_at: at(27, 11), branches_synced_at: '2026-09-27T13:00:00Z', branches_complete: 1 });
+  });
+
+  it('are not asked for while nothing moved; a day on, less the stagger, one request lists them alone, dropping one deleted without a push', async () => {
+    const w = world();
+    await w.sync(NOW);
+    w.take();
+    await w.sync(NOW + HOUR);
+    expect(w.take()).toEqual([]);
+    // Deleted from its page after a merge, say, which pushedAt may not show.
+    w.gql.state.branches[app] = w.gql.state.branches[app]!.filter((b) => b.name !== 'fix');
+    const due = NOW + relistAge(w.repoId());
+    await w.sync(due - 1000);
+    expect(w.take()).toEqual([]);
+    expect(await w.sync(due)).toMatchObject({ errors: [] });
+    expect(w.take()).toEqual([{ repo: app, sections: ['branches'], after: null }]);
+    expect(w.last.source!.requests).toBe(3);
+    expect(w.names()).toEqual(['main', 'spike']);
+  });
+
+  it('stop at 1000 without deleting anything (a capped listing can not tell), and a complete one deletes again', async () => {
+    const w = world();
+    await w.sync(NOW);
+    w.take();
+    // 1100 more, ahead of the others by name (GitHub's order); fix deleted.
+    const many = Array.from({ length: 1100 }, (_, i) => branchNode(`b${String(i).padStart(4, '0')}`, 'd', at(27)));
+    w.gql.state.owned[0] = repoNode(app, { pushedAt: at(27) });
+    w.gql.state.branches[app] = [...many, branchNode('main', 'a', at(26)), branchNode('spike', 'c', at(25), null)];
+    expect(await w.sync(NOW + HOUR)).toMatchObject({ errors: [] });
+    // Ten pages of 100: the first in the push's commits round, then alone.
+    const rounds = w.take();
+    expect(rounds.map((r) => r.sections.join())).toEqual(['commits,branches', ...Array<string>(9).fill('branches')]);
+    expect(rounds.map((r) => r.after)).toEqual([null, ...Array.from({ length: 9 }, (_, i) => String((i + 1) * 100))]);
+    expect(count(w.db, 'branches')).toBe(1003);
+    expect(w.names().filter((n) => !/^b\d{4}$/.test(n))).toEqual(['fix', 'main', 'spike']);
+    expect(w.listing()).toEqual({ branches_pushed_at: at(27), branches_synced_at: '2026-09-27T13:00:00Z', branches_complete: 0 });
+
+    w.gql.state.owned[0] = repoNode(app, { pushedAt: at(27, 10) });
+    w.gql.state.branches[app] = [branchNode('main', 'a', at(26)), branchNode('spike', 'c', at(25), null)];
+    await w.sync(NOW + 2 * HOUR);
+    expect(w.names()).toEqual(['main', 'spike']);
+    expect(w.listing()).toMatchObject({ branches_complete: 1 });
+  });
+
+  it("are skipped for forks unless forks are included, like their commit history", async () => {
+    const w = world({ isFork: true });
+    expect(await w.sync(NOW)).toMatchObject({ forksSkipped: 1, errors: [] });
+    expect(w.take().map((r) => r.sections)).toEqual([['prs', 'issues', 'releases', 'stars']]);
+    expect(w.names()).toEqual([]);
+    expect(await w.sync(NOW + HOUR, {}, { ...DEFAULT_SETTINGS, includeForks: true })).toMatchObject({ forksSkipped: 0 });
+    expect(w.take().map((r) => r.sections)).toEqual([['commits', 'branches']]);
+    expect(w.names()).toEqual(['fix', 'main', 'spike']);
+  });
+
+  it("of an archived repo are listed with its first sync, then by full syncs only; one synced before they were is listed once, alone", async () => {
+    const w = world({ isArchived: true });
+    await w.sync(NOW);
+    expect(w.take().map((r) => r.sections)).toEqual([['commits', 'prs', 'issues', 'releases', 'stars', 'branches']]);
+    w.gql.state.owned[0] = repoNode(app, { isArchived: true, pushedAt: at(27) });
+    await w.sync(NOW + 2 * DAY);
+    expect(w.take()).toEqual([]);
+    await w.sync(NOW + 2 * DAY, { full: true });
+    expect(w.take()[0]!.sections).toContain('branches');
+    // As a build from before branches were synced left it. Nothing else is read, not even open items it would list
+    // for an open count out of step.
+    w.db.run('UPDATE sync_state SET branches_pushed_at = NULL, branches_synced_at = NULL, branches_complete = NULL');
+    w.db.run('DELETE FROM branches');
+    w.gql.state.owned[0] = repoNode(app, { isArchived: true, pushedAt: at(27), openPrs: { totalCount: 1 } });
+    await w.sync(NOW + 3 * DAY);
+    expect(w.take()).toEqual([{ repo: app, sections: ['branches'], after: null }]);
+    expect(w.names()).toEqual(['fix', 'main', 'spike']);
+    await w.sync(NOW + 4 * DAY);
+    expect(w.take()).toEqual([]);
+  });
+
+  it('wait while the rate limit runs low, the rest of the sync going on, and are listed once there is room', async () => {
+    const w = world();
+    // Below a tenth of the budget, above what the client keeps back (it stops the run under 100).
+    w.gql.state.rateLimit.remaining = 400;
+    expect(await w.sync(NOW)).toMatchObject({ errors: [] });
+    expect(w.take().map((r) => r.sections)).toEqual([['commits', 'prs', 'issues', 'releases', 'stars']]);
+    expect(w.listing()).toEqual({ branches_pushed_at: null, branches_synced_at: null, branches_complete: null });
+    w.gql.state.rateLimit.remaining = 4990;
+    await w.sync(NOW + HOUR);
+    expect(w.take()).toEqual([{ repo: app, sections: ['branches'], after: null }]);
+    expect(w.names()).toEqual(['fix', 'main', 'spike']);
+  });
+
+  it("are not asked for of a repo read in part: GitHub would refuse them, and fail its round with them", async () => {
+    const w = world();
+    w.gql.state.others.push(repoNode('bob/tool'));
+    addManualRepo(w.db, 'bob/tool');
+    await w.sync(NOW);
+    // As a build from before branches were synced left it; then the token loses its code (default branch, refs).
+    w.db.run('UPDATE sync_state SET branches_synced_at = NULL WHERE repo_id = ?', [w.repoId('bob/tool')]);
+    w.gql.state.errors['R_bob/tool'] = { type: 'FORBIDDEN', message: DENIED, field: 'defaultBranchRef' };
+    w.codeDenied.add('bob/tool');
+    w.gql.state.prs['bob/tool'] = [prNode('bob/tool', 4, 'Theirs', at(27))];
+    w.take();
+    const res = await w.sync(NOW + HOUR);
+    expect(res.errors).toEqual([expect.stringMatching(/^bob\/tool: The token can see bob\/tool but not its code history/)]);
+    expect(w.take().filter((r) => r.repo === 'bob/tool').map((r) => r.sections)).toEqual([['prs', 'issues', 'releases'], ['openPrs', 'openIssues']]);
+    expect(w.db.get(`SELECT title FROM pull_requests WHERE repo_id = ? AND number = 4`, [w.repoId('bob/tool')])).toEqual({ title: 'Theirs' });
+  });
+
+  it('follow a renamed default branch, which is one branch like the others', async () => {
+    const w = world();
+    await w.sync(NOW);
+    w.gql.state.owned[0] = repoNode(app, { pushedAt: at(27), defaultBranchRef: { name: 'trunk' } });
+    w.gql.state.branches[app] = [branchNode('fix', 'b', at(24)), branchNode('spike', 'c', at(25), null), branchNode('trunk', 'a', at(26))];
+    expect(await w.sync(NOW + HOUR)).toMatchObject({ errors: [] });
+    expect(w.names()).toEqual(['fix', 'spike', 'trunk']);
+    expect(w.db.get('SELECT r.default_branch, s.commits_branch FROM repos r JOIN sync_state s ON s.repo_id = r.id WHERE r.id = ?', [w.repoId()]))
+      .toEqual({ default_branch: 'trunk', commits_branch: 'trunk' });
+  });
+
+  it("are listed by single-repo syncs as by the others, and by full ones whether they moved or not", async () => {
+    const w = world();
+    w.gql.state.others.push(repoNode('bob/tool'));
+    w.gql.state.branches['bob/tool'] = [branchNode('main', 'a', at(20), 'bob')];
+    addManualRepo(w.db, 'bob/tool');
+    // Just added: its first sync, of it alone.
+    await w.sync(NOW, { repo: 'bob/tool' });
+    expect(w.take()).toEqual([{ repo: 'bob/tool', sections: ['commits', 'prs', 'issues', 'releases', 'branches'], after: null }]);
+    expect(w.names('bob/tool')).toEqual(['main']);
+    w.gql.state.others[0] = repoNode('bob/tool', { pushedAt: at(27) });
+    w.gql.state.branches['bob/tool']!.push(branchNode('topic', 'd', at(27), 'bob'));
+    await w.sync(NOW + HOUR, { repo: 'bob/tool' });
+    expect(w.take().map((r) => r.sections)).toEqual([['commits', 'branches']]);
+    expect(w.names('bob/tool')).toEqual(['main', 'topic']);
+    await w.sync(NOW + 2 * HOUR);
+    await w.sync(NOW + 3 * HOUR, { full: true });
+    expect(w.take().filter((r) => r.sections.includes('branches')).map((r) => r.repo)).toEqual([app, app, 'bob/tool']);
   });
 });

@@ -8,7 +8,7 @@
 // functions are exported for a source's own tests.
 
 import { describe, expect, it } from 'vitest';
-import type { CommitRecord, IssueRecord, PrRecord, ReleaseRecord, RepoProbe, RepoRecord, StarRecord } from '../db/records';
+import type { BranchRecord, CommitRecord, IssueRecord, PrRecord, ReleaseRecord, RepoProbe, RepoRecord, StarRecord } from '../db/records';
 import type { AccessFailure } from '../provider/access';
 import type {
   BackfillCounts,
@@ -163,6 +163,15 @@ export function checkStar(s: StarRecord): void {
   time(s.starredAt, `star ${s.login}: starredAt`);
 }
 
+/** The head is a full SHA; the author's email is lower-cased, as "me" matches it. */
+export function checkBranch(b: BranchRecord): void {
+  const at = `branch ${b.name}`;
+  expect(b.name, 'branch name').toBeTruthy();
+  expect(b.headOid, `${at}: headOid`).toMatch(OID);
+  timeOrNull(b.committedAt, `${at}: committedAt`);
+  if (b.author?.email) expect(b.author.email, `${at}: author email`).toBe(b.author.email.toLowerCase());
+}
+
 export function checkAccess(a: AccessFailure, problem?: AccessFailure['problem'], names?: string): void {
   expect(PROBLEMS).toContain(a.problem);
   if (problem) expect(a.problem).toBe(problem);
@@ -198,6 +207,10 @@ export function checkRound(req: RoundRequest, res: RoundResult, source: Pick<Syn
     checkPage(res.stars, checkStar, 'stars');
     count(res.stars.totalCount, 'stars totalCount');
   }
+  if (res.branches) {
+    expect(res.branches.failed, 'branches failed').toBeUndefined();
+    checkPage(res.branches, checkBranch, 'branches');
+  }
 }
 
 function checkRead(read: RepoRead | undefined, want: TrackedRepo, probesStars: boolean): void {
@@ -214,7 +227,7 @@ function checkUnreadable(read: RepoRead | undefined, want: TrackedRepo): void {
   checkAccess(read!.access, 'not-found', want.path);
 }
 
-const SECTIONS = ['commits', 'prs', 'issues', 'openPrs', 'openIssues', 'releases', 'stars'] as const;
+const SECTIONS = ['commits', 'prs', 'issues', 'openPrs', 'openIssues', 'releases', 'stars', 'branches'] as const;
 
 export function describeSyncSourceContract(name: string, h: SyncSourceHarness): void {
   /** Which hooks the setup offers: the cases that need one run only then. */
@@ -235,7 +248,7 @@ export function describeSyncSourceContract(name: string, h: SyncSourceHarness): 
       it("viewer(): the token's account and its commit emails; counters and flags", async () => {
         const { source } = h.setup();
         expect(['github', 'gitlab']).toContain(source.kind);
-        expect([typeof source.probesStars, typeof source.linksCommits]).toEqual(['boolean', 'boolean']);
+        expect([typeof source.probesStars, typeof source.linksCommits, typeof source.pushedAtCoversBranches]).toEqual(['boolean', 'boolean', 'boolean']);
         const before = source.requests;
         const v = await source.viewer();
         checkViewer(v, h.account.viewer);

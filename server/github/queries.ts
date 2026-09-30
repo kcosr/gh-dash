@@ -146,7 +146,9 @@ fragment IssueFields on Issue {
 /**
  * One page of each requested section; sections are toggled with @include and paged independently.
  * `openPrs` / `openIssues` list every open item regardless of age (the updatedAt-ordered sections stop at
- * the backfill window).
+ * the backfill window). `branches` come by name: GitHub accepts an order for refs/heads/ and ignores it (see
+ * diff-source.ts). GitHub prices a query by the requests its connections could take, a point per hundred; with no
+ * connection inside, the branches add one: next to nothing on a round of other sections, a point on their own.
  */
 export const REPO_DETAIL = `
 query RepoDetail(
@@ -157,7 +159,8 @@ query RepoDetail(
   $withOpenPrs: Boolean!, $openPrsAfter: String,
   $withOpenIssues: Boolean!, $openIssuesAfter: String,
   $withReleases: Boolean!, $releasesAfter: String,
-  $withStars: Boolean!, $starsAfter: String
+  $withStars: Boolean!, $starsAfter: String,
+  $withBranches: Boolean!, $branchesAfter: String
 ) {
   repository(owner: $owner, name: $name) {
     nameWithOwner
@@ -203,6 +206,10 @@ query RepoDetail(
       totalCount
       pageInfo { hasNextPage endCursor }
       edges { starredAt node { login name avatarUrl } }
+    }
+    branches: refs(refPrefix: "refs/heads/", first: 100, after: $branchesAfter) @include(if: $withBranches) {
+      pageInfo { hasNextPage endCursor }
+      nodes { name target { oid ... on Commit { committedDate author { ${GIT_ACTOR} } } } }
     }
   }
   ${RATE_LIMIT}

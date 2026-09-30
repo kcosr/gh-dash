@@ -28,7 +28,7 @@ import type {
 } from '../provider/types';
 import { accessFailure, notFound } from './access';
 import { type ClientOptions, GitHubClient, GitHubError } from './client';
-import { mapCommit, mapIssue, mapProbe, mapPullRequest, mapRelease, mapRepo, mapStar, RECORD_FIELDS } from './map';
+import { mapBranch, mapCommit, mapIssue, mapProbe, mapPullRequest, mapRelease, mapRepo, mapStar, RECORD_FIELDS } from './map';
 import {
   MANUAL_REPOS,
   recheckQuery,
@@ -98,6 +98,8 @@ export class GitHubSyncSource implements SyncSource {
   readonly probesStars = true;
   /** Commits come with the PR that brought them (associatedPullRequests). */
   readonly linksCommits = true;
+  /** A repository's pushedAt is its last push, to whichever branch. */
+  readonly pushedAtCoversBranches = true;
   /** Every sync request goes through it: its counters are the run's. */
   private readonly client: GitHubClient;
   private readonly rest: GitHubRestClient;
@@ -238,6 +240,8 @@ export class GitHubSyncSource implements SyncSource {
         releasesAfter: req.releases?.after ?? null,
         withStars: !!req.stars,
         starsAfter: req.stars?.after ?? null,
+        withBranches: !!req.branches,
+        branchesAfter: req.branches?.after ?? null,
       })
       .catch((err: unknown) => this.lost(err, repo));
     const r = data.repository;
@@ -262,6 +266,10 @@ export class GitHubSyncSource implements SyncSource {
     if (req.stars) {
       const conn = r.stargazers!;
       out.stars = { ...page({ pageInfo: conn.pageInfo, nodes: conn.edges }, mapStar), totalCount: conn.totalCount };
+    }
+    if (req.branches) {
+      const all = page(r.branches!, mapBranch);
+      out.branches = { ...all, items: all.items.flatMap((b) => b ?? []) };
     }
     return out;
   }

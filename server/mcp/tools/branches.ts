@@ -1,4 +1,4 @@
-// list_branches, get_branch: a repository's pushed branches as the code host has them, and one branch in full: the
+// list_branches, get_branch: a repository's pushed branches (the sync's, or the code host's), and one branch in full: the
 // review target of work that has no PR (yet), with the diff's revisions and files when gh-dash can get them.
 
 import { z } from 'zod';
@@ -24,8 +24,9 @@ export const listBranches = readTool({
   name: 'list_branches',
   title: 'List branches',
   description:
-    "A repository's branches on the code host (the default branch left out), newest commit first, each with the newest PR " +
-    'from it that gh-dash has synced, if any. `more`: the host has more matching branches (narrow them with `query`). ' +
+    "A repository's branches (the default branch left out), as the sync last listed them or else the code host has them, " +
+    'newest commit first, each with the newest PR from it that gh-dash has synced, if any. `more`: there are more matching ' +
+    'branches (narrow them with `query`). ' +
     'get_branch reads one in full.',
   input: z
     .object({

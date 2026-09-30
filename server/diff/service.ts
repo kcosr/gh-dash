@@ -5,6 +5,7 @@ import { isBranchName, isBranchQuery } from '../../shared/branch';
 import { PROVIDERS } from '../../shared/provider';
 import { HttpError } from '../lib/errors';
 import type { Db } from '../db/db';
+import { likeContains } from '../db/filters';
 import { repoKeySql, resolveRepo } from '../db/repo-key';
 import { getSettings } from '../db/settings';
 import { SourceError } from '../provider/errors';
@@ -399,11 +400,12 @@ export class DiffService {
 
   /**
    * A pushed branch's diff against the repo's default branch (three-dot: from the merge base, like a PR's). Nothing
-   * tells us when a branch moves (the sync reads no branches), so every view first asks the code host for the branch's
-   * head (GitHub: a conditional request, free while it is the cached one; GitLab: 1 request), and serves the cached diff
-   * when that is its head, the default branch is still the one it was compared with, and it is younger than
-   * BRANCH_TTL_MS (the default branch can absorb the branch's commits, moving the merge base, with the head unchanged).
-   * Otherwise the branch is compared again, and `refresh` always does (the head, then the comparison: 2 or 3 requests).
+   * tells us in time when a branch moves (the sync's branches are as old as its last listing), so every view first asks
+   * the code host for the branch's head (GitHub: a conditional request, free while it is the cached one; GitLab: 1
+   * request), and serves the cached diff when that is its head, the default branch is still the one it was compared
+   * with, and it is younger than BRANCH_TTL_MS (the default branch can absorb the branch's commits, moving the merge
+   * base, with the head unchanged). Otherwise the branch is compared again, and `refresh` always does (the head, then
+   * the comparison: 2 or 3 requests).
    * One diff is kept per branch, replaced by each new one.
    *
    * As for PRs, a cached diff is served marked `stale` when the code host can't be asked (no token, rate limit, outage), not
@@ -448,15 +450,50 @@ export class DiffService {
   }
 
   /**
-   * The repo's branches as the code host has them (at most BRANCH_LIST_LIMIT, newest first, the default branch left
-   * out), the newest synced PR from each of them (same-repo PRs, of any state) noted. The code host's list is kept for
-   * BRANCH_LIST_TTL_MS per repo and name filter (`q`, a substring); `refresh` asks again. The PRs are read fresh each
-   * time: they come from the sync, not the code host.
+   * The repo's branches (at most BRANCH_LIST_LIMIT, newest first, the default branch left out), the newest synced PR
+   * from each of them (same-repo PRs, of any state) noted. They are the sync's when its last listing of the repo was
+   * complete (syncedBranches): no code host request. Otherwise, and always with `refresh`, they are the code host's,
+   * whose list is kept for BRANCH_LIST_TTL_MS per repo and name filter (`q`, a substring); `refresh` asks again. The PRs
+   * are read fresh each time: they come from the sync, not the code host.
    */
   async branchList(repoName: string, q: string | null, refresh = false): Promise<BranchListResponse> {
     const query = q?.trim() || null;
     if (query && !isBranchQuery(query)) throw new HttpError(400, 'Invalid q');
     const { id, sourceId, repo, base } = this.branchRepo(repoName);
+    const listed = (!refresh && this.syncedBranches(id, base, query)) || (await this.hostBranches(sourceId, repo, query, refresh));
+    const refs = listed.refs.filter((b) => b.name !== base);
+    const prs = new Map<string, NonNullable<BranchSummary['pr']>>();
+    // Ascending, so that the newest PR from a branch is the one left.
+    for (const pr of this.db.all<{ head_ref: string; number: number; state: 'open' | 'merged' | 'closed'; title: string }>(
+      `SELECT head_ref, number, state, title FROM pull_requests
+       WHERE repo_id = ? AND cross_repo = 0 AND head_ref IN (SELECT value FROM json_each(?)) ORDER BY number`,
+      [id, JSON.stringify(refs.map((b) => b.name))],
+    )) {
+      prs.set(pr.head_ref, { number: pr.number, state: pr.state, title: pr.title });
+    }
+    const items = refs.slice(0, BRANCH_LIST_LIMIT).map((b) => ({ name: b.name, headOid: b.headOid, committedAt: b.committedAt, pr: prs.get(b.name) ?? null }));
+    return { items, defaultBranch: base, more: listed.more || refs.length > BRANCH_LIST_LIMIT };
+  }
+
+  /**
+   * The repo's branches as the sync last listed them, besides the default branch: one more than a list holds (so that
+   * `more` says when there are more), newest first as a source lists them (DiffSource.branches; no date last, as SQLite
+   * sorts NULL lowest), those whose name contains `query` (ASCII case-insensitively, as SQLite's LIKE is). null until the
+   * sync has listed them, and when its listing was capped: only the code host knows them all then.
+   */
+  private syncedBranches(repoId: number, base: string, query: string | null): { refs: BranchRef[]; more: boolean } | null {
+    const synced = this.db.get<{ complete: number | null }>('SELECT branches_complete AS complete FROM sync_state WHERE repo_id = ? AND branches_synced_at IS NOT NULL', [repoId]);
+    if (synced?.complete !== 1) return null;
+    const rows = this.db.all<{ name: string; head_oid: string; committed_at: string | null }>(
+      `SELECT name, head_oid, committed_at FROM branches WHERE repo_id = ? AND name <> ?${query ? " AND name LIKE ? ESCAPE '\\'" : ''}
+       ORDER BY committed_at DESC, name LIMIT ?`,
+      [repoId, base, ...(query ? [likeContains(query)] : []), BRANCH_LIST_LIMIT + 1],
+    );
+    return { refs: rows.map((r) => ({ name: r.name, headOid: r.head_oid, committedAt: r.committed_at })), more: false };
+  }
+
+  /** The repo's branches as the code host has them (BRANCH_LIST_LIMIT + 1 asked for), kept per repo and name filter. */
+  private async hostBranches(sourceId: number, repo: DiffRepo, query: string | null, refresh: boolean): Promise<{ refs: BranchRef[]; more: boolean }> {
     const key = `${repo.key}\n${query ?? ''}`;
     let listed = this.branchLists.get(key);
     if (!listed || refresh || this.now() - listed.at >= BRANCH_LIST_TTL_MS) {
@@ -474,18 +511,7 @@ export class DiffService {
         this.branchLists.delete(oldest);
       }
     }
-    const refs = listed.refs.filter((b) => b.name !== base);
-    const prs = new Map<string, NonNullable<BranchSummary['pr']>>();
-    // Ascending, so that the newest PR from a branch is the one left.
-    for (const pr of this.db.all<{ head_ref: string; number: number; state: 'open' | 'merged' | 'closed'; title: string }>(
-      `SELECT head_ref, number, state, title FROM pull_requests
-       WHERE repo_id = ? AND cross_repo = 0 AND head_ref IN (SELECT value FROM json_each(?)) ORDER BY number`,
-      [id, JSON.stringify(refs.map((b) => b.name))],
-    )) {
-      prs.set(pr.head_ref, { number: pr.number, state: pr.state, title: pr.title });
-    }
-    const items = refs.slice(0, BRANCH_LIST_LIMIT).map((b) => ({ name: b.name, headOid: b.headOid, committedAt: b.committedAt, pr: prs.get(b.name) ?? null }));
-    return { items, defaultBranch: base, more: listed.more || refs.length > BRANCH_LIST_LIMIT };
+    return listed;
   }
 
   // ---------------------------------------------------------------------------

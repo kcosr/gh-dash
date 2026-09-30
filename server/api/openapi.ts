@@ -825,17 +825,18 @@ export const ENDPOINTS: EndpointDoc[] = [
     response: { status: 200, schema: ref('Diff') },
   },
   {
-    method: 'get', path: '/api/v1/branches/{repo}', tag: 'Diffs', summary: "A repository's branches on its code host, newest first",
+    method: 'get', path: '/api/v1/branches/{repo}', tag: 'Diffs', summary: "A repository's branches, newest first",
     description:
-      "Asked of the repo's code host (GitHub or GitLab), at most 100 branches with the default branch left out, each with the PR from it if the sync has one. " +
+      'At most 100 branches with the default branch left out, each with the PR from it if the sync has one. ' +
+      "They are the sync's when its last listing of the repo was complete (no code host request). Otherwise, and with refresh=1, they are asked of the repo's code host (GitHub or GitLab): " +
       'GitHub cannot sort branches, so up to 500 are read to find the newest (more than that are cut off alphabetically: `more` is then true; narrow them with `q`). ' +
-      'Kept in memory for a minute per repo and `q`. ' +
+      "The code host's list is kept in memory for a minute per repo and `q`. " +
       "Errors: 404 unknown repo, 409 the repo's default branch isn't known yet (sync it), 503 no token for the repo's source, 429 rate limit (details.resetAt), 502 other failures of the code host, " +
       '403 for cross-site browser requests.',
     params: [
       REPO,
-      q('q', 'Only branches whose name contains this (up to 255 characters; the code host matches without regard to case; GitLab also takes `^prefix` and `suffix$`).'),
-      q('refresh', "'1' asks the code host again instead of using the list kept for a minute.", enumOf('1')),
+      q('q', "Only branches whose name contains this, without regard to case (up to 255 characters; the sync's list ignores non-ASCII case; GitLab, when asked, also takes `^prefix` and `suffix$`)."),
+      q('refresh', "'1' asks the code host, instead of using the sync's list or the one kept for a minute.", enumOf('1')),
     ],
     response: { status: 200, schema: ref('BranchListResponse') },
   },

@@ -24,8 +24,9 @@ interface Shown { agent: Agent; token: string; kind: 'added' | 'new' }
 function Copy({ text, what, className = 'btn sm' }: { text: string; what: string; className?: string }) {
   const toast = useToast();
   return (
-    <button type="button" className={className} onClick={async () => toast((await copyText(text)) ? `${what} copied` : 'Copy failed')} title={`Copy ${what.toLowerCase()}`}>
-      <Icon name="copy" />Copy
+    <button type="button" className={className} onClick={async () => toast((await copyText(text)) ? `${what} copied` : 'Copy failed')} title={`Copy ${what.toLowerCase()}`}
+      aria-label={`Copy ${what.toLowerCase()}`}>
+      <Icon name="copy" /><span className="lbl">Copy</span>
     </button>
   );
 }

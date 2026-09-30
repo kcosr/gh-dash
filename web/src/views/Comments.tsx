@@ -11,6 +11,7 @@ import { PROVIDERS, capitalize, refText } from '../../../shared/provider';
 import { patchThreadLists, threadActions, threadListQuery, useAgents, useMe, useThreadList } from '../api/hooks';
 import { threadListParams } from '../lib/apiQuery';
 import { hasBlockingLayer, isTypingTarget } from '../lib/layers';
+import { sortAgents } from '../lib/agents';
 import { plainPreview } from '../lib/markdown';
 import { fmtDateTime, plural, rel } from '../lib/time';
 import { groupThreads, threadTarget, withHeld } from '../lib/threadList';
@@ -381,7 +382,7 @@ function AuthorMenu({ value, agents, onChange }: { value: ThreadAuthor | null; a
           {opt('agents', 'Agents', null, close)}
           {named && (
             <div className="pop-foot" role="presentation">
-              {agents.map((a) => opt(a.id, a.name, a.revokedAt ? 'revoked' : null, close))}
+              {sortAgents(agents).map((a) => opt(a.id, a.name, a.revokedAt ? 'revoked' : null, close))}
             </div>
           )}
         </>

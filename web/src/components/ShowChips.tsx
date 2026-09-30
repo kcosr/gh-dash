@@ -110,7 +110,7 @@ function Chip({ chip, last, onSay }: { chip: ShowChip; last: boolean; onSay: (te
     dismiss();
     void open(t).then(() => {
       // The chip is gone: hand focus to the diff (or the page) rather than to nothing.
-      if (focus) requestAnimationFrame(() => document.querySelector<HTMLElement>('.diff-view .dv-body, main .scroll')?.focus({ preventScroll: true }));
+      if (focus) requestAnimationFrame(() => (document.querySelector<HTMLElement>('.diff-view .dv-body') ?? document.querySelector<HTMLElement>('main .scroll'))?.focus({ preventScroll: true }));
     });
   };
   const onKey = (e: KeyboardEvent) => {

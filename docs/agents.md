@@ -97,18 +97,40 @@ A few prompts to start from:
 > Review PR #17 in gh-dash. Read the existing threads first, then add comments for anything that
 > hasn't been raised.
 
+> Push this branch and review it in gh-dash, before I open a PR: comment where you'd change something.
+
 > Show me in gh-dash where you made that change.
 
 Agents work from their own clone of the repository and their own `gh` or `glab`. gh-dash tells
 them which pull request and exact commits a comment belongs to, and where it sits in the latest
 code.
 
+### Reviewing a branch before it has a pull request
+
+A pushed branch can be reviewed on its own, against the repository's default branch, and its
+comments carry over to the pull requests later opened from it. An agent does this in a few steps:
+
+1. **Push the branch.** gh-dash sees only what GitHub or GitLab has, so a local-only branch has to
+   be pushed first.
+2. **`get_branch`** with the repository and branch name. It gives the head commit, the merge base,
+   the changed files, the pull request from the branch if there is one, and the comment counts.
+   (`find_pr` with the current branch says so when there is no pull request, and points to it.)
+3. **`add_comment`** with `branch` instead of `pr`, to comment on the whole branch, a file of its
+   diff, or lines. `list_threads` with `branch` reads them, and `wait_for_reply` with `branch` waits
+   for your answers.
+
+A branch's threads are shared with its pull requests: listing or waiting on a pull request also
+covers the threads made on its branch and on its branch's other pull requests, until a merge ends
+that line of work. `list_branches` lists what a repository has pushed, newest first, with each
+branch's pull request.
+
 ## Things to know
 
 - **The repository must be tracked in gh-dash.** If it isn't, the agent is told so. Add it with
   **+ Add repository**.
 - **Comments are pinned to pushed commits.** A comment's lines belong to a commit GitHub or GitLab
-  knows, normally the pull request's latest. An agent with unpushed work is asked to push first.
+  knows, normally the pull request's or branch's latest. An agent with unpushed work is asked to
+  push first.
 - **What agents may do.** Agents can resolve and reopen any thread, and edit or delete only their
   own comments. They can delete a thread only if every comment in it is theirs.
 - **`show` requests.** When an agent asks to show you something, a small note appears in your
@@ -129,9 +151,10 @@ The tools' own descriptions tell the agent the details.
 | `whoami` | The agent's name in gh-dash, the version and the code hosts |
 | `list_repos`, `resolve_repo` | Tracked repositories; the repository key for a git remote URL |
 | `list_prs`, `find_pr`, `get_pr` | Pull requests by state or text; by branch or commit; one in full, with its exact commits, fetch refspec and files |
-| `list_threads`, `get_thread` | Comment threads by repository, pull request, commit, file, status, author or who they wait on, each with where it sits in the latest code |
-| `add_comment` | A new thread on a pull request or commit: on lines, a file, or the whole change |
+| `list_branches`, `get_branch` | A repository's pushed branches, newest first, with their pull requests; one in full, with its head, merge base, fetch name, files, pull request and comment counts |
+| `list_threads`, `get_thread` | Comment threads by repository, pull request, branch, commit, file, status, author or who they wait on, each with where it sits in the latest code |
+| `add_comment` | A new thread on a pull request, a pushed branch or a commit: on lines, a file, or the whole change |
 | `reply`, `edit_comment`, `delete_comment` | Answer a thread; change or delete the agent's own comments |
 | `resolve_thread`, `reopen_thread` | Optionally with a reply first |
-| `wait_for_reply` | Waits (45 seconds by default, up to 5 minutes) for someone else to write on the threads it's following |
-| `show` | Asks your open gh-dash windows to show a thread or a diff |
+| `wait_for_reply` | Waits (45 seconds by default, up to 5 minutes) for someone else to write on the threads it's following: everywhere, or in a repository, pull request, branch or commit |
+| `show` | Asks your open gh-dash windows to show a thread, or a pull request's, branch's or commit's diff |

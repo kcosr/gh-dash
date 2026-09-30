@@ -8,7 +8,7 @@ import { PROVIDERS } from '../../shared/provider';
 import type { RepoRef } from '../db/repo-key';
 import { isFullSha } from '../diff/service';
 import { HttpError } from '../lib/errors';
-import { loadBlob, loadDiff } from './diffs';
+import { branchDiffError, loadBlob, loadDiff } from './diffs';
 import { targetRef } from './format';
 import type { McpDeps } from './tool';
 
@@ -164,6 +164,35 @@ export async function prAnchor(deps: McpDeps, ref: RepoRef, kind: ProviderKind, 
     throw new HttpError(503, `gh-dash can't get ${what}'s diff (${diffError}), so it can't anchor lines: comment on the file or the whole PR instead`);
   }
   const lines = await lineAnchor(deps, ref.key, args, atDiff ? file : null, args.path, { new: commitOid, old: atDiff ? diff!.baseOid : null }, signal);
+  return { ...out, ...lines };
+}
+
+/**
+ * A new thread on a pushed branch: on its diff against the default branch at its current head (there is no earlier push
+ * to name: `at_commit` is refused), on the whole branch, a file of the diff, or lines of one of its sides. The head is the
+ * diff's, so without the diff (the host can't be reached) there is nothing to anchor to, unlike a PR, whose head the sync
+ * knows.
+ */
+export async function branchAnchor(deps: McpDeps, ref: RepoRef, kind: ProviderKind, branch: string, args: AnchorArgs, signal: AbortSignal): Promise<Anchored> {
+  const what = targetRef(kind, ref.key, { branch });
+  if (args.at_commit !== undefined) throw new HttpError(400, "A branch's comments are on its current head: leave at_commit out");
+  let diff: Diff;
+  try {
+    diff = await loadDiff(deps, { repo: ref.key, kind: 'branch', branch }, signal);
+  } catch (err) {
+    if (!(err instanceof HttpError)) throw err;
+    // Not found, the default branch and the like say what is wrong with the branch; anything else is the host, out of reach.
+    if (err.status === 400 || err.status === 404 || err.status === 409) throw new HttpError(err.status, branchDiffError(err));
+    throw new HttpError(err.status, `gh-dash can't get ${what}'s diff (${err.message}): a comment needs its head commit, so try again`);
+  }
+  const out = { commitOid: diff.headOid, baseOid: diff.baseOid, diff };
+  if (args.path === undefined) {
+    if (args.start_line !== undefined || args.end_line !== undefined) throw new HttpError(400, 'start_line needs a path');
+    return { ...out, path: null, side: null, startLine: null, endLine: null, snippet: null };
+  }
+  const file = fileIn(diff, args.path, what);
+  if (args.start_line !== undefined) checkSide(file, args.side, what);
+  const lines = await lineAnchor(deps, ref.key, args, file, args.path, { new: diff.headOid, old: diff.baseOid }, signal);
   return { ...out, ...lines };
 }
 

@@ -9,8 +9,12 @@ import type { Placement } from './placement';
 /** Longest snippet a thread list shows (get_thread shows it whole). */
 export const LIST_SNIPPET_CHARS = 400;
 
-/** The PR's title or the commit's headline (a synced PR's commit when the commit itself isn't synced); null if neither. */
+/**
+ * The PR's title or the commit's headline (a synced PR's commit when the commit itself isn't synced); null if neither, and
+ * for a branch, whose name says it.
+ */
 export function targetTitle(db: Db, t: Pick<CommentThread, 'repo' | 'kind' | 'number' | 'commitOid'>): string | null {
+  if (t.kind === 'branch') return null;
   const row =
     t.kind === 'pr'
       ? db.get<{ title: string }>('SELECT p.title FROM pull_requests p JOIN repos r ON r.id = p.repo_id WHERE r.key = ? AND p.number = ?', [t.repo, t.number])
@@ -34,14 +38,21 @@ export interface ThreadOutOptions {
   snippetChars: number | null;
 }
 
+/** What the thread is on, for `target` and `ref`: a branch thread names its branch (it has no title). */
+function onOf(t: CommentThread, title: string | null) {
+  if (t.kind === 'pr') return { kind: 'pr' as const, number: t.number!, title };
+  if (t.kind === 'branch') return { kind: 'branch' as const, branch: t.branch! };
+  return { kind: 'commit' as const, oid: t.commitOid, title };
+}
+
 export function threadOut(t: CommentThread, me: Principal, o: ThreadOutOptions) {
-  const target = t.kind === 'pr' ? { kind: 'pr' as const, number: t.number!, title: o.title } : { kind: 'commit' as const, oid: t.commitOid, title: o.title };
+  const target = onOf(t, o.title);
   const snippet = t.snippet !== null && o.snippetChars !== null && t.snippet.length > o.snippetChars ? `${t.snippet.slice(0, o.snippetChars)}…` : t.snippet;
   const last = t.comments.at(-1)!;
   return {
     id: t.id,
     repo: t.repo,
-    ref: targetRef(o.kind, t.repo, t.kind === 'pr' ? { number: t.number! } : { oid: t.commitOid }),
+    ref: targetRef(o.kind, t.repo, target),
     target,
     status: t.status,
     resolvedBy: t.resolvedBy ? byOf(t.resolvedBy, me) : null,

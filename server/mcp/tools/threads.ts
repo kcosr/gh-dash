@@ -1,4 +1,4 @@
-// list_threads, get_thread: gh-dash's comment threads on PRs and commits, placed on the current diff.
+// list_threads, get_thread: gh-dash's comment threads on PRs, branches and commits, placed on the current diff.
 
 import { z } from 'zod';
 import { decodeCursor, encodeCursor } from '../../api/scope';
@@ -7,8 +7,8 @@ import { listThreadItems, type ThreadFilter } from '../../db/thread-list';
 import { HttpError } from '../../lib/errors';
 import * as comments from '../../services/comments';
 import { repoKinds, scopedQuery } from '../../services/lists';
-import { commitArg, idArg, limitArg, prArg, repoArg } from '../format';
-import { placeThreads } from '../placement';
+import { branchArg, commitArg, idArg, limitArg, prArg, repoArg } from '../format';
+import { placeThreads, type ViewTarget } from '../placement';
 import { LIST_SNIPPET_CHARS, targetTitle, threadOut } from '../threads';
 import { readTool } from '../tool';
 import { requireRepo } from './prs';
@@ -18,16 +18,18 @@ const ANCHOR_DOC =
   'The anchor is where the thread was made: the revision (commit), file (path), side (new: the head\'s lines, old: the ' +
   "base's) and lines, with their text (snippet).";
 const PLACEMENT_DOC =
-  "placement is where it is on the current diff (a PR's head): line (startLine..endLine; relocated when it was made on an " +
-  'earlier push and found again by its text), file, target (the whole PR or commit), outdated (its file or lines are ' +
-  "gone), or unknown (the diff wasn't available).";
+  "placement is where it is on the current diff (a PR's or branch's head): line (startLine..endLine; relocated when it was " +
+  'made on an earlier push and found again by its text), file, target (the whole PR, branch or commit), outdated (its ' +
+  "file or lines are gone), or unknown (the diff wasn't available).";
 
 export const listThreads = readTool({
   name: 'list_threads',
   title: 'List comment threads',
   description:
-    'Comment threads in gh-dash, most recent activity first: everywhere, or on one repo, PR (repo and pr) or commit (repo ' +
-    'and commit), optionally one file or directory (path). waiting_on "me": open threads whose last comment isn\'t ' +
+    'Comment threads in gh-dash, most recent activity first: everywhere, or on one repo, PR (repo and pr), branch (repo and ' +
+    "branch) or commit (repo and commit), optionally one file or directory (path). A PR's or branch's list includes the " +
+    "threads it shares with the branch's other PRs and the branch itself (`ref` says which), all placed on its diff. " +
+    'waiting_on "me": open threads whose last comment isn\'t ' +
     'yours, so someone (usually the user) is waiting for your answer; "you": open threads whose last comment isn\'t the ' +
     "user's, so they wait on the user. author is who opened the thread (me, you: the user, agents). Items have the " +
     `thread id, its target, status, anchor, placement and last comment (include_comments: the whole conversation). ${BY_DOC} ` +
@@ -36,6 +38,7 @@ export const listThreads = readTool({
     .object({
       repo: repoArg.optional(),
       pr: prArg.optional().describe('A PR (or MR) number of repo'),
+      branch: branchArg.optional().describe("A pushed branch of repo (its review's threads, shared with its PRs)"),
       commit: commitArg.optional().describe("A commit of repo (its own threads, not its PR's)"),
       path: z.string().min(1).max(4096).optional().describe('A file, or a directory for the files under it'),
       status: z.enum(['open', 'resolved', 'all']).default('open'),
@@ -48,11 +51,13 @@ export const listThreads = readTool({
       cursor: z.string().max(500).optional(),
     })
     .strict()
-    .refine((a) => a.repo !== undefined || (a.pr === undefined && a.commit === undefined), 'pr and commit need repo')
-    .refine((a) => a.pr === undefined || a.commit === undefined, 'give pr or commit, not both'),
+    .refine((a) => a.repo !== undefined || (a.pr === undefined && a.branch === undefined && a.commit === undefined), 'pr, branch and commit need repo')
+    .refine((a) => [a.pr, a.branch, a.commit].filter((x) => x !== undefined).length <= 1, 'give only one of pr, branch or commit'),
   run: async (args, { deps, principal, signal }) => {
     const { db, config } = deps;
-    if (args.repo !== undefined) requireRepo(db, args.repo);
+    const ref = args.repo !== undefined ? requireRepo(db, args.repo) : null;
+    // A branch is checked as a new thread's is (a valid name, not the default branch), so a mistake isn't an empty list.
+    if (ref && args.branch !== undefined) comments.resolveTarget(deps, { repo: ref.key, kind: 'branch', branch: args.branch });
     let since: string | undefined;
     if (args.since !== undefined) {
       const t = Date.parse(args.since);
@@ -68,12 +73,25 @@ export const listThreads = readTool({
       sort: 'recent',
       ...(args.author === 'me' ? { author: principal.id } : args.author === 'you' ? { author: 'self' } : args.author === 'agents' ? { author: 'agents' } : {}),
       ...(args.waiting_on ? { waitingOn: args.waiting_on === 'me' ? principal.id : SELF_PRINCIPAL_ID } : {}),
-      ...(args.pr !== undefined ? { target: { pr: args.pr } } : args.commit !== undefined ? { target: { commit: args.commit } } : {}),
+      ...(args.pr !== undefined
+        ? { target: { pr: args.pr } }
+        : args.branch !== undefined
+          ? { target: { branch: args.branch } }
+          : args.commit !== undefined
+            ? { target: { commit: args.commit } }
+            : {}),
       ...(args.path !== undefined ? { path: args.path } : {}),
       ...(since ? { since } : {}),
     };
     const res = listThreadItems(db, ctx, scope, filter, { limit: args.limit, after });
-    const placements = await placeThreads(deps, res.items, signal);
+    // A PR's or branch's view shows its group's threads on its own diff.
+    const against: ViewTarget | undefined =
+      ref && args.pr !== undefined
+        ? { repo: ref.key, kind: 'pr', number: args.pr }
+        : ref && args.branch !== undefined
+          ? { repo: ref.key, kind: 'branch', branch: args.branch }
+          : undefined;
+    const placements = await placeThreads(deps, res.items, signal, { against });
     const kindOf = repoKinds(db);
     return {
       items: res.items.map((t) =>

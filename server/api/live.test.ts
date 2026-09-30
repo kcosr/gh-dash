@@ -158,6 +158,21 @@ describe('GET /stream', () => {
     await vi.waitFor(() => expect(bus.windows).toBe(0));
   });
 
+  it('answers HEAD with the headers alone, holding no stream (so HEADs never use up the 32)', async () => {
+    const { app, bus } = makeApp();
+    for (let i = 0; i < MAX_STREAMS + 5; i++) {
+      const res = await app.request('/api/v1/stream', { method: 'HEAD' });
+      expect(res.status).toBe(200);
+      expect(res.headers.get('content-type')).toContain('text/event-stream');
+    }
+    expect(bus.windows).toBe(0);
+    const client = new AbortController();
+    expect((await app.request('/api/v1/stream', { signal: client.signal })).status).toBe(200);
+    expect(bus.windows).toBe(1);
+    client.abort();
+    await vi.waitFor(() => expect(bus.windows).toBe(0));
+  });
+
   it('cuts off a window that stops reading, drops what it held, and stops counting it for show', async () => {
     const { app, bus } = makeApp();
     const stream = textReader((await app.request('/api/v1/stream')).body!);

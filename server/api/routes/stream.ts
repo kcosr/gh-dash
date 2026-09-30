@@ -30,6 +30,9 @@ export function streamRoutes({ bus }: AppDeps, opts: StreamOptions = {}): Hono {
   const { pingMs = STREAM_PING_MS, maxStreams = MAX_STREAMS, maxQueuedBytes = MAX_QUEUED_BYTES } = opts;
   const r = new Hono();
   r.get('/stream', (c) => {
+    // HEAD comes through GET handlers, and its body is thrown away without being cancelled: a stream opened for it would
+    // hold a slot (and its ping timer) for good. The headers alone, then.
+    if (c.req.method === 'HEAD') return c.body(null, 200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
     // The bus is the server's (every listener's app shares it), so this counts every open window.
     if (bus.windows >= maxStreams) {
       c.header('Retry-After', String(RETRY_AFTER_S));

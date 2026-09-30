@@ -180,6 +180,20 @@ describe('GitLab → rows: merge requests', () => {
     });
   });
 
+  it("maps whether the source branch is in another project: a fork's MR is cross-repo, one from the project's own branch is not", () => {
+    expect([draft, merged, closed, locked].map((p) => [p!.number, p!.headRef, p!.crossRepo])).toEqual([
+      [7, 'settings', false], [5, 'fix', false], [4, 'attempt', true], [2, 'deps', false],
+    ]);
+    expect(mrs.map((m) => [m.sourceProjectId, m.targetProjectId])).toEqual([[40, 40], [40, 40], [57, 40], [40, 40]]);
+  });
+
+  it("counts an MR from a fork that was deleted (no source project) as cross-repo: its branch is not the project's", () => {
+    expect(mapMergeRequest({ ...mrs[1]!, sourceProjectId: null }, BASE).crossRepo).toBe(true);
+    // Whichever way they differ.
+    expect(mapMergeRequest({ ...mrs[1]!, sourceProjectId: 41 }, BASE).crossRepo).toBe(true);
+    expect(mapMergeRequest({ ...mrs[2]!, sourceProjectId: 40 }, BASE).crossRepo).toBe(false);
+  });
+
   it('counts a locked MR (mid-merge) as open', () => {
     expect(locked).toMatchObject({ number: 2, state: 'open', mergedBy: null, activityAt: '2026-09-18T09:00:00Z', labels: [], commits: [], commitCount: 1 });
   });

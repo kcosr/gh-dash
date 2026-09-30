@@ -166,6 +166,8 @@ export interface GqlPullRequest {
   headRefName: string;
   headRefOid: string;
   baseRefName: string;
+  /** The head branch is in another repository (a fork). */
+  isCrossRepository: boolean;
   author: GqlActor | null;
   mergedBy: { login: string } | null;
   labels: GqlLabels | null;

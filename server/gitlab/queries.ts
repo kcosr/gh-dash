@@ -118,12 +118,14 @@ ${PROBE_FIELDS}`;
  * `commits` lists the MR's newest commits first; `workItemRelations` (issues the MR closes) is null while GitLab's
  * explicit_mr_work_item_relations flag is off. `mergeCommitSha` (with the MR's own commit SHAs) is what links the commits
  * on the target branch back to the MR (the commits themselves don't say). 19.3's MergeRequest has no `squashCommitSha`.
+ * `sourceProjectId` and `targetProjectId` say whether the source branch is in another project (a fork's MR); they are read
+ * from the MR itself, not through the `sourceProject` object.
  */
 const MR_FIELDS = `
 fragment MrFields on MergeRequest {
   iid title description state draft webUrl
   createdAt updatedAt mergedAt closedAt
-  sourceBranch targetBranch diffHeadSha mergeCommitSha commitCount
+  sourceBranch targetBranch sourceProjectId targetProjectId diffHeadSha mergeCommitSha commitCount
   author { ${USER} }
   mergeUser { username }
   diffStatsSummary { additions deletions fileCount }

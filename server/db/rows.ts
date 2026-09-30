@@ -34,6 +34,8 @@ export interface PrRow {
   url: string;
   /** The head commit as of the last sync; null in rows synced before it was recorded. */
   head_oid: string | null;
+  /** 1 when the head branch is in another repo (a fork), 0 when in this one; null until a sync says (PrRecord.crossRepo). */
+  cross_repo: number | null;
   /** Local comment threads on the PR, and the ones still open (PR_SELECT counts them). */
   threads: number;
   unresolved_threads: number;

@@ -148,7 +148,7 @@ describe('removeSource', () => {
       upsertPr(db, id, {
         number: 1, title: 'Parser rework', body: 'parser', state: 'open', isDraft: false, author: actor, mergedBy: null, createdAt: '2026-09-20T00:00:00Z',
         updatedAt: '2026-09-20T00:00:00Z', mergedAt: null, closedAt: null, activityAt: '2026-09-20T00:00:00Z', additions: 1, deletions: 0, changedFiles: 1,
-        commitCount: 1, headRef: 'x', headOid: 'a'.repeat(40), baseRef: 'main', labels: [], closingIssues: [], url: 'u', mergeCommitOid: null, squashCommitOid: null,
+        commitCount: 1, headRef: 'x', headOid: 'a'.repeat(40), baseRef: 'main', crossRepo: null, labels: [], closingIssues: [], url: 'u', mergeCommitOid: null, squashCommitOid: null,
         commits: [{ oid: 'b'.repeat(40), headline: 'parser', committedAt: '2026-09-20T00:00:00Z', url: 'u', author: actor }],
       });
       upsertCommit(db, id, { oid: `${i}`.repeat(40), headline: 'Parser fix', body: '', author: actor, committedAt: '2026-09-20T00:00:00Z', url: 'u', additions: 1, deletions: 0, prNumber: null });

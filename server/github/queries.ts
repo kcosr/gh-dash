@@ -119,11 +119,12 @@ query Viewer {
   ${RATE_LIMIT}
 }`;
 
+/** `isCrossRepository`: the head branch is in another repo (a fork), so its name says nothing about this repo's branches. */
 const PR_FIELDS = `
 fragment PrFields on PullRequest {
   number title body state isDraft url
   createdAt updatedAt mergedAt closedAt
-  additions deletions changedFiles headRefName headRefOid baseRefName
+  additions deletions changedFiles headRefName headRefOid baseRefName isCrossRepository
   author { ${ACTOR} }
   mergedBy { login }
   ${LABELS}

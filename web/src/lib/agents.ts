@@ -19,10 +19,19 @@ export const TOKEN_ENV = 'GH_DASH_AGENT_TOKEN';
  */
 export function agentConfig(url: string, token: string): { claude: string; codex: string; codexEnv: string } {
   return {
-    claude: `claude mcp add -s user --transport http gh-dash ${url} --header "Authorization: Bearer ${token}"`,
-    codex: `codex mcp add gh-dash --url ${url} --bearer-token-env-var ${TOKEN_ENV}`,
-    codexEnv: `export ${TOKEN_ENV}=${token}`,
+    claude: `claude mcp add -s user --transport http gh-dash ${shellArg(url)} --header ${shellArg(`Authorization: Bearer ${token}`)}`,
+    codex: `codex mcp add gh-dash --url ${shellArg(url)} --bearer-token-env-var ${TOKEN_ENV}`,
+    codexEnv: `export ${TOKEN_ENV}=${shellArg(token)}`,
   };
+}
+
+/**
+ * One word for a POSIX shell, whatever it holds: as it is when it has nothing the shell would read (a generated token,
+ * a URL), else in single quotes, where nothing is special but the quote itself (written '\''). A token of your own may
+ * hold $, backticks, quotes, ; or \ : pasted, they must stay text.
+ */
+export function shellArg(value: string): string {
+  return /^[A-Za-z0-9_@%+=:,./-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 /** Agents in the order Settings lists them: active ones by name, the built-in one, then revoked ones (newest revoked first). */

@@ -11,26 +11,33 @@ export type DiffTarget = { repo: string; kind: 'pr'; number: number } | { repo: 
 /** How long a tool waits for a diff or a file by default. */
 export const DIFF_WAIT_MS = 20_000;
 
-/** `p`, or a 504 after `ms`, or the signal's reason once it aborts. */
+/**
+ * `p`, or a 504 after `ms`, or the signal's reason once it aborts. `p` is always handled: a fetch that fails after the wait
+ * gave up (or when it was already over) must not be an unhandled rejection, which would stop the server.
+ */
 export function within<T>(p: Promise<T>, ms: number, signal: AbortSignal): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    if (signal.aborted) return reject(signal.reason);
-    const timer = setTimeout(() => reject(new HttpError(504, 'gh-dash is still fetching this from the code host; try again in a moment')), ms);
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const onAbort = () => reject(signal.reason);
-    signal.addEventListener('abort', onAbort, { once: true });
     p.then(resolve, reject).finally(() => {
       clearTimeout(timer);
       signal.removeEventListener('abort', onAbort);
     });
+    if (signal.aborted) return onAbort();
+    timer = setTimeout(() => reject(new HttpError(504, 'gh-dash is still fetching this from the code host; try again in a moment')), ms);
+    signal.addEventListener('abort', onAbort, { once: true });
   });
 }
 
+/** A cancelled call starts no fetch. */
 export async function loadDiff(deps: McpDeps, target: DiffTarget, signal: AbortSignal, ms = DIFF_WAIT_MS): Promise<Diff> {
+  signal.throwIfAborted();
   const payload = target.kind === 'pr' ? deps.diffs.prDiff(target.repo, target.number) : deps.diffs.commitDiff(target.repo, target.oid);
   return JSON.parse(await payloadText(await within(payload, ms, signal))) as Diff;
 }
 
 /** A file's text at a revision. */
 export async function loadBlob(deps: McpDeps, repo: string, oid: string, path: string, signal: AbortSignal, ms = DIFF_WAIT_MS): Promise<string> {
+  signal.throwIfAborted();
   return payloadText(await within(deps.diffs.blob(repo, oid, path), ms, signal));
 }

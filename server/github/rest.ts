@@ -6,6 +6,7 @@ const API = 'https://api.github.com';
 const API_VERSION = '2026-03-10';
 const JSON_TYPE = 'application/vnd.github+json';
 const SHA_TYPE = 'application/vnd.github.sha';
+const DIFF_TYPE = 'application/vnd.github.diff';
 /** Safety net against a runaway Link chain (GitHub's 3000-file lists need at most 30 pages). */
 const MAX_PAGES = 40;
 
@@ -108,6 +109,16 @@ export class GitHubRestClient {
     // This media type's ETag is the quoted SHA.
     const { body } = await this.get(url(path), SHA_TYPE, readText, opts, known && `"${known}"`);
     return body === null ? known! : body.trim();
+  }
+
+  /**
+   * A comparison (or commit) as one unified diff, reading at most `maxBytes` of the body: `tooLarge` when it is longer,
+   * and `text` is then empty. A Content-Length over the cap isn't read at all. Bytes that aren't UTF-8 become U+FFFD,
+   * as in the `patch` of the JSON.
+   */
+  async diff(path: string, maxBytes: number, opts: CallOptions = {}): Promise<{ text: string; tooLarge: boolean }> {
+    const { bytes, tooLarge } = (await this.get(url(path, opts.query), DIFF_TYPE, (res) => readCapped(res, maxBytes), opts)).body!;
+    return { text: tooLarge ? '' : new TextDecoder().decode(bytes), tooLarge };
   }
 
   /** Raw file contents, reading at most `maxBytes` of the body. */

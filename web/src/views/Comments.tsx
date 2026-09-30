@@ -1,12 +1,13 @@
 /**
- * Comments: every local diff-comment thread in scope, across PRs and commits, grouped per PR or commit (or repo, or
- * not at all). A row opens the diff at its thread; it also opens in place to read the conversation and resolve it.
- * Replying stays in the diff.
+ * Comments: every local diff-comment thread in scope, across PRs, branches and commits, grouped per PR, branch or commit
+ * (or repo, or not at all). A row opens the diff at its thread; it also opens in place to read the conversation and
+ * resolve it. Replying stays in the diff.
  */
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import type { Agent, Me, Principal, ThreadKindFilter, ThreadListItem, ThreadStatusFilter } from '../../../shared/api';
+import { branchRef } from '../../../shared/comment-markdown';
 import { PROVIDERS, capitalize, refText } from '../../../shared/provider';
 import { patchThreadLists, threadActions, threadListQuery, useAgents, useMe, useThreadList } from '../api/hooks';
 import { threadListParams } from '../lib/apiQuery';
@@ -214,26 +215,30 @@ export function CommentsView() {
   const fetching = list.isFetching && !!data;
   const stWord = STATUS_WORD[s.status];
   const summary = useMemo(() => {
-    const prs = new Set<string>(), commits = new Set<string>(), repos = new Set<string>();
+    const prs = new Set<string>(), branches = new Set<string>(), commits = new Set<string>(), repos = new Set<string>();
     for (const t of data?.items ?? []) {
-      (t.kind === 'pr' ? prs : commits).add(threadTarget(t));
+      (t.kind === 'pr' ? prs : t.kind === 'branch' ? branches : commits).add(threadTarget(t));
       repos.add(t.repo);
     }
-    const on = [prs.size && `${prs.size} ${plural(prs.size, w.short, w.shortMany)}`, commits.size && `${commits.size} ${plural(commits.size, 'commit')}`].filter(Boolean).join(' and ');
+    const on = listWords([
+      prs.size && `${prs.size} ${plural(prs.size, w.short, w.shortMany)}`,
+      branches.size && `${branches.size} ${plural(branches.size, 'branch', 'branches')}`,
+      commits.size && `${commits.size} ${plural(commits.size, 'commit')}`,
+    ]);
     // Waiting on you implies unresolved.
     const what = [!s.waiting && stWord, plural(total, 'thread'), byWord(s.author, agents), s.waiting && 'waiting on you'].filter(Boolean).join(' ');
     return `${what}${on ? ` on ${on}` : ''}${repos.size ? ` · ${repos.size} ${plural(repos.size, 'repo')}` : ''}`;
   }, [data, total, stWord, w, s.author, s.waiting, agents]);
-  // "PR or commit"; with both hosts' repos in view, "PR/MR or commit".
+  // "PR, branch or commit"; with both hosts' repos in view, "PR/MR, branch or commit".
   const changeWord = words.host ? w.short : `${PROVIDERS.github.pr.short}/${PROVIDERS.gitlab.pr.short}`;
-  const kindWord = s.kind === 'pr' ? `on ${w.shortMany}` : s.kind === 'commit' ? 'on commits' : '';
+  const kindWord = s.kind === 'pr' ? `on ${w.shortMany}` : s.kind === 'branch' ? 'on branches' : s.kind === 'commit' ? 'on commits' : '';
   const n = (x: number | undefined) => x !== undefined && <span className="n">{x.toLocaleString()}</span>;
 
   return (
     <main className="main">
       <FilterToolbar summary={[
         s.waiting ? 'Waiting on you' : s.status === 'open' ? 'Unresolved' : s.status === 'resolved' ? 'Resolved' : 'All',
-        s.kind === 'pr' ? w.shortMany : s.kind === 'commit' ? 'Commits' : '',
+        s.kind === 'pr' ? w.shortMany : s.kind === 'branch' ? 'Branches' : s.kind === 'commit' ? 'Commits' : '',
         s.author !== null && `By ${authorName(s.author, agents)}`,
         s.q && `“${s.q}”`,
       ].filter(Boolean).join(' · ')}>
@@ -249,7 +254,7 @@ export function CommentsView() {
             ]}
           />
           <Seg<ThreadKindFilter> value={s.kind} onChange={(kind) => set({ kind })} ariaLabel="Threads on" options={[
-            { value: 'all', label: 'All' }, { value: 'pr', label: w.shortMany }, { value: 'commit', label: 'Commits' },
+            { value: 'all', label: 'All' }, { value: 'pr', label: w.shortMany }, { value: 'branch', label: 'Branches' }, { value: 'commit', label: 'Commits' },
           ]} />
           {showAuthor && <AuthorMenu value={s.author} agents={agents} onChange={(author) => set({ author })} />}
           <span className="summary grow" title={data ? `${total.toLocaleString()} ${summary}` : undefined}>
@@ -273,14 +278,14 @@ export function CommentsView() {
           <span className="spacer" />
           <Ctl label="Group">
             <Seg<ThreadGroup> className="sm" value={s.threadGroup} onChange={(threadGroup) => set({ threadGroup })} ariaLabel="Group by" options={[
-              { value: 'target', label: `${changeWord} or commit` }, { value: 'repo', label: 'Repo' }, { value: 'none', label: 'None' },
+              { value: 'target', label: `${changeWord}, branch or commit` }, { value: 'repo', label: 'Repo' }, { value: 'none', label: 'None' },
             ]} />
           </Ctl>
           <Ctl label="Sort">
             <Seg<ThreadOrder> className="sm" value={s.threadSort} onChange={(threadSort) => set({ threadSort })} ariaLabel="Sort" options={[
               { value: 'recent', label: 'Recent', title: 'Latest activity first' },
               { value: 'oldest', label: 'Oldest', title: 'Earliest activity first' },
-              { value: 'file', label: 'File order', title: `Each ${changeWord} or commit read top to bottom: general comments, then by file and line` },
+              { value: 'file', label: 'File order', title: `Each ${changeWord}, branch or commit read top to bottom: general comments, then by file and line` },
             ]} />
           </Ctl>
         </div>
@@ -297,8 +302,8 @@ export function CommentsView() {
             <NoReposSelected onSelectAll={() => set({ repos: null })} />
           ) : !rows.length && counts && counts.open + counts.resolved === 0 && !s.q && s.kind === 'all' && s.author === null && !s.waiting ? (
             <EmptyState icon="comment" title={s.repos === null && s.vis === 'all' && s.own === 'all' ? 'No comments yet' : 'No comments in these repositories'}>
-              Comments you add in a diff show up here. Open the changes of a {changeWord} or a commit, and use the + beside a
-              line, or the comments column for one on the whole of it.
+              Comments you add in a diff show up here. Open the changes of a {changeWord}, a branch or a commit, and use the +
+              beside a line, or the comments column for one on the whole of it.
             </EmptyState>
           ) : !rows.length ? (
             <EmptyState
@@ -312,7 +317,7 @@ export function CommentsView() {
                   )}
                   {s.waiting && <button type="button" className="btn" onClick={() => set({ waiting: false })}>Show all unresolved</button>}
                   {s.author !== null && <button type="button" className="btn" onClick={() => set({ author: null })}>Show anyone's</button>}
-                  {s.kind !== 'all' && <button type="button" className="btn" onClick={() => set({ kind: 'all' })}>Show {w.shortMany} and commits</button>}
+                  {s.kind !== 'all' && <button type="button" className="btn" onClick={() => set({ kind: 'all' })}>Show {w.shortMany}, branches and commits</button>}
                   {s.q && <button type="button" className="btn" onClick={() => set({ q: '' })}>Clear filter</button>}
                 </div>
               }
@@ -393,12 +398,20 @@ function AuthorMenu({ value, agents, onChange }: { value: ThreadAuthor | null; a
 
 type ProviderOf = ReturnType<typeof useProviderOf>;
 
-/** "#42" or "!42" for a PR, "@3f2a91c" for a commit. */
-const refOf = (t: ThreadListItem, providerOf: ProviderOf) => (t.kind === 'pr' ? `${providerOf(t.repo).prRef}${t.number}` : `@${t.commitOid.slice(0, 7)}`);
+/** "#42" or "!42" for a PR, the name for a branch, "@3f2a91c" for a commit. */
+const refOf = (t: ThreadListItem, providerOf: ProviderOf) =>
+  t.kind === 'pr' ? `${providerOf(t.repo).prRef}${t.number}` : t.kind === 'branch' ? t.branch ?? '' : `@${t.commitOid.slice(0, 7)}`;
 
-/** "app#42" or "app@3f2a91c", as the exports name them. */
+/** "app#42", "app branch fix/login" or "app@3f2a91c", as the exports name them. */
 const targetText = (t: ThreadListItem, label: (key: string) => string, providerOf: ProviderOf) =>
-  t.kind === 'pr' ? refText(providerOf(t.repo).kind, label(t.repo), t.number!, 'pr') : `${label(t.repo)}@${t.commitOid.slice(0, 7)}`;
+  t.kind === 'pr' ? refText(providerOf(t.repo).kind, label(t.repo), t.number!, 'pr')
+    : t.kind === 'branch' ? branchRef(label(t.repo), t.branch ?? '') : `${label(t.repo)}@${t.commitOid.slice(0, 7)}`;
+
+/** "a, b and c". */
+const listWords = (parts: (string | 0 | false)[]) => {
+  const w = parts.filter(Boolean) as string[];
+  return w.length > 1 ? `${w.slice(0, -1).join(', ')} and ${w[w.length - 1]}` : w.join('');
+};
 
 /** "3 threads · 1 unresolved": the unresolved part when it says something the status filter doesn't. */
 function groupCount(g: ThreadGroupOf<ThreadListItem>, status: ThreadStatusFilter) {
@@ -406,25 +419,27 @@ function groupCount(g: ThreadGroupOf<ThreadListItem>, status: ThreadStatusFilter
   return `${n} ${plural(n, 'thread')}${g.open > 0 && (g.open < n || status !== 'open') ? ` · ${g.open} unresolved` : ''}`;
 }
 
-/** A PR's or commit's group: what it is (the diff opens from its title), its threads, its last activity. */
+/** A PR's, branch's or commit's group: what it is (the diff opens from its title), its threads, its last activity. */
 function TargetHeader({ g, status, onDiff, onDetails }: { g: ThreadGroupOf<ThreadListItem>; status: ThreadStatusFilter; onDiff: () => void; onDetails: () => void }) {
   const t = g.items[0]!;
   const providerOf = useProviderOf();
   const p = providerOf(t.repo);
   const pr = t.kind === 'pr';
-  const what = pr ? capitalize(p.pr.one) : 'Commit';
-  const title = t.targetTitle ?? `${what} not synced`;
+  const branch = t.kind === 'branch';
+  const what = pr ? capitalize(p.pr.one) : branch ? 'Branch' : 'Commit';
+  // A branch's name is its title.
+  const title = branch ? t.branch ?? '' : t.targetTitle ?? `${what} not synced`;
   const state = pr && t.prState;
   return (
     <div className="group-h cv-gh">
       <span className="gt">
-        <span className={cx('pr-ic', state || 'commit')} title={state ? `${what} ${state}` : pr ? what : 'Commit'}>
-          <Icon name={state ? prIconName({ state, isDraft: false }) : pr ? 'prOpen' : 'commit'} />
+        <span className={cx('pr-ic', state || 'commit')} title={state ? `${what} ${state}` : what}>
+          <Icon name={state ? prIconName({ state, isDraft: false }) : pr ? 'prOpen' : branch ? 'branch' : 'commit'} />
         </span>
         <RepoChip repo={t.repo} />
         <button type="button" className="cv-target" data-diff={g.key} onClick={onDiff} title={`${title} · open the diff`}>
-          <span className="num">{refOf(t, providerOf)}</span>
-          <span className={cx('cv-title', !t.targetTitle && 'muted')}>{title}</span>
+          {!branch && <span className="num">{refOf(t, providerOf)}</span>}
+          <span className={cx('cv-title', !branch && !t.targetTitle && 'muted')}>{title}</span>
         </button>
       </span>
       <span className="cv-acts">
@@ -476,7 +491,12 @@ const Row = memo(function Row({ t, on, cursor, open, me, onOpen, onToggle, onSta
         <Icon name={open ? 'chevron' : 'chevronRight'} />
       </button>
       <ThreadRow thread={t} onOpen={() => onOpen(t)} data-diff={threadTarget(t)} aria-label={aria} onFocus={() => onFocus(t.id)} onKeyDown={keepSpace} onKeyUp={keepSpace}
-        before={on && <span className="cv-on" title={t.targetTitle ?? undefined}>{on === 'repo' && <span className="r">{label(t.repo)}</span>}{refOf(t, providerOf)}</span>}
+        before={on && (
+          <span className="cv-on" title={t.kind === 'branch' ? targetText(t, label, providerOf) : t.targetTitle ?? undefined}>
+            {on === 'repo' && <span className="r">{label(t.repo)}</span>}
+            {t.kind === 'branch' ? <span className="b">{refOf(t, providerOf)}</span> : refOf(t, providerOf)}
+          </span>
+        )}
         after={<>
           {t.earlierPush && <span className="cv-tag" title={`Made on an earlier push (${t.commitOid.slice(0, 7)}); the ${providerOf(t.repo).pr.short} has changed since`}>earlier push</span>}
           {resolved && t.resolvedBy && <span className="cv-by" title={t.resolvedAt ? `Resolved ${fmtDateTime(t.resolvedAt)}` : undefined}>resolved by {principalWord(t.resolvedBy)}</span>}

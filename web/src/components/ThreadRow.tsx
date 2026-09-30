@@ -11,9 +11,9 @@ export { threadLines, threadPlace } from '../lib/threadList';
 
 /**
  * One comment thread as a line (the drawer's Comments, the Comments list): where (the file's name, its path in the
- * title; "General" for one on the whole PR or commit), who opened it when an agent did, the first comment's opening
- * words, the replies. A click opens the diff at the thread. `before` and `after` add to the line (what it is on, when,
- * tags).
+ * title; "General" for one on the whole PR, branch or commit), who opened it when an agent did, the first comment's
+ * opening words, the replies. A click opens the diff at the thread. `before` and `after` add to the line (what it is on,
+ * when, tags).
  */
 export function ThreadRow({ thread: t, onOpen, before, after, className, ...rest }: {
   thread: CommentThread;

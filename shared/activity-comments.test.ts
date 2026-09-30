@@ -67,6 +67,17 @@ describe('Activity: comment events', () => {
     expect(claude17.at.getMinutes()).toBe(3);
   });
 
+  it("groups a branch's events per branch, apart from a PR from it", () => {
+    const feed = rows([
+      ev('thread_opened', you, { min: 1, threadId: 1, target: { kind: 'branch', branch: 'fix/a', title: null } }),
+      ev('replied', you, { min: 2, threadId: 2, target: { kind: 'branch', branch: 'fix/a', title: null } }),
+      ev('replied', you, { min: 3, threadId: 3, target: { kind: 'branch', branch: 'fix/b', title: null } }),
+      ev('replied', you, { min: 4, threadId: 4 }),
+    ]);
+    const shape = feed[0]!.rows.map((r) => (r.kind === 'comments' ? [r.target.kind === 'branch' ? r.target.branch : r.target.kind, r.events.map((e) => e.comment.threadId)] : r.kind));
+    expect(shape).toEqual([['pr', [4]], ['fix/b', [3]], ['fix/a', [2, 1]]]);
+  });
+
   it('keeps an event once, however the pages overlap', () => {
     const e = ev('replied', claude, { eventId: 900 });
     const feed = rows([e, { ...e }]);

@@ -20,6 +20,8 @@ describe('Comments URL state', () => {
       .toMatchObject({ status: 'resolved', kind: 'commit', threadGroup: 'none', threadSort: 'file', q: 'race' });
     expect(parseUrlState('?status=all&kind=pr&group=repo&sort=oldest', 'comments'))
       .toMatchObject({ status: 'all', kind: 'pr', threadGroup: 'repo', threadSort: 'oldest' });
+    expect(parseUrlState('?kind=branch', 'comments').kind).toBe('branch');
+    expect(patchSearch('', 'comments', { kind: 'branch' })).toBe('?kind=branch');
     expect(parseUrlState('?status=closed&kind=issue&group=week&sort=stars', 'comments'))
       .toMatchObject({ status: 'open', kind: 'all', threadGroup: 'target', threadSort: 'recent' });
   });
@@ -77,6 +79,11 @@ describe('Comments API params and export', () => {
     const d = parseUrlState('?sort=file&group=none', 'comments');
     expect(Object.fromEntries(Object.entries(threadListParams(d)).filter(([, v]) => v !== undefined))).toEqual({ status: 'open' });
     expect(threadListParams(parseUrlState('?repos=', 'comments')).repos).toBe('');
+  });
+
+  it('asks for the threads on branches alone', () => {
+    expect(threadListParams(parseUrlState('?kind=branch', 'comments'))).toMatchObject({ kind: 'branch' });
+    expect(exportUrl(exportTarget('comments', parseUrlState('?kind=branch&status=all', 'comments')))).toBe('/api/v1/threads?status=all&kind=branch');
   });
 
   it('exports the same list as the API and as Markdown', () => {
@@ -148,6 +155,18 @@ describe('Comments grouping and order', () => {
   it('names the diff a thread opens in', () => {
     expect(threadTarget(t.a1)).toBe('alice/app#1');
     expect(threadTarget(t.c1)).toBe(`alice/app@${commit}`);
+    expect(threadTarget(item({ kind: 'branch', number: null, branch: 'fix/a#1', at: 0 }))).toBe('alice/app~fix/a#1');
+    // A PR's thread from a branch is still the PR's.
+    expect(threadTarget(item({ number: 3, branch: 'fix/a', at: 0 }))).toBe('alice/app#3');
+  });
+
+  it("groups a branch's threads under the branch, apart from the PRs from it", () => {
+    const b1 = item({ id: 40, kind: 'branch', number: null, branch: 'fix/a', path: 'src/b.ts', at: 70, prState: null, targetTitle: null });
+    const b2 = item({ id: 41, kind: 'branch', number: null, branch: 'fix/a', path: null, side: null, startLine: null, endLine: null, at: 5, prState: null, targetTitle: null });
+    const p1 = item({ id: 42, number: 3, branch: 'fix/a', at: 65 });
+    expect(shape(groupThreads([b1, p1, b2], 'target', 'recent'))).toEqual([['alice/app~fix/a', [40, 41]], ['alice/app#3', [42]]]);
+    expect(shape(groupThreads([b1, p1, b2], 'target', 'file'))).toEqual([['alice/app~fix/a', [41, 40]], ['alice/app#3', [42]]]);
+    expect(shape(groupThreads([b1, p1, b2], 'repo', 'file'))).toEqual([['alice/app', [41, 40, 42]]]);
   });
 
   it('reads general threads first, then by path and line', () => {

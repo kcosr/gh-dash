@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { Agent } from './api';
-import { TOKEN_ENV, agentConfig, agentNameProblem, agentTokenProblem, generateAgentToken, mcpUrl, shellArg, sortAgents } from '../web/src/lib/agents';
+import {
+  TOKEN_ENV, agentConfig, agentNameProblem, agentReach, agentsShown, agentTokenProblem, generateAgentToken, mcpUrl, pickedSources, pickOf, shellArg, sortAgents,
+  sourceLabel,
+} from '../web/src/lib/agents';
 
 /**
  * Runs `line` in a real POSIX shell after `prelude` and returns what it printed. node:child_process by the running
@@ -86,5 +89,52 @@ describe('Settings → Agents', () => {
     expect(agentTokenProblem('y'.repeat(257))).toBe('24 to 256 characters');
     expect(agentTokenProblem('with a space in the middle of it')).toBe('Printable ASCII without spaces');
     expect(agentTokenProblem('ünïcode-token-000000000000')).toBe('Printable ASCII without spaces');
+  });
+
+  describe('sources', () => {
+    const known = [
+      { host: 'github.com', name: 'GitHub' },
+      { host: 'gitlab.example.com', name: 'gitlab.example.com' },
+      { host: 'gitlab.other.example', name: 'gitlab.other.example' },
+    ];
+
+    it('says what an agent reaches in a few words, naming sources as Settings → Sources does', () => {
+      expect(agentReach(null, known)).toBe('All sources');
+      expect(agentReach([], known)).toBe('No sources');
+      expect(agentReach(['github.com'], known)).toBe('GitHub only');
+      expect(agentReach(['github.com', 'gitlab.example.com'], known)).toBe('GitHub, gitlab.example.com only');
+      expect(agentReach(['github.com', 'gitlab.example.com', 'gitlab.other.example'], known)).toBe('GitHub, gitlab.example.com, gitlab.other.example only');
+      // A host the list doesn't know yet, by its host.
+      expect(agentReach(['gitlab.new.example'], [])).toBe('gitlab.new.example only');
+      expect(agentReach(['gitlab.example.com'], [{ host: 'gitlab.example.com', name: 'GitLab' }])).toBe('GitLab only');
+    });
+
+    it("names a source, with its host when the name doesn't say it", () => {
+      expect(sourceLabel({ host: 'github.com', name: 'GitHub' })).toEqual({ name: 'GitHub', host: 'github.com' });
+      expect(sourceLabel({ host: 'gitlab.example.com', name: 'gitlab.example.com' })).toEqual({ name: 'gitlab.example.com', host: null });
+    });
+
+    it('turns the picker into hosts for the bridge: every source (null), or those picked that are sources, in their order', () => {
+      expect(pickOf(null)).toEqual({ all: true, hosts: [] });
+      expect(pickOf(undefined)).toEqual({ all: true, hosts: [] });
+      expect(pickOf(['gitlab.example.com'])).toEqual({ all: false, hosts: ['gitlab.example.com'] });
+      expect(pickedSources({ all: true, hosts: ['github.com'] }, known)).toEqual({ sources: null, problem: null });
+      expect(pickedSources({ all: false, hosts: ['gitlab.other.example', 'github.com'] }, known)).toEqual({ sources: ['github.com', 'gitlab.other.example'], problem: null });
+      expect(pickedSources({ all: false, hosts: ['gone.example', 'github.com'] }, known)).toEqual({ sources: ['github.com'], problem: null });
+      for (const hosts of [[], ['gone.example']]) {
+        expect(pickedSources({ all: false, hosts }, known)).toEqual({ sources: null, problem: 'Pick at least one source, or all of them' });
+      }
+    });
+
+    it('lists the built-in agent while requests without a token act as it, before it has done anything too', () => {
+      const list = [agent(3, 'Claude'), agent(2, 'Codex', { revokedAt: '2026-09-02T00:00:00.000Z', tokenPrefix: null })];
+      expect(agentsShown(list, false).map((a) => a.name)).toEqual(['Claude', 'Codex']);
+      const shown = agentsShown(list, true);
+      expect(shown.map((a) => [a.id, a.name, a.builtIn, a.sources])).toEqual([[3, 'Claude', false, null], [0, 'Agent', true, null], [2, 'Codex', false, null]]);
+      // Once listed, as it is.
+      const listed = [...list, agent(5, 'Agent (no token)', { builtIn: true, tokenPrefix: null, sources: ['github.com'] })];
+      expect(agentsShown(listed, true).filter((a) => a.builtIn)).toEqual([listed[2]]);
+      expect(agentsShown(listed, false).filter((a) => a.builtIn)).toEqual([listed[2]]);
+    });
   });
 });

@@ -85,9 +85,10 @@ export function registerIpc(desktop: Desktop, window: () => BrowserWindow | null
     return file ? desktop.setGlabPath(file) : null;
   });
   // Agents (MCP): the child makes and revokes them; the new token comes back here once, for the renderer to show.
-  handle(DESKTOP_IPC.addAgent, (name, token) => desktop.addAgent(name, token));
+  handle(DESKTOP_IPC.addAgent, (name, token, sources) => desktop.addAgent(name, token, sources));
   handle(DESKTOP_IPC.regenerateAgentToken, (id, token) => desktop.regenerateAgentToken(id, token));
   handle(DESKTOP_IPC.revokeAgent, (id) => desktop.revokeAgent(id));
+  handle(DESKTOP_IPC.setAgentSources, (id, sources) => desktop.setAgentSources(id, sources));
   handle(DESKTOP_IPC.enableMcp, () => desktop.enableMcp());
   // The picker names the host the file is for; main keeps the file for that host only.
   handle(DESKTOP_IPC.chooseTokenFile, async (url) => {

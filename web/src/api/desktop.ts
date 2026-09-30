@@ -143,8 +143,9 @@ export function useSourceActions() {
 
 /**
  * The desktop app's agent actions (Settings → Agents): adding one or making it a new token answers with the token, to
- * show once; revoking keeps the agent and its comments. Each rejects outside the app. The list is refetched after
- * each (the stream's `agents` message says so too, to every window).
+ * show once; revoking keeps the agent and its comments; `setSources` limits one to some sources, or lets it reach every
+ * one. Each rejects outside the app. The list is refetched after each (the stream's `agents` message says so too, to
+ * every window).
  */
 export function useAgentActions() {
   const bridge = getBridge();
@@ -153,7 +154,7 @@ export function useAgentActions() {
   // MCP turned on restarted the server: everything is asked again, the app's state first.
   const restarted = () => void qc.invalidateQueries();
   const add = useMutation({
-    mutationFn: ({ name, token }: { name: string; token?: string }) => need(bridge).addAgent(name, token),
+    mutationFn: ({ name, token, sources }: { name: string; token?: string; sources?: string[] | null }) => need(bridge).addAgent(name, token, sources ?? null),
     onSuccess: (r) => { if (r.enabledMcp) restarted(); },
     onSettled: changed,
   });
@@ -162,6 +163,11 @@ export function useAgentActions() {
     onSettled: changed,
   });
   const revoke = useMutation({ mutationFn: (id: number) => need(bridge).revokeAgent(id), onSettled: changed });
+  /** `id`: 'built-in' for the built-in agent (listed or not yet). `sources`: hosts, or null for every source. */
+  const setSources = useMutation({
+    mutationFn: ({ id, sources }: { id: number | 'built-in'; sources: string[] | null }) => need(bridge).setAgentSources(id, sources),
+    onSettled: changed,
+  });
   /** "Turn on MCP": the Local API for agents (its REST API as it was), then everything is asked again. */
   const enableMcp = useMutation({
     mutationFn: () => need(bridge).enableMcp(),
@@ -170,5 +176,5 @@ export function useAgentActions() {
       void qc.invalidateQueries({ predicate: (q) => q.queryKey[0] !== qk.desktop[0] });
     },
   });
-  return { add, regenerate, revoke, enableMcp };
+  return { add, regenerate, revoke, setSources, enableMcp };
 }

@@ -180,10 +180,10 @@ export class ServerChild {
     return expect(await this.request({ type: 'sync-source', source }), 'sync-started').result;
   }
 
-  /** Makes an agent in the child's database; the answer carries its token, once. */
-  async addAgent(name: string, token?: string | null): Promise<{ agent: Agent; token: string }> {
+  /** Makes an agent in the child's database, reaching `sources` (hosts; absent or null, every source); the answer carries its token, once. */
+  async addAgent(name: string, token?: string | null, sources?: string[] | null): Promise<{ agent: Agent; token: string }> {
     await this.running();
-    return withToken(expect(await this.request({ type: 'add-agent', name, ...(token ? { token } : {}) }), 'agent-result'));
+    return withToken(expect(await this.request({ type: 'add-agent', name, ...(token ? { token } : {}), ...(sources ? { sources } : {}) }), 'agent-result'));
   }
 
   /** A new token for an agent (the one given, else generated); the old one stops working. */
@@ -196,6 +196,12 @@ export class ServerChild {
   async revokeAgent(agent: number): Promise<Agent> {
     await this.running();
     return expect(await this.request({ type: 'revoke-agent', agent }), 'agent-result').agent;
+  }
+
+  /** Limits an agent (or the built-in one) to the sources with these hosts, or lets it reach every one (null). */
+  async setAgentSources(agent: number | 'built-in', sources: string[] | null): Promise<Agent> {
+    await this.running();
+    return expect(await this.request({ type: 'set-agent-sources', agent, sources }), 'agent-result').agent;
   }
 
   private async running(): Promise<void> {

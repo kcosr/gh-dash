@@ -40,6 +40,7 @@ const fakeChild = () => {
     addAgent: vi.fn(async (name: string) => ({ agent: agent(2, name), token: 'ghd_secret1' })),
     regenerateAgentToken: vi.fn(async (id: number) => ({ agent: agent(id), token: 'ghd_secret2' })),
     revokeAgent: vi.fn(async (id: number) => ({ ...agent(id), tokenPrefix: null, revokedAt: 'y' })),
+    setAgentSources: vi.fn(async (id: number | 'built-in', sources: string[] | null) => ({ ...agent(id === 'built-in' ? 5 : id, id === 'built-in' ? 'Agent' : 'Claude'), sources })),
   };
 };
 function fakeTokens() {
@@ -187,7 +188,7 @@ describe('agents', () => {
     expect(await desktop.addAgent('Claude')).toEqual({ agent: expect.objectContaining({ id: 2, name: 'Claude' }), token: 'ghd_secret1' });
     expect(await desktop.regenerateAgentToken(2)).toMatchObject({ agent: { id: 2 }, token: 'ghd_secret2' });
     expect(await desktop.revokeAgent(2)).toMatchObject({ id: 2, tokenPrefix: null, revokedAt: 'y' });
-    expect(child.addAgent).toHaveBeenCalledWith('Claude', undefined);
+    expect(child.addAgent).toHaveBeenCalledWith('Claude', undefined, null);
     expect(child.regenerateAgentToken).toHaveBeenCalledWith(2, undefined);
     expect(child.revokeAgent).toHaveBeenCalledWith(2);
     expect(lines).toEqual(['[agents] added Claude (id 2)', '[agents] new token for Claude (id 2)', '[agents] revoked Claude (id 2)']);
@@ -262,7 +263,7 @@ describe('agents', () => {
     const mine = 'my-own-agent-token-0123456789';
     await desktop.addAgent('Claude', mine);
     await desktop.regenerateAgentToken(2, mine);
-    expect(child.addAgent).toHaveBeenCalledWith('Claude', mine);
+    expect(child.addAgent).toHaveBeenCalledWith('Claude', mine, null);
     expect(child.regenerateAgentToken).toHaveBeenCalledWith(2, mine);
     expect(lines.join('\n')).not.toContain(mine);
     for (const bad of ['short', 'has a space in it, somewhere here', 'tëst-token-with-accents-000', 'x'.repeat(257), 42]) {
@@ -284,6 +285,42 @@ describe('agents', () => {
     const refused = await desktop.addAgent('claude').catch((e: Error) => e);
     expect(refused).toBeInstanceOf(ConfigInputError);
     expect((refused as Error).message).toBe('There is already an agent called Claude (id 2); regenerate its token instead');
+  });
+
+  it('passes the sources an agent may reach to the child, as hosts, for a new agent or one already there, the built-in one too', async () => {
+    const lines: string[] = [];
+    desktop = new Desktop({ child: child as unknown as ServerChild, tokens: tokens as unknown as TokenStore, configPath, dataDir: join(dir, 'data'), version: '1', restart, log: (l) => lines.push(l) });
+    writeFileSync(configPath, JSON.stringify({ listen: true }));
+    const work: Agent = { id: 2, name: 'Work', tokenPrefix: 'ghd_abcd', createdAt: 'x', lastUsedAt: null, revokedAt: null, builtIn: false, sources: ['gitlab.example.com'] };
+    child.addAgent.mockImplementationOnce(async () => ({ agent: work, token: 'ghd_secret1' }));
+    expect(await desktop.addAgent('Work', undefined, [' GitLab.example.com '])).toMatchObject({ agent: { sources: ['gitlab.example.com'] } });
+    expect(child.addAgent).toHaveBeenCalledWith('Work', undefined, ['gitlab.example.com']);
+    expect(await desktop.setAgentSources(2, ['github.com'])).toMatchObject({ id: 2, sources: ['github.com'] });
+    expect(await desktop.setAgentSources(2, null)).toMatchObject({ id: 2, sources: null });
+    expect(await desktop.setAgentSources('built-in', ['github.com'])).toMatchObject({ name: 'Agent', sources: ['github.com'] });
+    expect(child.setAgentSources.mock.calls).toEqual([[2, ['github.com']], [2, null], ['built-in', ['github.com']]]);
+    expect(lines).toEqual([
+      '[agents] added Work (id 2), reaching gitlab.example.com only',
+      '[agents] Claude (id 2) now reaches github.com only',
+      '[agents] Claude (id 2) now reaches every source',
+      '[agents] Agent (id 5) now reaches github.com only',
+    ]);
+    expect(restart).not.toHaveBeenCalled();
+  });
+
+  it("refuses sources that aren't a list of hosts, and an agent that isn't one, before asking the child", async () => {
+    for (const bad of [[], 'github.com', [''], ['  '], [42], ['git hub.com'], ['a\nb'], ['x'.repeat(254)], Array(101).fill('github.com'), {}]) {
+      expect(() => desktop.setAgentSources(2, bad), JSON.stringify(bad)).toThrow(ConfigInputError);
+      expect(() => desktop.addAgent('Claude', undefined, bad), JSON.stringify(bad)).toThrow(ConfigInputError);
+    }
+    expect(() => desktop.setAgentSources(2, [])).toThrow('Choose at least one source, or all of them.');
+    for (const bad of ['builtin', 'Agent', 0, -1, 1.5, null, undefined]) expect(() => desktop.setAgentSources(bad, null), String(bad)).toThrow('That is not an agent.');
+    expect(child.setAgentSources).not.toHaveBeenCalled();
+    expect(child.addAgent).not.toHaveBeenCalled();
+    child.setAgentSources.mockRejectedValueOnce(new Error("gitlab.nope isn't a source here (the sources: github.com)"));
+    const refused = await desktop.setAgentSources(2, ['gitlab.nope']).catch((e: Error) => e);
+    expect(refused).toBeInstanceOf(ConfigInputError);
+    expect((refused as Error).message).toBe("gitlab.nope isn't a source here (the sources: github.com)");
   });
 
   it('waits for a restart in progress instead of racing it', async () => {

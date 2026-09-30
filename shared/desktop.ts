@@ -81,13 +81,19 @@ export type MainToServer =
   | { type: 'sync-source'; id: number; source: string }
   /**
    * Make an agent (MCP) called `name`, with its first token: `token` when the user chose one (checked there), else a
-   * generated one. Answered with `agent-result` (the token).
+   * generated one. `sources`: the hosts of the sources it may reach; absent or null, every source. Answered with
+   * `agent-result` (the token).
    */
-  | { type: 'add-agent'; id: number; name: string; token?: string | null }
+  | { type: 'add-agent'; id: number; name: string; token?: string | null; sources?: string[] | null }
   /** A new token for the agent with principal id `agent` (`token`, or generated); the old one stops working. Answered with `agent-result` (the token). */
   | { type: 'regenerate-agent-token'; id: number; agent: number; token?: string | null }
   /** Revoke the agent's token; its comments stay. Answered with `agent-result` (no token). */
   | { type: 'revoke-agent'; id: number; agent: number }
+  /**
+   * Limit the agent with principal id `agent` (or the built-in agent, made if it isn't yet) to the sources with these
+   * hosts, or let it reach every source again (null). Answered with `agent-result` (no token).
+   */
+  | { type: 'set-agent-sources'; id: number; agent: number | 'built-in'; sources: string[] | null }
   /** Close the listeners and databases, then exit 0. */
   | { type: 'shutdown' };
 
@@ -115,8 +121,8 @@ export type ServerToMain =
   /** Result of sync-source. */
   | { type: 'sync-started'; id: number; result: 'started' | 'queued' }
   /**
-   * Result of add-agent, regenerate-agent-token and revoke-agent: the agent as it is now, and its new token (null for
-   * revoke-agent). The token goes to the renderer once, to be shown to the user; nobody logs it.
+   * Result of add-agent, regenerate-agent-token, revoke-agent and set-agent-sources: the agent as it is now, and its new
+   * token (null for the last two). The token goes to the renderer once, to be shown to the user; nobody logs it.
    */
   | { type: 'agent-result'; id: number; agent: Agent; token: string | null }
   /** A request with an `id` failed (an unknown source, one still configured...): `message` says why, for the user. */
@@ -295,10 +301,11 @@ export interface DesktopBridge {
   /**
    * Makes an agent (MCP; Settings → Agents) and its token (`token`, one the user chose, else generated). The token is
    * in the answer once and never again: show it with the MCP URL (DesktopState.mcpUrl) and the agent's config. A name
-   * another agent has is refused. With MCP off on the Local API, it turns it on too (see enableMcp): the answer's
+   * another agent has is refused. `sources`: the hosts (Source.host) of the sources it may reach; absent or null, every
+   * source, those added later too. With MCP off on the Local API, it turns it on too (see enableMcp): the answer's
    * `enabledMcp` says so.
    */
-  addAgent(name: string, token?: string): Promise<DesktopAgentToken>;
+  addAgent(name: string, token?: string, sources?: string[] | null): Promise<DesktopAgentToken>;
   /**
    * A new token for an agent (by its id), revoked or not; the old token stops working at once. Shown once, like
    * addAgent's. `token`: one the user chose (24–256 printable ASCII characters without spaces, no other agent's), else
@@ -312,6 +319,12 @@ export interface DesktopBridge {
   enableMcp(): Promise<DesktopState>;
   /** Revokes an agent's token at once; the agent and its comments stay (GET /agents lists it as revoked). */
   revokeAgent(id: number): Promise<Agent>;
+  /**
+   * Limits an agent (by its id; 'built-in' for the built-in agent, listed or not yet) to the sources with these hosts
+   * (Source.host, at least one), or lets it reach every source again, those added later too (null). It applies from the
+   * agent's next MCP request. The REST API isn't limited.
+   */
+  setAgentSources(id: number | 'built-in', sources: string[] | null): Promise<Agent>;
 }
 
 /** IPC channel names used by the preload script (ipcRenderer.invoke) and main (ipcMain.handle). */
@@ -334,6 +347,7 @@ export const DESKTOP_IPC = {
   addAgent: 'gh-dash:add-agent',
   regenerateAgentToken: 'gh-dash:regenerate-agent-token',
   revokeAgent: 'gh-dash:revoke-agent',
+  setAgentSources: 'gh-dash:set-agent-sources',
   enableMcp: 'gh-dash:enable-mcp',
 } as const;
 

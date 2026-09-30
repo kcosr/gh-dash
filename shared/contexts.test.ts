@@ -138,6 +138,7 @@ describe('context rules on the address bar', () => {
   it('follows the repo a URL opens: its page, the diff, the drawer, a single repos= entry', () => {
     expect(rw('/repos/alice/app', `?source=${GL}`)).toBe('?source=github.com');
     expect(rw('/activity', `?source=${GL}&diff=alice/app@${'a'.repeat(40)}`)).toBe(`?source=github.com&diff=alice/app@${'a'.repeat(40)}`);
+    expect(rw('/comments', `?source=github.com&diff=${GL}/team/svc~fix/a%231`)).toBe(`?source=${GL}&diff=${GL}/team/svc~fix/a%231`);
     expect(rw('/prs', `?source=github.com&pr=${GL}/alice/app%237`)).toBe(`?source=${GL}&pr=${GL}/alice/app%237`);
     expect(rw('/prs', `?source=github.com&repos=${GL}/team/svc`)).toBe(`?source=${GL}&repos=${GL}/team/svc`);
     // An unknown repo decides nothing; the next one named does.

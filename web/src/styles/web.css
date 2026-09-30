@@ -200,6 +200,16 @@ a.iss-li:hover .iss-t { color: var(--accent-text); text-decoration: underline; t
 .dv-title { flex: 0 1 auto; min-width: 0; margin: 0 4px; font-size: 14.5px; font-weight: 600; line-height: 1.35; letter-spacing: -.005em; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dv-head .diffstat, .dv-files { flex: none; white-space: nowrap; }
 .dv-files { font-size: 12.5px; color: var(--muted); }
+/* A branch's diff: its mark in place of a number, what it's compared with, and its PR. */
+.dv-br { display: inline-flex; flex: none; color: var(--muted); }
+.dv-br svg { width: 14px; height: 14px; }
+.dv-base { flex: none; font-size: 12.5px; color: var(--muted); white-space: nowrap; }
+.dv-base code { font-size: 11.5px; color: var(--text-2); }
+.dv-pr { display: inline-flex; flex: none; align-items: center; gap: 3px; height: 22px; padding: 0 6px 0 4px; border-radius: 6px; }
+.dv-pr:hover { background: var(--surface-2); }
+.dv-pr:hover .num { color: var(--accent-text); }
+.dv-pr .pr-ic { display: inline-flex; padding-top: 0; }
+.dv-pr .pr-ic svg { width: 13px; height: 13px; }
 .dv-actions { display: flex; align-items: center; gap: 4px; flex: none; margin-left: auto; padding-left: 8px; }
 .dv-note { margin: 0; border-radius: 0; padding: 7px 22px; border-bottom: 1px solid var(--border); }
 .dv-note a { color: var(--accent-text); }
@@ -265,6 +275,21 @@ table.rtable .pin-mark svg { width: 12px; height: 12px; }
 .mini-pr .mp-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 550; }
 .mini-pr .mp-title .labels { display: inline-flex; gap: 4px; margin-left: 6px; vertical-align: 1px; }
 .mini-pr .mp-who, .mini-pr time { font-size: 12px; color: var(--muted); white-space: nowrap; }
+/* The repo page's branches: like its PRs, a branch's mark, name, PR and head's age. */
+.mini-br { display: grid; grid-template-columns: 16px minmax(0,1fr) auto auto; gap: 10px; align-items: center; padding: 6px 8px; margin: 0 -8px; border-radius: 8px; font-size: 13px; text-align: left; }
+.mini-br:hover { background: var(--surface-2); }
+.mini-br.active { background: var(--accent-weak); }
+.mini-br > svg { width: 14px; height: 14px; margin-left: 1px; color: var(--muted); }
+.mini-br .mb-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 550; }
+.mini-br time { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.br-pr { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
+.br-pr .pr-ic { display: inline-flex; padding-top: 0; }
+.br-pr .pr-ic svg { width: 13px; height: 13px; }
+.br-card .card-h { align-items: center; }
+.br-card .card-h .sub code { font-size: 11.5px; }
+.br-filter { flex: 0 1 180px; min-width: 120px; }
+.br-filter input { height: 26px; font-size: 12.5px; }
+.br-empty { padding: 32px 12px; }
 .rel-list { display: flex; flex-direction: column; }
 .rel-item { border-top: 1px solid var(--border); }
 .rel-item:first-child { border-top: 0; }
@@ -310,6 +335,8 @@ pre.code.muted { color: var(--muted); }
 .input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-weak); }
 .input.bad { border-color: var(--del); }
 .pal-in .spin svg { width: 15px; height: 15px; animation: spin 1s linear infinite; color: var(--muted); }
+/* A step of the palette (reviewing a branch): where it is, before what you type. */
+.pal-step { flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; height: 24px; line-height: 24px; padding: 0 9px; border-radius: 999px; background: var(--surface-2); font-size: 12.5px; font-weight: 550; color: var(--text-2); }
 .pal-item { color: var(--text); }
 .pal-item .pal-l { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pal-item .r { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; flex: none; }
@@ -509,7 +536,7 @@ a.sync:hover .sync-text { color: var(--text); text-decoration: underline; text-u
   .dv-head { flex-wrap: wrap; row-gap: 2px; padding: 4px 8px 10px 16px; }
   .dv-head .repo-chip { flex: 0 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; }
   .dv-title { order: 1; flex: 1 0 100%; margin: 0; white-space: normal; overflow-wrap: anywhere; }
-  .dv-head .diffstat, .dv-files { order: 2; }
+  .dv-head .diffstat, .dv-files, .dv-base, .dv-pr { order: 2; }
   .dv-actions .btn { min-width: 40px; min-height: 40px; justify-content: center; }
   .dv-lbl { display: none; }
   .dv-note { padding: 7px 16px; }
@@ -720,6 +747,9 @@ a.sync:hover .sync-text { color: var(--text); text-decoration: underline; text-u
 /* What the thread is on ("#17", "app!7"): the repo gives way first, the ref stays whole. */
 .cv-on { display: inline-flex; flex: none; max-width: 32%; min-width: 0; white-space: nowrap; font: 12px var(--mono); color: var(--muted); }
 .cv-on .r { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* A branch's name, after its repo's: both give way. */
+.cv-on .b { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.cv-on .r + .b { margin-left: 1ch; }
 .cv-tag { flex: none; padding: 0 6px; border: 1px solid var(--border-strong); border-radius: 999px; font-size: 11px; font-weight: 500; line-height: 16px; color: var(--muted); white-space: nowrap; }
 .cv-time { flex: none; min-width: 52px; text-align: right; font-size: 12px; color: var(--muted); white-space: nowrap; }
 .th-by { flex: none; display: inline-flex; align-items: baseline; gap: 4px; max-width: 30%; min-width: 0; font-size: 12px; font-weight: 550; color: var(--text-2); white-space: nowrap; }

@@ -5,6 +5,7 @@
 import { useCallback, useMemo, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router';
 import { EVENT_TYPES } from '../../../shared/api';
+import { isBranchName } from '../../../shared/branch';
 import { encodeQueryValue } from '../../../shared/query';
 import type { CommentFilter, EventType, GroupBy, Ownership, PrStateFilter, Repo, ThreadKindFilter, ThreadStatusFilter, VisibilityFilter, Who } from '../../../shared/api';
 import { RANGE_IDS, resolveRange } from './range';
@@ -17,9 +18,9 @@ export type RepoSort = 'activity' | 'stars' | 'open' | 'name';
 export type RepoLayout = 'grid' | 'list';
 /** The diff's file list narrowed to files with comment threads, or with unresolved ones. */
 export type FileFilter = 'commented' | 'unresolved';
-/** The Comments list: one group per PR or commit, per repo, or none. */
+/** The Comments list: one group per PR, branch or commit, per repo, or none. */
 export type ThreadGroup = 'target' | 'repo' | 'none';
-/** The Comments list: by last activity (newest or oldest first), or each PR's or commit's threads in file order. */
+/** The Comments list: by last activity (newest or oldest first), or each PR's, branch's or commit's threads in file order. */
 export type ThreadOrder = 'recent' | 'oldest' | 'file';
 /** Who opened a thread (GET /threads `author`): you, any agent, or one agent (its principal id). */
 export type ThreadAuthor = 'self' | 'agents' | number;
@@ -46,7 +47,7 @@ export interface UrlState {
   q: string;
   /** "<repo>#<n>" open in the drawer. */
   pr: string | null;
-  /** Diff open over the list and drawer: "<repo>#<n>" (a PR) or "<repo>@<oid>" (a commit). */
+  /** Diff open over the list and drawer: "<repo>#<n>" (a PR), "<repo>~<branch>" (a branch) or "<repo>@<oid>" (a commit). */
   diff: string | null;
   /** Path of the file in view in the open diff (only with `diff`). */
   file: string | null;
@@ -60,7 +61,7 @@ export interface UrlState {
   // /comments only
   /** Unresolved ('open'), resolved or all threads. */
   status: ThreadStatusFilter;
-  /** Threads on PRs, on commits, or both. */
+  /** Threads on PRs, on branches, on commits, or all of them. */
   kind: ThreadKindFilter;
   /** The `group` param on /comments (elsewhere it is `group`). */
   threadGroup: ThreadGroup;
@@ -178,7 +179,7 @@ export function parseUrlState(search: string, view: ViewName): UrlState {
     sort: threads ? d.sort : oneOf(p.get('sort'), ['activity', 'stars', 'open', 'name'] as const, d.sort),
     layout: oneOf(p.get('layout'), ['grid', 'list'] as const, d.layout),
     status: threads ? oneOf(p.get('status'), ['open', 'resolved', 'all'] as const, d.status) : d.status,
-    kind: threads ? oneOf(p.get('kind'), ['all', 'pr', 'commit'] as const, d.kind) : d.kind,
+    kind: threads ? oneOf(p.get('kind'), ['all', 'pr', 'branch', 'commit'] as const, d.kind) : d.kind,
     threadGroup: threads ? oneOf(p.get('group'), ['target', 'repo', 'none'] as const, d.threadGroup) : d.threadGroup,
     threadSort: threads ? oneOf(p.get('sort'), ['recent', 'oldest', 'file'] as const, d.threadSort) : d.threadSort,
     author: threads ? parseAuthor(p.get('author')) : d.author,
@@ -318,14 +319,30 @@ export function canonicalQuery(query: string): string {
 
 export type DiffTarget =
   | { kind: 'pr'; repo: string; number: number }
+  | { kind: 'branch'; repo: string; branch: string }
   | { kind: 'commit'; repo: string; oid: string };
 
 /** A PR's diff param is its id ("<repo>#<n>", like `pr`); a commit's is "<repo>@<oid>". */
 export const commitDiffId = (repo: string, oid: string) => `${repo}@${oid}`;
 
-/** Parse a `diff` param; null when malformed. Commit oids may be abbreviated (7–64 hex chars: a SHA-1 is 40, a SHA-256 is 64). */
+/**
+ * A branch's is "<repo>~<branch>": git forbids '~' in a branch's name, and repo keys never have one, so the first '~'
+ * ends the repo.
+ */
+export const branchDiffId = (repo: string, branch: string) => `${repo}~${branch}`;
+
+/**
+ * Parse a `diff` param; null when malformed. Commit oids may be abbreviated (7–64 hex chars: a SHA-1 is 40, a SHA-256
+ * is 64). The branch form is read first: a branch's name may hold '#' or '@', which mustn't make it a PR or a commit.
+ */
 export function parseDiffId(id: string | null): DiffTarget | null {
-  const m = id ? /^([^#@\s]+)(?:#([1-9]\d{0,9})|@([0-9a-f]{7,64}))$/i.exec(id) : null;
+  if (!id) return null;
+  const tilde = id.indexOf('~');
+  if (tilde >= 0) {
+    const repo = id.slice(0, tilde), branch = id.slice(tilde + 1);
+    return repo && !/\s/.test(repo) && isBranchName(branch) ? { kind: 'branch', repo, branch } : null;
+  }
+  const m = /^([^#@\s]+)(?:#([1-9]\d{0,9})|@([0-9a-f]{7,64}))$/i.exec(id);
   if (!m) return null;
   return m[2] ? { kind: 'pr', repo: m[1], number: Number(m[2]) } : { kind: 'commit', repo: m[1], oid: m[3] };
 }

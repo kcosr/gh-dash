@@ -63,6 +63,9 @@ describe('canonicalRepoUrl (legacy bare names in the address bar)', () => {
     });
     expect(canon('/activity', '?diff=sedes@6df2155')).toEqual({ pathname: '/activity', search: '?diff=kcosr/sedes@6df2155' });
     expect(canon('/prs', '?diff=SEDES@6DF2155')).toEqual({ pathname: '/prs', search: '?diff=kcosr/sedes@6DF2155' });
+    // A branch's: the repo part ends at the '~', whatever the name holds.
+    expect(canon('/repos/kcosr/sedes', '?diff=sedes~fix/a%2312&thread=3')).toEqual({ pathname: '/repos/kcosr/sedes', search: '?diff=kcosr/sedes~fix/a%2312&thread=3' });
+    expect(canon('/prs', '?diff=kcosr/sedes~fix/a@b')).toBeNull();
   });
 
   it('rewrites a /repos/<name> path and keeps the search as it was', () => {

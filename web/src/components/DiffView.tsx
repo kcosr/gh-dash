@@ -1,5 +1,5 @@
 /**
- * The diff view: a PR's or commit's changes, full width over the list and drawer columns (the whole
+ * The diff view: a PR's, branch's or commit's changes, full width over the list and drawer columns (the whole
  * content area on narrow screens). A blocking layer, so list shortcuts stop while it's open. The
  * renderer (web/src/diff) is heavy, so it's split into its own chunk, loaded when a diff first opens.
  */
@@ -9,7 +9,7 @@ import { Component, Suspense, lazy, useCallback, useEffect, useLayoutEffect, use
 import type { ReactNode } from 'react';
 import { Link } from 'react-router';
 import { isUnreachable, rateLimitResetAt } from '../api/client';
-import { findCachedCommit, findCachedPr, useDiff, useLoadFile, useMe, usePrDetail, useRefreshDiff, useRepoMap, useThreadActions, useThreads } from '../api/hooks';
+import { findCachedCommit, findCachedPr, useBranch, useDiff, useLoadFile, useMe, usePrDetail, useRefreshDiff, useRepoMap, useThreadActions, useThreads } from '../api/hooks';
 import { LayerParent, useLayerHandle } from '../lib/layers';
 import { fmtDateTime, fmtTime, plural, rel, relFuture, relLong } from '../lib/time';
 import { commitDiffId, parseDiffId, useUrlState } from '../lib/urlState';
@@ -17,27 +17,32 @@ import type { DiffTarget, FileFilter } from '../lib/urlState';
 import type { DiffRequest } from '../diff/DiffViewer';
 import { useDiffNudge } from '../lib/show';
 import { isChunkLoadError } from '../lib/util';
-import { Diffstat } from './bits';
+import { Diffstat, prIconClass, prIconName } from './bits';
 import { EmptyState, ErrorNote, ProgressBar } from './EmptyState';
 import { Icon } from './Icon';
 import { RepoChip } from './RepoChip';
+import type { BranchSummary } from '../../../shared/api';
+import { branchRef } from '../../../shared/comment-markdown';
 import { capitalize, refText, repoProvider } from '../../../shared/provider';
 import type { Provider } from '../../../shared/provider';
 import { repoLabel } from '../../../shared/repos';
 import { useRepoLabel } from './repoMapContext';
 import { useToast } from './Toasts';
+import { useSyncNow } from './TopBar';
 
 const loadViewer = () => import('../diff/DiffViewer');
 const DiffViewer = lazy(loadViewer);
 
 /** What the header can show before the diff arrives, from PRs and commits already loaded by lists. */
-interface Summary { title: string; additions?: number; deletions?: number; files?: number; url: string }
+interface Summary { title: string; additions?: number; deletions?: number; files?: number; url?: string }
 
 function cachedSummary(qc: QueryClient, t: DiffTarget, p: Provider): Summary | undefined {
   if (t.kind === 'pr') {
     const pr = findCachedPr(qc, `${t.repo}#${t.number}`);
     return pr && { title: pr.title, additions: pr.additions, deletions: pr.deletions, files: pr.changedFiles, url: p.link.prFiles(pr.url) };
   }
+  // A branch's name is its title.
+  if (t.kind === 'branch') return { title: t.branch };
   const c = findCachedCommit(qc, t.repo, t.oid);
   return c && { title: c.headline, additions: c.additions, deletions: c.deletions, url: c.url };
 }
@@ -63,7 +68,9 @@ export function DiffView({ id, compact }: { id: string; compact: boolean }) {
   const [initialFile] = useState(s.file);
   const [initialThread] = useState(s.thread);
   // A commit's threads are keyed by its full oid, which an abbreviated `diff` param only gets from the diff.
-  const threadsId = t.kind === 'pr' ? id : diff.data ? commitDiffId(t.repo, diff.data.headOid) : null;
+  const threadsId = t.kind !== 'commit' ? id : diff.data ? commitDiffId(t.repo, diff.data.headOid) : null;
+  // A branch's PR, from a list already loaded or asked for by name: the header links to it.
+  const branch = useBranch(t.repo, t.kind === 'branch' ? t.branch : null);
   const threads = useThreads(threadsId);
   const threadActions = useThreadActions(threadsId ?? id);
   const me = useMe();
@@ -139,22 +146,32 @@ export function DiffView({ id, compact }: { id: string; compact: boolean }) {
   }, [id, opener]);
 
   const d = diff.data;
-  const label = t.kind === 'pr' ? `${p.prRef}${t.number}` : (d?.headOid ?? t.oid).slice(0, 7);
+  const label = t.kind === 'pr' ? `${p.prRef}${t.number}` : t.kind === 'branch' ? t.branch : (d?.headOid ?? t.oid).slice(0, 7);
   const title = d?.title ?? cached?.title;
   const add = d?.additions ?? cached?.additions;
   const del = d?.deletions ?? cached?.deletions;
   const files = d?.totalFiles ?? cached?.files;
   const repo = repos.get(t.repo);
   const repoText = repoLabel(t.repo, repos);
-  const ghUrl = d?.url ?? cached?.url ?? (repo && (t.kind === 'pr' ? p.link.prFiles(p.link.pr(repo.url, t.number)) : p.link.commit(repo.url, t.oid)));
+  // What a branch is compared with: the diff says; before it arrives, the repo's default branch as synced (the default
+  // branch itself is compared with nothing, and gets an error).
+  const baseRef = t.kind === 'branch' && t.branch !== repo?.defaultBranch ? d?.baseRef ?? repo?.defaultBranch ?? null : null;
+  const ghUrl = d?.url ?? cached?.url ?? (repo && (
+    t.kind === 'pr' ? p.link.prFiles(p.link.pr(repo.url, t.number))
+      : t.kind === 'branch' ? (baseRef ? p.link.compare(repo.url, baseRef, t.branch) : undefined)
+        : p.link.commit(repo.url, t.oid)));
+  /** "app#12", "app branch fix/login" or "app@abc1234". */
+  const ref = t.kind === 'pr' ? `${repoText}${label}` : t.kind === 'branch' ? branchRef(repoText, t.branch) : `${repoText}@${label}`;
 
   useEffect(() => {
     const prev = document.title;
     return () => { document.title = prev; };
   }, []);
   useEffect(() => {
-    document.title = `${title ? `${title} · ` : ''}${repoText}${t.kind === 'pr' ? label : `@${label}`} · gh-dash`;
-  }, [title, repoText, t.kind, label]);
+    // A branch's title is its name, which its ref already says.
+    document.title = `${title && t.kind !== 'branch' ? `${title} · ` : ''}${ref} · gh-dash`;
+  }, [title, ref, t.kind]);
+  const openPr = (n: number) => set({ diff: `${t.repo}#${n}`, file: null, thread: null, only: null });
 
   const doRefresh = () => refresh.mutate(undefined, {
     onSuccess: (next) => toast(d && next.headOid === d.headOid ? 'Already up to date' : 'Diff updated'),
@@ -163,11 +180,13 @@ export function DiffView({ id, compact }: { id: string; compact: boolean }) {
 
   return (
     <LayerParent.Provider value={layer.scope}>
-      <section ref={panel} className="diff-view" aria-label={`Changes in ${repoText} ${label}`}>
+      <section ref={panel} className="diff-view" aria-label={`Changes in ${ref}`}>
         <header className="dv-head">
           <RepoChip repo={t.repo} />
-          <span className="num">{label}</span>
+          {t.kind === 'branch' ? <span className="num dv-br" title="Branch"><Icon name="branch" /></span> : <span className="num">{label}</span>}
           <h2 className="dv-title" title={title}>{title ?? (diff.isError ? null : <span className="skel" style={{ width: 220 }} />)}</h2>
+          {baseRef && <span className="dv-base" title={`Compared with ${baseRef} from where they diverge, as a ${p.pr.one} would be`}>compared with <code>{baseRef}</code></span>}
+          {t.kind === 'branch' && branch?.pr && <BranchPr pr={branch.pr} p={p} onOpen={openPr} />}
           {add !== undefined && del !== undefined && <Diffstat add={add} del={del} />}
           {files !== undefined && <span className="dv-files">{files.toLocaleString()} {plural(files, 'file')}</span>}
           <span className="dv-actions">
@@ -186,7 +205,8 @@ export function DiffView({ id, compact }: { id: string; compact: boolean }) {
         )}
         {d && d.totalFiles > d.files.length && (
           <div className="list-note dv-note">
-            Showing {d.files.length.toLocaleString()} of {d.totalFiles.toLocaleString()} files: {p.name} lists at most 3,000.{' '}
+            Showing {d.files.length.toLocaleString()} of {d.totalFiles.toLocaleString()} files:{' '}
+            {d.kind === 'branch' ? `${p.name} returned only part of this comparison.` : `${p.name} lists at most 3,000.`}{' '}
             <a href={d.url} target="_blank" rel="noopener noreferrer">See all on {p.name}</a>
           </div>
         )}
@@ -214,6 +234,20 @@ export function DiffView({ id, compact }: { id: string; compact: boolean }) {
   );
 }
 
+/**
+ * The PR from a branch (its newest, from this repo), as a small link to its diff: its threads are this branch's as well
+ * (see "Branch groups" in shared/api.ts), so there's nothing more to say.
+ */
+function BranchPr({ pr, p, onOpen }: { pr: NonNullable<BranchSummary['pr']>; p: Provider; onOpen: (n: number) => void }) {
+  const what = capitalize(p.pr.one);
+  return (
+    <button type="button" className="dv-pr" onClick={() => onOpen(pr.number)} title={`${what} ${p.prRef}${pr.number} (${pr.state}): ${pr.title} · open its diff`}>
+      <span className={`pr-ic ${prIconClass({ state: pr.state, isDraft: false })}`}><Icon name={prIconName({ state: pr.state, isDraft: false })} /></span>
+      <span className="num">{p.prRef}{pr.number}</span>
+    </button>
+  );
+}
+
 function DiffSkeleton() {
   return (
     <div className="skel-block dv-skel" aria-busy="true" aria-label="Loading diff">
@@ -230,8 +264,22 @@ function DiffError({ error, t, p, ghUrl, onRetry }: { error: unknown; t: DiffTar
   if (isUnreachable(error)) return <ErrorNote error={error} onRetry={onRetry} />;
   if (status === 404) {
     return (
-      <EmptyState icon="alert" title={t.kind === 'pr' ? `${capitalize(p.pr.one)} not found` : 'Commit not found'} action={gh}>
-        {t.kind === 'pr' ? `${refText(p.kind, repoText, t.number, 'pr')} isn't in the local database or on ${p.name}.` : `${p.name} has no commit ${t.oid.slice(0, 7)} in ${repoText}.`}
+      <EmptyState icon="alert" title={t.kind === 'pr' ? `${capitalize(p.pr.one)} not found` : t.kind === 'branch' ? 'Branch not found' : 'Commit not found'} action={t.kind === 'branch' ? null : gh}>
+        {t.kind === 'pr' ? `${refText(p.kind, repoText, t.number, 'pr')} isn't in the local database or on ${p.name}.`
+          : t.kind === 'branch' ? `${p.name} has no branch ${t.branch} in ${repoText}: it may have been deleted, or not pushed yet.`
+            : `${p.name} has no commit ${t.oid.slice(0, 7)} in ${repoText}.`}
+      </EmptyState>
+    );
+  }
+  // A branch that can't be reviewed (the default branch itself, a name git doesn't allow): the server says why.
+  if (status === 400 && t.kind === 'branch') {
+    return <EmptyState icon="alert" title="This branch can't be reviewed">{(error as Error).message}</EmptyState>;
+  }
+  // The repo's default branch isn't known yet (never synced): what a branch is compared with.
+  if (status === 409 && t.kind === 'branch') {
+    return (
+      <EmptyState icon="alert" title="The default branch isn't known yet" action={<div className="empty-actions"><SyncRepoButton repo={t.repo} />{retry}</div>}>
+        A branch is compared with {repoText}'s default branch, which its next sync reads.
       </EmptyState>
     );
   }
@@ -259,6 +307,12 @@ function DiffError({ error, t, p, ghUrl, onRetry }: { error: unknown; t: DiffTar
     );
   }
   return <ErrorNote error={error} onRetry={onRetry} />;
+}
+
+/** Sync one repo (its default branch comes with it), then try again. */
+function SyncRepoButton({ repo }: { repo: string }) {
+  const sync = useSyncNow();
+  return <button type="button" className="btn" onClick={() => sync.run({ repo })} disabled={sync.pending}><Icon name="sync" />Sync now</button>;
 }
 
 /** The viewer failing to load (e.g. after a redeploy) or to render a diff leaves the rest of the app alone. */

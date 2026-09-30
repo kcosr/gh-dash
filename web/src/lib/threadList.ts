@@ -1,14 +1,14 @@
 /**
- * The Comments list's shape: threads across PRs and commits grouped per PR or commit, per repo, or not at all, and
- * ordered by activity or in file order. Pure, so the view and the tests share it.
+ * The Comments list's shape: threads across PRs, branches and commits grouped per PR, branch or commit, per repo, or not
+ * at all, and ordered by activity or in file order. Pure, so the view and the tests share it.
  */
 import type { CommentThread, ThreadListItem } from '../../../shared/api';
-import { commitDiffId } from './urlState';
+import { branchDiffId, commitDiffId } from './urlState';
 import type { ThreadGroup, ThreadOrder } from './urlState';
 
 type Placed = Pick<CommentThread, 'id' | 'path' | 'startLine'>;
 
-/** ":12" or ":12–14"; '' for a thread on a whole file or on the PR or commit. */
+/** ":12" or ":12–14"; '' for a thread on a whole file or on the PR, branch or commit. */
 export const threadLines = (t: Pick<CommentThread, 'startLine' | 'endLine'>) =>
   t.startLine === null ? '' : `:${t.startLine === t.endLine ? t.startLine : `${t.startLine}–${t.endLine}`}`;
 
@@ -21,9 +21,13 @@ export const byFileOrder = (a: Placed, b: Placed) =>
 
 export const sortThreads = <T extends Placed>(list: readonly T[]): T[] => [...list].sort(byFileOrder);
 
-/** The diff a thread is on, as the `diff` param names it: its PR ("<repo>#<n>"), or its commit with the full oid. */
-export function threadTarget(t: Pick<CommentThread, 'kind' | 'repo' | 'number' | 'commitOid'>): string {
-  return t.kind === 'pr' ? `${t.repo}#${t.number}` : commitDiffId(t.repo, t.commitOid);
+/**
+ * The diff a thread is on, as the `diff` param names it: its PR ("<repo>#<n>"), its branch ("<repo>~<branch>"), or its
+ * commit with the full oid.
+ */
+export function threadTarget(t: Pick<CommentThread, 'kind' | 'repo' | 'number' | 'branch' | 'commitOid'>): string {
+  if (t.kind === 'pr') return `${t.repo}#${t.number}`;
+  return t.kind === 'branch' && t.branch ? branchDiffId(t.repo, t.branch) : commitDiffId(t.repo, t.commitOid);
 }
 
 export interface ThreadGroupOf<T> {
@@ -42,8 +46,8 @@ export interface ThreadGroupOf<T> {
 /**
  * Group and order threads. Activity is newest first ('recent', and the blocks of 'file') or oldest first, by `at`
  * (default `updatedAt`; the view holds rows in place after a change), ties by id like the server. Blocks (targets,
- * repos) come in the order of their first thread; 'file' keeps that order for the blocks and reads each PR or commit
- * top to bottom (byFileOrder). With 'file' and no grouping that is: by repo, target, path, line.
+ * repos) come in the order of their first thread; 'file' keeps that order for the blocks and reads each PR, branch or
+ * commit top to bottom (byFileOrder). With 'file' and no grouping that is: by repo, target, path, line.
  */
 export function groupThreads<T extends ThreadListItem>(
   items: readonly T[],

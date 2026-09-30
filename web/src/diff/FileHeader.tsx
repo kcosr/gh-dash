@@ -27,8 +27,9 @@ const NOTES = {
 } as const;
 
 /**
- * The file on the host's diff page (a PR's changed files, a commit page), anchored as the host does it
- * (`Provider.link.fileAnchor`). Falls back to the page itself where SubtleCrypto is unavailable (plain HTTP off localhost).
+ * The file on the host's diff page (a PR's changed files, a branch's compare page, a commit page), anchored as the host
+ * does it (`Provider.link.fileAnchor`). Falls back to the page itself where SubtleCrypto is unavailable (plain HTTP off
+ * localhost).
  */
 function useFileAnchor(url: string, path: string, provider: Provider, active: boolean): string {
   const [href, setHref] = useState(url);

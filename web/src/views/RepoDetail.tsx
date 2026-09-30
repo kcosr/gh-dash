@@ -6,6 +6,7 @@ import { capitalize, repoProvider } from '../../../shared/provider';
 import { usePatchRepo, usePrList, useReleases, useRepos, useStats, useSyncStatus } from '../api/hooks';
 import { ChartCard, HBars, StackedColumns, StatTile } from '../charts';
 import { prIconClass, prIconName } from '../components/bits';
+import { BranchesCard } from '../components/Branches';
 import { DateRangeButton } from '../components/DateRange';
 import { EmptyState, ErrorNote, ProgressBar } from '../components/EmptyState';
 import { Icon, ProviderIcon } from '../components/Icon';
@@ -181,6 +182,8 @@ export function RepoDetailView() {
                   : <div className="chart-empty">{open.data ? `No open ${w.many}` : 'Loading…'}</div>}
                 {(open.data?.total ?? 0) > LIST_MAX && <div className="card-more">+{open.data!.total - LIST_MAX} more</div>}
               </section>
+
+              {repo && <BranchesCard repo={repo} />}
 
               <section className="card list-card">
                 <div className="card-h">

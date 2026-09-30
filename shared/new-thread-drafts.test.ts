@@ -37,6 +37,13 @@ describe('new-thread drafts', () => {
     expect(listNewDrafts('app#20')).toEqual([]);
   });
 
+  it("keeps a branch's drafts apart from those of a branch whose name starts with its name and a '|'", () => {
+    openNewDraft('app~fix', anchor(R1));
+    openNewDraft('app~fix|more', anchor(R2));
+    expect(listNewDrafts('app~fix').map((d) => d.anchor.commitOid)).toEqual([R1]);
+    expect(listNewDrafts('app~fix|more').map((d) => d.anchor.commitOid)).toEqual([R2]);
+  });
+
   it("doesn't bring back a draft that was sent or discarded", () => {
     const d = openNewDraft('app#2', anchor(R1));
     const before = newDraftsVersion();

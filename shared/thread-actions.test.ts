@@ -146,6 +146,43 @@ describe('thread actions', () => {
     }
   });
 
+  it("makes a branch's thread on its branch, and refetches every thread list and PR of the repo (its group's)", async () => {
+    const qc = new QueryClient();
+    const branch = qk.threads('app~fix/login');
+    const lists = [branch, qk.threads('app#2'), qk.threads('app#3'), qk.threads('lib#2'), qk.pr('app', 2), qk.pr('lib', 2), qk.prs({ state: 'open' })];
+    for (const k of lists) qc.setQueryData(k, []);
+    const made = { ...thread(7), kind: 'branch' as const, number: null, branch: 'fix/login' };
+    const fetch = reply(made);
+    vi.stubGlobal('fetch', fetch);
+    await threadActions(qc, 'app~fix/login').create({ commitOid: 'a'.repeat(40), body: 'x' });
+    expect((fetch.mock.calls[0] as unknown[])[0]).toBe('/api/v1/branches/app/fix%2Flogin/threads');
+    expect(qc.getQueryData<CommentThread[]>(branch)?.map((t) => t.id)).toEqual([7]);
+    expect(lists.filter((k) => qc.getQueryState(k)?.isInvalidated)).toEqual([branch, qk.threads('app#2'), qk.threads('app#3'), qk.pr('app', 2), qk.prs({ state: 'open' })]);
+  });
+
+  it("reaches the group from a PR's thread with a branch, also when deleting it (its branch as the list knew it)", async () => {
+    const qc = new QueryClient();
+    const grouped = { ...thread(1), branch: 'fix/login' };
+    const other = qk.threads('app~fix/login');
+    const fresh = () => { qc.setQueryData(key, [grouped, thread(2)]); qc.setQueryData(other, []); };
+    const cases: [(a: ReturnType<typeof threadActions>) => Promise<unknown>, unknown, number?][] = [
+      [(a) => a.reply(1, 'x'), grouped],
+      [(a) => a.deleteThread(1), null, 204],
+      [(a) => a.deleteComment(1, 5), { thread: null }],
+    ];
+    for (const [act, body, status] of cases) {
+      fresh();
+      vi.stubGlobal('fetch', reply(body, status));
+      await act(threadActions(qc, 'app#2'));
+      expect(qc.getQueryState(other)?.isInvalidated).toBe(true);
+    }
+    // A PR's thread without a branch (a fork's PR) leaves the rest of the repo alone.
+    fresh();
+    vi.stubGlobal('fetch', reply(thread(2, 'resolved')));
+    await threadActions(qc, 'app#2').setStatus(2, 'resolved');
+    expect(qc.getQueryState(other)?.isInvalidated).toBe(false);
+  });
+
   it('patches a status into every cached Comments list at once, and leaves each stale, so another filter refetches', () => {
     const qc = new QueryClient();
     const unresolved = qk.threadList({ status: 'open' });

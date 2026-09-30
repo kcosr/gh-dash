@@ -10,6 +10,7 @@ import { CodeView, WorkerPoolContextProvider, type CodeViewHandle } from '@pierr
 import HighlightWorker from '@pierre/diffs/worker/worker.js?worker';
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from 'react';
 import type { CommentThread, Diff, Me } from '../../../shared/api';
+import { branchRef } from '../../../shared/comment-markdown';
 import { createPlacer, patchLines, placeThreads, type SideLines } from '../../../shared/comment-placement';
 import { PROVIDERS, type Provider } from '../../../shared/provider';
 import type { useThreadActions } from '../api/hooks';
@@ -62,7 +63,7 @@ export interface DiffRequest { thread: number | null; file: string | null; n: nu
 
 /** The diff's comment threads, from the shell (which owns the URL and the queries). */
 export interface DiffComments {
-  /** The threads' key (a PR id, or a commit's with its full oid): drafts are stored under it. */
+  /** The threads' key (a PR's or branch's diff id, or a commit's with its full oid): drafts are stored under it. */
   key: string;
   /** undefined while loading. */
   threads: CommentThread[] | undefined;
@@ -906,7 +907,8 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
     </div>
   )), [compact]);
   const onOnly = comments.onOnlyChange;
-  const title = diff.kind === 'pr' ? `${diff.repo}${provider.prRef}${diff.number}` : `${diff.repo}@${diff.headOid.slice(0, 7)}`;
+  const title = diff.kind === 'pr' ? `${diff.repo}${provider.prRef}${diff.number}`
+    : diff.kind === 'branch' ? branchRef(diff.repo, diff.branch ?? diff.title) : `${diff.repo}@${diff.headOid.slice(0, 7)}`;
 
   return (
     <div className={cx('diff-viewer', compact && 'compact')} ref={root} onKeyDown={expandControls.onKeyDown}>
@@ -957,7 +959,7 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
           )}
           {showColumn && (
             <LayerParent.Provider value={columnLayer.scope}>
-              <CommentsColumn threads={ordered} order={indexOf} title={title} kind={diff.kind} provider={provider} error={comments.error} onRetry={comments.retry}
+              <CommentsColumn threads={ordered} order={indexOf} title={title} kind={diff.kind} number={diff.number} provider={provider} error={comments.error} onRetry={comments.retry}
                 onJump={(id) => focusThread(id, { scroll: true })} onClose={() => setColumn(false)} onCreateGeneral={createGeneral}
                 unsent={unsent} sending={sending} headOid={diff.headOid} onResume={resumeDraft} onDiscardDraft={removeNewDraft} />
             </LayerParent.Provider>

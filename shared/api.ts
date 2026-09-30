@@ -833,7 +833,8 @@ export interface Principal {
 /**
  * An agent that writes comments through MCP (GET /agents): a principal of kind 'agent' with a token. The token is shown
  * once, when it is made (desktop: Settings → Agents; headless: the `agents` command), and is stored only as a hash.
- * Revoking it keeps the agent's comments, attributed to it.
+ * Revoking it keeps the agent's comments, attributed to it. Its token and the sources it may reach are changed there
+ * too, never over HTTP.
  */
 export interface Agent {
   /** The principal's id. */
@@ -846,9 +847,17 @@ export interface Agent {
   revokedAt: string | null;
   /**
    * The built-in agent, "Agent": who MCP requests without a token act as while the desktop app doesn't require agent
-   * tokens. It has no token (no prefix, nothing to regenerate or revoke), and is listed once it has done something.
+   * tokens. It has no token (no prefix, nothing to regenerate or revoke), and is listed once it has done something or
+   * is limited to some sources.
    */
   builtIn: boolean;
+  /**
+   * The sources it may reach through MCP, by host (github.com first, then as they were added); null for every source,
+   * those added later included. A source deleted since is left out, and never widens it: an agent left with none reaches
+   * nothing. Out of reach, a repository reads to the agent as one gh-dash doesn't track, and a thread as one that doesn't
+   * exist. The REST API is the user's own, and isn't limited.
+   */
+  sources: string[] | null;
 }
 
 /** What happened to a comment or thread (the comment event log, shown in Activity as type 'comment'). */
@@ -1174,8 +1183,8 @@ export interface ThreadListResponse extends ListResponse<ThreadListItem> {
 //          branches and commits: status open by default, newest activity first; format=md groups them per PR, branch
 //          or commit)
 // GET    /api/v1/threads/:id                   -> CommentThread
-// GET    /api/v1/agents                        -> { items: Agent[] }   (made and revoked only by the desktop app or the
-//          headless `agents` command, never over HTTP)
+// GET    /api/v1/agents                        -> { items: Agent[] }   (made, revoked and limited to sources only by the
+//          desktop app or the headless `agents` command, never over HTTP)
 // GET    /api/v1/stream                        -> text/event-stream of StreamMessage (`data: <json>`; a comment line every
 //          25 s keeps proxies from closing it)
 // POST   /mcp                                  -> MCP over Streamable HTTP (JSON responses), `Authorization: Bearer <agent

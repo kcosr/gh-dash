@@ -7,12 +7,12 @@ import { SELF_PRINCIPAL_ID, viewOfThread } from '../../db/comments';
 import { listThreadItems, type ThreadFilter } from '../../db/thread-list';
 import { HttpError } from '../../lib/errors';
 import * as comments from '../../services/comments';
-import { repoKinds, scopedQuery } from '../../services/lists';
+import { repoKinds } from '../../services/lists';
 import { branchArg, commitArg, idArg, limitArg, prArg, repoArg } from '../format';
 import { placeThreads, type ViewTarget } from '../placement';
+import { reachScope, requireRepo, requireThreadInReach } from '../reach';
 import { LIST_SNIPPET_CHARS, targetTitle, threadOut } from '../threads';
 import { readTool } from '../tool';
-import { requireRepo } from './prs';
 
 const BY_DOC = '`by` is "me" (you), "you" (the user) or "agent:<name>".';
 const ANCHOR_DOC =
@@ -55,9 +55,10 @@ export const listThreads = readTool({
     .strict()
     .refine((a) => a.repo !== undefined || (a.pr === undefined && a.branch === undefined && a.commit === undefined), 'pr, branch and commit need repo')
     .refine((a) => [a.pr, a.branch, a.commit].filter((x) => x !== undefined).length <= 1, 'give only one of pr, branch or commit'),
-  run: async (args, { deps, principal, signal }) => {
-    const { db, config } = deps;
-    const ref = args.repo !== undefined ? requireRepo(db, args.repo) : null;
+  run: async (args, reach) => {
+    const { deps, principal, signal } = reach;
+    const { db } = deps;
+    const ref = args.repo !== undefined ? requireRepo(reach, args.repo) : null;
     // A branch is checked as a new thread's is (a valid name, not the default branch), so a mistake isn't an empty list.
     if (ref && args.branch !== undefined) comments.resolveTarget(deps, { repo: ref.key, kind: 'branch', branch: args.branch });
     let since: string | undefined;
@@ -68,7 +69,8 @@ export const listThreads = readTool({
     }
     const after = decodeCursor(args.cursor, 2);
     if (after && (typeof after[0] !== 'string' || typeof after[1] !== 'number')) throw new HttpError(400, 'Invalid cursor');
-    const { scope, ctx } = scopedQuery(db, config, { repos: args.repo, q: args.q });
+    // The threads the agent may reach.
+    const { scope, ctx } = reachScope(reach, { repos: args.repo, q: args.q });
     const filter: ThreadFilter = {
       status: args.status,
       kind: 'all',
@@ -121,7 +123,9 @@ export const getThreadTool = readTool({
   title: 'Get a comment thread',
   description: `One comment thread with its whole conversation (comment ids for edit_comment and delete_comment). ${BY_DOC} ${ANCHOR_DOC} ${PLACEMENT_DOC}`,
   input: z.object({ id: idArg('Thread id') }).strict(),
-  run: async ({ id }, { deps, principal, signal }) => {
+  run: async ({ id }, ctx) => {
+    const { deps, principal, signal } = ctx;
+    requireThreadInReach(ctx, id);
     const t = { ...comments.getThread(deps, id), view: viewOfThread(deps.db, id) ?? undefined };
     const placement = (await placeThreads(deps, [t], signal)).get(t.id)!;
     return threadOut(t, principal, { kind: repoKinds(deps.db)(t.repo), title: targetTitle(deps.db, t), placement, view: t.view, comments: true, snippetChars: null });

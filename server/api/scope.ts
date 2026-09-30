@@ -169,10 +169,12 @@ export function parseSources(value: string | undefined): string[] | null {
   return hosts.length ? hosts : null;
 }
 
-/** A 400 when `hosts` names a host that isn't a source in this database (a typo shouldn't read as "nothing here"). */
-export function requireSources(db: Db, hosts: readonly string[] | null | undefined): void {
+/**
+ * A 400 when `hosts` names a host that isn't a source in this database (a typo shouldn't read as "nothing here"). `known`:
+ * the hosts to take as the sources instead (an agent's, which reads the others as it reads hosts that aren't sources).
+ */
+export function requireSources(db: Db, hosts: readonly string[] | null | undefined, known = listSources(db).map((s) => s.host)): void {
   if (!hosts) return;
-  const known = listSources(db).map((s) => s.host);
   const unknown = hosts.filter((h) => !known.includes(h));
   if (unknown.length) {
     throw new HttpError(400, `${unknown.join(', ')} ${unknown.length === 1 ? "isn't a source" : "aren't sources"} here.`, { sources: known });

@@ -9,8 +9,9 @@ import { HttpError } from '../../lib/errors';
 import { repoKinds } from '../../services/lists';
 import { branchDiffError, loadBranches, loadDiff } from '../diffs';
 import { branchArg, limitArg, repoArg, targetRef } from '../format';
+import { requireRepo } from '../reach';
 import { readTool } from '../tool';
-import { diffFiles, requireRepo, STALE_NOTE } from './prs';
+import { diffFiles, STALE_NOTE } from './prs';
 
 /** The PR from a branch, as branch results name it. */
 const branchPr = (kind: ProviderKind, repo: string, pr: NonNullable<BranchSummary['pr']>) => ({
@@ -34,8 +35,9 @@ export const listBranches = readTool({
       limit: limitArg(100, 30),
     })
     .strict(),
-  run: async ({ repo, query, limit }, { deps, signal }) => {
-    const ref = requireRepo(deps.db, repo);
+  run: async ({ repo, query, limit }, ctx) => {
+    const { deps, signal } = ctx;
+    const ref = requireRepo(ctx, repo);
     const kind = repoKinds(deps.db)(ref.key);
     const listed = await loadBranches(deps, ref.key, query ?? null, signal);
     const more = listed.more || listed.items.length > limit;
@@ -63,9 +65,10 @@ export const getBranch = readTool({
     'they are left out with a note. `moreFiles`: changed files not listed (at least: a host may cut a big diff short). ' +
     'Comment on it with add_comment (branch).',
   input: z.object({ repo: repoArg, branch: branchArg }).strict(),
-  run: async ({ repo, branch }, { deps, signal }) => {
+  run: async ({ repo, branch }, ctx) => {
+    const { deps, signal } = ctx;
     const { db } = deps;
-    const ref = requireRepo(db, repo);
+    const ref = requireRepo(ctx, repo);
     const kind = repoKinds(db)(ref.key);
     const row = db.get<{ url: string; default_branch: string | null }>('SELECT url, default_branch FROM repos WHERE id = ?', [ref.id])!;
     const pr = db.get<NonNullable<BranchSummary['pr']>>(

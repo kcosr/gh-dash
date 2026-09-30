@@ -3,8 +3,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { runAgentsCommand } from './agents-cli';
-import { principalForToken } from './db/agents';
-import { openDb } from './db/db';
+import { agentSourceIds, principalForToken } from './db/agents';
+import { type Db, openDb } from './db/db';
+import { ensureSource, removeSource } from './db/sources';
 
 let dir: string;
 let env: NodeJS.ProcessEnv;
@@ -30,14 +31,16 @@ async function runWith(stdin: string | null, ...args: string[]) {
   return { code, out: out.join('\n'), err: err.join('\n') };
 }
 const tokenIn = (text: string) => /Token \(shown once, keep it somewhere safe\): (ghd_[A-Za-z0-9_-]{43})$/m.exec(text)?.[1];
-const principal = (token: string) => {
+/** `fn` on the database the command uses, closed after. */
+const withDb = <T>(fn: (db: Db) => T): T => {
   const db = openDb(join(dir, 'dash.db'));
   try {
-    return principalForToken(db, token);
+    return fn(db);
   } finally {
     db.close();
   }
 };
+const principal = (token: string) => withDb((db) => principalForToken(db, token));
 
 describe('gh-dash agents', () => {
   it('adds an agent, printing its token once with where to connect', async () => {
@@ -71,9 +74,9 @@ describe('gh-dash agents', () => {
     expect(code).toBe(0);
     expect(out).not.toContain(token);
     const lines = out.split('\n');
-    expect(lines[0]).toMatch(/^ID +NAME +TOKEN +CREATED +LAST USED +STATUS$/);
-    expect(lines[1]).toMatch(new RegExp(`^2 +Claude +${token.slice(0, 8)}… +\\S+ +never +active$`));
-    expect(lines[2]).toMatch(/^3 +Codex +- +\S+ +never +revoked \S+$/);
+    expect(lines[0]).toMatch(/^ID +NAME +TOKEN +CREATED +LAST USED +STATUS +SOURCES$/);
+    expect(lines[1]).toMatch(new RegExp(`^2 +Claude +${token.slice(0, 8)}… +\\S+ +never +active +all$`));
+    expect(lines[2]).toMatch(/^3 +Codex +- +\S+ +never +revoked \S+ +all$/);
   });
 
   it('regenerates a token by id or name: the old one stops working', async () => {
@@ -147,7 +150,85 @@ describe('gh-dash agents', () => {
     } finally {
       db.close();
     }
-    expect((await run('list')).out).toMatch(/^2 +Agent +- +\S+ +never +built in \(no token\)$/m);
+    expect((await run('list')).out).toMatch(/^2 +Agent +- +\S+ +never +built in \(no token\) +all$/m);
+  });
+
+  describe('sources', () => {
+    const GITLAB = 'gitlab.example.com';
+    /** A GitLab source beside github.com, as a sync of a configured one leaves it; its id. */
+    const addGitLab = (host = GITLAB) => withDb((db) => ensureSource(db, { kind: 'gitlab', host, baseUrl: `https://${host}` }).id);
+    const reach = (id: number) => withDb((db) => agentSourceIds(db, id));
+
+    it('adds an agent that reaches only the sources named (--source, any case), or every one', async () => {
+      const gitlab = addGitLab();
+      const some = await run('add', 'Work', '--source', 'GitLab.example.com');
+      expect([some.code, some.err]).toEqual([0, '']);
+      expect(some.out).toContain(`Added agent Work (id 2); it reaches ${GITLAB} only.`);
+      expect(tokenIn(some.out)).toBeDefined();
+      expect(reach(2)).toEqual([gitlab]);
+      expect((await run('add', 'Both', `--source=${GITLAB}`, '--source', 'github.com')).out).toContain(`it reaches github.com, ${GITLAB} only.`);
+      expect(reach(3)).toEqual([1, gitlab]);
+      expect((await run('add', 'All')).out).toContain('Added agent All (id 4).');
+      expect(reach(4)).toBeNull();
+      // With a token of your own too.
+      expect((await runWith('my-own-agent-token-0123456789\n', 'add', 'Mine', '--token-stdin', '--source', 'github.com')).code).toBe(0);
+      expect(principal('my-own-agent-token-0123456789')).toMatchObject({ name: 'Mine' });
+      expect(reach(5)).toEqual([1]);
+      const lines = (await run('list')).out.split('\n');
+      expect(lines.slice(1).map((l) => l.split(/ {2,}/).at(-1))).toEqual([GITLAB, `github.com,${GITLAB}`, 'all', 'github.com']);
+    });
+
+    it('limits an agent later, or lets it reach every source again, by id or name', async () => {
+      const gitlab = addGitLab();
+      const token = tokenIn((await run('add', 'Claude')).out)!;
+      expect(await run('scope', 'claude', '--source', GITLAB)).toEqual({ code: 0, out: `Claude (id 2) now reaches ${GITLAB} only, from its next request.`, err: '' });
+      expect(reach(2)).toEqual([gitlab]);
+      expect((await run('scope', '2', '--source', 'github.com', '--source', GITLAB)).out).toBe(`Claude (id 2) now reaches github.com, ${GITLAB} only, from its next request.`);
+      expect((await run('scope', 'Claude', '--all')).out).toBe('Claude (id 2) now reaches every source, those added later too, from its next request.');
+      expect(reach(2)).toBeNull();
+      // Its token is untouched; a revoked agent can be limited too.
+      expect(principal(token)).toMatchObject({ id: 2 });
+      await run('revoke', 'Claude');
+      expect((await run('scope', 'Claude', '--source', 'github.com')).code).toBe(0);
+      expect((await run('list')).out).toMatch(/^2 +Claude +- +\S+ +\S+ +revoked \S+ +github\.com$/m);
+    });
+
+    it('says which hosts are sources when one is not, and changes nothing', async () => {
+      addGitLab();
+      const known = `(the sources: github.com, ${GITLAB})`;
+      expect(await run('add', 'Claude', '--source', 'gitlab.nope.example')).toMatchObject({ code: 1, err: `gh-dash: gitlab.nope.example isn't a source here ${known}` });
+      expect((await run('list')).out).toBe('No agents yet. Add one: gh-dash agents add <name>');
+      await run('add', 'Claude', '--source', 'github.com');
+      expect(await run('scope', 'Claude', '--source', GITLAB, '--source', 'https://github.com')).toMatchObject({ code: 1, err: `gh-dash: https://github.com isn't a source here ${known}` });
+      expect(reach(2)).toEqual([1]);
+      expect(await run('scope', 'nobody', '--all')).toMatchObject({ code: 1, err: 'gh-dash: No agent is called or numbered nobody (see: gh-dash agents list)' });
+    });
+
+    it('shows an agent whose sources were all deleted as reaching none, never all', async () => {
+      const gitlab = addGitLab();
+      await run('add', 'Work', '--source', GITLAB);
+      withDb((db) => removeSource(db, gitlab));
+      expect((await run('list')).out).toMatch(/^2 +Work +ghd_\S+… +\S+ +never +active +none$/m);
+      expect(reach(2)).toEqual([]);
+      addGitLab();
+      expect(reach(2)).toEqual([]);
+    });
+
+    it('takes --source with add or scope only, --all with scope only, and one of them for scope (usage: 2)', async () => {
+      await run('add', 'Claude');
+      for (const args of [
+        ['scope', 'Claude'], ['scope', 'Claude', '--all', '--source', 'github.com'], ['scope', '--all'], ['scope', 'Claude', 'Codex', '--all'],
+        ['scope', 'Claude', '--source'], ['scope', 'Claude', '--source', '--all'], ['scope', 'Claude', '--source='], ['add', 'Codex', '--all'],
+        ['list', '--source', 'github.com'], ['regenerate', 'Claude', '--source', 'github.com'], ['revoke', 'Claude', '--all'],
+      ]) {
+        const res = await run(...args);
+        expect([args, res.code, res.out]).toEqual([args, 2, '']);
+        expect(res.err).toContain('Usage: gh-dash agents <command>');
+      }
+      expect((await run('scope', 'Claude')).err).toContain('gh-dash: agents scope takes --source <host> (one or more), or --all');
+      expect(reach(2)).toBeNull();
+      expect((await run('list')).out.split('\n')).toHaveLength(2);
+    });
   });
 
   it('reports a config it cannot read', async () => {

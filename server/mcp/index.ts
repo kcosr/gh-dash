@@ -25,7 +25,8 @@ export const INSTRUCTIONS = [
   'wait_for_reply for their answer. add_comment annotates the diff (a PR, at its head: path and start_line). A pushed',
   'branch with no PR is reviewed the same way (get_branch, then add_comment and list_threads with branch); its threads',
   'are shared with a PR later opened from it.',
-  'In results, `by` is "me" (you), "you" (the user) or "agent:<name>" (another agent).',
+  'In results, `by` is "me" (you), "you" (the user) or "agent:<name>" (another agent). The user may limit you to some',
+  'of their code hosts (whoami lists yours): repositories on the others read as untracked.',
 ].join(' ');
 
 export function createMcpCore(deps: McpDeps, log?: (line: string) => void): McpCore {

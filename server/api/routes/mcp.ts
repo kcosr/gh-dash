@@ -6,6 +6,7 @@
 import type { Context, Hono } from 'hono';
 import type { Principal } from '../../../shared/api';
 import { errorResponse, INVALID_REQUEST, type McpCore, PARSE_ERROR, PROTOCOL_VERSIONS } from '../../mcp/core';
+import type { SourceIds } from '../../mcp/tool';
 import { origin } from '../http';
 
 export const MCP_PATH = '/mcp';
@@ -29,6 +30,11 @@ export interface McpRouteOptions {
    * agent); absent, such a request is refused. A request that sends a token still needs a valid one.
    */
   withoutToken?: () => Principal;
+  /**
+   * The sources the principal may reach (db/agents.ts agentSourceIds), read once per request with the principal: a
+   * change applies from its next request.
+   */
+  sourcesFor: (principal: Principal) => SourceIds;
 }
 
 const AUTH_HINT = 'send Authorization: Bearer <agent token> (gh-dash Settings â†’ Agents, or the `agents` command)';
@@ -36,7 +42,7 @@ const AUTH_HINT = 'send Authorization: Bearer <agent token> (gh-dash Settings â†
 const rpcError = (c: Context, status: 400 | 401 | 403 | 405 | 415, message: string, code = INVALID_REQUEST, data?: unknown) =>
   c.json(errorResponse(null, code, message, data), status);
 
-export function installMcp(app: Hono, { core, principalFor, withoutToken }: McpRouteOptions): void {
+export function installMcp(app: Hono, { core, principalFor, withoutToken, sourcesFor }: McpRouteOptions): void {
   app.post(MCP_PATH, async (c) => {
     // A browser always sends Origin on a POST; agents' HTTP clients don't. Only a page of this very server may.
     const from = c.req.header('origin');
@@ -68,7 +74,7 @@ export function installMcp(app: Hono, { core, principalFor, withoutToken }: McpR
       return rpcError(c, 400, 'Parse error: the body must be JSON', PARSE_ERROR);
     }
     // The request's own signal aborts when the client goes away: a waiting tool stops with it.
-    const reply = await core.handle(message, { principal, signal: c.req.raw.signal });
+    const reply = await core.handle(message, { principal, sources: sourcesFor(principal), signal: c.req.raw.signal });
     return reply === null ? c.body(null, 202) : c.json(reply);
   });
 

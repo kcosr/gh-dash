@@ -44,7 +44,7 @@ describe('a tool cancelled before it fetches a diff', () => {
     const core = createMcpCore({ db: h.db, config: h.config, diffs: h.diffs, bus: h.bus });
     const out = await core.handle(
       { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'get_pr', arguments: { repo: 'alice/app', number: 2 } } },
-      { principal: h.agent, signal: AbortSignal.abort() },
+      { principal: h.agent, sources: null, signal: AbortSignal.abort() },
     );
     expect(out).toMatchObject({ id: 1, error: { code: REQUEST_CANCELLED } });
     await settle();
@@ -63,7 +63,7 @@ describe('a tool cancelled before it fetches a diff', () => {
       ['add_comment', { repo: 'alice/app', branch: 'topic/x', body: 'x' }],
       ['list_branches', { repo: 'alice/app' }],
     ] as const) {
-      const out = await core.handle({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }, { principal: h.agent, signal: AbortSignal.abort() });
+      const out = await core.handle({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }, { principal: h.agent, sources: null, signal: AbortSignal.abort() });
       expect(out, name).toMatchObject({ id: 1, error: { code: REQUEST_CANCELLED } });
     }
     await settle();

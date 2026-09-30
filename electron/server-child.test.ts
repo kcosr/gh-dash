@@ -163,7 +163,7 @@ describe('ServerChild', () => {
   it("sends the agents' requests and hands back the agent, with its token when there is one", async () => {
     await startRunning();
     const proc = procs[0]!;
-    const agent = { id: 2, name: 'Claude', tokenPrefix: 'ghd_abcd', createdAt: 'x', lastUsedAt: null, revokedAt: null, builtIn: false };
+    const agent = { id: 2, name: 'Claude', tokenPrefix: 'ghd_abcd', createdAt: 'x', lastUsedAt: null, revokedAt: null, builtIn: false, sources: null };
     const added = child.addAgent('Claude');
     const regenerated = child.regenerateAgentToken(2);
     const revoked = child.revokeAgent(2);

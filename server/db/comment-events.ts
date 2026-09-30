@@ -12,9 +12,10 @@ import { repoKeySql } from './repo-key';
  * Where to look: some threads, or a repo (by id) and optionally one target of it, whose events are those of the threads its
  * view lists (shared/api.ts, "Branch groups"): `prNumber` a PR's own threads and its branch group, `branch` the branch's
  * current group (it needs `repoId`, as a name is the repo's), `commitOid` one commit's own (not a PR's or a branch's made
- * on it).
+ * on it). `sourceIds`: only in repos on these sources (an agent's reach; none: nothing), whatever else it names.
  */
 export interface CommentEventScope {
+  sourceIds?: readonly number[];
   threadIds?: number[];
   repoId?: number;
   prNumber?: number;
@@ -96,6 +97,10 @@ export function commentEventsAfter(
   if (opts.exceptActor !== undefined) {
     where.push('ce.actor_id <> ?');
     params.push(opts.exceptActor);
+  }
+  if (scope.sourceIds) {
+    where.push('r.source_id IN (SELECT value FROM json_each(?))');
+    params.push(JSON.stringify(scope.sourceIds));
   }
   if (scope.threadIds) {
     where.push('ce.thread_id IN (SELECT value FROM json_each(?))');

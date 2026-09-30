@@ -184,6 +184,111 @@ describe('GitLabDiffSource: commits', () => {
   });
 });
 
+describe('GitLabDiffSource: branches', () => {
+  const REPOSITORY = `${PROJECT}/repository`;
+  const BRANCH_ROUTE = `${REPOSITORY}/branches/feature%2Fx`;
+  const COMPARE = `${REPOSITORY}/compare?from=${BASE_OID}&to=${B}`;
+  const MERGE_BASE = `${REPOSITORY}/merge_base?refs%5B%5D=main&refs%5B%5D=${B}`;
+  // What `merge_base` answers: the commit.
+  const mergeBase = { body: { id: BASE_OID, short_id: BASE_OID.slice(0, 8), title: 'Base', parent_ids: [], committed_date: '2026-09-01T10:00:00.000Z' } };
+  const branch = (name: string, id: string, committed: string | null) => ({ name, merged: false, protected: false, default: false, commit: { id, short_id: id.slice(0, 8), committed_date: committed } });
+
+  it('reads the head of a branch, its name encoded as one segment', async () => {
+    const { source, requests } = setup({ [BRANCH_ROUTE]: { body: branch('feature/x', B, '2026-09-30T10:00:00+02:00') } });
+    expect(await source.branchHead(REPO, 'feature/x', A, signal())).toBe(B);
+    expect(requests).toEqual([BRANCH_ROUTE]);
+    // Dots are encoded as well: ".json" would otherwise be taken for a format.
+    const dotted = setup({ [`${REPOSITORY}/branches/release%2Fv1%2E0%2Ejson`]: { body: branch('release/v1.0.json', A, null) } });
+    expect(await dotted.source.branchHead(REPO, 'release/v1.0.json', null, signal())).toBe(A);
+  });
+
+  it('reports a branch the project does not have as not-found', async () => {
+    const { source } = setup({ [BRANCH_ROUTE]: { status: 404, body: { message: '404 Branch Not Found' } } });
+    expect(await fail(source.branchHead(REPO, 'feature/x', null, signal()))).toMatchObject({ kind: 'not-found', status: 404, message: expect.stringContaining('404 Branch Not Found') });
+  });
+
+  it('compares from the merge base to the head, both pinned, with the files mapped and counted like a merge request\'s', async () => {
+    const { source, requests, calls } = setup({
+      [MERGE_BASE]: mergeBase,
+      [COMPARE]: { body: { commit: { id: B }, commits: [{ id: B }], diffs: versionFixture.diffs, compare_timeout: false, compare_same_ref: false, web_url: 'https://x' } },
+    });
+    const out = await source.compare(REPO, 'main', B, signal());
+    expect(requests).toEqual([MERGE_BASE, COMPARE]);
+    expect(calls.map((c) => c.method)).toEqual(['GET', 'GET']);
+    expect(out).toMatchObject({ baseOid: BASE_OID, headOid: B, totalFiles: 8, additions: 6, deletions: 4 });
+    expect(out.files.map((f) => [f.path, f.previousPath, f.status, f.additions, f.deletions, f.patch === null])).toEqual([
+      ['src/login.ts', null, 'modified', 1, 1, false],
+      ['docs/auth.md', null, 'added', 3, 0, false],
+      ['config/legacy.toml', null, 'removed', 0, 2, false],
+      ['src/session/store.ts', 'src/store.ts', 'renamed', 0, 0, true],
+      ['src/session/token.ts', 'src/token.ts', 'renamed', 2, 1, false],
+      ['assets/logo.png', null, 'modified', 0, 0, true],
+      ['data/fixtures.json', null, 'modified', 0, 0, true],
+      ['package-lock.json', null, 'modified', 0, 0, true],
+    ]);
+    expect(out.files[0]!.patch).toBe("@@ -1,4 +1,4 @@\n import { login } from './auth';\n-const retries = 1;\n+const retries = 3;\n export { login };");
+  });
+
+  it('lists at most MAX_FILES files, and says when GitLab cut the comparison off', async () => {
+    const diffs = Array.from({ length: MAX_FILES + 5 }, (_, i) => ({ ...versionFixture.diffs[0]!, new_path: `f${i}`, old_path: `f${i}` }));
+    const many = setup({ [MERGE_BASE]: mergeBase, [COMPARE]: { body: { diffs, compare_timeout: false } } });
+    const out = await many.source.compare(REPO, 'main', B, signal());
+    expect(out.files).toHaveLength(MAX_FILES);
+    expect(out.totalFiles).toBe(MAX_FILES + 5);
+
+    const some = versionFixture.diffs.slice(0, 2);
+    const cut = setup({ [MERGE_BASE]: mergeBase, [COMPARE]: { body: { diffs: some, compare_timeout: true } } });
+    // The list is a lower bound now: there is at least one file more than it has.
+    expect(await cut.source.compare(REPO, 'main', B, signal())).toMatchObject({ totalFiles: 3, additions: 4, deletions: 1 });
+    expect((await cut.source.compare(REPO, 'main', B, signal())).files).toHaveLength(2);
+
+    const same = setup({ [MERGE_BASE]: mergeBase, [COMPARE]: { body: { diffs: [], compare_timeout: false, compare_same_ref: false } } });
+    expect(await same.source.compare(REPO, 'main', B, signal())).toEqual({ baseOid: BASE_OID, headOid: B, files: [], totalFiles: 0, additions: 0, deletions: 0 });
+  });
+
+  it('reports a comparison GitLab cannot make (no merge base, an unknown ref) as not-found', async () => {
+    const orphan = setup({ [MERGE_BASE]: { status: 404, body: { message: '404 Merge Base Not Found' } } });
+    expect(await fail(orphan.source.compare(REPO, 'main', B, signal()))).toMatchObject({ kind: 'not-found', status: 404 });
+    expect(orphan.requests).toEqual([MERGE_BASE]);
+    const gone = setup({ [MERGE_BASE]: mergeBase, [COMPARE]: { status: 404, body: { message: '404 Commit Not Found' } } });
+    expect(await fail(gone.source.compare(REPO, 'main', B, signal()))).toMatchObject({ kind: 'not-found' });
+  });
+
+  it('lists branches newest first, as UTC instants, with GitLab asked to sort and search', async () => {
+    const list = [
+      branch('main', A, '2026-09-30T12:00:00+02:00'),
+      branch('old', sha('1'), '2026-01-01T00:00:00.000Z'),
+      branch('undated', sha('2'), null),
+      branch('feature/x', B, '2026-09-30T11:30:00.000Z'),
+    ];
+    const { source, requests } = setup({ [`${REPOSITORY}/branches`]: page(list, null) });
+    const out = await source.branches(REPO, 'fea', 50, signal());
+    expect(requests).toEqual([`${REPOSITORY}/branches?per_page=50&sort=updated_desc&search=fea`]);
+    // 12:00+02:00 is 10:00Z: older than 11:30Z, which string order would get wrong.
+    expect(out.items).toEqual([
+      { name: 'feature/x', headOid: B, committedAt: '2026-09-30T11:30:00.000Z' },
+      { name: 'main', headOid: A, committedAt: '2026-09-30T10:00:00.000Z' },
+      { name: 'old', headOid: sha('1'), committedAt: '2026-01-01T00:00:00.000Z' },
+      { name: 'undated', headOid: sha('2'), committedAt: null },
+    ]);
+    expect(out.more).toBe(false);
+    expect(await setup({ [`${REPOSITORY}/branches`]: page([], null) }).source.branches(REPO, null, 1000, signal())).toEqual({ items: [], more: false });
+  });
+
+  it('asks for at most 100 and no search without a query, and says when there are more', async () => {
+    const full = Array.from({ length: 100 }, (_, i) => branch(`b${i}`, sha('3'), `2026-01-01T00:${String(i % 60).padStart(2, '0')}:00Z`));
+    const next = setup({ [`${REPOSITORY}/branches`]: page(full, 2, { 'x-total': '250' }) });
+    expect((await next.source.branches(REPO, null, 1000, signal())).more).toBe(true);
+    expect(next.requests).toEqual([`${REPOSITORY}/branches?per_page=100&sort=updated_desc`]);
+    // GitLab counts nothing beyond 10,000 items or for long lists, and may not name a next page: a full page is then all there is to go by.
+    expect((await setup({ [`${REPOSITORY}/branches`]: page(full, null) }).source.branches(REPO, null, 100, signal())).more).toBe(true);
+    expect((await setup({ [`${REPOSITORY}/branches`]: page(full.slice(0, 99), null) }).source.branches(REPO, null, 100, signal())).more).toBe(false);
+    // Counted: the total decides.
+    expect((await setup({ [`${REPOSITORY}/branches`]: page(full, null, { 'x-total': '100' }) }).source.branches(REPO, null, 100, signal())).more).toBe(false);
+    expect((await setup({ [`${REPOSITORY}/branches`]: page(full, null, { 'x-total': '101' }) }).source.branches(REPO, null, 100, signal())).more).toBe(true);
+  });
+});
+
 describe('GitLabDiffSource: file contents', () => {
   const RAW = `${PROJECT}/repository/files/src%2Fsession%2Ftoken%2Ets/raw`;
 

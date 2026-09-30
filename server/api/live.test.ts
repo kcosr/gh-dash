@@ -152,7 +152,7 @@ describe('OpenAPI', () => {
     const { schemas } = doc.components;
     expect(schemas.ActivityEvent!.oneOf!.map((v) => v.properties.type.enum[0])).toEqual(['commit', 'pr', 'issue', 'release', 'star', 'comment']);
     expect(Object.keys(schemas.CommentActivity!.properties!)).toEqual([
-      'eventId', 'threadId', 'live', 'by', 'target', 'commitOid', 'path', 'side', 'startLine', 'endLine', 'excerpt',
+      'eventId', 'threadId', 'commentId', 'live', 'by', 'target', 'commitOid', 'path', 'side', 'startLine', 'endLine', 'excerpt',
     ]);
     expect(Object.keys(schemas.Agent!.properties!)).toEqual(['id', 'name', 'tokenPrefix', 'createdAt', 'lastUsedAt', 'revokedAt']);
     expect(schemas.CommentThread!.properties).toHaveProperty('resolvedBy');

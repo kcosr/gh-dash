@@ -436,6 +436,7 @@ export function listActivity(
 interface CommentEventRow {
   id: number;
   thread_id: number;
+  comment_id: number | null;
   live: number;
   actor_id: number;
   actor_kind: PrincipalKind;
@@ -461,6 +462,7 @@ const COMMENT_EVENT_SELECT =
 const toCommentActivity = (r: CommentEventRow): CommentActivity => ({
   eventId: r.id,
   threadId: r.thread_id,
+  commentId: r.comment_id,
   live: !!r.live,
   by: { id: r.actor_id, kind: r.actor_kind, name: r.actor_name },
   target: r.pr_number !== null ? { kind: 'pr', number: r.pr_number, title: r.target_title } : { kind: 'commit', oid: r.commit_oid, title: r.target_title },

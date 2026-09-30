@@ -19,7 +19,8 @@ function ev(kind: CommentEventKind, by: Principal, o: Partial<CommentActivity> &
     type: 'comment', kind, at: new Date(2026, 8, day, 10, min).toISOString(), repo,
     actor: { login: null, name: by.name, avatarUrl: null, isMe: by.kind === 'self' },
     comment: {
-      eventId, threadId: 1, live: true, by, target: { kind: 'pr', number: 17, title: 'Fix the race' }, commitOid: 'a'.repeat(40),
+      eventId, threadId: 1, commentId: ['resolved', 'reopened', 'thread_deleted'].includes(kind) ? null : eventId * 10, live: true, by,
+      target: { kind: 'pr', number: 17, title: 'Fix the race' }, commitOid: 'a'.repeat(40),
       path: 'packages/opencode/src/host.ts', side: 'new', startLine: 42, endLine: 44, excerpt: `comment ${eventId}`, ...c,
     },
   };
@@ -90,6 +91,11 @@ describe('Activity: comment events', () => {
       .toBe('opened 2 threads and replied to 3');
     expect(commentSummary([ev('resolved', you, { threadId: 1 }), ev('thread_opened', you, { threadId: 2 })])).toBe('opened a thread and resolved one');
     expect(commentSummary([ev('edited', claude), ev('edited', claude), ev('resolved', claude, { threadId: 2 })])).toBe('edited 2 comments and resolved a thread');
+    // One comment edited twice is one comment; two of a thread's comments deleted are two.
+    expect(commentSummary([ev('edited', claude, { commentId: 7 }), ev('edited', claude, { commentId: 7 }), ev('resolved', claude, { threadId: 2 })]))
+      .toBe('edited a comment and resolved a thread');
+    expect(commentSummary([ev('edited', claude, { commentId: 7 }), ev('edited', claude, { commentId: 7 })])).toBe('edited a comment on host.ts:42–44');
+    expect(commentSummary([ev('comment_deleted', you, { commentId: 7 }), ev('comment_deleted', you, { commentId: 8 })])).toBe('deleted 2 comments');
     expect(commentSummary([ev('replied', claude, { threadId: 1 }), ev('edited', claude), ev('reopened', claude, { threadId: 2 })])).toBe('replied to a thread, edited a comment and reopened a thread');
   });
 

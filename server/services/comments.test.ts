@@ -60,7 +60,7 @@ describe('comment services', () => {
   it('writes as the principal named, records it and tells the bus once it has committed', () => {
     const t = createPrThread(deps, claude, 'app', 2, { commitOid: HEAD, path: 'src/a.ts', side: 'new', startLine: 1, endLine: 1, snippet: 'x', body: 'Why?' });
     expect(t.comments[0]!.author).toEqual(claude);
-    expect(heard).toEqual([{ type: 'comments', repo: 'alice/app', kind: 'pr', number: 2, commitOid: HEAD, threadId: t.id, event: 'thread_opened', by: claude }]);
+    expect(heard).toEqual([{ type: 'comments', repo: 'alice/app', kind: 'pr', number: 2, branch: null, commitOid: HEAD, threadId: t.id, event: 'thread_opened', by: claude }]);
     const c = createCommitThread(deps, me, 'alice/app', COMMIT.toUpperCase(), { body: 'Nit' });
     expect(c).toMatchObject({ kind: 'commit', commitOid: COMMIT, number: null });
     expect(heard[1]).toMatchObject({ kind: 'commit', number: null, commitOid: COMMIT, event: 'thread_opened', by: me });

@@ -56,7 +56,7 @@ describe('comment threads', () => {
   it('opens threads at every anchor level with their first comment', () => {
     const t = open(pr(), lines(3, 4, 'const a = 1;\nconst b = 2;'));
     expect(t).toEqual({
-      id: t.id, kind: 'pr', repo: 'alice/app', number: 2, commitOid: HEAD, baseOid: BASE,
+      id: t.id, kind: 'pr', repo: 'alice/app', number: 2, branch: null, commitOid: HEAD, baseOid: BASE,
       path: 'src/a.ts', side: 'new', startLine: 3, endLine: 4, snippet: 'const a = 1;\nconst b = 2;',
       status: 'open', resolvedAt: null, resolvedBy: null, createdAt: T0, updatedAt: T0,
       comments: [{ id: expect.any(Number), author: me, body: 'Why?', createdAt: T0, editedAt: null }],
@@ -186,6 +186,7 @@ describe('comment event log', () => {
     kind: string;
     repo_id: number;
     pr_number: number | null;
+    branch: string | null;
     commit_oid: string;
     thread_id: number;
     comment_id: number | null;
@@ -202,7 +203,7 @@ describe('comment event log', () => {
     const t = open(pr(), lines(3, 4, 'a\nb'), 'Why **two**?', me, T0);
     const first = t.comments[0]!.id;
     expect(events()).toEqual([{
-      id: expect.any(Number), at: T0, actor_id: me.id, kind: 'thread_opened', repo_id: app, pr_number: 2, commit_oid: HEAD, thread_id: t.id,
+      id: expect.any(Number), at: T0, actor_id: me.id, kind: 'thread_opened', repo_id: app, pr_number: 2, branch: null, commit_oid: HEAD, thread_id: t.id,
       comment_id: first, path: 'src/a.ts', side: 'new', start_line: 3, end_line: 4, excerpt: 'Why two?',
     }]);
     const reply = addComment(db, t.id, agent, 'Because.', T1)!.comments[1]!.id;

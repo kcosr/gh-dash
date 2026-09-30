@@ -7,7 +7,10 @@ import { repoKeySql } from './repo-key';
  * in some scope, by anyone but the one asking. Activity reads the same table as the `comment` event type (lists.ts).
  */
 
-/** Where to look: some threads, or a repo (by id) and optionally one PR of it or one commit's own threads. */
+/**
+ * Where to look: some threads, or a repo (by id) and optionally one PR's own threads of it or one commit's (not a PR's or
+ * a branch's made on it).
+ */
 export interface CommentEventScope {
   threadIds?: number[];
   repoId?: number;
@@ -25,7 +28,8 @@ export interface CommentEventItem {
   commentId: number | null;
   by: Principal;
   repo: string;
-  target: { kind: 'pr'; number: number } | { kind: 'commit'; oid: string };
+  /** What the thread is on, derived as its kind is (db/comments.ts hydrate). */
+  target: { kind: 'pr'; number: number } | { kind: 'branch'; branch: string } | { kind: 'commit'; oid: string };
   path: string | null;
   startLine: number | null;
   endLine: number | null;
@@ -45,6 +49,7 @@ interface Row {
   actor_name: string;
   repo: string;
   pr_number: number | null;
+  branch: string | null;
   commit_oid: string;
   path: string | null;
   start_line: number | null;
@@ -87,13 +92,13 @@ export function commentEventsAfter(
     params.push(scope.prNumber);
   }
   if (scope.commitOid !== undefined) {
-    where.push('ce.pr_number IS NULL AND ce.commit_oid = ?');
+    where.push('ce.pr_number IS NULL AND ce.branch IS NULL AND ce.commit_oid = ?');
     params.push(scope.commitOid);
   }
   params.push(opts.limit ?? 100);
   const rows = db.all<Row>(
     `SELECT ce.id, ce.at, ce.kind, ce.thread_id, ce.comment_id, ce.actor_id, p.kind AS actor_kind, p.name AS actor_name,
-       ${repoKeySql('r')} AS repo, ce.pr_number, ce.commit_oid, ce.path, ce.start_line, ce.end_line, ce.excerpt,
+       ${repoKeySql('r')} AS repo, ce.pr_number, ce.branch, ce.commit_oid, ce.path, ce.start_line, ce.end_line, ce.excerpt,
        (SELECT status FROM comment_threads WHERE id = ce.thread_id) AS thread_status
      FROM comment_events ce JOIN repos r ON r.id = ce.repo_id JOIN principals p ON p.id = ce.actor_id
      WHERE ${where.join(' AND ')} ORDER BY ce.id LIMIT ?`,
@@ -107,7 +112,12 @@ export function commentEventsAfter(
     commentId: r.comment_id,
     by: { id: r.actor_id, kind: r.actor_kind, name: r.actor_name },
     repo: r.repo,
-    target: r.pr_number !== null ? { kind: 'pr', number: r.pr_number } : { kind: 'commit', oid: r.commit_oid },
+    target:
+      r.pr_number !== null
+        ? { kind: 'pr', number: r.pr_number }
+        : r.branch !== null
+          ? { kind: 'branch', branch: r.branch }
+          : { kind: 'commit', oid: r.commit_oid },
     path: r.path,
     startLine: r.start_line,
     endLine: r.end_line,

@@ -85,7 +85,7 @@ export const waitForReply = readTool({
       kind: e.kind,
       threadId: e.threadId,
       ...(e.commentId !== null ? { commentId: e.commentId } : {}),
-      ref: targetRef(kindOf(e.repo), e.repo, e.target.kind === 'pr' ? { number: e.target.number } : { oid: e.target.oid }),
+      ref: targetRef(kindOf(e.repo), e.repo, e.target),
       ...(e.path !== null ? { path: e.path } : {}),
       ...(e.startLine !== null ? { lines: e.startLine === e.endLine ? `${e.startLine}` : `${e.startLine}-${e.endLine}` } : {}),
       by: byOf(e.by, principal),

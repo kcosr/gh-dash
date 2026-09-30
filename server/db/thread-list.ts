@@ -1,6 +1,6 @@
 import type { PrState, ThreadKindFilter, ThreadListItem, ThreadSort, ThreadStatus, ThreadStatusFilter } from '../../shared/api';
 import { PROVIDERS } from '../../shared/provider';
-import { hydrate, SELF_PRINCIPAL_ID, type ThreadRow } from './comments';
+import { branchGroupSql, hydrate, prGroupSql, SELF_PRINCIPAL_ID, type ThreadRow } from './comments';
 import type { Db } from './db';
 import { addRepoScope, likeContains, type QueryCtx, type Scope, Where } from './filters';
 import type { CursorKey, Page } from './lists';
@@ -14,8 +14,12 @@ export interface ThreadFilter {
   author?: 'self' | 'agents' | number;
   /** Open threads whose last comment isn't this principal's (someone is waiting on them): GET /threads's waiting=you is the dashboard's user. */
   waitingOn?: number;
-  /** One PR's threads, or one commit's (a full oid or a prefix of one), in the scope's repos (MCP's list_threads). */
-  target?: { pr: number } | { commit: string };
+  /**
+   * What one target's view shows, in the scope's repos (MCP's list_threads), as its per-target list does
+   * (db/comments.ts listThreads): a PR's own threads and its branch group, a branch's current group, or one commit's
+   * own threads (a full oid or a prefix of one).
+   */
+  target?: { pr: number } | { branch: string } | { commit: string };
   /** Threads on this file, or on files under this directory. */
   path?: string;
   /** Threads with activity (updatedAt) at or after this ISO time. */
@@ -39,28 +43,39 @@ interface ThreadListRow extends ThreadRow {
   pr_state: PrState | null;
   pr_head_oid: string | null;
   repo_url: string;
+  /** What a branch thread's compare link is against; null (or empty) while the sync doesn't know it. */
+  default_branch: string | null;
   source_kind: string;
 }
 
 // What the filters and counts need: threads in their live repos.
 const THREADS = 'comment_threads t JOIN repos r ON r.id = t.repo_id';
-// What a listed thread is on. Threads are keyed by repo and PR number or commit oid, so they still list when the sync
-// hasn't (or no longer has) the PR or commit; both joins hit a unique key, so a thread is one row.
+// What a listed thread is on. Threads are keyed by repo and PR number, branch or commit oid, so they still list when the
+// sync hasn't (or no longer has) the PR or commit; both joins hit a unique key, so a thread is one row. A branch has no
+// row: its name is all there is to say of it.
 const THREADS_WITH_TARGETS =
   `${THREADS} JOIN sources s ON s.id = r.source_id LEFT JOIN pull_requests p ON p.repo_id = t.repo_id AND p.number = t.pr_number ` +
-  'LEFT JOIN commits c ON c.repo_id = t.repo_id AND t.pr_number IS NULL AND c.oid = t.commit_oid';
+  'LEFT JOIN commits c ON c.repo_id = t.repo_id AND t.pr_number IS NULL AND t.branch IS NULL AND c.oid = t.commit_oid';
 /**
  * A commit the sync doesn't hold (default branches only) may be one of a synced PR's: its headline is then the newest
- * such PR's (highest number; the same commit reads the same in each). A PR thread never takes a commit's headline.
- * `alias`: a row with a thread's repo_id, pr_number and commit_oid (a thread, or a comment event).
+ * such PR's (highest number; the same commit reads the same in each). A PR or branch thread never takes a commit's
+ * headline. `alias`: a row with a thread's repo_id, pr_number, branch and commit_oid (a thread, or a comment event).
  */
 export const prCommitHeadlineSql = (alias: string) =>
   `(SELECT pc.headline FROM pr_commits pc JOIN pull_requests q ON q.id = pc.pr_id
-     WHERE ${alias}.pr_number IS NULL AND q.repo_id = ${alias}.repo_id AND pc.oid = ${alias}.commit_oid ORDER BY q.number DESC LIMIT 1)`;
+     WHERE ${alias}.pr_number IS NULL AND ${alias}.branch IS NULL AND q.repo_id = ${alias}.repo_id AND pc.oid = ${alias}.commit_oid
+     ORDER BY q.number DESC LIMIT 1)`;
 const SELECT =
-  `t.*, ${repoKeySql('r')} AS repo, r.url AS repo_url, s.kind AS source_kind, ` +
+  `t.*, ${repoKeySql('r')} AS repo, r.url AS repo_url, r.default_branch AS default_branch, s.kind AS source_kind, ` +
   `COALESCE(p.title, c.headline, ${prCommitHeadlineSql('t')}) AS target_title, COALESCE(NULLIF(p.url, ''), NULLIF(c.url, '')) AS target_url, ` +
   'p.state AS pr_state, p.head_oid AS pr_head_oid';
+
+// Threads by kind, as hydrate derives it: a PR number makes a PR thread, else a branch a branch thread.
+const KIND_SQL: Record<Exclude<ThreadKindFilter, 'all'>, string> = {
+  pr: 't.pr_number IS NOT NULL',
+  branch: 't.pr_number IS NULL AND t.branch IS NOT NULL',
+  commit: 't.pr_number IS NULL AND t.branch IS NULL',
+};
 
 // The author of a thread's first comment (the thread's) and of its last one.
 const OPENER = '(SELECT m.author_id FROM comments m WHERE m.thread_id = t.id ORDER BY m.id LIMIT 1)';
@@ -71,14 +86,21 @@ function threadWhere(ctx: QueryCtx, scope: Scope, f: ThreadFilter, status: Threa
   const w = new Where();
   addRepoScope(w, scope, ctx);
   if (status !== 'all') w.add('t.status = ?', status);
-  if (f.kind !== 'all') w.add(f.kind === 'pr' ? 't.pr_number IS NOT NULL' : 't.pr_number IS NULL');
+  if (f.kind !== 'all') w.add(KIND_SQL[f.kind]);
   if (f.author === 'self') w.add(`${OPENER} = ?`, SELF_PRINCIPAL_ID);
   else if (f.author === 'agents') w.add(`${OPENER} IN (SELECT id FROM principals WHERE kind = 'agent')`);
   else if (f.author !== undefined) w.add(`${OPENER} = ?`, f.author);
   if (f.waitingOn !== undefined) w.add(`t.status = 'open' AND ${LAST_AUTHOR} <> ?`, f.waitingOn);
-  if (f.target && 'pr' in f.target) w.add('t.pr_number = ?', f.target.pr);
-  // Oids are stored lower-case: [prefix, prefix + 'g') is every oid that starts with it.
-  else if (f.target) w.add('t.pr_number IS NULL AND t.commit_oid >= ? AND t.commit_oid < ?', f.target.commit, `${f.target.commit}g`);
+  if (f.target && 'pr' in f.target) {
+    // Its own threads, and its branch group where the sync holds the PR (in each repo of the scope with that number).
+    const group = `EXISTS (SELECT 1 FROM pull_requests tp WHERE tp.repo_id = t.repo_id AND tp.number = ? AND ${prGroupSql('t', 'tp')})`;
+    w.add(`t.pr_number = ? OR ${group}`, f.target.pr, f.target.pr);
+  } else if (f.target && 'branch' in f.target) {
+    w.add(branchGroupSql('t', '?'), f.target.branch);
+  } else if (f.target) {
+    // Oids are stored lower-case: [prefix, prefix + 'g') is every oid that starts with it.
+    w.add(`${KIND_SQL.commit} AND t.commit_oid >= ? AND t.commit_oid < ?`, f.target.commit, `${f.target.commit}g`);
+  }
   if (f.path !== undefined) {
     // Under a directory: from "dir/" up to "dir0" ('0' follows '/'), comparing bytes as the paths are case-sensitive.
     const dir = f.path.replace(/\/+$/, '');
@@ -93,18 +115,24 @@ function threadWhere(ctx: QueryCtx, scope: Scope, f: ThreadFilter, status: Threa
   return w;
 }
 
-/** Where the PR or commit is on its code host, built from the repo's url when the sync has no row (with its url) for it. */
-function unsyncedUrl(row: ThreadListRow): string {
+/**
+ * Where the PR or commit is on its code host, built from the repo's url when the sync has no row (with its url) for it;
+ * and a branch's compare page against the default branch. While the sync doesn't know the default branch (a repo not
+ * synced yet, or an empty one), there is nothing to compare against: the repo's own page.
+ */
+function builtUrl(row: ThreadListRow): string {
   const link = PROVIDERS[row.source_kind === 'gitlab' ? 'gitlab' : 'github'].link;
   const repoUrl = row.repo_url.replace(/\/+$/, '');
-  return row.pr_number === null ? link.commit(repoUrl, row.commit_oid) : link.pr(repoUrl, row.pr_number);
+  if (row.pr_number !== null) return link.pr(repoUrl, row.pr_number);
+  if (row.branch !== null) return row.default_branch ? link.compare(repoUrl, row.default_branch, row.branch) : repoUrl;
+  return link.commit(repoUrl, row.commit_oid);
 }
 
 /**
- * Every thread in scope, across PRs and commits, by last activity: `recent` newest first, `oldest` the reverse, ties by
- * thread id in the same direction, so each order is the exact reverse of the other. `page.after` is the previous page's
- * `nextCursor`; null pages = every matching thread. `scope.who` and the date range don't apply: a thread stays open
- * however old it is.
+ * Every thread in scope, across PRs, branches and commits, by last activity: `recent` newest first, `oldest` the
+ * reverse, ties by thread id in the same direction, so each order is the exact reverse of the other. `page.after` is the
+ * previous page's `nextCursor`; null pages = every matching thread. `scope.who` and the date range don't apply: a thread
+ * stays open however old it is.
  */
 export function listThreadItems(db: Db, ctx: QueryCtx, scope: Scope, f: ThreadFilter, page: Page): ThreadListResult {
   const base = threadWhere(ctx, scope, f, 'all');
@@ -141,7 +169,7 @@ export function listThreadItems(db: Db, ctx: QueryCtx, scope: Scope, f: ThreadFi
       ...t,
       targetTitle: row.target_title,
       prState: row.pr_state,
-      targetUrl: row.target_url ?? unsyncedUrl(row),
+      targetUrl: row.target_url ?? builtUrl(row),
       earlierPush: row.pr_number !== null && row.pr_head_oid !== null && row.pr_head_oid !== row.commit_oid,
     };
   });

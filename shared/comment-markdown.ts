@@ -4,13 +4,22 @@
  */
 import type { CommentThread, ThreadComment } from './api';
 import type { ThreadPlacement } from './comment-placement';
-import { capitalize, PROVIDERS, type Provider } from './provider';
+import { capitalize, PROVIDERS, type Provider, refText } from './provider';
 
 export interface ThreadsMarkdownOptions {
   /** Top heading, e.g. "gh-dash#12" (or "app!12" for a GitLab merge request). */
   title?: string;
-  /** The repo's code host: a PR-level thread is headed "Pull request" or "Merge request". GitHub when absent. */
-  provider?: Pick<Provider, 'pr'>;
+  /**
+   * The repo's code host: a PR-level thread is headed "Pull request" or "Merge request", and another PR is `#1` or `!1`.
+   * GitHub when absent.
+   */
+  provider?: Pick<Provider, 'pr' | 'kind'>;
+  /**
+   * What the threads are listed for, as a thread names it: a PR's list or a branch's holds its branch group too (see
+   * "Branch groups" in shared/api.ts), and a thread made elsewhere in the group says where (`from #1`, `from the branch
+   * review`). Without it, none does.
+   */
+  target?: Pick<CommentThread, 'kind' | 'number'>;
   /**
    * Placement in the diff on screen (the server has none): relocated threads show their current lines, outdated
    * ones are marked. Without it, threads show the lines they were made on.
@@ -58,17 +67,28 @@ export function commentExcerpt(body: string, max = EXCERPT_CHARS): string {
   return chars.length <= max ? plain : `${chars.slice(0, max - 1).join('').trimEnd()}…`;
 }
 
+/**
+ * A branch as the exports name it, beside `alice/app#12` for a PR and `alice/app@abc1234` for a commit:
+ * `alice/app branch fix/login`. A branch name holds no space, so the name reads whole.
+ */
+export const branchRef = (repo: string, branch: string): string => `${repo} branch ${branch}`;
+
 const extension = (path: string) => /\.([\w+-]+)$/.exec(path)?.[1] ?? '';
 const lineRange = (start: number, end: number) => (start === end ? `line ${start}` : `lines ${start}–${end}`);
 
-function heading(t: CommentThread, placement: ThreadPlacement | undefined, p: Pick<Provider, 'pr'>): string {
+function heading(t: CommentThread, placement: ThreadPlacement | undefined, p: Pick<Provider, 'pr' | 'kind'>, target: ThreadsMarkdownOptions['target']): string {
   const notes: string[] = [];
   let where: string;
-  if (t.path === null) where = t.kind === 'pr' ? capitalize(p.pr.one) : 'Commit';
+  if (t.path === null) where = t.kind === 'pr' ? capitalize(p.pr.one) : t.kind === 'branch' ? 'Branch' : 'Commit';
   else if (t.side === null || t.startLine === null || t.endLine === null) where = `\`${t.path}\``;
   else {
     const at = placement?.kind === 'line' ? placement : { startLine: t.startLine, endLine: t.endLine };
     where = `\`${t.path}\` ${lineRange(at.startLine, at.endLine)} (${t.side})`;
+  }
+  // Made elsewhere in the target's branch group. A thread on the whole branch is headed "Branch": that says it.
+  if (target && (t.kind !== target.kind || t.number !== target.number)) {
+    if (t.number !== null) notes.push(`from ${refText(p.kind, '', t.number, 'pr')}`);
+    else if (t.path !== null) notes.push('from the branch review');
   }
   if (placement?.kind === 'outdated') notes.push(`outdated, made on ${t.commitOid.slice(0, 7)}`);
   if (t.status === 'resolved') notes.push('resolved');
@@ -88,7 +108,7 @@ function compare(a: CommentThread, b: CommentThread): number {
 export function threadsMarkdown(threads: readonly CommentThread[], opts: ThreadsMarkdownOptions = {}): string {
   const parts: string[] = opts.title ? [`# ${opts.title}`] : [];
   for (const t of [...threads].sort(compare)) {
-    const lines = [heading(t, opts.placements?.get(t.id), opts.provider ?? PROVIDERS.github)];
+    const lines = [heading(t, opts.placements?.get(t.id), opts.provider ?? PROVIDERS.github, opts.target)];
     if (t.snippet !== null && t.path !== null) {
       const f = fence(t.snippet);
       lines.push(`${f}${extension(t.path)}\n${t.snippet}\n${f}`);

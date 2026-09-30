@@ -178,6 +178,138 @@ describe('comment threads', () => {
   });
 });
 
+describe('branch threads and branch groups', () => {
+  /** An hour of the seed's last day as a code host gives times (whole seconds)... */
+  const hostTime = (hour: number) => `2026-09-29T${String(hour).padStart(2, '0')}:00:00Z`;
+  /** ... and as gh-dash writes its own (milliseconds). */
+  const at = (hour: number, ms = 0) => `2026-09-29T${String(hour).padStart(2, '0')}:00:00.${String(ms).padStart(3, '0')}Z`;
+
+  /**
+   * PR `number` of alice/app from branch `head`: from the same repo unless `crossRepo` says otherwise (1: a fork, null:
+   * the sync hasn't said). `endHour`: when it was merged or closed.
+   */
+  function prFrom(number: number, head: string, state: 'open' | 'merged' | 'closed', endHour: number | null = null, crossRepo: 0 | 1 | null = 0) {
+    const end = endHour === null ? null : hostTime(endHour);
+    db.run(
+      `INSERT INTO pull_requests (repo_id, number, title, state, created_at, updated_at, merged_at, closed_at, activity_at, url, head_ref, cross_repo)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [app, number, `PR ${number}`, state, hostTime(0), end ?? hostTime(0), state === 'merged' ? end : null, end, end ?? hostTime(0), 'u', head, crossRepo],
+    );
+  }
+  const branch = (name: string, repoId = app): ThreadTarget => ({ repoId, kind: 'branch', branch: name });
+  const onBranch = (name: string, body: string, time: string, repoId = app) =>
+    createThread(db, branch(name, repoId), { commitOid: HEAD, baseOid: BASE, anchor: general, body }, me, time);
+  /** A thread on PR `number`, with the branch the service gives it (null: from a fork, or not known yet). */
+  const onPr = (number: number, prBranch: string | null, body: string, time: string) =>
+    createThread(db, pr(number), { commitOid: HEAD, baseOid: BASE, anchor: general, body, prBranch }, me, time);
+  const view = (target: ThreadTarget) => listThreads(db, target).map((t) => t.comments[0]!.body);
+
+  it("opens a branch's thread with the branch and no number, and a PR's with the branch the caller gives", () => {
+    const t = onBranch('fix/login', 'Why?', at(1));
+    expect(t).toMatchObject({ kind: 'branch', repo: 'alice/app', number: null, branch: 'fix/login', commitOid: HEAD, baseOid: BASE });
+    expect(onPr(2, 'fix/login', 'On the PR', at(2))).toMatchObject({ kind: 'pr', number: 2, branch: 'fix/login' });
+    expect(open(pr(), general)).toMatchObject({ kind: 'pr', branch: null });
+    // A commit thread has none, whatever it is given.
+    const c = createThread(db, commit(), { commitOid: COMMIT, baseOid: null, anchor: general, body: 'x', prBranch: 'fix/login' }, me);
+    expect(c).toMatchObject({ kind: 'commit', branch: null });
+  });
+
+  it("shows a branch's threads in its review until a PR from it is merged, then in that PR only", () => {
+    prFrom(10, 'fix/login', 'merged', 4);
+    onBranch('fix/login', 'Before the PR', at(1));
+    onPr(10, 'fix/login', 'On #10', at(2));
+    onBranch('fix/login', 'While #10 was open', at(3));
+    onBranch('fix/login', 'After the merge', at(5));
+    prFrom(11, 'fix/login', 'open');
+    onPr(11, 'fix/login', 'On #11', at(6));
+    expect(view(pr(10))).toEqual(['Before the PR', 'On #10', 'While #10 was open']);
+    // The branch's review after the merge: only what came after it, the next PR's threads included.
+    expect(view(branch('fix/login'))).toEqual(['After the merge', 'On #11']);
+    expect(view(pr(11))).toEqual(['After the merge', 'On #11']);
+  });
+
+  it('shares threads between a closed PR and a new PR from the same branch, until a merge separates them', () => {
+    prFrom(20, 'feat', 'closed', 3);
+    onPr(20, 'feat', 'On #20', at(1));
+    onBranch('feat', 'On the branch', at(2));
+    prFrom(21, 'feat', 'open');
+    onPr(21, 'feat', 'On #21', at(5));
+    const all = ['On #20', 'On the branch', 'On #21'];
+    expect([view(pr(20)), view(pr(21)), view(branch('feat'))]).toEqual([all, all, all]);
+    db.run(`UPDATE pull_requests SET state = 'merged', merged_at = ?, closed_at = ? WHERE repo_id = ? AND number = 21`, [hostTime(6), hostTime(6), app]);
+    onBranch('feat', 'Next', at(7));
+    expect([view(pr(20)), view(pr(21)), view(branch('feat'))]).toEqual([all, all, ['Next']]);
+  });
+
+  it("always shows a PR's own threads: made before the sync knew its branch, or after its merge", () => {
+    prFrom(30, 'fix/x', 'merged', 4);
+    onPr(30, null, 'Branch not known yet', at(1));
+    onPr(30, 'fix/x', 'After its merge', at(5));
+    expect(view(pr(30))).toEqual(['Branch not known yet', 'After its merge']);
+    // By its time, the second is in the branch's next line of work, as any thread made then is.
+    expect(view(branch('fix/x'))).toEqual(['After its merge']);
+    // An unsynced PR (dropped by the sync) still lists its own; there is no row to find its group by.
+    db.run('DELETE FROM pull_requests WHERE repo_id = ? AND number = 30', [app]);
+    expect(view(pr(30))).toEqual(['Branch not known yet', 'After its merge']);
+  });
+
+  it("keeps a fork's PR, and one the sync hasn't said of, to their own threads; neither's merge ends the branch's line", () => {
+    onBranch('fix/x', 'On the branch', at(1));
+    prFrom(40, 'fix/x', 'merged', 2, 1);
+    prFrom(41, 'fix/x', 'merged', 3, null);
+    onPr(40, null, 'On the fork PR', at(4));
+    onPr(41, null, 'On the unknown PR', at(4));
+    expect(view(pr(40))).toEqual(['On the fork PR']);
+    expect(view(pr(41))).toEqual(['On the unknown PR']);
+    expect(view(branch('fix/x'))).toEqual(['On the branch']);
+  });
+
+  it('puts a thread made at the very time of a merge before it, and one a millisecond later after it', () => {
+    prFrom(50, 'edge', 'merged', 4);
+    onBranch('edge', 'At the merge', at(4, 0));
+    onBranch('edge', 'Just after', at(4, 1));
+    onBranch('edge', 'Just before', at(3, 999));
+    prFrom(51, 'edge', 'open');
+    expect(view(pr(50))).toEqual(['At the merge', 'Just before']);
+    expect(view(branch('edge'))).toEqual(['Just after']);
+    expect(view(pr(51))).toEqual(['Just after']);
+  });
+
+  it('splits a branch merged again and again into its lines of work, each PR seeing its own', () => {
+    prFrom(60, 'multi', 'merged', 2);
+    prFrom(61, 'multi', 'closed', 4);
+    prFrom(62, 'multi', 'merged', 6);
+    prFrom(63, 'multi', 'open');
+    // A closed PR the host gave no time for hasn't ended, as far as anyone can tell; a reopened one has a closing time
+    // left over from before, and hasn't either.
+    prFrom(64, 'multi', 'closed', null);
+    prFrom(65, 'multi', 'open');
+    db.run('UPDATE pull_requests SET closed_at = ? WHERE repo_id = ? AND number = 65', [hostTime(4), app]);
+    for (const [hour, body] of [[1, 'First'], [3, 'Second, before #61 closed'], [5, 'Second, after'], [7, 'Third']] as const) onBranch('multi', body, at(hour));
+    const second = ['Second, before #61 closed', 'Second, after'];
+    expect(view(pr(60))).toEqual(['First']);
+    expect(view(pr(61))).toEqual(second);
+    expect(view(pr(62))).toEqual(second);
+    expect(view(pr(63))).toEqual(['Third']);
+    expect(view(pr(64))).toEqual(['Third']);
+    expect(view(pr(65))).toEqual(['Third']);
+    expect(view(branch('multi'))).toEqual(['Third']);
+  });
+
+  it("keeps each repo's and each branch's threads apart, and a commit's list to the commit's own", () => {
+    const secret = db.get<{ id: number }>("SELECT id FROM repos WHERE name = 'secret'")!.id;
+    onBranch('x', 'app x', at(1));
+    onBranch('x', 'secret x', at(1), secret);
+    onBranch('y', 'app y', at(1));
+    open(commit(HEAD), general, 'On the commit');
+    expect(view(branch('x'))).toEqual(['app x']);
+    expect(view(branch('x', secret))).toEqual(['secret x']);
+    expect(view(branch('X'))).toEqual([]);
+    // Every branch thread above was made on HEAD: none is the commit's.
+    expect(view(commit(HEAD))).toEqual(['On the commit']);
+  });
+});
+
 describe('comment event log', () => {
   interface EventRow {
     id: number;
@@ -265,6 +397,21 @@ describe('comment event log', () => {
     // A removed repository takes its events along.
     db.run('DELETE FROM repos WHERE id = ?', [app]);
     expect(events()).toEqual([]);
+  });
+
+  it("copies the thread's branch into its events, as the rest of its place", () => {
+    const b = createThread(db, { repoId: app, kind: 'branch', branch: 'fix/login' }, { commitOid: HEAD, baseOid: null, anchor: general, body: 'On the branch' }, me, T0);
+    const p = createThread(db, pr(), { commitOid: HEAD, baseOid: null, anchor: general, body: 'On the PR', prBranch: 'fix/login' }, me, T0);
+    const c = open(commit(), general, 'On the commit');
+    addComment(db, b.id, agent, 'Reply', T1);
+    deleteThread(db, b.id, me, T1);
+    expect(events().map((e) => [e.thread_id, e.kind, e.pr_number, e.branch])).toEqual([
+      [b.id, 'thread_opened', null, 'fix/login'],
+      [p.id, 'thread_opened', 2, 'fix/login'],
+      [c.id, 'thread_opened', null, null],
+      [b.id, 'replied', null, 'fix/login'],
+      [b.id, 'thread_deleted', null, 'fix/login'],
+    ]);
   });
 
   it('records nothing for an edit that keeps the words', () => {

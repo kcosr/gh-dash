@@ -7,6 +7,7 @@ import { HttpError } from '../lib/errors';
 import { seedDb } from '../test/seed';
 import {
   type CommentDeps,
+  createBranchThread,
   createCommitThread,
   createPrThread,
   deleteComment,
@@ -158,6 +159,55 @@ describe('comment services', () => {
     expect(heard).toEqual([]);
     editComment(deps, claude, t.comments[0]!.id, 'Why not?');
     expect(told()).toEqual([['edited', 'Claude', t.id]]);
+  });
+
+  it("opens a branch's thread, tells the bus which branch, and lists it with the branch's group", () => {
+    const t = createBranchThread(deps, claude, 'app', 'fix/login', { commitOid: HEAD.toUpperCase(), path: 'src/a.ts', body: 'Why?' });
+    expect(t).toMatchObject({ kind: 'branch', repo: 'alice/app', number: null, branch: 'fix/login', commitOid: HEAD, path: 'src/a.ts' });
+    expect(heard).toEqual([{ type: 'comments', repo: 'alice/app', kind: 'branch', number: null, branch: 'fix/login', commitOid: HEAD, threadId: t.id, event: 'thread_opened', by: claude }]);
+    expect(listTargetThreads(deps, { repo: 'alice/app', kind: 'branch', branch: 'fix/login' }).map((x) => x.id)).toEqual([t.id]);
+    expect(listTargetThreads(deps, { repo: 'app', kind: 'branch', branch: 'fix' })).toEqual([]);
+    reply(deps, me, t.id, 'Because.');
+    expect(heard.at(-1)).toMatchObject({ kind: 'branch', branch: 'fix/login', event: 'replied' });
+  });
+
+  it("gives a PR's thread its head branch when the PR is from the same repo, and none otherwise", () => {
+    const branchOf = (crossRepo: number | null, headRef = 'feature') => {
+      db.run("UPDATE pull_requests SET cross_repo = ?, head_ref = ? WHERE number = 2 AND repo_id = (SELECT id FROM repos WHERE key = 'alice/app')", [crossRepo, headRef]);
+      return createPrThread(deps, me, 'app', 2, { commitOid: HEAD, body: 'x' }).branch;
+    };
+    expect(branchOf(0)).toBe('feature');
+    expect(heard.at(-1)).toMatchObject({ kind: 'pr', number: 2, branch: 'feature' });
+    // From a fork: the head branch is another repo's. Not known yet: kept to the PR until the sync says.
+    expect(branchOf(1)).toBeNull();
+    expect(branchOf(null)).toBeNull();
+    expect(branchOf(0, '')).toBeNull();
+    // So the PR's list and the branch's share the first.
+    db.run("UPDATE pull_requests SET cross_repo = 0, head_ref = 'feature' WHERE number = 2");
+    const onBranch = createBranchThread(deps, me, 'app', 'feature', { commitOid: HEAD, body: 'On the branch' });
+    const shared = listTargetThreads(deps, { repo: 'app', kind: 'branch', branch: 'feature' });
+    expect(shared.map((x) => [x.kind, x.comments[0]!.body])).toEqual([['pr', 'x'], ['branch', 'On the branch']]);
+    expect(listTargetThreads(deps, { repo: 'app', kind: 'pr', number: 2 }).map((x) => x.id)).toContain(onBranch.id);
+  });
+
+  it('validates a branch as it does PRs and commits: its name, the default branch, the repo and the body', () => {
+    const body = { commitOid: HEAD, body: 'x' };
+    for (const name of ['', 'a..b', 'fix~1', 'fix login', '-x', 'x/', 'x.lock', '@', 'a@{1}', 'x'.repeat(256)]) {
+      expect(failure(() => createBranchThread(deps, me, 'app', name, body)), name).toEqual({ status: 400, message: 'Invalid branch name' });
+      expect(failure(() => listTargetThreads(deps, { repo: 'app', kind: 'branch', branch: name })), name).toEqual({ status: 400, message: 'Invalid branch name' });
+    }
+    const main = { status: 400, message: 'main is the default branch: branches are compared against it' };
+    expect(failure(() => createBranchThread(deps, me, 'app', 'main', body))).toEqual(main);
+    expect(failure(() => listTargetThreads(deps, { repo: 'app', kind: 'branch', branch: 'main' }))).toEqual(main);
+    expect(failure(() => createBranchThread(deps, me, 'nope', 'fix', body))).toEqual({ status: 404, message: 'Repository not found' });
+    expect(failure(() => createBranchThread(deps, me, 'app', 'fix', { body: 'x' } as never))).toMatchObject({ status: 400, message: expect.stringContaining('commitOid') });
+    expect(failure(() => createBranchThread(deps, me, 'app', 'fix', { ...body, side: 'new' }))).toMatchObject({ status: 400, message: 'a line thread needs a path' });
+    expect(heard).toEqual([]);
+    expect(events()).toEqual([]);
+    // Names git allows, whether or not the code host has them; and any name while the default branch isn't known.
+    for (const name of ['Main', 'fix/login', 'release/1.2', 'feat_x#2', 'user@host']) expect(createBranchThread(deps, me, 'app', name, body).branch).toBe(name);
+    db.run("UPDATE repos SET default_branch = NULL WHERE key = 'alice/app'");
+    expect(createBranchThread(deps, me, 'app', 'main', body).branch).toBe('main');
   });
 
   it('works without a bus', () => {

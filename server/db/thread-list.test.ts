@@ -414,3 +414,63 @@ describe('thread list targets', () => {
     expect(byId.get(onCommit.id)).toMatchObject({ targetTitle: 'Refactor parser module', prState: null, earlierPush: false });
   });
 });
+
+describe('branch threads in the list', () => {
+  const branch = (key: string, name: string): ThreadTarget => ({ repoId: repoId(key), kind: 'branch', branch: name });
+  /** A PR thread with the branch the service gives a same-repo PR's. */
+  const addOnPr = (key: string, number: number, prBranch: string, body: string, minute: number) =>
+    createThread(db, pr(key, number), { commitOid: HEAD, baseOid: BASE, anchor: general, body, prBranch }, me, at(minute));
+
+  it('filters by kind: a PR number makes a PR thread whatever its branch, a branch alone a branch thread', () => {
+    const onPr = addOnPr('alice/app', 2, 'feature', 'pr', 1);
+    const onBranch = add(branch('alice/app', 'feature'), 'branch', 2);
+    const onCommit = add(commit('alice/app', C1), 'commit', 3);
+    setThreadStatus(db, onBranch.id, 'resolved', me, at(4));
+    expect(ids(list({ kind: 'pr', status: 'all' }))).toEqual([onPr.id]);
+    expect(ids(list({ kind: 'branch', status: 'all' }))).toEqual([onBranch.id]);
+    expect(ids(list({ kind: 'commit', status: 'all' }))).toEqual([onCommit.id]);
+    expect(list({ kind: 'branch' })).toMatchObject({ items: [], total: 0, counts: { open: 0, resolved: 1 } });
+    expect(list({ kind: 'all' })).toMatchObject({ total: 2, counts: { open: 2, resolved: 1 } });
+  });
+
+  it("names a branch thread by its branch alone: no title, state or earlier push, and its compare page as the url", () => {
+    // Made on the synced commit C1, and on a commit a PR lists: neither is what the thread is on.
+    const onC1 = createThread(db, branch('alice/app', 'fix/login'), { commitOid: C1, baseOid: BASE, anchor: general, body: 'on c1' }, me, at(1));
+    db.run('UPDATE pr_commits SET oid = ? WHERE oid = ?', [HEAD, 'p1']);
+    const odd = add(branch('alice/app', 'feat#2@x'), 'odd name', 2);
+    const byId = new Map(list().items.map((i) => [i.id, i]));
+    expect(byId.get(onC1.id)).toMatchObject({
+      kind: 'branch', number: null, branch: 'fix/login', targetTitle: null, prState: null, earlierPush: false,
+      targetUrl: 'https://github.com/alice/app/compare/main...fix/login',
+    });
+    expect(byId.get(odd.id)).toMatchObject({ targetTitle: null, targetUrl: 'https://github.com/alice/app/compare/main...feat%232%40x' });
+    const { repoId: gl } = seedGitLab(db);
+    const onGitLab = add({ repoId: gl, kind: 'branch', branch: 'fix/login' }, 'gitlab', 3);
+    expect(list({}, { source: [GITLAB_HOST] }).items.find((i) => i.id === onGitLab.id)!.targetUrl).toBe(`https://${GITLAB_HOST}/platform/app/-/compare/main...fix/login`);
+    // No default branch known (not synced yet, or an empty repo): nothing to compare against, so the repo's page.
+    db.run("UPDATE repos SET default_branch = NULL, url = url || '/' WHERE key = 'alice/app'");
+    expect(list().items.find((i) => i.id === onC1.id)!.targetUrl).toBe('https://github.com/alice/app');
+    db.run("UPDATE repos SET default_branch = '' WHERE key = 'alice/app'");
+    expect(list().items.find((i) => i.id === onC1.id)!.targetUrl).toBe('https://github.com/alice/app');
+  });
+
+  it("filters to what a PR's, a branch's or a commit's view shows", () => {
+    const pullId = (number: number) => db.get<{ id: number }>('SELECT id FROM pull_requests WHERE repo_id = ? AND number = ?', [repoId('alice/app'), number])!.id;
+    // app#1 (merged 2026-09-21T10:00:00Z) and app#2 (open) are both from `feature`, of the same repo.
+    db.run('UPDATE pull_requests SET cross_repo = 0 WHERE id IN (?, ?)', [pullId(1), pullId(2)]);
+    const before = createThread(db, branch('alice/app', 'feature'), { commitOid: HEAD, baseOid: BASE, anchor: general, body: 'before #1 merged' }, me, '2026-09-21T09:00:00.000Z');
+    const onOne = addOnPr('alice/app', 1, 'feature', 'on #1', 1);
+    const onTwo = addOnPr('alice/app', 2, 'feature', 'on #2', 2);
+    const onBranch = add(branch('alice/app', 'feature'), 'on the branch', 3);
+    const onCommit = add(commit('alice/app', HEAD), 'on the commit', 4);
+    const elsewhere = add(branch('alice/secret', 'feature'), 'secret feature', 5);
+    expect(ids(list({ target: { pr: 2 } }))).toEqual([onBranch.id, onTwo.id, onOne.id]);
+    // #1's own, and its line of work: what came before its merge.
+    expect(ids(list({ target: { pr: 1 } }))).toEqual([onOne.id, before.id]);
+    expect(ids(list({ target: { branch: 'feature' } }))).toEqual([elsewhere.id, onBranch.id, onTwo.id, onOne.id]);
+    expect(ids(list({ target: { branch: 'feature' } }, { repos: ['app'] }))).toEqual([onBranch.id, onTwo.id, onOne.id]);
+    expect(ids(list({ target: { commit: HEAD.slice(0, 7) } }))).toEqual([onCommit.id]);
+    // Counts follow the target.
+    expect(list({ target: { pr: 2 } })).toMatchObject({ total: 3, counts: { open: 3, resolved: 0 } });
+  });
+});

@@ -320,24 +320,37 @@ const schemas: Record<string, Schema> = {
     patch: nullable(str('Unified-diff hunks as the code host returns them, starting at the first "@@" line (no diff/---/+++ headers). null for binary files and diffs too large for the API.')),
   }),
   Diff: obj({
-    kind: enumOf('pr', 'commit'),
+    kind: enumOf('pr', 'commit', 'branch'),
     repo: str(),
-    number: nullable(int('PR number; null for commits')),
-    title: str('PR title or commit headline'),
-    baseOid: nullable(str('Old side of every file: the merge base for a PR, the first parent for a commit (null for a root commit)')),
-    headOid: str('New side of every file: the PR head, or the commit itself'),
+    number: nullable(int('PR number; null for commits and branches')),
+    branch: str("For kind 'branch': the branch, compared against baseRef. Absent otherwise."),
+    baseRef: str("For kind 'branch': the repo's default branch, which the branch is compared against. Absent otherwise."),
+    title: str("PR title, commit headline, or the branch's name"),
+    baseOid: nullable(str('Old side of every file: the merge base for a PR or branch (three-dot), the first parent for a commit (null for a root commit)')),
+    headOid: str("New side of every file: the PR head, the commit itself, or the branch's head"),
     files: { ...arr(ref('DiffFile')), description: "In the code host's order; GitHub lists at most 3000" },
     totalFiles: int('Files the code host reports as changed; exceeds files.length when it caps the list'),
     additions: int(),
     deletions: int(),
     fetchedAt: { ...dateTime, description: 'When the diff was fetched from the code host (earlier than the request when cached)' },
-    url: str('The PR\'s "Files changed" tab (GitLab: the merge request\'s changes page) or the commit page on the code host'),
+    url: str('The PR\'s "Files changed" tab (GitLab: the merge request\'s changes page), the commit page, or the branch\'s compare page on the code host'),
     stale: {
       ...bool,
       const: true,
-      description: "Present on a cached PR diff served because the code host couldn't be asked whether it is still current (no token, rate limit, outage); never with refresh=1",
+      description: "Present on a cached PR or branch diff served because the code host couldn't be asked whether it is still current (no token, rate limit, outage); never with refresh=1",
     },
-  }, ['stale']),
+  }, ['stale', 'branch', 'baseRef']),
+  BranchSummary: obj({
+    name: str(),
+    headOid: str('The commit the branch points to'),
+    committedAt: nullable({ ...dateTime, description: "The head commit's committer date; null when the code host doesn't say" }),
+    pr: nullable(obj({ number: int(), state: enumOf('open', 'merged', 'closed'), title: str() })),
+  }),
+  BranchListResponse: obj({
+    items: { ...arr(ref('BranchSummary')), description: 'Newest head commit first; the default branch is left out. `pr` is the newest synced PR from the same repo with this branch as its head, of any state: a branch with an open PR is usually reviewed there (its threads are shared with the branch).' },
+    defaultBranch: str("The repo's default branch, as of the last sync"),
+    more: { ...bool, description: 'The code host has more matching branches than were listed (at most 100): narrow them with `q`.' },
+  }),
   DiffCacheStats: obj({
     entries: int(),
     bytes: int('Bytes used by cached diffs and file contents (compressed)'),
@@ -758,6 +771,37 @@ export const ENDPOINTS: EndpointDoc[] = [
     method: 'get', path: '/api/v1/commits/{repo}/{oid}/diff', tag: 'Diffs', summary: "A commit's changes against its first parent",
     description: 'The commit need not be synced (e.g. PR branch commits), but the repo must be. Errors as for PR diffs.',
     params: [REPO, p('oid', 'Commit SHA or an abbreviation of one, 7-64 hex characters (a SHA-1 is 40, a SHA-256 is 64)'), q('refresh', "'1' fetches it again instead of using the cache.", enumOf('1'))],
+    response: { status: 200, schema: ref('Diff') },
+  },
+  {
+    method: 'get', path: '/api/v1/branches/{repo}', tag: 'Diffs', summary: "A repository's branches on its code host, newest first",
+    description:
+      "Asked of the repo's code host (GitHub or GitLab), at most 100 branches with the default branch left out, each with the PR from it if the sync has one. " +
+      'GitHub cannot sort branches, so up to 500 are read to find the newest (more than that are cut off alphabetically: `more` is then true; narrow them with `q`). ' +
+      'Kept in memory for a minute per repo and `q`. ' +
+      "Errors: 404 unknown repo, 409 the repo's default branch isn't known yet (sync it), 503 no token for the repo's source, 429 rate limit (details.resetAt), 502 other failures of the code host, " +
+      '403 for cross-site browser requests.',
+    params: [
+      REPO,
+      q('q', 'Only branches whose name contains this (up to 255 characters; the code host matches without regard to case; GitLab also takes `^prefix` and `suffix$`).'),
+      q('refresh', "'1' asks the code host again instead of using the list kept for a minute.", enumOf('1')),
+    ],
+    response: { status: 200, schema: ref('BranchListResponse') },
+  },
+  {
+    method: 'get', path: '/api/v1/branches/{repo}/{branch}/diff', tag: 'Diffs', summary: "A pushed branch's changes against the repo's default branch",
+    description:
+      "For reviewing a branch that has no PR (yet), or before it does: the branch compared with the default branch, three-dot as a PR's is (kind `branch`; `baseOid` is the merge base). " +
+      "Fetched from the repo's code host on view and cached, one diff per branch. The code host is asked for the branch's head on every view (GitHub: a request that costs nothing while it is unchanged), " +
+      "and the branch is compared again when it moved, when the default branch changed, and hourly (the default branch can move the merge base); `refresh=1` compares again. " +
+      'When the code host cannot be asked (503, 429, 502), the cached diff is served with `stale: true` (not with refresh=1). ' +
+      "GitHub lists at most 300 files of a comparison in its JSON and reads the rest from the diff text; a comparison whose diff is over 20 MB lists the files GitHub's JSON has. " +
+      "Errors: 400 an invalid branch name, or the default branch itself; 404 unknown repo, a branch the code host doesn't have, or one that can't be compared (no history in common with the default branch); " +
+      "409 the repo's default branch isn't known yet (sync it); 503 no token for the repo's source, 429 rate limit (details.resetAt), 502 other failures of the code host, 403 for cross-site browser requests.",
+    params: [
+      REPO, p('branch', 'Branch name, URL-encoded as one segment (`feature%2Fx` for feature/x).'),
+      q('refresh', "'1' compares the branch again instead of trusting the cached diff.", enumOf('1')),
+    ],
     response: { status: 200, schema: ref('Diff') },
   },
   {

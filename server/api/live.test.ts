@@ -1,3 +1,6 @@
+import type { Server } from 'node:http';
+import { type AddressInfo, connect } from 'node:net';
+import { createAdaptorServer } from '@hono/node-server';
 import { describe, expect, it, vi } from 'vitest';
 import type { Agent, StreamMessage } from '../../shared/api';
 import { CommentBus } from '../comments/bus';
@@ -10,6 +13,7 @@ import { SyncManager } from '../sync/manager';
 import { seedDb } from '../test/seed';
 import { testTokens } from '../test/tokens';
 import { createApp } from './app';
+import { MAX_STREAMS } from './routes/stream';
 
 function makeApp(over: Partial<Config> = {}) {
   const db = seedDb();
@@ -129,6 +133,91 @@ describe('GET /stream', () => {
     const late = textReader((await app.request('/api/v1/stream')).body!);
     expect(await late.until('never')).toBe(false);
     expect(bus.windows).toBe(0);
+  });
+
+  it('serves at most 32 streams at once, and asks the rest to come back later', async () => {
+    const { app, bus } = makeApp();
+    const windows = await Promise.all(Array.from({ length: MAX_STREAMS }, async () => {
+      const client = new AbortController();
+      const res = await app.request('/api/v1/stream', { signal: client.signal });
+      expect(res.status).toBe(200);
+      return { client, stream: textReader(res.body!) };
+    }));
+    expect(bus.windows).toBe(MAX_STREAMS);
+    const refused = await app.request('/api/v1/stream');
+    expect(refused.status).toBe(503);
+    expect(refused.headers.get('retry-after')).toBe('15');
+    expect(await refused.json()).toEqual({ error: 'Too many live streams open (32); try again later' });
+    expect(bus.windows).toBe(MAX_STREAMS);
+    // One goes: another may come.
+    windows[0]!.client.abort();
+    await vi.waitFor(() => expect(bus.windows).toBe(MAX_STREAMS - 1));
+    const next = new AbortController();
+    expect((await app.request('/api/v1/stream', { signal: next.signal })).status).toBe(200);
+    for (const w of [...windows, { client: next }]) w.client.abort();
+    await vi.waitFor(() => expect(bus.windows).toBe(0));
+  });
+
+  it('cuts off a window that stops reading, drops what it held, and stops counting it for show', async () => {
+    const { app, bus } = makeApp();
+    const stream = textReader((await app.request('/api/v1/stream')).body!);
+    expect(await stream.until(': connected')).toBe(true);
+    // Unread from here on: each message is ~1 KB, the budget 256 KB.
+    const show = (i: number): StreamMessage => ({
+      type: 'show', id: `s${i}`, agent: { id: 2, kind: 'agent', name: 'Claude' }, target: { repo: 'alice/app', pr: 2 }, message: 'x'.repeat(1000), at: '2026-09-29T10:00:00.000Z',
+    });
+    const reached: number[] = [];
+    for (let i = 0; i < 1000; i++) reached.push(bus.emit(show(i)));
+    const took = reached.indexOf(0);
+    expect(took).toBeGreaterThan(200);
+    expect(took).toBeLessThan(260);
+    expect(reached.slice(0, took).every((n) => n === 1)).toBe(true);
+    expect(reached.slice(took).every((n) => n === 0)).toBe(true);
+    expect(bus.windows).toBe(0);
+    // The client's read fails at once: the queue was dropped, not left to drain.
+    await expect(stream.until('never')).rejects.toThrow('The client fell too far behind');
+  });
+
+  it('closes the connection of a window that stops reading, over a real socket, without logging an error', async () => {
+    const { app, bus } = makeApp();
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const server = createAdaptorServer({ fetch: app.fetch }) as Server;
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const socket = connect((server.address() as AddressInfo).port, '127.0.0.1');
+      let closed = false;
+      let text = '';
+      socket.on('close', () => (closed = true));
+      socket.on('error', () => {});
+      socket.write('GET /api/v1/stream HTTP/1.1\r\nHost: localhost\r\n\r\n');
+      // Read the headers, then stop reading altogether.
+      await new Promise<void>((resolve) => socket.once('data', () => resolve()));
+      socket.pause();
+      expect(bus.windows).toBe(1);
+      const big: StreamMessage = {
+        type: 'show', id: 'big', agent: { id: 2, kind: 'agent', name: 'Claude' }, target: { repo: 'alice/app', pr: 2, path: 'p'.repeat(16 * 1024) }, message: null, at: '2026-09-29T10:00:00.000Z',
+      };
+      // Past the kernel's socket buffers, then the stream's budget.
+      let taken = 0;
+      for (let i = 0; i < 2000 && bus.windows > 0; i++) {
+        taken += bus.emit(big);
+        await new Promise((r) => setImmediate(r));
+      }
+      expect(bus.windows).toBe(0);
+      // Reading again, the client gets what was already on its way, then the end: the rest was dropped.
+      socket.setEncoding('latin1');
+      socket.on('data', (chunk: string) => (text += chunk));
+      socket.resume();
+      await vi.waitFor(() => expect(closed).toBe(true), { timeout: 5000 });
+      const received = text.split('"id":"big"').length - 1;
+      // The stream held about 16 of them (256 KB): those never went out.
+      expect(received).toBeLessThanOrEqual(taken - 10);
+      expect(errors).not.toHaveBeenCalled();
+    } finally {
+      errors.mockRestore();
+      server.closeAllConnections();
+      await new Promise((resolve) => server.close(resolve));
+    }
   });
 
   it('needs what any /api GET needs', async () => {

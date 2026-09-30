@@ -743,7 +743,8 @@ export const ENDPOINTS: EndpointDoc[] = [
       'text/event-stream: one `data: <json>` event per StreamMessage, nothing replayed. `comments`: a thread changed (repo, kind, number, commitOid, threadId, ' +
       'event, by); `show`: an agent asks the app to show something (id, agent, target {repo, pr?, commit?, threadId?, path?}, message, at); `agents`: an agent ' +
       'was added, given a new token or revoked. A comment line (`: ping`) every 25 s keeps proxies from closing an idle stream; behind nginx, turn ' +
-      'proxy_buffering off for it (deploy/nginx.conf.example).',
+      'proxy_buffering off for it (deploy/nginx.conf.example). At most 32 streams are open at once (503 with Retry-After beyond), and a client ' +
+      'that stops reading is disconnected once 256 KB wait for it: reconnect and refetch.',
     response: { status: 200, schema: str(), type: 'text/event-stream' },
   },
   { method: 'get', path: '/api/v1/sync/status', tag: 'Sync', summary: 'Sync progress, last result, next run and rate limit', response: { status: 200, schema: ref('SyncStatus') } },

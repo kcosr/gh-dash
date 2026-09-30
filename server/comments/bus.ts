@@ -1,6 +1,7 @@
 import type { StreamMessage } from '../../shared/api';
 
-export type StreamListener = (message: StreamMessage) => void;
+/** A window's stream returns false when the message didn't reach it (it has ended, or was just cut off as too slow). */
+export type StreamListener = (message: StreamMessage) => unknown;
 
 export interface SubscribeOptions {
   /** A window's stream (GET /stream): counted by `emit` and `windows`, as a `show` reaches it. */
@@ -27,13 +28,12 @@ export class CommentBus {
 
   constructor(private readonly log: (line: string) => void = (line) => console.error(line)) {}
 
-  /** Tells every subscriber, in the order they subscribed; returns how many windows (streams) it reached. */
+  /** Tells every subscriber, in the order they subscribed; returns how many windows (streams) took it. */
   emit(message: StreamMessage): number {
     let windows = 0;
     for (const s of [...this.subscribers]) {
-      if (s.window) windows++;
       try {
-        s.listener(message);
+        if (s.listener(message) !== false && s.window) windows++;
       } catch (err) {
         this.log(`[bus] a ${message.type} listener failed: ${(err as Error).message}`);
       }

@@ -25,6 +25,16 @@ describe('CommentBus', () => {
     expect(seen).toEqual(['aagents', 'bagents', 'cagents', 'bcomments', 'ccomments']);
   });
 
+  it("doesn't count a window that says the message didn't reach it", () => {
+    const bus = new CommentBus();
+    let open = true;
+    bus.subscribe(() => open, { window: true });
+    bus.subscribe(() => false);
+    expect(bus.emit({ type: 'agents' })).toBe(1);
+    open = false;
+    expect(bus.emit({ type: 'agents' })).toBe(0);
+  });
+
   it("keeps going when a listener throws, and says so", () => {
     const log = vi.fn();
     const bus = new CommentBus(log);

@@ -25,13 +25,30 @@ export function agentConfig(url: string, token: string): { claude: string; codex
   };
 }
 
-/** Agents in the order Settings lists them: active ones by name, then revoked ones (newest revoked first). */
+/** Agents in the order Settings lists them: active ones by name, the built-in one, then revoked ones (newest revoked first). */
 export function sortAgents(list: readonly Agent[]): Agent[] {
   return [...list].sort((a, b) =>
     Number(!!a.revokedAt) - Number(!!b.revokedAt)
+    || Number(!!a.builtIn) - Number(!!b.builtIn)
     || (a.revokedAt && b.revokedAt ? b.revokedAt.localeCompare(a.revokedAt) : 0)
     || a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
     || a.id - b.id);
+}
+
+/** A token of the shape the server generates: `ghd_` and 32 random bytes, base64url (from the browser's CSPRNG). */
+export function generateAgentToken(random: (bytes: Uint8Array<ArrayBuffer>) => void = (b) => { crypto.getRandomValues(b); }): string {
+  const bytes = new Uint8Array(32);
+  random(bytes);
+  let bin = '';
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return `ghd_${btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')}`;
+}
+
+/** What's wrong with a token the user typed or pasted, or null. The server's rules (server/db/agents.ts agentToken). */
+export function agentTokenProblem(token: string): string | null {
+  if (token.length < 24 || token.length > 256) return '24 to 256 characters';
+  if (!/^[\x21-\x7e]+$/.test(token)) return 'Printable ASCII without spaces';
+  return null;
 }
 
 /**
@@ -44,6 +61,7 @@ export function agentNameProblem(name: string, taken: readonly Pick<Agent, 'name
   if (/^\d+$/.test(n)) return 'Not only digits (those are ids)';
   if (Array.from(n).length > 64) return 'At most 64 characters';
   if (n.toLowerCase() === 'you') return '“You” is you: give the agent another name';
+  if (n.toLowerCase() === 'agent') return '“Agent” is the built-in agent (requests without a token)';
   if (taken.some((a) => a.name.toLowerCase() === n.toLowerCase())) return 'An agent has that name: give it a new token instead';
   return null;
 }

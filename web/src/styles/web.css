@@ -780,10 +780,11 @@ a.sync:hover .sync-text { color: var(--text); text-decoration: underline; text-u
   .show-host { right: 8px; left: 8px; bottom: 8px; width: auto; }
   .show-acts .btn { height: 34px; }
 }
-.agent-row .trk-name { flex: 0 1 auto; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
+.agent-row .trk-name { flex: 0 0 auto; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
 .agent-row.revoked .trk-name { color: var(--muted); font-weight: 400; }
 .agent-prefix { flex: none; padding: 0; background: none; font-size: 11.5px; color: var(--muted); }
 .agent-row .agent-st { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; display: block; }
+.agent-row .agent-prefix { flex: none; }
 .agent-row .btn.sm { flex: none; color: var(--text-2); }
 .agent-row .btn.sm + .btn.sm { margin-left: -6px; }
 .agent-add { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 14px; }
@@ -821,3 +822,20 @@ button.cm-quote { display: -webkit-box; text-align: left; }
   .cm-where { max-width: 60%; }
   .agent-snip .btn .lbl { display: none; }
 }
+/* Settings → Instance: the Local API's switches, their settings under them. A quiet warning under a switch. */
+.set-row.sub .set-l { padding-left: 16px; }
+.set-warn { display: flex; align-items: baseline; gap: 7px; font-size: 12px; line-height: 1.45; color: var(--text-2); }
+.set-warn::before { content: ""; flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--star); transform: translateY(-1px); }
+.set-c.stack > .set-warn { margin-top: 2px; }
+/* Settings → Agents: MCP off, the token field, a new token's form. */
+.set-sec .agent-off { align-items: center; }
+.agent-off > span { flex: 1; }
+.agent-off .btn { flex: none; }
+.agent-enabled { display: flex; align-items: center; gap: 6px; margin: -2px 0 10px !important; font-size: 12.5px; color: var(--text); }
+.agent-enabled svg { width: 13px; height: 13px; color: var(--add); }
+.agent-token-field { display: inline-flex; flex: 1 1 360px; gap: 8px; min-width: 0; }
+.agent-token-in { flex: 1; min-width: 0; font: 12px var(--mono); }
+.agent-add .agent-token-field .btn { flex: none; }
+.agent-new { padding: 12px 14px; border-radius: 8px; background: var(--surface-2); }
+.agent-new-h { flex-basis: 100%; margin: 0 !important; font-size: 12.5px; color: var(--text-2); }
+.agent-new-h b { color: var(--text); font-weight: 600; }

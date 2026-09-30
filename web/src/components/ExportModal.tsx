@@ -85,7 +85,7 @@ export function ExportModal({ initialTab, onClose }: { initialTab: ExportTab; on
               <pre className="code"><span className="k">GET</span> {url}</pre>
               <div className="api-l">curl</div>
               {curl ? <pre className="code">{curl}</pre> : (
-                <p className="api-off">Turn on the Local API in <Link to="/settings#instance" onClick={onClose}>Settings</Link> to call it from curl or scripts.</p>
+                <p className="api-off">Turn on the Local API's REST API in <Link to="/settings#instance" onClick={onClose}>Settings</Link> to call it from curl or scripts.</p>
               )}
               <div className="api-l">JSON response{target.endpoint === 'stats' || target.endpoint === 'repos' ? ' (trimmed)' : ' (first item)'}</div>
               <pre className="code">

@@ -150,8 +150,25 @@ export function useAgentActions() {
   const bridge = getBridge();
   const qc = useQueryClient();
   const changed = () => void qc.invalidateQueries({ queryKey: qk.agents });
-  const add = useMutation({ mutationFn: (name: string) => need(bridge).addAgent(name), onSettled: changed });
-  const regenerate = useMutation({ mutationFn: (id: number) => need(bridge).regenerateAgentToken(id), onSettled: changed });
+  // MCP turned on restarted the server: everything is asked again, the app's state first.
+  const restarted = () => void qc.invalidateQueries();
+  const add = useMutation({
+    mutationFn: ({ name, token }: { name: string; token?: string }) => need(bridge).addAgent(name, token),
+    onSuccess: (r) => { if (r.enabledMcp) restarted(); },
+    onSettled: changed,
+  });
+  const regenerate = useMutation({
+    mutationFn: ({ id, token }: { id: number; token?: string }) => need(bridge).regenerateAgentToken(id, token),
+    onSettled: changed,
+  });
   const revoke = useMutation({ mutationFn: (id: number) => need(bridge).revokeAgent(id), onSettled: changed });
-  return { add, regenerate, revoke };
+  /** "Turn on MCP": the Local API for agents (its REST API as it was), then everything is asked again. */
+  const enableMcp = useMutation({
+    mutationFn: () => need(bridge).enableMcp(),
+    onSuccess: (state) => {
+      qc.setQueryData(qk.desktop, state);
+      void qc.invalidateQueries({ predicate: (q) => q.queryKey[0] !== qk.desktop[0] });
+    },
+  });
+  return { add, regenerate, revoke, enableMcp };
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Agent } from './api';
-import { TOKEN_ENV, agentConfig, agentNameProblem, mcpUrl, sortAgents } from '../web/src/lib/agents';
+import { TOKEN_ENV, agentConfig, agentNameProblem, agentTokenProblem, generateAgentToken, mcpUrl, sortAgents } from '../web/src/lib/agents';
 
 const agent = (id: number, name: string, o: Partial<Agent> = {}): Agent =>
   ({ id, name, tokenPrefix: 'ghd_abcd', createdAt: '2026-09-01T00:00:00.000Z', lastUsedAt: null, revokedAt: null, builtIn: false, ...o });
@@ -29,6 +29,8 @@ describe('Settings → Agents', () => {
       agent(4, 'old', { revokedAt: '2026-09-05T00:00:00.000Z', tokenPrefix: null }),
     ];
     expect(sortAgents(list).map((a) => a.id)).toEqual([3, 2, 4, 1]);
+    // The built-in agent after the ones you added.
+    expect(sortAgents([...list, agent(5, 'Agent', { builtIn: true, tokenPrefix: null })]).map((a) => a.id)).toEqual([3, 2, 5, 4, 1]);
   });
 
   it("asks for a name no agent has", () => {
@@ -41,5 +43,19 @@ describe('Settings → Agents', () => {
     expect(agentNameProblem('42', list)).toBe('Not only digits (those are ids)');
     expect(agentNameProblem('R2D2', list)).toBeNull();
     expect(agentNameProblem(' Codex ', list)).toBeNull();
+    expect(agentNameProblem('agent', list)).toMatch(/built-in agent/);
+  });
+
+  it('generates tokens shaped like the server’s, and checks one the user typed as the server does', () => {
+    const a = generateAgentToken();
+    expect(a).toMatch(/^ghd_[A-Za-z0-9_-]{43}$/);
+    expect(generateAgentToken()).not.toBe(a);
+    expect(generateAgentToken((b) => b.fill(255))).toBe(`ghd_${'_'.repeat(42)}8`);
+    expect(agentTokenProblem(a)).toBeNull();
+    expect(agentTokenProblem('my-own-agent-token-0123456789')).toBeNull();
+    expect(agentTokenProblem('short')).toBe('24 to 256 characters');
+    expect(agentTokenProblem('y'.repeat(257))).toBe('24 to 256 characters');
+    expect(agentTokenProblem('with a space in the middle of it')).toBe('Printable ASCII without spaces');
+    expect(agentTokenProblem('ünïcode-token-000000000000')).toBe('Printable ASCII without spaces');
   });
 });

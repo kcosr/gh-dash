@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link, useLocation } from 'react-router';
 import type { Settings } from '../../../shared/api';
 import { useApiBase, useClearDiffCache, useDiffCacheStats, usePatchSettings, useSettings, useSyncStatus, useWorkSources } from '../api/hooks';
+import { useDesktop } from '../api/desktop';
 import { useSyncNow } from '../components/TopBar';
 import { ChipsInput } from '../components/ChipsInput';
 import { Icon } from '../components/Icon';
@@ -21,7 +22,7 @@ import { TrackedSection } from './SettingsTracked';
 /** A link to this API from outside the app; disabled with a hint while the Local API is off. */
 function ApiButton({ href, icon, children }: { href: string | null; icon: IconName; children: string }) {
   if (href) return <a className="btn" href={href} target="_blank" rel="noopener noreferrer"><Icon name={icon} />{children}</a>;
-  return <button type="button" className="btn" disabled title="Turn on the Local API below (Instance)"><Icon name={icon} />{children}</button>;
+  return <button type="button" className="btn" disabled title="Turn on the Local API's REST API below (Instance)"><Icon name={icon} />{children}</button>;
 }
 
 /** The editable part of Settings: what the form holds and what PATCH sends (never myEmailsFromEnv). */
@@ -142,6 +143,7 @@ export function SettingsView() {
   const st = status.data;
   const repoLabel = useRepoLabel();
   const apiBase = useApiBase();
+  const desktopState = useDesktop().state;
   const docsUrl = apiLink(apiBase, '/api/docs');
   const openapiUrl = apiLink(apiBase, '/api/v1/openapi.json');
   const unreachable = !st && status.isError;
@@ -263,7 +265,10 @@ export function SettingsView() {
                 <li><a href={openapiUrl} target="_blank" rel="noopener noreferrer">{openapiUrl}</a> · OpenAPI 3.1 document</li>
               </ul>
             ) : (
-              <p className="muted">The Local API is off, so browsers, curl and scripts can't reach it. Turn it on under <Link to={{ hash: 'instance' }}>Instance</Link>.</p>
+              <p className="muted">
+                {desktopState?.config.listen ? "The Local API's REST API is off" : 'The Local API is off'}, so browsers, curl and scripts can't reach it. Turn it on
+                under <Link to={{ hash: 'instance' }}>Instance</Link>.
+              </p>
             )}
           </section>
         </div>

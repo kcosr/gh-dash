@@ -245,18 +245,25 @@ and leave annotations for you to pick up. Comments live in gh-dash only; agents,
 of gh-dash, never change anything on GitHub or GitLab. Each agent has a name and a token. What
 it writes, resolves or reopens is shown as its own, in the diff, the Comments tab and Activity.
 
-In the desktop app, **Settings → Agents → Add agent** shows the new token once, with the MCP
-address and the configuration to paste into the agent. Agents connect through the **Local
-API**, so turn it on in **Settings**; the address is `http://127.0.0.1:4780/mcp` (with the
-Local API's port). For the headless server, use the `agents` command, which opens the same
-database as the server (`GH_DASH_DB`, `config.json`), whether or not it is running:
+In the desktop app, **Settings → Agents → Add agent** takes a name and a token (generated, or
+one of your own: 24–256 printable characters without spaces) and shows the token once, with the
+MCP address and the configuration to paste into the agent. Agents connect through the **Local
+API**'s MCP switch (see [Desktop app](#desktop-app)): the address is `http://127.0.0.1:4780/mcp`
+(with the Local API's port). When MCP is off, **Turn on MCP** there (or adding an agent) turns it
+on, with the Local API for agents alone if it was off. For the headless server, use the `agents`
+command, which opens the same database as the server (`GH_DASH_DB`, `config.json`), whether or
+not it is running:
 
 ```sh
 node dist/server/index.mjs agents add Claude       # prints the token, once
 node dist/server/index.mjs agents list
 node dist/server/index.mjs agents regenerate Claude
 node dist/server/index.mjs agents revoke Claude    # its comments stay
+printf '%s\n' "$MY_TOKEN" | node dist/server/index.mjs agents add Codex --token-stdin   # a token of your own
 ```
+
+A token of your own is read from stdin, never from the command line, where other users could see
+it (`ps`).
 
 The address is the server's own followed by `/mcp` (`http://127.0.0.1:4780/mcp` by default).
 For Claude Code (`-s user` makes it available in every project):
@@ -352,11 +359,25 @@ data. `GITLAB_TOKEN` in the app's environment is one more way to sign a source i
 before sending it to that address, and it is never any source's token by default. The app writes
 the sources to its `config.json`; the tokens themselves never go there, nor to the database.
 
-**Local API.** Turn it on in **Settings** to reach the API from browsers, curl and scripts
-(`/api/docs`). It listens on `127.0.0.1` only, unless you allow other devices on the network,
-which requires a password. Add an API key for scripts, and list any host names other than
-`localhost` and IP addresses under allowed hosts. If its port is taken when the app starts, the
-app offers to turn the Local API off.
+**Local API.** A port on this computer (4780 unless you change it), off until you turn it on in
+**Settings → Instance**. It has two switches, each with its own access rules:
+
+- **REST API**: the API for browsers, curl and scripts (`/api/docs`), and the dashboard in a
+  browser. It listens on `127.0.0.1` only, unless you allow other devices on the network, which
+  requires a password. Without a password any program on this computer can use it: set one to
+  require a sign-in. Add an API key for scripts, and list any host names other than `localhost`
+  and IP addresses under allowed hosts.
+- **MCP for agents**: `/mcp` (see [Agents](#agents-mcp)). **Require agent tokens** is on by
+  default: each agent sends its own. Turned off, a request without a token writes as the built-in
+  agent **Agent** (a request that sends a token still needs a valid one); that is only allowed
+  while the port serves this computer alone, so allowing other devices turns tokens back on.
+
+With the REST API off the port serves agents alone, on `127.0.0.1`, and answers everything but
+`/mcp` and `/api/health` with a 404; with MCP off, `/mcp` answers 404. A Local API turned on
+before these switches existed keeps serving both, with tokens required. If its port is taken
+when the app starts, the app offers to turn the Local API off. (A headless server always serves
+both, and always requires agent tokens: the switches are the desktop app's, in its
+`config.json` as `restApi`, `mcp` and `mcpRequireTokens`.)
 
 **Linux.** When `/dev/shm` is smaller than 512 MB, as in many containers, the app passes
 `--disable-dev-shm-usage` to Chromium itself. The AppImage needs FUSE; without it, run it with

@@ -31,7 +31,7 @@ export interface ThreadRow {
   snippet: string | null;
   status: ThreadStatus;
   resolved_at: string | null;
-  /** Who resolved it (schema v8 on); null while open, and for threads resolved before it was recorded. */
+  /** Who resolved it; null while open (v8 attributed the threads resolved before it to the dashboard user). */
   resolved_by: number | null;
   created_at: string;
   updated_at: string;
@@ -210,12 +210,15 @@ export const mayEdit = (actor: Principal, authorId: number): boolean => actor.id
  */
 export const mayDelete = (actor: Principal, authorId: number): boolean => actor.kind === 'self' || actor.id === authorId;
 
-/** Changes a comment's words, as `actor` (its author: the caller checks). null when there is no such comment. */
+/**
+ * Changes a comment's words, as `actor` (its author: the caller checks). The same words again change nothing, and
+ * record nothing. null when there is no such comment.
+ */
 export function editComment(db: Db, id: number, body: string, actor: Principal, now = nowIso()): CommentThread | null {
   const ref = getCommentRef(db, id);
   if (!ref) return null;
   db.tx(() => {
-    db.run('UPDATE comments SET body = ?, edited_at = ? WHERE id = ?', [body, now, id]);
+    if (!db.run('UPDATE comments SET body = ?, edited_at = ? WHERE id = ? AND body <> ?', [body, now, id, body]).changes) return;
     touch(db, ref.threadId, now);
     logEvent(db, actor, 'edited', ref.threadId, id, body, now);
   });
@@ -225,6 +228,9 @@ export function editComment(db: Db, id: number, body: string, actor: Principal, 
 /**
  * Deletes a comment. The first comment is the thread's opening statement: deleting it deletes the whole thread,
  * replies included (thread null), rather than leaving replies to nothing. null when there is no such comment.
+ *
+ * Deleted words go from the event log too: the log keeps who deleted what, where and when, but no event of the comment
+ * (its reply, its edits, the delete) keeps its text.
  */
 export function deleteComment(db: Db, id: number, actor: Principal, now = nowIso()): { thread: CommentThread | null } | null {
   const ref = getCommentRef(db, id);
@@ -234,8 +240,9 @@ export function deleteComment(db: Db, id: number, actor: Principal, now = nowIso
     return { thread: null };
   }
   db.tx(() => {
-    const body = db.get<{ body: string }>('SELECT body FROM comments WHERE id = ?', [id])!.body;
-    logEvent(db, actor, 'comment_deleted', ref.threadId, id, body, now);
+    logEvent(db, actor, 'comment_deleted', ref.threadId, id, null, now);
+    // By thread first: comment_events_thread finds them.
+    db.run('UPDATE comment_events SET excerpt = NULL WHERE thread_id = ? AND comment_id = ?', [ref.threadId, id]);
     db.run('DELETE FROM comments WHERE id = ?', [id]);
     touch(db, ref.threadId, now);
   });
@@ -258,11 +265,15 @@ export function setThreadStatus(db: Db, id: number, status: ThreadStatus, actor:
   return getThread(db, id);
 }
 
-/** Deletes a thread and its comments, as `actor`; false when it doesn't exist. */
+/**
+ * Deletes a thread and its comments, as `actor`; false when it doesn't exist. Every event of the thread loses its text
+ * (as deleteComment's do): the log keeps what happened, not what was said.
+ */
 export function deleteThread(db: Db, id: number, actor: Principal, now = nowIso()): boolean {
   return db.tx(() => {
     if (!db.get('SELECT 1 FROM comment_threads WHERE id = ?', [id])) return false;
-    logEvent(db, actor, 'thread_deleted', id, null, firstBody(db, id), now);
+    logEvent(db, actor, 'thread_deleted', id, null, null, now);
+    db.run('UPDATE comment_events SET excerpt = NULL WHERE thread_id = ?', [id]);
     return db.run('DELETE FROM comment_threads WHERE id = ?', [id]).changes > 0;
   });
 }

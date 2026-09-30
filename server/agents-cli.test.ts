@@ -94,12 +94,13 @@ describe('gh-dash agents', () => {
     expect(await run('add', 'You')).toMatchObject({ code: 1, err: expect.stringContaining('"You" is the dashboard user') });
     expect(await run('revoke', 'nobody')).toMatchObject({ code: 1, err: 'gh-dash: No agent is called or numbered nobody (see: gh-dash agents list)' });
     expect(await run('regenerate', '1')).toMatchObject({ code: 1, err: expect.stringContaining('No agent is called or numbered 1') });
-    for (const args of [[], ['add'], ['add', 'a', 'b'], ['add', '  '], ['revoke'], ['list', 'x'], ['remove', 'Claude']]) {
+    for (const args of [[], ['add'], ['add', 'a', 'b'], ['add', '  '], ['add', '--help'], ['add', '-h'], ['revoke', '--help'], ['revoke'], ['list', 'x'], ['remove', 'Claude']]) {
       const res = await run(...args);
       expect([args, res.code, res.out]).toEqual([args, 2, '']);
       expect(res.err).toContain('Usage: gh-dash agents <command>');
     }
     expect(await run('--help')).toMatchObject({ code: 0, out: expect.stringContaining('Usage: gh-dash agents <command>'), err: '' });
+    expect((await run('list')).out).not.toContain('--help');
   });
 
   it('reports a config it cannot read', async () => {

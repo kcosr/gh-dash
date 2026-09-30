@@ -78,6 +78,14 @@ describe('commentExcerpt', () => {
     expect(commentExcerpt('  \r\n  ')).toBe('');
   });
 
+  it('stays quick on bodies made to be slow to parse', () => {
+    for (const body of ['['.repeat(65_536), '!['.repeat(32_768), '<!--'.repeat(16_384), `${'a '.repeat(30_000)}[x](y)`]) {
+      const t0 = performance.now();
+      expect(commentExcerpt(body).length).toBeLessThanOrEqual(280);
+      expect(performance.now() - t0).toBeLessThan(100);
+    }
+  });
+
   it('cuts at 280 characters with an ellipsis, never inside a character', () => {
     expect(commentExcerpt('x'.repeat(280))).toBe('x'.repeat(280));
     expect(commentExcerpt('x'.repeat(281))).toBe(`${'x'.repeat(279)}…`);

@@ -4,7 +4,7 @@
 // committed, the bus hears of it (GET /stream tells the windows, wait_for_reply wakes up).
 
 import { z } from 'zod';
-import type { CommentEventKind, CommentThread, Principal, ProviderKind, ThreadAnchor, ThreadStatus } from '../../shared/api';
+import type { CommentEventKind, CommentThread, NewPrThread, NewThread, Principal, ProviderKind, ThreadAnchor, ThreadStatus } from '../../shared/api';
 import type { CommentBus } from '../comments/bus';
 import * as store from '../db/comments';
 import type { ThreadTarget } from '../db/comments';
@@ -14,7 +14,10 @@ import { HttpError, parseWith } from '../lib/errors';
 
 export interface CommentDeps {
   db: Db;
-  /** Told of every write once it has committed. Absent: nobody listens (tests, one-off tools). */
+  /**
+   * Told of every write once it has committed. Pass the server's (AppDeps.bus) so windows and waiting agents hear of
+   * it; absent only where nobody could listen (tests, one-off tools).
+   */
   bus?: CommentBus;
 }
 
@@ -81,10 +84,8 @@ const statusValue = z.enum(['open', 'resolved']);
 /** PATCH /threads/:id's request body. */
 export const statusBody = z.object({ status: statusValue }).strict();
 
-/** POST /prs/:repo/:number/threads's body (validated here: the anchor's fields, the body, the full head SHA). */
-export type NewPrThread = z.input<typeof prThreadBody>;
-/** POST /commits/:repo/:oid/threads's body. */
-export type NewThread = z.input<typeof commitThreadBody>;
+// The request bodies (shared/api.ts), validated here: the anchor's fields, the body, the full head SHA.
+export type { NewPrThread, NewThread };
 
 /** What a thread is on, by repo key: a PR by number, or a commit by full oid. */
 export type TargetRef = { repo: string; kind: 'pr'; number: number } | { repo: string; kind: 'commit'; oid: string };
@@ -225,13 +226,14 @@ function liveComment(db: Db, id: number): store.CommentRef {
   return ref;
 }
 
-/** Changes a comment's words: its author's only (403). */
+/** Changes a comment's words: its author's only (403). The same words again change nothing, and nobody is told. */
 export function editComment(deps: CommentDeps, actor: Principal, commentId: number, body: string): CommentThread {
   const { body: text } = parseWith(replyBody, { body });
   const comment = liveComment(deps.db, commentId);
   if (!store.mayEdit(actor, comment.authorId)) throw new HttpError(403, 'You can only edit your own comments');
+  const was = deps.db.get<{ body: string }>('SELECT body FROM comments WHERE id = ?', [commentId])?.body;
   const thread = found(store.editComment(deps.db, commentId, text, actor), 'Comment');
-  announce(deps, thread, 'edited', actor);
+  if (was !== text) announce(deps, thread, 'edited', actor);
   return thread;
 }
 

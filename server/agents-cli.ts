@@ -41,7 +41,8 @@ export async function runAgentsCommand(args: string[], io: CliIo = { out: consol
     const open = () => (opened.db ??= openDb(config.dbPath, { allowDestructiveMigrations: config.syncEnabled }));
     const mcpUrl = `${localApiUrl(config.host, config.port)}/mcp`;
     const one = (what: string): string => {
-      if (rest.length !== 1 || !rest[0]!.trim()) throw new UsageError(`agents ${command} takes one ${what}`);
+      // `add --help` is a question, not an agent called "--help".
+      if (rest.length !== 1 || !rest[0]!.trim() || rest[0]!.startsWith('-')) throw new UsageError(`agents ${command} takes one ${what}`);
       return rest[0]!;
     };
     const agentBy = (idOrName: string): Agent => {

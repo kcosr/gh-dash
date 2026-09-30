@@ -15,7 +15,7 @@ import { hasBlockingLayer, isTypingTarget } from '../lib/layers';
 import { sortAgents } from '../lib/agents';
 import { plainPreview } from '../lib/markdown';
 import { fmtDateTime, plural, rel } from '../lib/time';
-import { groupThreads, threadTarget, withHeld } from '../lib/threadList';
+import { groupThreads, threadTarget, threadView, withHeld } from '../lib/threadList';
 import type { ThreadGroupOf } from '../lib/threadList';
 import { useUrlState } from '../lib/urlState';
 import type { ThreadAuthor, ThreadGroup, ThreadOrder } from '../lib/urlState';
@@ -129,13 +129,16 @@ export function CommentsView() {
     if (!open && document.activeElement?.closest(`#cv-conv-${id}`)) rowButton(id)?.focus({ preventScroll: true });
   }, []);
 
-  /** The diff opens from the row's own button, so closing it hands focus back there (DiffView). */
+  /**
+   * The diff opens from the row's own button, so closing it hands focus back there (DiffView). It opens where the thread
+   * is shown (threadView): a branch thread of an earlier line of work is on the merged PR that ended it.
+   */
   const openDiff = useCallback((t: ThreadListItem) => {
     const i = rows.findIndex((r) => r.id === t.id);
     if (i >= 0) setCursor({ id: t.id, index: i });
     const btn = rowButton(t.id);
     if (btn && document.activeElement !== btn) btn.focus({ preventScroll: true });
-    set({ diff: threadTarget(t), thread: t.id });
+    set({ diff: threadView(t), thread: t.id });
   }, [rows, set]);
 
   const toggleStatus = useCallback(async (t: ThreadListItem) => {
@@ -148,7 +151,7 @@ export function CommentsView() {
         await qc.ensureQueryData(othersQuery);
         setHeld((h) => (h.key === key && !h.ids.has(t.id) ? { key, ids: new Set(h.ids).add(t.id) } : h));
       }
-      const next = await threadActions(qc, threadTarget(t)).setStatus(t.id, status);
+      const next = await threadActions(qc, threadView(t)).setStatus(t.id, status);
       // The new status at once, in every list that has the thread; their refetch (threadActions) settles them.
       patchThreadLists(qc, next);
       toast(status === 'resolved' ? 'Resolved' : 'Reopened');
@@ -330,7 +333,7 @@ export function CommentsView() {
               {groups.map((g) => (
                 <section key={g.key} aria-label={s.threadGroup === 'target' ? targetText(g.items[0]!, label, providerOf) : s.threadGroup === 'repo' ? label(g.key) : undefined}>
                   {s.threadGroup === 'target' ? (
-                    <TargetHeader g={g} status={s.status} onDiff={() => set({ diff: g.key, thread: null })} onDetails={() => set({ pr: g.key })} />
+                    <TargetHeader g={g} status={s.status} onDiff={() => set({ diff: groupView(g), thread: null })} onDetails={() => set({ pr: g.key })} />
                   ) : s.threadGroup === 'repo' ? (
                     <div className="group-h">
                       <span className="gt"><RepoChip repo={g.key} className="repo-ref" /></span>
@@ -413,6 +416,15 @@ const listWords = (parts: (string | 0 | false)[]) => {
   return w.length > 1 ? `${w.slice(0, -1).join(', ')} and ${w[w.length - 1]}` : w.join('');
 };
 
+/**
+ * The diff a group's header opens: its own target's, unless every thread in it is shown elsewhere, by one diff (a
+ * branch's threads all from a line of work a merged PR ended).
+ */
+function groupView(g: ThreadGroupOf<ThreadListItem>): string {
+  const views = new Set(g.items.map(threadView));
+  return views.size === 1 ? [...views][0]! : g.key;
+}
+
 /** "3 threads · 1 unresolved": the unresolved part when it says something the status filter doesn't. */
 function groupCount(g: ThreadGroupOf<ThreadListItem>, status: ThreadStatusFilter) {
   const n = g.items.length;
@@ -437,7 +449,7 @@ function TargetHeader({ g, status, onDiff, onDetails }: { g: ThreadGroupOf<Threa
           <Icon name={state ? prIconName({ state, isDraft: false }) : pr ? 'prOpen' : branch ? 'branch' : 'commit'} />
         </span>
         <RepoChip repo={t.repo} />
-        <button type="button" className="cv-target" data-diff={g.key} onClick={onDiff} title={`${title} · open the diff`}>
+        <button type="button" className="cv-target" data-diff={groupView(g)} onClick={onDiff} title={`${title} · open the diff`}>
           {!branch && <span className="num">{refOf(t, providerOf)}</span>}
           <span className={cx('cv-title', !branch && !t.targetTitle && 'muted')}>{title}</span>
         </button>
@@ -490,7 +502,7 @@ const Row = memo(function Row({ t, on, cursor, open, me, onOpen, onToggle, onSta
         onClick={() => onToggle(t.id, !open)}>
         <Icon name={open ? 'chevron' : 'chevronRight'} />
       </button>
-      <ThreadRow thread={t} onOpen={() => onOpen(t)} data-diff={threadTarget(t)} aria-label={aria} onFocus={() => onFocus(t.id)} onKeyDown={keepSpace} onKeyUp={keepSpace}
+      <ThreadRow thread={t} onOpen={() => onOpen(t)} data-diff={threadView(t)} aria-label={aria} onFocus={() => onFocus(t.id)} onKeyDown={keepSpace} onKeyUp={keepSpace}
         before={on && (
           <span className="cv-on" title={t.kind === 'branch' ? targetText(t, label, providerOf) : t.targetTitle ?? undefined}>
             {on === 'repo' && <span className="r">{label(t.repo)}</span>}
@@ -540,7 +552,7 @@ function Conversation({ id, t, me, onOpen, onStatus }: { id: string; t: ThreadLi
           onClick={() => { setBusy(true); void onStatus(t).finally(() => setBusy(false)); }}>
           <Icon name={resolved ? 'comment' : 'check'} />{resolved ? 'Reopen' : 'Resolve'}
         </button>
-        <button type="button" className="btn sm" data-diff={threadTarget(t)} onClick={() => onOpen(t)} title="Open the diff at this thread, to reply (Enter)">
+        <button type="button" className="btn sm" data-diff={threadView(t)} onClick={() => onOpen(t)} title="Open the diff at this thread, to reply (Enter)">
           <Icon name="diff" />Open in diff
         </button>
       </div>

@@ -4,7 +4,7 @@ import { api } from '../web/src/api/client';
 import { exportTarget, exportUrl, tabCountParams, threadCountParams, threadListParams } from '../web/src/lib/apiQuery';
 import { viewHref } from '../web/src/lib/contexts';
 import type { Places } from '../web/src/lib/contexts';
-import { byFileOrder, groupThreads, sortThreads, threadTarget, withHeld } from '../web/src/lib/threadList';
+import { byFileOrder, groupThreads, sortThreads, threadTarget, threadView, withHeld } from '../web/src/lib/threadList';
 import { carrySearch, defaultsFor, parseUrlState, patchSearch, viewFromPath } from '../web/src/lib/urlState';
 
 describe('Comments URL state', () => {
@@ -158,6 +158,21 @@ describe('Comments grouping and order', () => {
     expect(threadTarget(item({ kind: 'branch', number: null, branch: 'fix/a#1', at: 0 }))).toBe('alice/app~fix/a#1');
     // A PR's thread from a branch is still the PR's.
     expect(threadTarget(item({ number: 3, branch: 'fix/a', at: 0 }))).toBe('alice/app#3');
+  });
+
+  it('opens a thread where it is shown: a branch thread of an earlier line of work at the merged PR that ended it', () => {
+    const current = item({ kind: 'branch', number: null, branch: 'fix/a', view: { kind: 'branch', branch: 'fix/a' }, at: 0 });
+    const earlier = item({ kind: 'branch', number: null, branch: 'fix/a', view: { kind: 'pr', number: 7 }, at: 0 });
+    expect(threadView(current)).toBe('alice/app~fix/a');
+    expect(threadView(earlier)).toBe('alice/app#7');
+    // Grouped by its own target all the same.
+    expect(threadTarget(earlier)).toBe('alice/app~fix/a');
+    expect(groupThreads([current, earlier], 'target', 'recent').map((g) => g.key)).toEqual(['alice/app~fix/a']);
+    expect(threadView(item({ kind: 'commit', number: null, commitOid: commit, view: { kind: 'commit', oid: commit }, at: 0 }))).toBe(`alice/app@${commit}`);
+    expect(threadView(t.a1)).toBe('alice/app#1');
+    // An older server's item, without a view: its own target.
+    const { view: _, ...old } = earlier;
+    expect(threadView(old as typeof earlier)).toBe('alice/app~fix/a');
   });
 
   it("groups a branch's threads under the branch, apart from the PRs from it", () => {

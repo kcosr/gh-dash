@@ -19,3 +19,13 @@ export function isBranchName(name: string): boolean {
   if (name.startsWith('-') || name.startsWith('/') || name.endsWith('/') || name.endsWith('.')) return false;
   return name.split('/').every((part) => !part.startsWith('.') && !part.endsWith('.lock'));
 }
+
+/**
+ * Whether `q` can narrow a branch list (GET /branches/:repo's `q`, which the code host matches anywhere in a name): so
+ * not a whole name's rules ("feature/" and "/login" are fine), only the list's: not blank, and once trimmed at most
+ * MAX_BRANCH_CHARS long, with no control characters.
+ */
+export function isBranchQuery(q: string): boolean {
+  const t = q.trim();
+  return t.length > 0 && t.length <= MAX_BRANCH_CHARS && !/[\x00-\x1f\x7f]/.test(t);
+}

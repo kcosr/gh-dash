@@ -2,7 +2,7 @@
 // the commit), as the diff viewer places them. Diffs come from the diff service's cache or the code host, for at most
 // MAX_TARGETS targets per call and under a deadline; the rest, and any that fail, are `unknown`.
 
-import type { CommentThread } from '../../shared/api';
+import type { CommentThread, ThreadView } from '../../shared/api';
 import { createPlacer, type ThreadPlacement } from '../../shared/comment-placement';
 import { HttpError } from '../lib/errors';
 import { type DiffTarget, loadDiff } from './diffs';
@@ -39,13 +39,18 @@ export function compactPlacement(p: ThreadPlacement): Placement {
   }
 }
 
-/** The diff a thread was made on: its PR's head, its branch's, or the commit itself. */
-const targetOf = (t: CommentThread): DiffTarget =>
-  t.kind === 'pr'
-    ? { repo: t.repo, kind: 'pr', number: t.number! }
-    : t.kind === 'branch'
-      ? { repo: t.repo, kind: 'branch', branch: t.branch! }
-      : { repo: t.repo, kind: 'commit', oid: t.commitOid };
+/** A thread, with the diff that shows it when that is known (ThreadListItem.view, viewOfThread). */
+export type PlaceableThread = CommentThread & { view?: ThreadView };
+
+/**
+ * The diff a thread is shown on: its `view` when it has one (a branch thread of an earlier line of work is shown by the
+ * merged PR that ended it), else its own PR's head, its branch's, or the commit itself.
+ */
+const targetOf = (t: PlaceableThread): DiffTarget => {
+  const on: ThreadView = t.view ?? (t.kind === 'pr' ? { kind: 'pr', number: t.number! } : t.kind === 'branch' ? { kind: 'branch', branch: t.branch! } : { kind: 'commit', oid: t.commitOid });
+  if (on.kind === 'pr') return { repo: t.repo, kind: 'pr', number: on.number };
+  return on.kind === 'branch' ? { repo: t.repo, kind: 'branch', branch: on.branch } : { repo: t.repo, kind: 'commit', oid: on.oid };
+};
 const keyOf = (t: DiffTarget) => (t.kind === 'pr' ? `pr ${t.repo}#${t.number}` : t.kind === 'branch' ? `branch ${t.repo}~${t.branch}` : `commit ${t.repo}@${t.oid}`);
 
 /** A target with a view that lists more than its own threads: a PR, or a branch. */
@@ -59,12 +64,12 @@ export type ViewTarget = Extract<DiffTarget, { kind: 'pr' | 'branch' }>;
  */
 export async function placeThreads(
   deps: McpDeps,
-  threads: readonly CommentThread[],
+  threads: readonly PlaceableThread[],
   signal: AbortSignal,
   opts: { against?: ViewTarget; maxTargets?: number; waitMs?: number } = {},
 ): Promise<Map<number, Placement>> {
   const out = new Map<number, Placement>();
-  const groups = new Map<string, { target: DiffTarget; threads: CommentThread[] }>();
+  const groups = new Map<string, { target: DiffTarget; threads: PlaceableThread[] }>();
   for (const t of threads) {
     if (t.path === null) {
       out.set(t.id, { kind: 'target' });
@@ -79,7 +84,7 @@ export async function placeThreads(
   const max = opts.maxTargets ?? MAX_TARGETS;
   await Promise.all(
     [...groups.values()].map(async ({ target, threads: group }, i) => {
-      let place: (t: CommentThread) => Placement;
+      let place: (t: PlaceableThread) => Placement;
       if (i >= max) {
         place = () => ({ kind: 'unknown', reason: `not checked: more than ${max} PRs, branches and commits in one call` });
       } else {

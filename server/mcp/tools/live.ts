@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { ShowTarget, StreamMessage } from '../../../shared/api';
 import { type CommentEventItem, commentEventsAfter, lastCommentEventId } from '../../db/comment-events';
+import { viewOfThread } from '../../db/comments';
 import type { Db } from '../../db/db';
 import { isFullSha } from '../../diff/service';
 import { HttpError } from '../../lib/errors';
@@ -152,7 +153,10 @@ export const show = writeTool({
     let target: ShowTarget;
     if (thread_id !== undefined) {
       const t = comments.getThread(deps, thread_id);
-      const on = t.kind === 'pr' ? { pr: t.number! } : t.kind === 'branch' ? { branch: t.branch! } : { commit: t.commitOid };
+      // Where the thread is shown: its own PR, branch or commit, but a branch thread of an earlier line of work is shown by the
+      // merged PR that ended it, not by the branch's current review.
+      const view = viewOfThread(db, t.id)!;
+      const on = view.kind === 'pr' ? { pr: view.number } : view.kind === 'branch' ? { branch: view.branch } : { commit: view.oid };
       target = { repo: t.repo, ...on, threadId: t.id, ...(t.path ? { path: t.path } : {}) };
     } else {
       const ref = requireRepo(db, repo!);

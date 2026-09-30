@@ -64,13 +64,15 @@ interface Row {
 
 /**
  * The events, each with the place of its thread as a view sees it, for the branch groups' SQL (db/comments.ts), which
- * reads a thread's repo_id, branch and created_at. While the thread exists that is its row's: a sync can take a PR
- * thread's branch away when it learns the PR was merged, and the events written before still carry the branch. Once it is
- * deleted the log's copy is all there is (its branch), and its creation time is that of its first event, written with it.
+ * reads a thread's repo_id, branch and created_at. One place for all of a thread's events, as of the thread's last state:
+ * while it exists, its row's; once it is deleted, that of its last event, thread_deleted, which deleteThread logs from the
+ * row as it was just before (the branch a sync may have taken away or found since: an event's own copy is as of its
+ * writing, and would put a thread's events in another group than its own view had it). Its creation time, once it is
+ * gone, is that of its first event, thread_opened, written with it.
  */
 const GROUPED_EVENTS =
   `(SELECT e.id, e.at, e.actor_id, e.kind, e.repo_id, e.pr_number, e.commit_oid, e.thread_id, e.comment_id, e.path, e.start_line, e.end_line, e.excerpt,
-      CASE WHEN th.id IS NULL THEN e.branch ELSE th.branch END AS branch,
+      CASE WHEN th.id IS NULL THEN (SELECT l.branch FROM comment_events l WHERE l.thread_id = e.thread_id ORDER BY l.id DESC LIMIT 1) ELSE th.branch END AS branch,
       COALESCE(th.created_at, (SELECT f.at FROM comment_events f WHERE f.thread_id = e.thread_id ORDER BY f.id LIMIT 1)) AS created_at
     FROM comment_events e LEFT JOIN comment_threads th ON th.id = e.thread_id)`;
 

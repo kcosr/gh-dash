@@ -2,7 +2,7 @@
 
 import { z } from 'zod';
 import { decodeCursor, encodeCursor } from '../../api/scope';
-import { SELF_PRINCIPAL_ID } from '../../db/comments';
+import { SELF_PRINCIPAL_ID, viewOfThread } from '../../db/comments';
 import { listThreadItems, type ThreadFilter } from '../../db/thread-list';
 import { HttpError } from '../../lib/errors';
 import * as comments from '../../services/comments';
@@ -20,7 +20,8 @@ const ANCHOR_DOC =
 const PLACEMENT_DOC =
   "placement is where it is on the current diff (a PR's or branch's head): line (startLine..endLine; relocated when it was " +
   'made on an earlier push and found again by its text), file, target (the whole PR, branch or commit), outdated (its ' +
-  "file or lines are gone), or unknown (the diff wasn't available).";
+  "file or lines are gone), or unknown (the diff wasn't available). A branch thread made before one of the branch's PRs " +
+  'was merged belongs to that merged PR: its placement is on that PR, and `shownIn` names it.';
 
 export const listThreads = readTool({
   name: 'list_threads',
@@ -99,6 +100,7 @@ export const listThreads = readTool({
           kind: kindOf(t.repo),
           title: t.targetTitle,
           placement: placements.get(t.id)!,
+          view: t.view,
           comments: args.include_comments,
           snippetChars: LIST_SNIPPET_CHARS,
         }),
@@ -116,8 +118,8 @@ export const getThreadTool = readTool({
   description: `One comment thread with its whole conversation (comment ids for edit_comment and delete_comment). ${BY_DOC} ${ANCHOR_DOC} ${PLACEMENT_DOC}`,
   input: z.object({ id: idArg('Thread id') }).strict(),
   run: async ({ id }, { deps, principal, signal }) => {
-    const t = comments.getThread(deps, id);
+    const t = { ...comments.getThread(deps, id), view: viewOfThread(deps.db, id) ?? undefined };
     const placement = (await placeThreads(deps, [t], signal)).get(t.id)!;
-    return threadOut(t, principal, { kind: repoKinds(deps.db)(t.repo), title: targetTitle(deps.db, t), placement, comments: true, snippetChars: null });
+    return threadOut(t, principal, { kind: repoKinds(deps.db)(t.repo), title: targetTitle(deps.db, t), placement, view: t.view, comments: true, snippetChars: null });
   },
 });

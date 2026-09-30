@@ -140,3 +140,35 @@ export function useSourceActions() {
   const chooseTokenFile = useMutation({ mutationFn: (url: string) => need(bridge).chooseTokenFile(url) });
   return { testSource, addSource, setCredential, signOut, remove, locateGlab, chooseTokenFile };
 }
+
+/**
+ * The desktop app's agent actions (Settings → Agents): adding one or making it a new token answers with the token, to
+ * show once; revoking keeps the agent and its comments. Each rejects outside the app. The list is refetched after
+ * each (the stream's `agents` message says so too, to every window).
+ */
+export function useAgentActions() {
+  const bridge = getBridge();
+  const qc = useQueryClient();
+  const changed = () => void qc.invalidateQueries({ queryKey: qk.agents });
+  // MCP turned on restarted the server: everything is asked again, the app's state first.
+  const restarted = () => void qc.invalidateQueries();
+  const add = useMutation({
+    mutationFn: ({ name, token }: { name: string; token?: string }) => need(bridge).addAgent(name, token),
+    onSuccess: (r) => { if (r.enabledMcp) restarted(); },
+    onSettled: changed,
+  });
+  const regenerate = useMutation({
+    mutationFn: ({ id, token }: { id: number; token?: string }) => need(bridge).regenerateAgentToken(id, token),
+    onSettled: changed,
+  });
+  const revoke = useMutation({ mutationFn: (id: number) => need(bridge).revokeAgent(id), onSettled: changed });
+  /** "Turn on MCP": the Local API for agents (its REST API as it was), then everything is asked again. */
+  const enableMcp = useMutation({
+    mutationFn: () => need(bridge).enableMcp(),
+    onSuccess: (state) => {
+      qc.setQueryData(qk.desktop, state);
+      void qc.invalidateQueries({ predicate: (q) => q.queryKey[0] !== qk.desktop[0] });
+    },
+  });
+  return { add, regenerate, revoke, enableMcp };
+}

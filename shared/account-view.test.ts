@@ -5,7 +5,7 @@ import type { DesktopConfig } from './desktop';
 import { tokenResult } from '../web/src/api/desktop';
 import { qk } from '../web/src/api/hooks';
 import {
-  apiLink, authLabel, bridgeError, ghUnavailable, instanceForm, instancePatch, instanceProblems, parseHosts, resolveApiBase,
+  apiLink, authLabel, bridgeError, ghUnavailable, instanceForm, instancePatch, instanceProblems, parseHosts, resolveApiBase, tokensOptionalProblem,
   settingSource, tokenAccess, tokenExpiry, tokenKindLabel, tokenSourceLabel,
 } from '../web/src/lib/account';
 
@@ -117,7 +117,9 @@ describe('instance settings', () => {
 });
 
 describe('desktop instance form', () => {
-  const cfg: DesktopConfig = { dataDir: '/data', listen: false, network: false, port: 4780, allowedHosts: [], apiKeySet: false, passwordSet: false };
+  const cfg: DesktopConfig = {
+    dataDir: '/data', listen: false, restApi: true, mcp: true, mcpRequireTokens: true, network: false, port: 4780, allowedHosts: [], apiKeySet: false, passwordSet: false,
+  };
 
   it('sends only what changed', () => {
     const f = instanceForm(cfg);
@@ -147,6 +149,25 @@ describe('desktop instance form', () => {
     expect(instanceProblems(withPw, { ...f, network: true })).toEqual({});
     expect(instanceProblems(withPw, { ...f, network: true, password: null }).network).toBeTruthy();
     expect(instanceProblems(cfg, { ...f, dataDir: ' ' }).dataDir).toBeTruthy();
+  });
+
+  it('sends the Local API switches that changed', () => {
+    const f = { ...instanceForm(cfg), listen: true };
+    expect(instancePatch(cfg, { ...f, restApi: false })).toEqual({ listen: true, restApi: false });
+    expect(instancePatch(cfg, { ...f, mcp: false, mcpRequireTokens: false })).toEqual({ listen: true, mcp: false, mcpRequireTokens: false });
+  });
+
+  it('asks for a password and agent tokens only while other devices reach the REST API', () => {
+    const f = { ...instanceForm(cfg), listen: true };
+    // Without the REST API the port serves this computer alone: network is set aside.
+    expect(instanceProblems(cfg, { ...f, restApi: false, network: true })).toEqual({});
+    expect(tokensOptionalProblem({ ...f, restApi: false, network: true })).toBeNull();
+    expect(instanceProblems(cfg, { ...f, mcpRequireTokens: false })).toEqual({});
+    const shared = { ...f, network: true, password: 'long enough' };
+    expect(tokensOptionalProblem(shared)).toMatch(/agents need their tokens/);
+    expect(instanceProblems(cfg, { ...shared, mcpRequireTokens: false }).network).toMatch(/tokens/);
+    // MCP off: its tokens don't matter.
+    expect(instanceProblems(cfg, { ...shared, mcp: false, mcpRequireTokens: false })).toEqual({});
   });
 
   it('normalizes host names and drops invalid ones', () => {

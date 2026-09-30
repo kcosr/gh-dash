@@ -45,6 +45,12 @@ export const threadQuerySchema = scopeSchema
     status: z.enum(['open', 'resolved', 'all']).optional(),
     kind: z.enum(['pr', 'commit', 'all']).optional(),
     sort: z.enum(['recent', 'oldest']).optional(),
+    author: z
+      .string()
+      .refine((v) => v === 'self' || v === 'agents' || /^[1-9]\d{0,15}$/.test(v), "expected self, agents or an agent's id")
+      .transform((v): 'self' | 'agents' | number => (v === 'self' || v === 'agents' ? v : Number(v)))
+      .optional(),
+    waiting: z.enum(['you']).optional(),
   });
 
 export const activityQuerySchema = scopeSchema.extend(pageSchema.shape).extend({

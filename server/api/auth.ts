@@ -6,6 +6,7 @@ import { DESKTOP_HOST, DESKTOP_SECRET_HEADER } from '../../shared/desktop';
 import type { Config } from '../config';
 import type { Db } from '../db/db';
 import { getMeta, setMeta } from '../db/meta';
+import { isMcpPath } from './routes/mcp';
 
 const COOKIE = 'gh_dash_session';
 const SESSION_DAYS = 30;
@@ -174,7 +175,7 @@ let warnedKeyOnly = false;
  *  - GH_DASH_API_KEY: /api/* requires the key (Bearer or X-API-Key) or a UI session cookie. Without a
  *    password, loading any UI page issues the session cookie, so key-only mode is not access control:
  *    anyone who can open the dashboard can use the API through it.
- * /api/health, /api/docs and /api/v1/openapi.json are always open.
+ * /api/health, /api/docs and /api/v1/openapi.json are always open; /mcp has its own auth (agent tokens).
  */
 export function installAuth(app: Hono, db: Db, config: Config): void {
   const { apiKey, password } = config;
@@ -205,7 +206,9 @@ export function installAuth(app: Hono, db: Db, config: Config): void {
 
   app.use('*', async (c, next) => {
     const path = c.req.path;
-    if (OPEN_PATHS.has(path)) return next();
+    // /mcp has its own auth, which the password and API key neither guard nor unlock: an agent's token only (a password
+    // would otherwise redirect it to /login, and key-only mode would hand it a session cookie).
+    if (OPEN_PATHS.has(path) || isMcpPath(path)) return next();
     const isApi = path === '/api' || path.startsWith('/api/');
     if (await hasSession(c, key)) return next();
     if (isApi) {

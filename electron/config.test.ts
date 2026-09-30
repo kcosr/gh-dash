@@ -1,13 +1,13 @@
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { applyDesktopPatch, ConfigInputError, isLoopbackHost, parseDesktopPatch, parseTokenInput, toDesktopConfig } from './config';
+import { applyDesktopPatch, ConfigInputError, enableMcpPatch, isLoopbackHost, parseAgentTokenInput, parseDesktopPatch, parseTokenInput, toDesktopConfig } from './config';
 
 const DEFAULT_DIR = '/home/me/.config/gh-dash-desktop/data';
 
 describe('toDesktopConfig', () => {
   it('maps an empty config.json to the defaults', () => {
     expect(toDesktopConfig({}, DEFAULT_DIR)).toEqual({
-      dataDir: DEFAULT_DIR, listen: false, network: false, port: 4780, allowedHosts: [], apiKeySet: false, passwordSet: false,
+      dataDir: DEFAULT_DIR, listen: false, restApi: true, mcp: true, mcpRequireTokens: true, network: false, port: 4780, allowedHosts: [], apiKeySet: false, passwordSet: false,
     });
   });
 
@@ -16,7 +16,9 @@ describe('toDesktopConfig', () => {
       { db: '/data/gh/gh-dash.db', host: '0.0.0.0', listen: true, port: 4999, allowedHosts: ['box.lan'], apiKey: 'k'.repeat(20), password: 'secret' },
       DEFAULT_DIR,
     );
-    expect(config).toEqual({ dataDir: '/data/gh', listen: true, network: true, port: 4999, allowedHosts: ['box.lan'], apiKeySet: true, passwordSet: true });
+    expect(config).toEqual({
+      dataDir: '/data/gh', listen: true, restApi: true, mcp: true, mcpRequireTokens: true, network: true, port: 4999, allowedHosts: ['box.lan'], apiKeySet: true, passwordSet: true,
+    });
     expect(JSON.stringify(config)).not.toContain('secret');
   });
 
@@ -57,6 +59,79 @@ describe('applyDesktopPatch', () => {
     expect(applyDesktopPatch({ password: 'longenough' }, { network: true, listen: true }, DEFAULT_DIR).host).toBe('0.0.0.0');
     // Off: a hand-edited 0.0.0.0 doesn't block unrelated edits.
     expect(applyDesktopPatch({ host: '0.0.0.0' }, { port: 4800 }, DEFAULT_DIR).port).toBe(4800);
+  });
+});
+
+describe('the Local API switches', () => {
+  it('reads a config from before them as both on, tokens required', () => {
+    expect(toDesktopConfig({ listen: true }, DEFAULT_DIR)).toMatchObject({ listen: true, restApi: true, mcp: true, mcpRequireTokens: true });
+    expect(toDesktopConfig({ listen: true, restApi: false, mcp: true, mcpRequireTokens: false }, DEFAULT_DIR))
+      .toMatchObject({ restApi: false, mcp: true, mcpRequireTokens: false });
+  });
+
+  it('writes each switch the patch names, and nothing else', () => {
+    expect(applyDesktopPatch({ listen: true }, { restApi: false }, DEFAULT_DIR)).toEqual({ listen: true, restApi: false });
+    expect(applyDesktopPatch({ listen: true }, { mcp: false, mcpRequireTokens: false }, DEFAULT_DIR)).toEqual({ listen: true, mcp: false, mcpRequireTokens: false });
+  });
+
+  it('asks for the password only while other devices reach the REST API', () => {
+    // REST API off: the port serves 127.0.0.1 alone, so a network host left in the file needs no password.
+    expect(applyDesktopPatch({ host: '0.0.0.0' }, { listen: true, restApi: false }, DEFAULT_DIR)).toMatchObject({ listen: true, restApi: false });
+    expect(() => applyDesktopPatch({ host: '0.0.0.0', listen: true, restApi: false }, { restApi: true }, DEFAULT_DIR)).toThrow(/password/);
+  });
+
+  it("refuses MCP without tokens while other devices can connect (the server would require them anyway)", () => {
+    const shared = { host: '0.0.0.0', listen: true, password: 'longenough' };
+    expect(() => applyDesktopPatch(shared, { mcpRequireTokens: false }, DEFAULT_DIR)).toThrow(/Require agent tokens/);
+    expect(() => applyDesktopPatch({ listen: true, mcpRequireTokens: false, password: 'longenough' }, { network: true }, DEFAULT_DIR)).toThrow(/Require agent tokens/);
+    // Fine on this computer, with the REST API off (loopback then), or with MCP off.
+    expect(applyDesktopPatch({ listen: true }, { mcpRequireTokens: false }, DEFAULT_DIR).mcpRequireTokens).toBe(false);
+    expect(applyDesktopPatch(shared, { restApi: false, mcpRequireTokens: false }, DEFAULT_DIR)).toMatchObject({ restApi: false, mcpRequireTokens: false });
+    expect(applyDesktopPatch(shared, { mcp: false, mcpRequireTokens: false }, DEFAULT_DIR)).toMatchObject({ mcp: false });
+  });
+
+  it('"Turn on MCP": the port for agents alone when it was off, MCP when it was on, nothing when it is served', () => {
+    const cfg = (file: object) => toDesktopConfig(file, DEFAULT_DIR);
+    expect(enableMcpPatch(cfg({}))).toEqual({ listen: true, restApi: false, mcp: true });
+    expect(enableMcpPatch(cfg({ listen: false, restApi: true }))).toEqual({ listen: true, restApi: false, mcp: true });
+    expect(enableMcpPatch(cfg({ listen: true, mcp: false }))).toEqual({ mcp: true });
+    expect(enableMcpPatch(cfg({ listen: true, restApi: false }))).toEqual({});
+  });
+
+  it('"Turn on MCP" on a port other devices reach: tokens back on, so the patch is one applyDesktopPatch takes', () => {
+    const file = { listen: true, restApi: true, host: '0.0.0.0', password: 'longenough', mcp: false, mcpRequireTokens: false };
+    const patch = enableMcpPatch(toDesktopConfig(file, DEFAULT_DIR));
+    expect(patch).toEqual({ mcp: true, mcpRequireTokens: true });
+    expect(applyDesktopPatch(file, patch, DEFAULT_DIR)).toMatchObject({ mcp: true, mcpRequireTokens: true });
+    // On this computer, or with the REST API off (loopback then), tokens stay as they were.
+    expect(enableMcpPatch(toDesktopConfig({ ...file, host: '127.0.0.1' }, DEFAULT_DIR))).toEqual({ mcp: true });
+    expect(enableMcpPatch(toDesktopConfig({ ...file, restApi: false }, DEFAULT_DIR))).toEqual({ mcp: true });
+  });
+
+  it('parses the switches as booleans', () => {
+    expect(parseDesktopPatch({ restApi: false, mcp: true, mcpRequireTokens: false })).toEqual({ restApi: false, mcp: true, mcpRequireTokens: false });
+    for (const key of ['restApi', 'mcp', 'mcpRequireTokens']) expect(() => parseDesktopPatch({ [key]: 'on' }), key).toThrow(new RegExp(key));
+  });
+});
+
+describe('parseAgentTokenInput', () => {
+  it('passes a token of 24–256 printable ASCII characters without spaces; none means generate one', () => {
+    expect(parseAgentTokenInput(undefined)).toBeUndefined();
+    expect(parseAgentTokenInput(null)).toBeUndefined();
+    const mine = `x${'!~'.repeat(11)}z`;
+    expect(parseAgentTokenInput(mine)).toBe(mine);
+    expect(parseAgentTokenInput('y'.repeat(256))).toBe('y'.repeat(256));
+  });
+
+  it.each([
+    ['y'.repeat(23), /24 to 256/],
+    ['y'.repeat(257), /24 to 256/],
+    ['with a space somewhere in it!', /printable ASCII without spaces/],
+    ['tab\tinside-the-token-000000', /printable ASCII/],
+    ['ünïcode-token-000000000000', /printable ASCII/],
+    [42, /text/],
+  ])('refuses %j', (token, message) => {
+    expect(() => parseAgentTokenInput(token)).toThrow(message);
   });
 });
 

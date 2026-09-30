@@ -125,6 +125,9 @@ export function bridgeError(e: unknown): string {
 export interface InstanceForm {
   dataDir: string;
   listen: boolean;
+  restApi: boolean;
+  mcp: boolean;
+  mcpRequireTokens: boolean;
   network: boolean;
   port: number;
   allowedHosts: string[];
@@ -133,14 +136,28 @@ export interface InstanceForm {
 }
 
 export const instanceForm = (c: DesktopConfig): InstanceForm => ({
-  dataDir: c.dataDir, listen: c.listen, network: c.network, port: c.port, allowedHosts: c.allowedHosts,
+  dataDir: c.dataDir, listen: c.listen, restApi: c.restApi, mcp: c.mcp, mcpRequireTokens: c.mcpRequireTokens, network: c.network, port: c.port,
+  allowedHosts: c.allowedHosts,
 });
+
+/** Other devices reach the port: it listens beyond this computer, which it does only while serving the REST API. */
+export const reachesNetwork = (f: Pick<InstanceForm, 'listen' | 'restApi' | 'network'>) => f.listen && f.restApi && f.network;
+
+/**
+ * Whether MCP may do without agent tokens: only while the port serves this computer alone (the server requires them
+ * otherwise, whatever the setting). The reason when not, for the switch.
+ */
+export const tokensOptionalProblem = (f: Pick<InstanceForm, 'listen' | 'restApi' | 'network'>): string | null =>
+  reachesNetwork(f) ? 'Other devices can connect: agents need their tokens.' : null;
 
 /** Only what changed, for DesktopBridge.updateConfig. */
 export function instancePatch(c: DesktopConfig, f: InstanceForm): DesktopConfigPatch {
   const p: DesktopConfigPatch = {};
   if (f.dataDir !== c.dataDir) p.dataDir = f.dataDir;
   if (f.listen !== c.listen) p.listen = f.listen;
+  if (f.restApi !== c.restApi) p.restApi = f.restApi;
+  if (f.mcp !== c.mcp) p.mcp = f.mcp;
+  if (f.mcpRequireTokens !== c.mcpRequireTokens) p.mcpRequireTokens = f.mcpRequireTokens;
   if (f.network !== c.network) p.network = f.network;
   if (f.port !== c.port) p.port = f.port;
   if (f.allowedHosts.join(',') !== c.allowedHosts.join(',')) p.allowedHosts = f.allowedHosts;
@@ -164,7 +181,8 @@ export function instanceProblems(
   const out: { port?: string; network?: string; dataDir?: string; password?: string } = {};
   if (!f.dataDir.trim()) out.dataDir = 'Choose a data folder.';
   if (f.listen && (!Number.isInteger(f.port) || f.port < 1 || f.port > 65535)) out.port = 'A port from 1 to 65535.';
-  if (f.listen && f.network && !willHavePassword(c, f)) out.network = 'Set a password to allow other devices.';
+  if (reachesNetwork(f) && !willHavePassword(c, f)) out.network = 'Set a password to allow other devices.';
+  if (f.mcp && !f.mcpRequireTokens && tokensOptionalProblem(f)) out.network ??= 'Agents need their tokens while other devices can connect.';
   if (typeof f.password === 'string') {
     if (f.password.length < PASSWORD_MIN || f.password.length > PASSWORD_MAX) out.password = `${PASSWORD_MIN} to ${PASSWORD_MAX} characters.`;
     else if (f.password.trim() !== f.password) out.password = 'No spaces at the start or end.';

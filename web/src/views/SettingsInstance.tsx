@@ -12,7 +12,7 @@ import { ChipsInput } from '../components/ChipsInput';
 import { Icon } from '../components/Icon';
 import { useToast } from '../components/Toasts';
 import {
-  SETTING_ENV, authLabel, bridgeError, instanceForm, instancePatch, instanceProblems, parseHosts, settingSource,
+  SETTING_ENV, authLabel, bridgeError, instanceForm, instancePatch, instanceProblems, parseHosts, settingSource, tokensOptionalProblem, willHavePassword,
 } from '../lib/account';
 import type { InstanceForm, SettingKey } from '../lib/account';
 import { copyText, cx } from '../lib/util';
@@ -36,6 +36,7 @@ function InstanceInfoList({ i }: { i: InstanceInfo }) {
       <dl className="kv">
         <dt>Version</dt><dd>{i.version}{i.desktop && <span className="muted"> · desktop app</span>}</dd>
         <dt>API URL</dt><dd>{i.apiUrl ? <a href={i.apiUrl} target="_blank" rel="noopener noreferrer">{i.apiUrl}</a> : <span className="muted">none</span>}</dd>
+        <dt>MCP URL</dt><dd>{i.mcpUrl ? <code className="path">{i.mcpUrl}</code> : <span className="muted">none</span>}</dd>
         <Row label="Address" k="host" i={i}>{s.host.value}</Row>
         <Row label="Port" k="port" i={i}>{s.port.value}</Row>
         <Row label="Allowed hosts" k="allowedHosts" i={i}>
@@ -65,7 +66,7 @@ function KeyState({ set, pending, onUndo }: { set: boolean; pending: string | nu
 }
 
 /** Desktop app: data folder and Local API, saved to config.json (the background server restarts). */
-function DesktopInstance({ state, apiUrl }: { state: DesktopState; apiUrl: string | null }) {
+function DesktopInstance({ state, apiUrl, mcpUrl }: { state: DesktopState; apiUrl: string | null; mcpUrl: string | null }) {
   const { updateConfig, chooseDataDir, generateApiKey } = useDesktopActions();
   const toast = useToast();
   const cfg = state.config;
@@ -105,7 +106,10 @@ function DesktopInstance({ state, apiUrl }: { state: DesktopState; apiUrl: strin
     onError: (e) => toast(bridgeError(e), { error: true }),
   });
   const copyKey = async () => { if (newKey) toast((await copyText(newKey)) ? 'API key copied' : 'Copy failed'); };
-  const showHosts = form.listen && (form.network || form.allowedHosts.length > 0);
+  const showHosts = form.network || form.allowedHosts.length > 0;
+  const tokensLocked = tokensOptionalProblem(form);
+  // The port as it runs now: the REST API's URL, or MCP's without it.
+  const running = cfg.listen ? (apiUrl ?? mcpUrl?.replace(/\/mcp$/, '') ?? null) : null;
 
   return (
     <form className="set-form" onSubmit={(e) => { e.preventDefault(); save(); }} aria-busy={busy || undefined}>
@@ -121,10 +125,10 @@ function DesktopInstance({ state, apiUrl }: { state: DesktopState; apiUrl: strin
           </span>
         </div>
         <div className="set-row">
-          <label className="set-l" htmlFor="local-api">Local API<small>Serve the API over HTTP for browsers, curl and scripts. Off: nothing listens on the network.</small></label>
+          <label className="set-l" htmlFor="local-api">Local API<small>A port on this computer for browsers, scripts and agents: the REST API and MCP below. Off: nothing listens.</small></label>
           <span className="set-c wrap">
             <input id="local-api" type="checkbox" className="switch" checked={form.listen} onChange={(e) => set({ listen: e.target.checked })} />
-            {cfg.listen && apiUrl && <small className="muted">Running at <a href={apiUrl} target="_blank" rel="noopener noreferrer">{apiUrl}</a></small>}
+            {running && <small className="muted">Listening on {apiUrl ? <a href={apiUrl} target="_blank" rel="noopener noreferrer">{running}</a> : running}</small>}
           </span>
         </div>
         {form.listen && (
@@ -137,58 +141,92 @@ function DesktopInstance({ state, apiUrl }: { state: DesktopState; apiUrl: strin
                 {problems.port && <span className="form-err">{problems.port}</span>}
               </span>
             </label>
-            <label className="set-row">
-              <span className="set-l">Allow other devices<small>Listen on all network interfaces. Needs a password.</small></span>
+            <div className="set-row">
+              <label className="set-l" htmlFor="local-rest">REST API<small>The dashboard in a browser and its JSON API, for curl and scripts.</small></label>
               <span className="set-c stack">
-                <input type="checkbox" className="switch" checked={form.network} onChange={(e) => set({ network: e.target.checked })}
-                  aria-invalid={problems.network ? true : undefined} aria-describedby={problems.network ? 'net-err' : undefined} />
-                {problems.network && <span id="net-err" className="form-err">{problems.network}</span>}
+                <input id="local-rest" type="checkbox" className="switch" checked={form.restApi} onChange={(e) => set({ restApi: e.target.checked })}
+                  aria-describedby={form.restApi && !willHavePassword(cfg, form) ? 'rest-warn' : undefined} />
+                {form.restApi && !willHavePassword(cfg, form) && (
+                  <small id="rest-warn" className="set-warn">Any program on this computer can use the API. Set a password to require a sign-in.</small>
+                )}
+                {!form.restApi && form.mcp && <small className="muted">Off: the port serves agents alone, on this computer only.</small>}
               </span>
-            </label>
-            {showHosts && (
-              <div className="set-row">
-                <span className="set-l">Host names<small>Names other devices use for this computer, e.g. <code>mybox.local</code>. localhost and IP addresses always work.</small></span>
-                <span className="set-c grow">
-                  <ChipsInput value={form.allowedHosts} onChange={(allowedHosts) => set({ allowedHosts })} parse={parseHosts} placeholder="mybox.local" label="Add host name" />
+            </div>
+            {form.restApi && (
+              <>
+                <label className="set-row sub">
+                  <span className="set-l">Allow other devices<small>Listen on all network interfaces. Needs a password.</small></span>
+                  <span className="set-c stack">
+                    <input type="checkbox" className="switch" checked={form.network} onChange={(e) => set({ network: e.target.checked, ...(e.target.checked ? { mcpRequireTokens: true } : {}) })}
+                      aria-invalid={problems.network ? true : undefined} aria-describedby={problems.network ? 'net-err' : undefined} />
+                    {problems.network && <span id="net-err" className="form-err">{problems.network}</span>}
+                  </span>
+                </label>
+                {showHosts && (
+                  <div className="set-row sub">
+                    <span className="set-l">Host names<small>Names other devices use for this computer, e.g. <code>mybox.local</code>. localhost and IP addresses always work.</small></span>
+                    <span className="set-c grow">
+                      <ChipsInput value={form.allowedHosts} onChange={(allowedHosts) => set({ allowedHosts })} parse={parseHosts} placeholder="mybox.local" label="Add host name" />
+                    </span>
+                  </div>
+                )}
+                <div className="set-row sub">
+                  <span className="set-l">Password<small>Browsers ask for it before showing the dashboard.</small></span>
+                  <span className="set-c grow wrap">
+                    <input className={cx('input set-secret', problems.password && 'bad')} type="password" autoComplete="new-password" aria-label={cfg.passwordSet ? 'New password' : 'Password'}
+                      placeholder={form.password === null ? 'Removed when you save' : cfg.passwordSet ? 'Set · type to replace' : 'Not set'} value={form.password ?? ''}
+                      onChange={(e) => set({ password: e.target.value || undefined })} disabled={form.password === null}
+                      aria-invalid={problems.password ? true : undefined} aria-describedby={problems.password ? 'pw-err' : undefined} />
+                    {problems.password && <span id="pw-err" className="form-err">{problems.password}</span>}
+                    {form.password === null && <button type="button" className="btn" onClick={() => set({ password: undefined })}>Undo</button>}
+                    {cfg.passwordSet && form.password === undefined && (
+                      <button type="button" className="btn" onClick={() => set({ password: null })}>Remove</button>
+                    )}
+                  </span>
+                </div>
+                <div className="set-row sub">
+                  <span className="set-l">API key<small>For scripts, sent as a Bearer token. It doesn't protect the dashboard.</small></span>
+                  <span className="set-c grow stack">
+                    {newKey && form.apiKey === newKey ? (
+                      <>
+                        <span className="set-c">
+                          <code className="set-key">{newKey}</code>
+                          <button type="button" className="btn" onClick={copyKey}><Icon name="copy" />Copy</button>
+                        </span>
+                        <small className="muted">Shown only once: copy it now. Click Save to keep it.</small>
+                      </>
+                    ) : (
+                      <span className="set-c wrap">
+                        <KeyState set={cfg.apiKeySet} pending={form.apiKey} onUndo={() => set({ apiKey: undefined })} />
+                        {form.apiKey !== null && (
+                          <button type="button" className="btn" onClick={generate} disabled={generateApiKey.isPending}><Icon name="key" />{cfg.apiKeySet ? 'Generate new' : 'Generate'}</button>
+                        )}
+                        {cfg.apiKeySet && form.apiKey === undefined && <button type="button" className="btn" onClick={() => set({ apiKey: null })}>Remove</button>}
+                      </span>
+                    )}
+                  </span>
+                </div>
+              </>
+            )}
+            <div className="set-row">
+              <label className="set-l" htmlFor="local-mcp">MCP for agents<small><code>/mcp</code> for coding agents (see Agents below).</small></label>
+              <span className="set-c"><input id="local-mcp" type="checkbox" className="switch" checked={form.mcp} onChange={(e) => set({ mcp: e.target.checked })} /></span>
+            </div>
+            {form.mcp && (
+              <div className="set-row sub">
+                <label className="set-l" htmlFor="local-mcp-tokens">Require agent tokens<small>Each agent sends its own. Off: a request without one writes as “Agent”.</small></label>
+                <span className="set-c stack">
+                  <input id="local-mcp-tokens" type="checkbox" className="switch" checked={form.mcpRequireTokens || !!tokensLocked} disabled={!!tokensLocked}
+                    onChange={(e) => set({ mcpRequireTokens: e.target.checked })} aria-describedby={tokensLocked || !form.mcpRequireTokens ? 'tokens-note' : undefined} />
+                  {tokensLocked
+                    ? <small id="tokens-note" className="muted">{tokensLocked}</small>
+                    : !form.mcpRequireTokens && <small id="tokens-note" className="set-warn">Any program on this computer can write comments as “Agent”.</small>}
                 </span>
               </div>
             )}
-            <div className="set-row">
-              <span className="set-l">Password<small>Browsers ask for it before showing the dashboard.</small></span>
-              <span className="set-c grow wrap">
-                <input className={cx('input set-secret', problems.password && 'bad')} type="password" autoComplete="new-password" aria-label={cfg.passwordSet ? 'New password' : 'Password'}
-                  placeholder={form.password === null ? 'Removed when you save' : cfg.passwordSet ? 'Set · type to replace' : 'Not set'} value={form.password ?? ''}
-                  onChange={(e) => set({ password: e.target.value || undefined })} disabled={form.password === null}
-                  aria-invalid={problems.password ? true : undefined} aria-describedby={problems.password ? 'pw-err' : undefined} />
-                {problems.password && <span id="pw-err" className="form-err">{problems.password}</span>}
-                {form.password === null && <button type="button" className="btn" onClick={() => set({ password: undefined })}>Undo</button>}
-                {cfg.passwordSet && form.password === undefined && (
-                  <button type="button" className="btn" onClick={() => set({ password: null })}>Remove</button>
-                )}
-              </span>
-            </div>
-            <div className="set-row">
-              <span className="set-l">API key<small>For scripts, sent as a Bearer token. It doesn't protect the dashboard.</small></span>
-              <span className="set-c grow stack">
-                {newKey && form.apiKey === newKey ? (
-                  <>
-                    <span className="set-c">
-                      <code className="set-key">{newKey}</code>
-                      <button type="button" className="btn" onClick={copyKey}><Icon name="copy" />Copy</button>
-                    </span>
-                    <small className="muted">Shown only once: copy it now. Click Save to keep it.</small>
-                  </>
-                ) : (
-                  <span className="set-c wrap">
-                    <KeyState set={cfg.apiKeySet} pending={form.apiKey} onUndo={() => set({ apiKey: undefined })} />
-                    {form.apiKey !== null && (
-                      <button type="button" className="btn" onClick={generate} disabled={generateApiKey.isPending}><Icon name="key" />{cfg.apiKeySet ? 'Generate new' : 'Generate'}</button>
-                    )}
-                    {cfg.apiKeySet && form.apiKey === undefined && <button type="button" className="btn" onClick={() => set({ apiKey: null })}>Remove</button>}
-                  </span>
-                )}
-              </span>
-            </div>
+            {!form.restApi && !form.mcp && (
+              <p className="set-foot muted">With both off, the port answers nothing but <code>/api/health</code>.</p>
+            )}
           </>
         )}
       </fieldset>
@@ -212,7 +250,7 @@ export function InstanceSection() {
     <section className="card set-sec" id="instance">
       <h2>Instance</h2>
       {bridge ? (
-        state ? <DesktopInstance state={state} apiUrl={state.apiUrl ?? i?.apiUrl ?? null} />
+        state ? <DesktopInstance state={state} apiUrl={state.apiUrl} mcpUrl={state.mcpUrl} />
           : <p className="muted">{loading ? 'Loading…' : "Couldn't read the app's settings."}</p>
       ) : i ? <InstanceInfoList i={i} />
         : inst.isError ? <p className="muted">Couldn't load: {(inst.error as Error).message}</p> : <p className="muted">Loading…</p>}

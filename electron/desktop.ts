@@ -9,9 +9,18 @@ import { accessSync, constants, mkdirSync, rmSync, statSync } from 'node:fs';
 import { basename, isAbsolute } from 'node:path';
 import { isDeepStrictEqual, promisify } from 'node:util';
 import { type ConfigFile, type LoadedConfigFile, readConfigFile, sourceUrl, writeConfigFile } from '../server/config-file';
-import type { AccountStatus, SourceAccount, SourceCheck, TokenChoice } from '../shared/api';
-import type { CredentialDraft, DesktopConfigPatch, DesktopSourceResult, DesktopState, DesktopTokenResult, SourceMethod, SourceTestDraft } from '../shared/desktop';
-import { applyDesktopPatch, ConfigInputError, parseDesktopPatch, toDesktopConfig } from './config';
+import type { AccountStatus, Agent, SourceAccount, SourceCheck, TokenChoice } from '../shared/api';
+import type {
+  CredentialDraft,
+  DesktopAgentToken,
+  DesktopConfigPatch,
+  DesktopSourceResult,
+  DesktopState,
+  DesktopTokenResult,
+  SourceMethod,
+  SourceTestDraft,
+} from '../shared/desktop';
+import { applyDesktopPatch, ConfigInputError, enableMcpPatch, parseAgentTokenInput, parseDesktopPatch, toDesktopConfig } from './config';
 import type { ServerChild, StartResult } from './server-child';
 import {
   addEntry,
@@ -122,6 +131,7 @@ export class Desktop {
       secureStorage: await this.d.tokens.secureStorage(),
       tokenRemembered: this.d.tokens.has(),
       apiUrl: running ? this.d.child.apiUrl : null,
+      mcpUrl: running ? this.d.child.mcpUrl : null,
       serverError: this.d.child.lastError ?? this.configError,
       sources,
       glab: { path: await (this.d.findGlab ?? findGlab)(glabPath).catch(() => null), chosen: glabPath !== null },
@@ -491,36 +501,119 @@ export class Desktop {
   }
 
   // -------------------------------------------------------------------------
+  // Agents (MCP). The child keeps them (its database) and says so to open windows; the token of a new or regenerated
+  // one comes back here once, goes to the renderer to be shown, and is never logged or kept.
+  // -------------------------------------------------------------------------
+
+  /**
+   * Makes an agent (with the token the user chose, or a generated one), then, when the Local API doesn't serve MCP,
+   * turns that on (enableMcpPatch; the server restarts) so the agent can connect: `enabledMcp` says it did.
+   */
+  addAgent(input: unknown, tokenInput?: unknown): Promise<DesktopAgentToken> {
+    if (typeof input !== 'string' || !input.trim()) throw new ConfigInputError('Give the agent a name.');
+    if (input.length > 200) throw new ConfigInputError("That name is too long for an agent's.");
+    const token = parseAgentTokenInput(tokenInput);
+    return this.exclusive(async () => {
+      // What turning MCP on would write, checked before the agent is made: a config.json that can't take it (unreadable,
+      // or refused) stops here, with nothing made.
+      const loaded = this.loadForChange();
+      const patch = enableMcpPatch(toDesktopConfig(loaded.data, this.d.dataDir));
+      if (Object.keys(patch).length) applyDesktopPatch(loaded.data, patch, this.d.dataDir);
+      const made = await this.agentRequest(() => this.d.child.addAgent(input, token));
+      this.d.log(`[agents] added ${made.agent.name} (id ${made.agent.id})`);
+      if (!Object.keys(patch).length) return made;
+      this.d.log('[agents] MCP was off: turning it on for the new agent');
+      // The agent is made: its token goes back whatever happens to the config (the restart failing is reported there).
+      try {
+        const state = await this.applyConfig(patch);
+        return { ...made, enabledMcp: !!state.mcpUrl };
+      } catch (error) {
+        this.d.log(`[agents] could not turn MCP on: ${(error as Error).message}`);
+        return { ...made, enabledMcp: false };
+      }
+    });
+  }
+
+  regenerateAgentToken(input: unknown, tokenInput?: unknown): Promise<DesktopAgentToken> {
+    const id = agentId(input);
+    const token = parseAgentTokenInput(tokenInput);
+    return this.exclusive(async () => {
+      const made = await this.agentRequest(() => this.d.child.regenerateAgentToken(id, token));
+      this.d.log(`[agents] new token for ${made.agent.name} (id ${id})`);
+      return made;
+    });
+  }
+
+  /** Settings → Agents, "Turn on MCP": see enableMcpPatch. Nothing to do: the state as it is. */
+  enableMcp(): Promise<DesktopState> {
+    return this.exclusive(async () => {
+      const patch = enableMcpPatch(toDesktopConfig(this.readConfigForChange(), this.d.dataDir));
+      if (!Object.keys(patch).length) return this.state();
+      this.d.log('[config] turning on MCP for agents');
+      return this.applyConfig(patch);
+    });
+  }
+
+  revokeAgent(input: unknown): Promise<Agent> {
+    const id = agentId(input);
+    return this.exclusive(async () => {
+      const agent = await this.agentRequest(() => this.d.child.revokeAgent(id));
+      this.d.log(`[agents] revoked ${agent.name} (id ${id})`);
+      return agent;
+    });
+  }
+
+  /** The child's refusals (a name taken, no such agent) are the user's to read, not stack traces for the log. */
+  private async agentRequest<T>(fn: () => Promise<T>): Promise<T> {
+    try {
+      return await fn();
+    } catch (error) {
+      throw new ConfigInputError((error as Error).message);
+    }
+  }
+
+  // -------------------------------------------------------------------------
   // config.json
   // -------------------------------------------------------------------------
 
   async updateConfig(input: unknown): Promise<DesktopState> {
     const patch = parseDesktopPatch(input);
-    return this.exclusive(async () => {
-      let loaded;
-      try {
-        loaded = readConfigFile(this.d.configPath);
-      } catch (error) {
-        throw new ConfigInputError(`Fix or remove ${this.d.configPath} first: ${(error as Error).message}`);
-      }
-      const next = applyDesktopPatch(loaded.data, patch, this.d.dataDir);
-      if (patch.dataDir !== undefined) ensureWritableDir(patch.dataDir);
-      if (isDeepStrictEqual(next, loaded.data) && this.d.child.status === 'running') return this.state();
-      writeConfigFile(this.d.configPath, next);
-      this.d.log(`[config] updated (${Object.keys(patch).join(', ')}); restarting the server`);
-      const result = await this.d.restart();
-      if (result.ok) {
-        this.configError = null;
-        return this.state();
-      }
-      // Keep the app usable: put the previous settings back and report why the new ones didn't work.
-      this.d.log(`[config] the new settings failed (${result.message}); restoring the previous ones`);
-      if (loaded.exists) writeConfigFile(this.d.configPath, loaded.data);
-      else rmSync(this.d.configPath, { force: true });
-      this.configError = `The new settings were not applied: ${result.message}`;
-      await this.d.restart();
+    return this.exclusive(() => this.applyConfig(patch));
+  }
+
+  /** config.json as it is, to change it: a broken one is the user's to fix first. */
+  private readConfigForChange(): ConfigFile {
+    return this.loadForChange().data;
+  }
+
+  private loadForChange(): LoadedConfigFile {
+    try {
+      return readConfigFile(this.d.configPath);
+    } catch (error) {
+      throw new ConfigInputError(`Fix or remove ${this.d.configPath} first: ${(error as Error).message}`);
+    }
+  }
+
+  /** Writes a patch and restarts the server; puts the previous settings back when the new ones don't start. Run exclusively. */
+  private async applyConfig(patch: DesktopConfigPatch): Promise<DesktopState> {
+    const loaded = this.loadForChange();
+    const next = applyDesktopPatch(loaded.data, patch, this.d.dataDir);
+    if (patch.dataDir !== undefined) ensureWritableDir(patch.dataDir);
+    if (isDeepStrictEqual(next, loaded.data) && this.d.child.status === 'running') return this.state();
+    writeConfigFile(this.d.configPath, next);
+    this.d.log(`[config] updated (${Object.keys(patch).join(', ')}); restarting the server`);
+    const result = await this.d.restart();
+    if (result.ok) {
+      this.configError = null;
       return this.state();
-    });
+    }
+    // Keep the app usable: put the previous settings back and report why the new ones didn't work.
+    this.d.log(`[config] the new settings failed (${result.message}); restoring the previous ones`);
+    if (loaded.exists) writeConfigFile(this.d.configPath, loaded.data);
+    else rmSync(this.d.configPath, { force: true });
+    this.configError = `The new settings were not applied: ${result.message}`;
+    await this.d.restart();
+    return this.state();
   }
 
   /** Error page: "Turn off the Local API" (its port is taken, say). */
@@ -568,6 +661,12 @@ export class Desktop {
 }
 
 const execFileAsync = promisify(execFile);
+
+/** An agent's id from the renderer: a positive integer. */
+function agentId(input: unknown): number {
+  if (typeof input !== 'number' || !Number.isInteger(input) || input <= 0) throw new ConfigInputError('That is not an agent.');
+  return input;
+}
 
 function ensureWritableDir(dir: string) {
   try {

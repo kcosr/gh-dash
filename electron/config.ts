@@ -20,6 +20,10 @@ export function toDesktopConfig(file: ConfigFile, defaultDataDir: string): Deskt
   return {
     dataDir: file.db ? dirname(file.db) : defaultDataDir,
     listen: file.listen ?? false,
+    // Configs from before the switches: a Local API that is on serves both, tokens required, as it always did.
+    restApi: file.restApi ?? true,
+    mcp: file.mcp ?? true,
+    mcpRequireTokens: file.mcpRequireTokens ?? true,
     network: file.host !== undefined && !isLoopbackHost(file.host),
     port: file.port ?? DEFAULT_PORT,
     allowedHosts: file.allowedHosts ?? [],
@@ -30,7 +34,8 @@ export function toDesktopConfig(file: ConfigFile, defaultDataDir: string): Deskt
 
 /**
  * Applies a validated patch to config.json's contents. Only the keys the patch names change; hand-edited keys
- * (timezone, tokenFile...) are kept. Refuses a Local API on all interfaces without a password.
+ * (timezone, tokenFile...) are kept. Refuses a REST API on all interfaces without a password, and MCP without agent
+ * tokens while other devices can connect.
  */
 export function applyDesktopPatch(file: ConfigFile, patch: DesktopConfigPatch, defaultDataDir: string): ConfigFile {
   const next: ConfigFile = { ...file };
@@ -42,6 +47,7 @@ export function applyDesktopPatch(file: ConfigFile, patch: DesktopConfigPatch, d
     else next.db = join(resolve(patch.dataDir), DB_FILE);
   }
   if (patch.listen !== undefined) next.listen = patch.listen;
+  for (const key of ['restApi', 'mcp', 'mcpRequireTokens'] as const) if (patch[key] !== undefined) next[key] = patch[key];
   if (patch.network !== undefined) next.host = patch.network ? '0.0.0.0' : '127.0.0.1';
   if (patch.port !== undefined) next.port = patch.port;
   if (patch.allowedHosts !== undefined) {
@@ -57,17 +63,34 @@ export function applyDesktopPatch(file: ConfigFile, patch: DesktopConfigPatch, d
     else next.password = patch.password;
   }
   const result = toDesktopConfig(next, defaultDataDir);
-  if (result.network && !result.passwordSet && (result.listen || patch.network === true)) {
+  // Other devices reach the port only while it serves the REST API (without it, the server listens on 127.0.0.1).
+  const shared = result.network && result.listen && result.restApi;
+  if (result.network && !result.passwordSet && (shared || patch.network === true)) {
     throw new ConfigInputError('Set a password before opening the Local API to other devices on the network.');
   }
+  if (shared && result.mcp && !result.mcpRequireTokens) {
+    throw new ConfigInputError('Agents need their tokens while other devices can connect: keep "Require agent tokens" on.');
+  }
   return next;
+}
+
+/**
+ * "Turn on MCP": the Local API on and its MCP switch on. A Local API that was off comes on for agents alone (its REST
+ * API stays off); one that was on keeps its REST API as it was, and requires agent tokens if other devices reach it
+ * (applyDesktopPatch refuses MCP without them there).
+ */
+export function enableMcpPatch(current: DesktopConfig): DesktopConfigPatch {
+  if (!current.listen) return { listen: true, restApi: false, mcp: true };
+  if (current.mcp) return {};
+  const shared = current.restApi && current.network;
+  return shared && !current.mcpRequireTokens ? { mcp: true, mcpRequireTokens: true } : { mcp: true };
 }
 
 // ---------------------------------------------------------------------------
 // IPC input validation: the renderer is trusted code, but check shapes and sizes anyway.
 // ---------------------------------------------------------------------------
 
-const PATCH_KEYS = new Set<keyof DesktopConfigPatch>(['dataDir', 'listen', 'network', 'port', 'allowedHosts', 'apiKey', 'password']);
+const PATCH_KEYS = new Set<keyof DesktopConfigPatch>(['dataDir', 'listen', 'restApi', 'mcp', 'mcpRequireTokens', 'network', 'port', 'allowedHosts', 'apiKey', 'password']);
 const HOST_NAME = /^(?=.{1,253}$)[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?(?:\.[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?)*$/;
 /** Printable ASCII without spaces: it travels in an Authorization header. */
 const API_KEY = /^[\x21-\x7e]{16,256}$/;
@@ -84,7 +107,7 @@ export function parseDesktopPatch(input: unknown, platform: NodeJS.Platform = pr
   if (unknown.length) throw new ConfigInputError(`Unknown setting: ${unknown.join(', ')}`);
   const patch: DesktopConfigPatch = {};
   if (raw.dataDir !== undefined) patch.dataDir = parseDataDir(raw.dataDir, platform);
-  for (const key of ['listen', 'network'] as const) {
+  for (const key of ['listen', 'restApi', 'mcp', 'mcpRequireTokens', 'network'] as const) {
     if (raw[key] === undefined) continue;
     if (typeof raw[key] !== 'boolean') throw new ConfigInputError(`${key} must be true or false.`);
     patch[key] = raw[key];
@@ -146,4 +169,16 @@ export function parseTokenInput(token: unknown, remember: unknown): { token: str
   if (value.length > 512 || !/^[\x21-\x7e]+$/.test(value)) throw new ConfigInputError('That does not look like a GitHub token.');
   if (typeof remember !== 'boolean') throw new ConfigInputError('remember must be true or false.');
   return { token: value, remember };
+}
+
+/**
+ * An agent token the user chose (addAgent, regenerateAgentToken): undefined = generate one. Checked here and again in
+ * the server (server/db/agents.ts agentToken), which also refuses one another agent has.
+ */
+export function parseAgentTokenInput(token: unknown): string | undefined {
+  if (token === undefined || token === null) return undefined;
+  if (typeof token !== 'string') throw new ConfigInputError('The token must be text.');
+  if (token.length < 24 || token.length > 256) throw new ConfigInputError('A token has 24 to 256 characters.');
+  if (!/^[\x21-\x7e]+$/.test(token)) throw new ConfigInputError('A token is printable ASCII without spaces (it goes in an Authorization header).');
+  return token;
 }

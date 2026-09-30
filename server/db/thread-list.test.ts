@@ -77,6 +77,27 @@ describe('thread list', () => {
   it('is empty with no threads', () => {
     expect(list()).toEqual({ items: [], nextCursor: null, total: 0, counts: { open: 0, resolved: 0 } });
   });
+
+  it("filters by who opened a thread and by whose turn it is, from any principal's side", () => {
+    const other = getPrincipal(db, db.run("INSERT INTO principals (kind, name, created_at) VALUES ('agent', 'Other', ?)", [at(0)]).lastInsertRowid)!;
+    const mine = add(pr('alice/app', 2), 'Mine', 1);
+    const theirs = add(pr('alice/app', 2), 'Theirs', 2, general, agent);
+    const others = add(commit('alice/app', C1), 'Others', 3, general, other);
+    addComment(db, mine.id, agent, 'Answer', at(4));
+    addComment(db, theirs.id, me, 'Reply', at(5));
+    // The opener counts, not who wrote last.
+    expect(ids(list({ author: 'self' }))).toEqual([mine.id]);
+    expect(ids(list({ author: 'agents' }))).toEqual([theirs.id, others.id]);
+    expect(ids(list({ author: agent.id }))).toEqual([theirs.id]);
+    expect(ids(list({ author: me.id }))).toEqual([mine.id]);
+    // Waiting on the dashboard user: the last word is someone else's. On an agent (MCP's waiting_on me): not the agent's.
+    expect(ids(list({ waitingOn: me.id }))).toEqual([mine.id, others.id]);
+    expect(ids(list({ waitingOn: agent.id }))).toEqual([theirs.id, others.id]);
+    setThreadStatus(db, others.id, 'resolved', me, at(6));
+    expect(list({ waitingOn: me.id })).toMatchObject({ total: 1, counts: { open: 1, resolved: 0 } });
+    expect(list({ author: 'agents' })).toMatchObject({ total: 1, counts: { open: 1, resolved: 1 } });
+    expect(ids(list({ author: 'agents', waitingOn: me.id, status: 'all' }))).toEqual([]);
+  });
 });
 
 describe('thread list scope', () => {
@@ -148,7 +169,7 @@ describe('thread list filters', () => {
     // A resolved and an open thread on each of a PR and a commit, at distinct times.
     for (const [i, target] of [pr('alice/app', 2), commit('alice/app', C1)].entries()) {
       const done = add(target, `done ${i}`, 1 + i * 2);
-      setThreadStatus(db, done.id, 'resolved', at(2 + i * 2));
+      setThreadStatus(db, done.id, 'resolved', me, at(2 + i * 2));
       add(target, `todo ${i}`, 10 + i);
     }
   });
@@ -176,7 +197,7 @@ describe('thread list filters', () => {
 
   it('a resolved thread that is reopened moves back, and its activity bumps its place', () => {
     const resolved = list({ status: 'resolved' }).items[0]!;
-    setThreadStatus(db, resolved.id, 'open', at(30));
+    setThreadStatus(db, resolved.id, 'open', me, at(30));
     expect(bodies(list())[0]).toBe(resolved.comments[0]!.body);
     expect(list().counts).toEqual({ open: 3, resolved: 1 });
   });
@@ -261,7 +282,7 @@ describe('thread list order and paging', () => {
 
   it('pages within a status and a kind', () => {
     const ts = seed();
-    setThreadStatus(db, ts[0]!.id, 'resolved', at(40));
+    setThreadStatus(db, ts[0]!.id, 'resolved', me, at(40));
     add(commit('alice/app', C1), 'c', 50);
     expect(walk({ sort: 'oldest', kind: 'pr' }, 3)).toEqual([[ts[1]!.id, ts[2]!.id, ts[3]!.id], [ts[4]!.id]]);
     expect(walk({ status: 'resolved' }, 3)).toEqual([[ts[0]!.id]]);

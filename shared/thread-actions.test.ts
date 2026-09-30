@@ -5,7 +5,7 @@ import { followsDefaultSelection, patchThreadLists, qk, refetchAfterSync, thread
 
 const thread = (id: number, status: CommentThread['status'] = 'open'): CommentThread => ({
   id, kind: 'pr', repo: 'app', number: 2, commitOid: 'a'.repeat(40), baseOid: null, path: null, side: null, startLine: null, endLine: null,
-  snippet: null, status, resolvedAt: null, createdAt: '', updatedAt: '', comments: [],
+  snippet: null, status, resolvedAt: null, resolvedBy: null, createdAt: '', updatedAt: '', comments: [],
 });
 
 /** A list fetch that read the threads before a change, and answers after it. */
@@ -120,37 +120,29 @@ describe('thread actions', () => {
     expect(refetchAfterSync(q(qk.threads('app#2')))).toBe(false);
   });
 
-  it("refetches the Activity feed's PR and commit counts when a thread comes or goes or changes status", async () => {
+  it('refetches the Activity feed after any change: its comment events, and its PR and commit counts', async () => {
     const qc = new QueryClient();
     const feed = qk.activity({ who: 'everyone', limit: 200 });
     const stale = () => qc.getQueryState(feed)?.isInvalidated;
     const fresh = () => qc.setQueryData(feed, { pages: [], pageParams: [] });
     const commit = `app@${'a'.repeat(40)}`;
-    const counted: [string, (a: ReturnType<typeof threadActions>) => Promise<unknown>, unknown, number?][] = [
+    const cases: [string, (a: ReturnType<typeof threadActions>) => Promise<unknown>, unknown, number?][] = [
       ['app#2', (a) => a.create({ body: 'x' } as never), thread(1)],
       [commit, (a) => a.create({ body: 'x' } as never), { ...thread(1), kind: 'commit' }],
       ['app#2', (a) => a.setStatus(1, 'resolved'), thread(1, 'resolved')],
       [commit, (a) => a.setStatus(1, 'open'), { ...thread(1), kind: 'commit' }],
       [commit, (a) => a.deleteThread(1), null, 204],
       ['app#2', (a) => a.deleteComment(1, 5), { thread: null }],
-    ];
-    for (const [id, act, body, status] of counted) {
-      fresh();
-      vi.stubGlobal('fetch', reply(body, status));
-      await act(threadActions(qc, id));
-      expect(stale(), id).toBe(true);
-    }
-    // A reply, an edit, or deleting a reply leaves the counts (threads, unresolved) as they were.
-    const same: [string, (a: ReturnType<typeof threadActions>) => Promise<unknown>, unknown][] = [
+      // A reply, an edit, or deleting a reply is an event in the feed too.
       ['app#2', (a) => a.reply(1, 'x'), thread(1)],
       [commit, (a) => a.edit(5, 'y'), thread(1)],
       [commit, (a) => a.deleteComment(1, 6), { thread: thread(1) }],
     ];
-    for (const [id, act, body] of same) {
+    for (const [id, act, body, status] of cases) {
       fresh();
-      vi.stubGlobal('fetch', reply(body));
+      vi.stubGlobal('fetch', reply(body, status));
       await act(threadActions(qc, id));
-      expect(stale(), id).toBe(false);
+      expect(stale(), id).toBe(true);
     }
   });
 

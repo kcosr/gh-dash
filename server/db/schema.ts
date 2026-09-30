@@ -1,3 +1,4 @@
+import { commentExcerpt } from '../../shared/comment-markdown';
 import { type RepoResolver, rewriteRepoParams, rewriteRepoPath } from '../../shared/query';
 import type { Db } from './db';
 
@@ -448,6 +449,65 @@ function moveViewerMeta(db: Db): void {
   db.run(`DELETE FROM meta WHERE key IN ('viewer', 'rateLimit')`);
 }
 
+// Agents (MCP) and the comment event log. An agent is a principal of kind 'agent' with one token, kept as its sha256
+// (the token is shown once); revoking keeps the principal, so its comments stay attributed to it. comment_events records
+// every comment write with the thread's place copied in, so an event still reads right once its thread is gone (no
+// foreign key to the thread or comment); a removed repo takes its events along. Agent names are unique (any case): the
+// `agents` command and tools name an agent by it. Until now only the dashboard's user (principal 1) could write, so it
+// resolved every thread that is resolved.
+const AGENTS = `
+ALTER TABLE comment_threads ADD COLUMN resolved_by INTEGER REFERENCES principals(id);
+UPDATE comment_threads SET resolved_by = 1 WHERE status = 'resolved' AND resolved_by IS NULL;
+CREATE UNIQUE INDEX principals_agent_name ON principals(name COLLATE NOCASE) WHERE kind = 'agent';
+CREATE TABLE agent_tokens (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  principal_id INTEGER NOT NULL UNIQUE REFERENCES principals(id),
+  token_hash TEXT NOT NULL UNIQUE,
+  prefix TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  last_used_at TEXT,
+  revoked_at TEXT
+);
+CREATE TABLE comment_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  at TEXT NOT NULL,
+  actor_id INTEGER NOT NULL REFERENCES principals(id),
+  kind TEXT NOT NULL CHECK (kind IN ('thread_opened', 'replied', 'edited', 'comment_deleted', 'resolved', 'reopened', 'thread_deleted')),
+  repo_id INTEGER NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  pr_number INTEGER,
+  commit_oid TEXT NOT NULL,
+  thread_id INTEGER NOT NULL,
+  comment_id INTEGER,
+  path TEXT,
+  side TEXT,
+  start_line INTEGER,
+  end_line INTEGER,
+  excerpt TEXT
+);
+CREATE INDEX comment_events_at ON comment_events(at, id);
+CREATE INDEX comment_events_thread ON comment_events(thread_id, id);
+CREATE INDEX comment_events_repo ON comment_events(repo_id, at);
+`;
+
+/**
+ * The comments made before the log existed: each thread's opening and every reply, at their times, by their authors
+ * (event ids in time order). Resolving, reopening, edits and deletes left no trace, so they have no events; the excerpt
+ * is the comment's words as they are now.
+ */
+function backfillCommentEvents(db: Db): void {
+  const rows = db.all<{ id: number; thread_id: number; author_id: number; body: string; created_at: string; first: number }>(
+    `SELECT c.id, c.thread_id, c.author_id, c.body, c.created_at, c.id = (SELECT min(id) FROM comments WHERE thread_id = c.thread_id) AS first
+     FROM comments c ORDER BY c.created_at, c.id`,
+  );
+  for (const c of rows) {
+    db.run(
+      `INSERT INTO comment_events (at, actor_id, kind, repo_id, pr_number, commit_oid, thread_id, comment_id, path, side, start_line, end_line, excerpt)
+       SELECT ?, ?, ?, repo_id, pr_number, commit_oid, id, ?, path, side, start_line, end_line, ? FROM comment_threads WHERE id = ?`,
+      [c.created_at, c.author_id, c.first ? 'thread_opened' : 'replied', c.id, commentExcerpt(c.body), c.thread_id],
+    );
+  }
+}
+
 const MIGRATIONS: Migration[] = [
   { name: 'initial', version: 1, destructive: false, sql: V1 },
   { name: 'commits-repo-index', version: 2, destructive: false, sql: V2 },
@@ -456,6 +516,7 @@ const MIGRATIONS: Migration[] = [
   { name: 'repos-v5', version: 5, destructive: true, rebuild: true, sql: REPOS_REBUILD, up: rewriteSavedViews },
   { name: 'comments', version: 6, destructive: false, sql: COMMENTS },
   { name: 'sources', version: 7, destructive: true, rebuild: true, sql: SOURCES, up: moveViewerMeta },
+  { name: 'agents', version: 8, destructive: false, sql: AGENTS, up: backfillCommentEvents },
 ];
 
 /** The schema version this build creates and understands. */

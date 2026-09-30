@@ -36,6 +36,17 @@ export interface Config {
   desktop: boolean;
   /** Run the TCP listener: always for a headless server; the desktop app's "Local API" setting (`listen`). */
   listen: boolean;
+  /**
+   * What the TCP listener serves: the REST API (/api/*, its docs, the web app, /login) and MCP (/mcp); /api/health
+   * always. A headless server serves both. The desktop app's Local API has a switch for each (`restApi`, `mcp`).
+   */
+  restApi: boolean;
+  mcp: boolean;
+  /**
+   * /mcp requires an agent token (always on a headless server). The desktop app may let a request without one act as
+   * the built-in agent "Agent", only while its Local API listens on loopback; otherwise this is forced on.
+   */
+  mcpRequireTokens: boolean;
   /** GH_DASH_TOKEN_SOURCE: where the GitHub token comes from; null = not chosen yet (the desktop default). */
   tokenChoice: TokenChoice | null;
   /** GITHUB_TOKEN_FILE: a file holding just the token, re-read on use. */
@@ -219,11 +230,27 @@ export function loadConfig(env: NodeJS.ProcessEnv, file: LoadedConfigFile | null
   warnings.push(...gitlab.warnings);
   const listenSetting = layer('listen', (raw) => parseSwitch(raw, CONFIG_ENV.listen), (v) => !!v, () => false);
   if (!desktop && sources.listen !== 'default' && !listenSetting) warnings.push(`${where('listen')} is ignored: a headless server always listens`);
+  // The desktop app's Local API switches: what its port serves. A headless server serves everything, tokens required.
+  const onSwitch = (key: 'restApi' | 'mcp' | 'mcpRequireTokens') => layer(key, (raw) => parseSwitch(raw, CONFIG_ENV[key]), (v) => v !== false, () => true);
+  const restApi = onSwitch('restApi');
+  const mcp = onSwitch('mcp');
+  let mcpRequireTokens = onSwitch('mcpRequireTokens');
+  if (!desktop) {
+    for (const key of ['restApi', 'mcp', 'mcpRequireTokens'] as const) {
+      if (sources[key] !== 'default') warnings.push(`${where(key)} is ignored: it is the desktop app's; a headless server serves the REST API and MCP, with agent tokens`);
+    }
+  }
   const password = secret('password');
+  // Without the REST API the desktop's port serves agents alone, on this computer only: host and its password are the REST API's.
+  const effectiveHost = desktop && listenSetting && !restApi ? '127.0.0.1' : host;
+  if (desktop && listenSetting && mcp && !mcpRequireTokens && !isLoopbackHost(effectiveHost)) {
+    mcpRequireTokens = true;
+    warnings.push(`${where('mcpRequireTokens')} is off, but the Local API listens on ${effectiveHost} (beyond this computer): agents need their tokens`);
+  }
 
   const config: Config = {
     port,
-    host,
+    host: effectiveHost,
     dbPath,
     cacheDbPath,
     syncEnabled: layer('sync', (raw) => raw.toLowerCase() !== 'off', (v) => v ?? true, () => true),
@@ -236,6 +263,9 @@ export function loadConfig(env: NodeJS.ProcessEnv, file: LoadedConfigFile | null
     version: packageVersion(root),
     desktop,
     listen: desktop ? listenSetting : true,
+    restApi: desktop ? restApi : true,
+    mcp: desktop ? mcp : true,
+    mcpRequireTokens: desktop ? mcpRequireTokens : true,
     tokenChoice,
     tokenFile,
     ghPath,
@@ -245,7 +275,7 @@ export function loadConfig(env: NodeJS.ProcessEnv, file: LoadedConfigFile | null
     sources,
     warnings,
   };
-  if (desktop && config.listen && !password && !isLoopbackHost(host)) {
+  if (desktop && config.listen && !password && !isLoopbackHost(config.host)) {
     throw new Error(`The Local API can listen on ${host} (beyond this computer) only with a password; set one, or listen on 127.0.0.1`);
   }
   return config;

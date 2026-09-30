@@ -4,7 +4,7 @@ import type { AppDeps } from '../app';
 import { origin } from '../http';
 
 /** How this server is running: version, where the API can be reached, and the effective instance settings. */
-export function instanceRoutes({ config, transport, localApiUrl }: AppDeps): Hono {
+export function instanceRoutes({ config, transport, localApiUrl, localMcpUrl }: AppDeps): Hono {
   const r = new Hono();
 
   r.get('/instance', (c) => {
@@ -15,6 +15,7 @@ export function instanceRoutes({ config, transport, localApiUrl }: AppDeps): Hon
       // Over the network, the address this request came in on; the desktop app's socket isn't reachable by other
       // clients, so there it's the Local API's address, if that is on.
       apiUrl: (transport?.kind ?? 'tcp') === 'tcp' ? origin(c) : (localApiUrl?.() ?? null),
+      mcpUrl: (transport?.kind ?? 'tcp') === 'tcp' ? (config.mcp ? `${origin(c)}/mcp` : null) : (localMcpUrl?.() ?? null),
       auth: { password: !!config.password, apiKey: !!config.apiKey },
       configPath: config.configPath,
       settings: {

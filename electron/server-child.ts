@@ -1,10 +1,10 @@
 /**
  * The server child (dist/server/desktop.mjs in a utilityProcess): start, ready/fatal, restart with backoff after
- * crashes, graceful shutdown, and the request/answer round trips (set-token, the GitLab sources' messages). Protocol:
+ * crashes, graceful shutdown, and the request/answer round trips (set-token, the GitLab sources' and the agents'). Protocol:
  * shared/desktop.ts (MainToServer/ServerToMain).
  */
 import { utilityProcess, type UtilityProcess } from 'electron';
-import type { AccountStatus, SourceAccount, SourceCheck, TokenChoice } from '../shared/api';
+import type { AccountStatus, Agent, SourceAccount, SourceCheck, TokenChoice } from '../shared/api';
 import type { MainToServer, ServerToMain, SourceTestDraft } from '../shared/desktop';
 
 export type ChildStatus = 'idle' | 'starting' | 'running' | 'stopping' | 'failed';
@@ -49,13 +49,16 @@ const BACKOFF_MS = [500, 1_000, 3_000, 8_000];
  */
 const TOKEN_TIMEOUT_MS = 90_000;
 
-type Outcome = { kind: 'ready'; apiUrl: string | null } | { kind: 'fatal'; message: string } | { kind: 'exit'; message: string };
+type Outcome = { kind: 'ready'; apiUrl: string | null; mcpUrl: string | null } | { kind: 'fatal'; message: string } | { kind: 'exit'; message: string };
 
 const STOPPED: StartResult = { ok: false, message: 'stopped' };
 
 export class ServerChild {
   status: ChildStatus = 'idle';
+  /** The Local API's URL while it serves the REST API. */
   apiUrl: string | null = null;
+  /** The Local API's MCP endpoint while it serves MCP. */
+  mcpUrl: string | null = null;
   /** Why the last start failed (fatal message, crash); cleared by a successful start. */
   lastError: string | null = null;
   private proc: UtilityProcess | null = null;
@@ -124,6 +127,7 @@ export class ServerChild {
     }
     await this.starting;
     this.apiUrl = null;
+    this.mcpUrl = null;
     this.setStatus('idle');
   }
 
@@ -174,6 +178,24 @@ export class ServerChild {
   async syncSource(source: string): Promise<'started' | 'queued'> {
     await this.running();
     return expect(await this.request({ type: 'sync-source', source }), 'sync-started').result;
+  }
+
+  /** Makes an agent in the child's database; the answer carries its token, once. */
+  async addAgent(name: string, token?: string | null): Promise<{ agent: Agent; token: string }> {
+    await this.running();
+    return withToken(expect(await this.request({ type: 'add-agent', name, ...(token ? { token } : {}) }), 'agent-result'));
+  }
+
+  /** A new token for an agent (the one given, else generated); the old one stops working. */
+  async regenerateAgentToken(agent: number, token?: string | null): Promise<{ agent: Agent; token: string }> {
+    await this.running();
+    return withToken(expect(await this.request({ type: 'regenerate-agent-token', agent, ...(token ? { token } : {}) }), 'agent-result'));
+  }
+
+  /** Revokes an agent's token. */
+  async revokeAgent(agent: number): Promise<Agent> {
+    await this.running();
+    return expect(await this.request({ type: 'revoke-agent', agent }), 'agent-result').agent;
   }
 
   private async running(): Promise<void> {
@@ -229,6 +251,7 @@ export class ServerChild {
       if (gen !== this.generation) return STOPPED;
       if (outcome.kind === 'ready') {
         this.apiUrl = outcome.apiUrl;
+        this.mcpUrl = outcome.mcpUrl;
         this.lastError = null;
         this.opts.onReady?.(outcome.apiUrl);
         this.setStatus('running');
@@ -301,8 +324,10 @@ export class ServerChild {
       proc.once('spawn', () => this.opts.log(`[server] pid ${proc.pid}: ${this.opts.script}`));
       proc.on('message', (message: ServerToMain) => {
         if (message?.type === 'ready') {
-          this.opts.log(`[server] ready in ${Date.now() - t0} ms${message.apiUrl ? ` · Local API ${message.apiUrl}` : ''}`);
-          done({ kind: 'ready', apiUrl: typeof message.apiUrl === 'string' ? message.apiUrl : null });
+          const apiUrl = typeof message.apiUrl === 'string' ? message.apiUrl : null;
+          const mcpUrl = typeof message.mcpUrl === 'string' ? message.mcpUrl : null;
+          this.opts.log(`[server] ready in ${Date.now() - t0} ms${apiUrl ? ` · Local API ${apiUrl}` : ''}${mcpUrl ? ` · MCP ${mcpUrl}` : ''}`);
+          done({ kind: 'ready', apiUrl, mcpUrl });
         } else if (message?.type === 'fatal') {
           fatal = String(message.message);
           done({ kind: 'fatal', message: fatal });
@@ -329,6 +354,7 @@ export class ServerChild {
         } else if (gen === this.generation && this.status === 'running') {
           this.opts.log(`[server] exited unexpectedly (code ${code})`);
           this.apiUrl = null;
+          this.mcpUrl = null;
           if (this.crashBudget()) {
             // Requests wait (whenSettled) while the replacement starts; a stop() or restart() meanwhile cancels it.
             void this.launch(this.backoffMs());
@@ -340,6 +366,12 @@ export class ServerChild {
       });
     });
   }
+}
+
+/** An agent-result that must carry a token (add, regenerate). */
+function withToken(answer: Extract<Answer, { type: 'agent-result' }>): { agent: Agent; token: string } {
+  if (typeof answer.token !== 'string') throw new Error('The gh-dash server answered without a token.');
+  return { agent: answer.agent, token: answer.token };
 }
 
 /** The answer of the expected type; another one means the two sides disagree on the protocol. */

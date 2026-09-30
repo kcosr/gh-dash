@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { CommentThread, Principal } from './api';
-import { threadsMarkdown } from './comment-markdown';
+import { commentExcerpt, threadsMarkdown } from './comment-markdown';
 import { PROVIDERS } from './provider';
 
 const you: Principal = { id: 1, kind: 'self', name: 'You' };
@@ -10,7 +10,7 @@ let nextId = 1;
 function thread(over: Partial<CommentThread>, bodies: [Principal, string][] = [[you, 'Why?']]): CommentThread {
   return {
     id: nextId++, kind: 'pr', repo: 'app', number: 2, commitOid: '0123456789'.repeat(4), baseOid: null,
-    path: null, side: null, startLine: null, endLine: null, snippet: null, status: 'open', resolvedAt: null,
+    path: null, side: null, startLine: null, endLine: null, snippet: null, status: 'open', resolvedAt: null, resolvedBy: null,
     createdAt: '2026-09-29T10:00:00.000Z', updatedAt: '2026-09-29T10:00:00.000Z',
     comments: bodies.map(([author, body], i) => ({ id: 100 + i, author, body, createdAt: '2026-09-29T10:00:00.000Z', editedAt: null })),
     ...over,
@@ -64,5 +64,34 @@ describe('threadsMarkdown', () => {
     expect(threadsMarkdown([thread({})], { provider: PROVIDERS.gitlab })).toBe('### Merge request\n\n- **You**: Why?\n');
     expect(threadsMarkdown([thread({ kind: 'commit', number: null })])).toMatch(/^### Commit\n/);
     expect(threadsMarkdown([])).toBe('');
+  });
+});
+
+describe('commentExcerpt', () => {
+  it("keeps a comment's words as one line of plain text", () => {
+    expect(commentExcerpt('Why **two** `consts`?\n\nSee [the docs](https://x.example) and ~~this~~.')).toBe('Why two consts? See the docs and this.');
+    expect(commentExcerpt('## Heading\n> quoted\n- [ ] task\n1. step\n<details><summary>More</summary>hidden</details><!-- note -->')).toBe(
+      'Heading quoted task step Morehidden',
+    );
+    expect(commentExcerpt('```ts\nconst a = 1;\n```')).toBe('const a = 1;');
+    expect(commentExcerpt('a < b and c > d, ![alt](img.png)')).toBe('a < b and c > d, alt');
+    expect(commentExcerpt('  \r\n  ')).toBe('');
+  });
+
+  it('stays quick on bodies made to be slow to parse', () => {
+    for (const body of ['['.repeat(65_536), '!['.repeat(32_768), '<!--'.repeat(16_384), `${'a '.repeat(30_000)}[x](y)`]) {
+      const t0 = performance.now();
+      expect(commentExcerpt(body).length).toBeLessThanOrEqual(280);
+      expect(performance.now() - t0).toBeLessThan(100);
+    }
+  });
+
+  it('cuts at 280 characters with an ellipsis, never inside a character', () => {
+    expect(commentExcerpt('x'.repeat(280))).toBe('x'.repeat(280));
+    expect(commentExcerpt('x'.repeat(281))).toBe(`${'x'.repeat(279)}…`);
+    const emoji = commentExcerpt('😀'.repeat(300));
+    expect(Array.from(emoji)).toHaveLength(280);
+    expect(emoji.endsWith('😀…')).toBe(true);
+    expect(commentExcerpt('one two three', 8)).toBe('one two…');
   });
 });

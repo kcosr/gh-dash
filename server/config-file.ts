@@ -96,6 +96,19 @@ const configFileKeys = z.object({
   ghPath: z.string().trim().min(1).nullable().optional(),
   /** Desktop only: also listen on TCP (the "Local API"). Headless servers always listen. */
   listen: z.boolean().optional(),
+  /**
+   * Desktop only, with `listen`: serve the REST API (/api/*, its docs, the web app, /login) on the Local API's port.
+   * Default true (as before it could be turned off). Off: that port answers 404 there, and listens on 127.0.0.1 only
+   * (host, allowedHosts, password and apiKey are the REST API's). A headless server always serves it.
+   */
+  restApi: z.boolean().optional(),
+  /** Desktop only, with `listen`: serve MCP (/mcp) for agents on the Local API's port. Default true. Headless: always. */
+  mcp: z.boolean().optional(),
+  /**
+   * Desktop only: /mcp requires an agent's token (default true). false: a request without one acts as the built-in
+   * agent "Agent" (one that sends a token still needs a valid one); only while the port listens on 127.0.0.1.
+   */
+  mcpRequireTokens: z.boolean().optional(),
   /** GH_DASH_GLAB_PATH. The glab executable, when it isn't on PATH or in a standard location. */
   glabPath: z.string().trim().min(1).nullable().optional(),
   /**
@@ -149,6 +162,9 @@ export const CONFIG_ENV: Record<keyof ConfigFile, string> = {
   tokenFile: 'GITHUB_TOKEN_FILE',
   ghPath: 'GH_DASH_GH_PATH',
   listen: 'GH_DASH_LISTEN',
+  restApi: 'GH_DASH_REST_API',
+  mcp: 'GH_DASH_MCP',
+  mcpRequireTokens: 'GH_DASH_MCP_REQUIRE_TOKENS',
   glabPath: 'GH_DASH_GLAB_PATH',
   // Declares or overrides one source; GITLAB_TOKEN_FILE and GH_DASH_GITLAB_TOKEN_SOURCE go with it (headless only).
   sources: 'GH_DASH_GITLAB_URL',

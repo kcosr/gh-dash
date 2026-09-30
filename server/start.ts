@@ -3,6 +3,7 @@ import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { createAdaptorServer } from '@hono/node-server';
 import { type AppDeps, createApp } from './api/app';
+import { CommentBus } from './comments/bus';
 import type { Config } from './config';
 import { readConfigFile } from './config-file';
 import { type Db, openDb } from './db/db';
@@ -44,14 +45,21 @@ export interface RunningServer {
   sources: SourceRegistry;
   sync: SyncManager;
   diffs: DiffService;
+  /** What happens to comments and agents: every listener's app shares it (GET /stream, MCP); desktop main's agent changes emit on it. */
+  bus: CommentBus;
   /**
    * Re-reads config.json's `sources` and `glabPath` (plus the environment's, headless) and applies them to `sources`,
    * validating the tokens of the sources it (re)built in the background: the desktop app's `reload-sources`. Updates
    * config.sourceConfigs and config.glabPath. Throws on a bad config.json, and then nothing changes.
    */
   reloadSources(): SourceRuntime[];
-  /** The TCP listener's local URL (http://127.0.0.1:<port> even when bound to all interfaces); null without one. */
+  /**
+   * The TCP listener's local URL (http://127.0.0.1:<port> even when bound to all interfaces) while it serves the REST
+   * API; null without one, or with the desktop app's REST API switch off.
+   */
   apiUrl: string | null;
+  /** Its MCP endpoint (`<url>/mcp`) while it serves MCP; null otherwise. */
+  mcpUrl: string | null;
   /** The socket or pipe the desktop transport listens on; null without one. */
   socketPath: string | null;
   /** Stops the scheduler, then closes the listeners and databases. Idempotent. */
@@ -72,7 +80,10 @@ export async function startServer(opts: StartOptions): Promise<RunningServer> {
   let cache: DiffCache | null = null;
   const servers: Server[] = [];
   let socketPath: string | null = null;
+  const bus = new CommentBus(log);
   const closeAll = async () => {
+    // Open streams (GET /stream) end first, so their connections go with the idle ones instead of after the grace period.
+    bus.close();
     await Promise.all(servers.map(closeServer));
     if (socketPath) removeSocket(socketPath);
     db.close();
@@ -106,9 +117,10 @@ export async function startServer(opts: StartOptions): Promise<RunningServer> {
     const sourcesReady = sources.check(sources.apply({ glabPath: config.glabPath, sources: config.sourceConfigs }));
     // Every source's account (the others' failures are logged by the manager).
     const viewerReady = sync.ensureViewer().catch((err: Error) => log(`[startup] could not fetch GitHub viewer: ${err.message}`));
-    const deps: AppDeps = { db, config, sync, diffs, tokens, sources };
+    const deps: AppDeps = { db, config, sync, diffs, tokens, sources, bus };
 
     let apiUrl: string | null = null;
+    let mcpUrl: string | null = null;
     let bound: string | null = null;
     if (opts.tcp ?? config.listen) {
       const server = createAdaptorServer({ fetch: createApp({ ...deps, transport: { kind: 'tcp' } }).fetch }) as Server;
@@ -116,11 +128,14 @@ export async function startServer(opts: StartOptions): Promise<RunningServer> {
       await listen(server, (done) => server.listen(config.port, config.host, done), hostPort(config.host, config.port));
       const { port } = server.address() as AddressInfo;
       bound = `http://${hostPort(config.host, port)}`;
-      apiUrl = localApiUrl(config.host, port);
+      // What the port serves (the desktop app's switches; a headless server serves both).
+      const url = localApiUrl(config.host, port);
+      apiUrl = config.restApi ? url : null;
+      mcpUrl = config.mcp ? `${url}/mcp` : null;
     }
     if (opts.socket) {
       const { path, secret } = opts.socket;
-      const app = createApp({ ...deps, transport: { kind: 'desktop', secret }, localApiUrl: () => apiUrl });
+      const app = createApp({ ...deps, transport: { kind: 'desktop', secret }, localApiUrl: () => apiUrl, localMcpUrl: () => mcpUrl });
       const server = createAdaptorServer({ fetch: app.fetch }) as Server;
       servers.push(server);
       removeStaleSocket(path);
@@ -156,7 +171,7 @@ export async function startServer(opts: StartOptions): Promise<RunningServer> {
 
     let closing: Promise<void> | null = null;
     return {
-      config, db, tokens, sources, sync, diffs, reloadSources, apiUrl, socketPath,
+      config, db, tokens, sources, sync, diffs, bus, reloadSources, apiUrl, mcpUrl, socketPath,
       close: () =>
         (closing ??= (async () => {
           await sync.shutdown();

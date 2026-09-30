@@ -1,5 +1,6 @@
 import { DESKTOP_ENV, type MainToServer, type ServerToMain } from '../shared/desktop';
 import { loadServerConfig } from './config';
+import { createAgent, regenerateAgentToken, revokeAgent } from './db/agents';
 import { deleteSource, testSourceDraft } from './services/sources';
 import { type RunningServer, startServer } from './start';
 
@@ -20,11 +21,13 @@ const FATAL_EXIT_DELAY_MS = 200;
  * - `reload-sources` re-reads config.json's sources and answers `sources-result`.
  * - `test-source` validates a draft source with a throwaway credential (`source-test-result`); `delete-source` removes
  *   an unconfigured source with its data (`source-deleted`); `sync-source` starts a source's sync (`sync-started`).
+ * - `add-agent`, `regenerate-agent-token` and `revoke-agent` change the MCP agents (`agent-result`, with the new token
+ *   for the first two), then tell open windows (an `agents` stream message).
  * - `shutdown` closes the listeners and databases, then exits 0.
  * A request that fails is answered with `request-failed` and the reason, so main never waits for nothing.
  */
 export function mainMessageHandler(
-  server: Pick<RunningServer, 'tokens' | 'close'> & Partial<Pick<RunningServer, 'reloadSources' | 'sources' | 'sync' | 'db' | 'diffs'>>,
+  server: Pick<RunningServer, 'tokens' | 'close'> & Partial<Pick<RunningServer, 'reloadSources' | 'sources' | 'sync' | 'db' | 'diffs' | 'bus'>>,
   post: (message: ServerToMain) => void,
   exit: (code: number) => void,
 ): (message: unknown) => Promise<void> {
@@ -33,6 +36,12 @@ export function mainMessageHandler(
     if (!part) throw new Error("This server can't manage sources");
     return part as NonNullable<RunningServer[K]>;
   };
+  const agentsDb = () => {
+    if (!server.db) throw new Error("This server can't manage agents");
+    return server.db;
+  };
+  const agentChanged = () => server.bus?.emit({ type: 'agents' });
+  const noAgent = (agent: number) => new Error(`There is no agent with id ${agent}.`);
   const handle = async (msg: MainToServer): Promise<void> => {
     if (msg.type === 'set-token' && msg.source !== undefined) {
       const runtime = need('sources').setAppToken(msg.source, msg.token);
@@ -62,6 +71,20 @@ export function mainMessageHandler(
     } else if (msg.type === 'sync-source') {
       const result = await need('sync').startOrQueue({ source: msg.source });
       post({ type: 'sync-started', id: msg.id, result });
+    } else if (msg.type === 'add-agent') {
+      const { agent, token } = createAgent(agentsDb(), String(msg.name), undefined, msg.token ?? null);
+      agentChanged();
+      post({ type: 'agent-result', id: msg.id, agent, token });
+    } else if (msg.type === 'regenerate-agent-token') {
+      const made = regenerateAgentToken(agentsDb(), msg.agent, undefined, msg.token ?? null);
+      if (!made) throw noAgent(msg.agent);
+      agentChanged();
+      post({ type: 'agent-result', id: msg.id, agent: made.agent, token: made.token });
+    } else if (msg.type === 'revoke-agent') {
+      const agent = revokeAgent(agentsDb(), msg.agent);
+      if (!agent) throw noAgent(msg.agent);
+      agentChanged();
+      post({ type: 'agent-result', id: msg.id, agent, token: null });
     } else if (msg.type === 'shutdown') {
       try {
         await server.close();
@@ -119,7 +142,7 @@ export async function runDesktopChild(
     setTimeout(() => exit(1), FATAL_EXIT_DELAY_MS);
     return null;
   }
-  post({ type: 'ready', apiUrl: server.apiUrl });
+  post({ type: 'ready', apiUrl: server.apiUrl, mcpUrl: server.mcpUrl });
   started(mainMessageHandler(server, post, exit));
   return server;
 }

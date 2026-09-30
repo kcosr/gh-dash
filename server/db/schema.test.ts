@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import { Db, openDb } from './db';
+import { getThread } from './comments';
 import { migrate, SCHEMA_VERSION, versionOf } from './schema';
 
 /** The repos rebuild's tests look at the database it leaves: they stop there. */
@@ -561,11 +562,16 @@ describe('comment threads across the sources rebuild', () => {
       migrate(db, true);
 
       expect(version(db)).toBe(SCHEMA_VERSION);
-      expect(rows(db)).toEqual(before);
+      // Every column the threads had, as they were. Named, not `SELECT *`: a statement cached before the migration may
+      // or may not see the column v8 adds, depending on the SQLite version.
+      const columns = Object.keys(before.threads[0] as object).join(', ');
+      expect({ ...rows(db), threads: db.all(`SELECT ${columns} FROM comment_threads ORDER BY id`) }).toEqual(before);
+      // ... and v8's resolved_by, empty: none of them was resolved.
+      expect(db.all<{ resolved_by: number | null }>('SELECT resolved_by FROM comment_threads ORDER BY id').map((t) => t.resolved_by)).toEqual([null, null, null]);
       expect(db.all('PRAGMA foreign_key_check')).toEqual([]);
       expect(foreignKeys(db)).toBe(1);
       expect(db.all<{ table: string; from: string; on_delete: string }>('PRAGMA foreign_key_list(comment_threads)').map((f) => [f.table, f.from, f.on_delete]))
-        .toEqual([['repos', 'repo_id', 'CASCADE']]);
+        .toEqual([['principals', 'resolved_by', 'NO ACTION'], ['repos', 'repo_id', 'CASCADE']]);
       // A deleted thread's id never comes back.
       expect(threadSeq(db)).toBe(seqBefore);
       const next = db.run(`INSERT INTO comment_threads (repo_id, pr_number, commit_oid, created_at, updated_at) VALUES (1, 1, ?, 'x', 'x')`, [HEAD]).lastInsertRowid;
@@ -578,11 +584,92 @@ describe('comment threads across the sources rebuild', () => {
   }
 });
 
+describe('migration to agents (v8)', () => {
+  const AGENTS = versionOf('agents');
+  const HEAD = 'a'.repeat(40);
+
+  /** A v7 database: two repos, threads with replies by the dashboard user and an agent, one resolved, one deleted. */
+  function v7(): Db {
+    const sqlite = new DatabaseSync(':memory:');
+    sqlite.exec('PRAGMA foreign_keys = ON');
+    const db = new Db(sqlite);
+    migrate(db, true, { upTo: AGENTS - 1 });
+    repo(db, 1, 'a');
+    repo(db, 2, 'b');
+    db.run(`INSERT INTO principals (id, kind, name, created_at) VALUES (2, 'agent', 'Reviewer', 'x')`);
+    const thread = (repoId: number, pr: number | null, path: string | null, at: string, status = 'open') =>
+      Number(db.run(`INSERT INTO comment_threads (repo_id, pr_number, commit_oid, path, side, start_line, end_line, snippet, status, resolved_at, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
+        repoId, pr, HEAD, path, path ? 'new' : null, path ? 3 : null, path ? 4 : null, path ? 'a\nb' : null, status, status === 'resolved' ? at : null, at, at,
+      ]).lastInsertRowid);
+    const comment = (t: number, author: number, body: string, at: string) =>
+      db.run('INSERT INTO comments (thread_id, author_id, body, created_at) VALUES (?, ?, ?, ?)', [t, author, body, at]);
+    const t1 = thread(1, 7, 'src/a.ts', '2026-09-01T10:00:00.000Z', 'resolved');
+    const t2 = thread(2, null, null, '2026-09-01T09:00:00.000Z');
+    comment(t1, 1, 'Why **this**?', '2026-09-01T10:00:00.000Z');
+    comment(t2, 2, 'Commit note', '2026-09-01T09:00:00.000Z');
+    comment(t1, 2, 'Because.', '2026-09-02T10:00:00.000Z');
+    comment(t2, 1, 'Thanks', '2026-09-01T11:00:00.000Z');
+    const gone = thread(1, 8, null, '2026-09-01T08:00:00.000Z');
+    comment(gone, 1, 'Gone', '2026-09-01T08:00:00.000Z');
+    db.run('DELETE FROM comment_threads WHERE id = ?', [gone]);
+    return db;
+  }
+
+  it('adds who resolved a thread (the dashboard user, the only writer so far, for resolved ones), agent tokens and the comment event log', () => {
+    const db = v7();
+    migrate(db, true);
+    expect(version(db)).toBe(AGENTS);
+    expect(db.all('SELECT id, status, resolved_by FROM comment_threads ORDER BY id')).toEqual([
+      { id: 1, status: 'resolved', resolved_by: 1 },
+      { id: 2, status: 'open', resolved_by: null },
+    ]);
+    // Read back as the principal.
+    expect(getThread(db, 1)!.resolvedBy).toEqual({ id: 1, kind: 'self', name: 'You' });
+    expect(getThread(db, 2)!.resolvedBy).toBeNull();
+    for (const table of ['agent_tokens', 'comment_events']) expect(db.get(`SELECT count(*) AS n FROM ${table}`), table).toBeDefined();
+    expect(db.all<{ name: string }>(`SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'comment_events' AND sql IS NOT NULL ORDER BY name`).map((i) => i.name))
+      .toEqual(['comment_events_at', 'comment_events_repo', 'comment_events_thread']);
+    expect(() => db.run(`INSERT INTO comment_events (at, actor_id, kind, repo_id, commit_oid, thread_id) VALUES ('x', 1, 'starred', 1, ?, 1)`, [HEAD]))
+      .toThrow(/CHECK constraint/);
+    expect(db.all('PRAGMA foreign_key_check')).toEqual([]);
+  });
+
+  it('backfills the openings and replies of existing threads, in time order, and nothing else', () => {
+    const db = v7();
+    migrate(db, true);
+    expect(db.all('SELECT id, at, actor_id, kind, repo_id, pr_number, commit_oid, thread_id, comment_id, path, side, start_line, end_line, excerpt FROM comment_events ORDER BY id')).toEqual([
+      { id: 1, at: '2026-09-01T09:00:00.000Z', actor_id: 2, kind: 'thread_opened', repo_id: 2, pr_number: null, commit_oid: HEAD, thread_id: 2, comment_id: 2, path: null, side: null, start_line: null, end_line: null, excerpt: 'Commit note' },
+      { id: 2, at: '2026-09-01T10:00:00.000Z', actor_id: 1, kind: 'thread_opened', repo_id: 1, pr_number: 7, commit_oid: HEAD, thread_id: 1, comment_id: 1, path: 'src/a.ts', side: 'new', start_line: 3, end_line: 4, excerpt: 'Why this?' },
+      { id: 3, at: '2026-09-01T11:00:00.000Z', actor_id: 1, kind: 'replied', repo_id: 2, pr_number: null, commit_oid: HEAD, thread_id: 2, comment_id: 4, path: null, side: null, start_line: null, end_line: null, excerpt: 'Thanks' },
+      { id: 4, at: '2026-09-02T10:00:00.000Z', actor_id: 2, kind: 'replied', repo_id: 1, pr_number: 7, commit_oid: HEAD, thread_id: 1, comment_id: 3, path: 'src/a.ts', side: 'new', start_line: 3, end_line: 4, excerpt: 'Because.' },
+    ]);
+  });
+
+  it('is additive: a GH_DASH_SYNC=off instance may run it', () => {
+    const db = v7();
+    migrate(db, false);
+    expect(version(db)).toBe(AGENTS);
+  });
+
+  it('keeps agent names unique in any case, and tokens one per agent', () => {
+    const db = openDb(':memory:');
+    db.run(`INSERT INTO principals (kind, name, created_at) VALUES ('agent', 'Claude', 'x')`);
+    expect(() => db.run(`INSERT INTO principals (kind, name, created_at) VALUES ('agent', 'claude', 'x')`)).toThrow(/UNIQUE/);
+    const token = (principal: number, hash: string) =>
+      db.run(`INSERT INTO agent_tokens (principal_id, token_hash, prefix, created_at) VALUES (?, ?, 'ghd_abcd', 'x')`, [principal, hash]);
+    token(2, 'h1');
+    expect(() => token(2, 'h2')).toThrow(/UNIQUE/);
+    expect(() => token(99, 'h3')).toThrow(/FOREIGN KEY/);
+  });
+});
+
 describe('migration names', () => {
   it('number migrations by name, and stop where asked', () => {
-    // The final order: T2's repos rebuild, then local comments (diff-comments), then sources (the GitLab wave).
-    expect(['repos-v5', 'comments', 'sources'].map(versionOf)).toEqual([5, 6, 7]);
-    expect(SCHEMA_VERSION).toBe(versionOf('sources'));
+    // The final order: T2's repos rebuild, then local comments (diff-comments), then sources (the GitLab wave), then
+    // agents and the comment event log (the MCP wave).
+    expect(['repos-v5', 'comments', 'sources', 'agents'].map(versionOf)).toEqual([5, 6, 7, 8]);
+    expect(SCHEMA_VERSION).toBe(versionOf('agents'));
     expect(() => versionOf('nope')).toThrow('No migration is called nope');
     const db = new Db(new DatabaseSync(':memory:'));
     migrate(db, true, { upTo: versionOf('repos-v5') });

@@ -235,6 +235,42 @@ describe('desktop child mode', () => {
     // Not listening: the address doesn't matter.
     expect(loadConfig({ ...env, GH_DASH_LISTEN: 'off', HOST: '0.0.0.0' }).listen).toBe(false);
   });
+
+  it("reads the Local API's switches from config.json: both on and tokens required unless it says otherwise", () => {
+    const env = desktopEnv();
+    writeConfigFile(env.GH_DASH_CONFIG, { listen: true });
+    expect(loadServerConfig(env).config).toMatchObject({ listen: true, restApi: true, mcp: true, mcpRequireTokens: true, warnings: [] });
+    writeConfigFile(env.GH_DASH_CONFIG, { listen: true, restApi: false, mcp: true, mcpRequireTokens: false });
+    expect(loadServerConfig(env).config).toMatchObject({ restApi: false, mcp: true, mcpRequireTokens: false });
+    writeConfigFile(env.GH_DASH_CONFIG, { listen: true, mcp: false });
+    expect(loadServerConfig(env).config).toMatchObject({ restApi: true, mcp: false });
+  });
+
+  it('serves agents alone on 127.0.0.1: without the REST API, the host and its password are set aside', () => {
+    const env = desktopEnv();
+    writeConfigFile(env.GH_DASH_CONFIG, { listen: true, restApi: false, host: '0.0.0.0' });
+    expect(loadServerConfig(env).config).toMatchObject({ host: '127.0.0.1', restApi: false });
+  });
+
+  it('requires agent tokens while the port listens beyond this computer, whatever config.json says, and warns', () => {
+    const env = desktopEnv();
+    writeConfigFile(env.GH_DASH_CONFIG, { listen: true, host: '0.0.0.0', password: 'longenough', mcpRequireTokens: false });
+    const { config } = loadServerConfig(env);
+    expect(config).toMatchObject({ host: '0.0.0.0', mcpRequireTokens: true });
+    expect(config.warnings).toContainEqual(expect.stringMatching(/agents need their tokens/));
+    // On this computer, as asked.
+    writeConfigFile(env.GH_DASH_CONFIG, { listen: true, host: '127.0.0.1', mcpRequireTokens: false });
+    expect(loadServerConfig(env).config.mcpRequireTokens).toBe(false);
+  });
+});
+
+describe('a headless server and the desktop switches', () => {
+  it('serves the REST API and MCP with tokens, and says the switches are ignored', () => {
+    const config = loadConfig({ GH_DASH_REST_API: 'off', GH_DASH_MCP: 'off', GH_DASH_MCP_REQUIRE_TOKENS: 'off' });
+    expect(config).toMatchObject({ restApi: true, mcp: true, mcpRequireTokens: true });
+    expect(config.warnings.filter((w) => /desktop app's/.test(w))).toHaveLength(3);
+    expect(loadConfig({})).toMatchObject({ restApi: true, mcp: true, mcpRequireTokens: true });
+  });
 });
 
 describe('app root', () => {

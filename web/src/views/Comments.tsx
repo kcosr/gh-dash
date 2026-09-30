@@ -6,25 +6,27 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
-import type { Me, ThreadKindFilter, ThreadListItem, ThreadStatusFilter } from '../../../shared/api';
+import type { Agent, Me, Principal, ThreadKindFilter, ThreadListItem, ThreadStatusFilter } from '../../../shared/api';
 import { PROVIDERS, capitalize, refText } from '../../../shared/provider';
-import { patchThreadLists, threadActions, threadListQuery, useMe, useThreadList } from '../api/hooks';
+import { patchThreadLists, threadActions, threadListQuery, useAgents, useMe, useThreadList } from '../api/hooks';
 import { threadListParams } from '../lib/apiQuery';
 import { hasBlockingLayer, isTypingTarget } from '../lib/layers';
+import { sortAgents } from '../lib/agents';
 import { plainPreview } from '../lib/markdown';
 import { fmtDateTime, plural, rel } from '../lib/time';
 import { groupThreads, threadTarget, withHeld } from '../lib/threadList';
 import type { ThreadGroupOf } from '../lib/threadList';
 import { useUrlState } from '../lib/urlState';
-import type { ThreadGroup, ThreadOrder } from '../lib/urlState';
+import type { ThreadAuthor, ThreadGroup, ThreadOrder } from '../lib/urlState';
 import { cx } from '../lib/util';
 import { Avatar } from '../components/Avatar';
-import { Ctl, MOD_K, prIconName } from '../components/bits';
+import { AgentMark, Ctl, MOD_K, prIconName } from '../components/bits';
 import { EmptyState, ErrorNote, ProgressBar } from '../components/EmptyState';
 import { FilterInput } from '../components/FilterInput';
 import { FilterToolbar } from '../components/FilterToolbar';
 import { Icon } from '../components/Icon';
 import { Markdown } from '../components/Markdown';
+import { MenuButton } from '../components/Menu';
 import { RepoChip } from '../components/RepoChip';
 import { useProviderOf, useRepoLabel, useWords } from '../components/repoMapContext';
 import { Seg } from '../components/Seg';
@@ -34,9 +36,24 @@ import { useUI } from '../components/ui';
 import { ListSkeleton, NoReposSelected } from './PullRequests';
 
 const STATUS_WORD = { open: 'unresolved', resolved: 'resolved', all: '' } as const;
+
+/** An author filter's name: "Anyone", "You", "Agents", or the agent's. */
+function authorName(a: ThreadAuthor | null, agents: readonly Pick<Agent, 'id' | 'name'>[]): string {
+  if (a === null) return 'Anyone';
+  if (a === 'self') return 'You';
+  if (a === 'agents') return 'Agents';
+  return agents.find((x) => x.id === a)?.name ?? `Agent ${a}`;
+}
+
+/** "by you", "by agents", "by Claude"; '' for anyone. */
+const byWord = (a: ThreadAuthor | null, agents: readonly Agent[]) => (a === null ? '' : `by ${a === 'self' || a === 'agents' ? authorName(a, agents).toLowerCase() : authorName(a, agents)}`);
+
+/** Who resolved a thread, in a sentence: "you", or the agent's name. */
+const principalWord = (p: Principal) => (p.kind === 'self' ? 'you' : p.name);
 /** Controls that handle their own keys (the row's own button is the list's, see onKey). */
 const CONTROLS = 'button, a[href], input, select, textarea, summary, [role="button"], [role="checkbox"], [role="link"], [role="menuitem"], [role="separator"]';
 const NO_IDS: ReadonlySet<number> = new Set();
+const NO_AGENTS: Agent[] = [];
 
 const rowButton = (id: number) => document.querySelector<HTMLElement>(`.cv-row[data-thread="${id}"] > .th-li`);
 
@@ -50,6 +67,11 @@ export function CommentsView() {
   const providerOf = useProviderOf();
   const label = useRepoLabel();
   const me = useMe().data;
+  const agents = useAgents().data ?? NO_AGENTS;
+  // Without agents every thread is yours and waits on no one: the Author and Waiting filters show once there are some
+  // (or while the URL has them on).
+  const showAuthor = agents.length > 0 || s.author !== null;
+  const showWaiting = agents.length > 0 || s.waiting;
   const asked = threadListParams(s);
   const filterKey = JSON.stringify(asked);
   // One object per set of filters (not per render), for the callbacks that use it.
@@ -198,8 +220,10 @@ export function CommentsView() {
       repos.add(t.repo);
     }
     const on = [prs.size && `${prs.size} ${plural(prs.size, w.short, w.shortMany)}`, commits.size && `${commits.size} ${plural(commits.size, 'commit')}`].filter(Boolean).join(' and ');
-    return `${[stWord, plural(total, 'thread')].filter(Boolean).join(' ')}${on ? ` on ${on}` : ''}${repos.size ? ` · ${repos.size} ${plural(repos.size, 'repo')}` : ''}`;
-  }, [data, total, stWord, w]);
+    // Waiting on you implies unresolved.
+    const what = [!s.waiting && stWord, plural(total, 'thread'), byWord(s.author, agents), s.waiting && 'waiting on you'].filter(Boolean).join(' ');
+    return `${what}${on ? ` on ${on}` : ''}${repos.size ? ` · ${repos.size} ${plural(repos.size, 'repo')}` : ''}`;
+  }, [data, total, stWord, w, s.author, s.waiting, agents]);
   // "PR or commit"; with both hosts' repos in view, "PR/MR or commit".
   const changeWord = words.host ? w.short : `${PROVIDERS.github.pr.short}/${PROVIDERS.gitlab.pr.short}`;
   const kindWord = s.kind === 'pr' ? `on ${w.shortMany}` : s.kind === 'commit' ? 'on commits' : '';
@@ -207,7 +231,12 @@ export function CommentsView() {
 
   return (
     <main className="main">
-      <FilterToolbar summary={[s.status === 'open' ? 'Unresolved' : s.status === 'resolved' ? 'Resolved' : 'All', s.kind === 'pr' ? w.shortMany : s.kind === 'commit' ? 'Commits' : '', s.q && `“${s.q}”`].filter(Boolean).join(' · ')}>
+      <FilterToolbar summary={[
+        s.waiting ? 'Waiting on you' : s.status === 'open' ? 'Unresolved' : s.status === 'resolved' ? 'Resolved' : 'All',
+        s.kind === 'pr' ? w.shortMany : s.kind === 'commit' ? 'Commits' : '',
+        s.author !== null && `By ${authorName(s.author, agents)}`,
+        s.q && `“${s.q}”`,
+      ].filter(Boolean).join(' · ')}>
         <div className="row">
           <Seg<ThreadStatusFilter>
             value={s.status}
@@ -222,6 +251,7 @@ export function CommentsView() {
           <Seg<ThreadKindFilter> value={s.kind} onChange={(kind) => set({ kind })} ariaLabel="Threads on" options={[
             { value: 'all', label: 'All' }, { value: 'pr', label: w.shortMany }, { value: 'commit', label: 'Commits' },
           ]} />
+          {showAuthor && <AuthorMenu value={s.author} agents={agents} onChange={(author) => set({ author })} />}
           <span className="summary grow" title={data ? `${total.toLocaleString()} ${summary}` : undefined}>
             {data ? <><b>{total.toLocaleString()}</b> {summary}</> : list.isError ? null : <span className="muted">Loading…</span>}
           </span>
@@ -232,6 +262,14 @@ export function CommentsView() {
         </div>
         <div className="row">
           <FilterInput value={s.q} onChange={(q) => set({ q }, { replace: true })} placeholder="Filter by comment or file path…" />
+          {showWaiting && (
+            <button type="button" className={cx('chip-toggle', s.waiting && 'on')} style={{ marginLeft: 4 }} aria-pressed={s.waiting}
+              disabled={s.status === 'resolved' && !s.waiting}
+              title={s.status === 'resolved' && !s.waiting ? 'Resolved threads wait on no one' : "Unresolved threads whose last comment isn't yours"}
+              onClick={() => set({ waiting: !s.waiting })}>
+              <Icon name="enter" />Waiting on you
+            </button>
+          )}
           <span className="spacer" />
           <Ctl label="Group">
             <Seg<ThreadGroup> className="sm" value={s.threadGroup} onChange={(threadGroup) => set({ threadGroup })} ariaLabel="Group by" options={[
@@ -257,7 +295,7 @@ export function CommentsView() {
             <ListSkeleton density="titles" />
           ) : s.repos?.length === 0 ? (
             <NoReposSelected onSelectAll={() => set({ repos: null })} />
-          ) : !rows.length && counts && counts.open + counts.resolved === 0 && !s.q && s.kind === 'all' ? (
+          ) : !rows.length && counts && counts.open + counts.resolved === 0 && !s.q && s.kind === 'all' && s.author === null && !s.waiting ? (
             <EmptyState icon="comment" title={s.repos === null && s.vis === 'all' && s.own === 'all' ? 'No comments yet' : 'No comments in these repositories'}>
               Comments you add in a diff show up here. Open the changes of a {changeWord} or a commit, and use the + beside a
               line, or the comments column for one on the whole of it.
@@ -265,18 +303,22 @@ export function CommentsView() {
           ) : !rows.length ? (
             <EmptyState
               icon="comment"
-              title={`No ${[stWord, 'comments', kindWord].filter(Boolean).join(' ')}${s.q ? ` matching “${s.q}”` : ''}`}
+              title={s.waiting && !s.q && s.kind === 'all' && s.author === null ? 'Nothing is waiting on you'
+                : `No ${[!s.waiting && stWord, 'comments', byWord(s.author, agents), kindWord, s.waiting && 'waiting on you'].filter(Boolean).join(' ')}${s.q ? ` matching “${s.q}”` : ''}`}
               action={
                 <div className="empty-actions">
-                  {s.status !== 'all' && counts && (s.status === 'open' ? counts.resolved : counts.open) > 0 && (
+                  {!s.waiting && s.status !== 'all' && counts && (s.status === 'open' ? counts.resolved : counts.open) > 0 && (
                     <button type="button" className="btn" onClick={() => set({ status: 'all' })}>Show all comments</button>
                   )}
+                  {s.waiting && <button type="button" className="btn" onClick={() => set({ waiting: false })}>Show all unresolved</button>}
+                  {s.author !== null && <button type="button" className="btn" onClick={() => set({ author: null })}>Show anyone's</button>}
                   {s.kind !== 'all' && <button type="button" className="btn" onClick={() => set({ kind: 'all' })}>Show {w.shortMany} and commits</button>}
                   {s.q && <button type="button" className="btn" onClick={() => set({ q: '' })}>Clear filter</button>}
                 </div>
               }
             >
-              {s.status === 'open' && !s.q && counts && counts.resolved > 0 ? 'Everything here is resolved.' : 'Try another filter, or select more repositories.'}
+              {s.waiting && !s.q && s.kind === 'all' && s.author === null ? 'Every unresolved thread ends with a comment of yours.'
+                : s.status === 'open' && !s.waiting && !s.q && counts && counts.resolved > 0 ? 'Everything here is resolved.' : 'Try another filter, or select more repositories.'}
             </EmptyState>
           ) : (
             <>
@@ -314,6 +356,38 @@ export function CommentsView() {
         </div>
       </div>
     </main>
+  );
+}
+
+/** Who opened the threads: anyone, you, any agent, or one agent (each by name when there are several). */
+function AuthorMenu({ value, agents, onChange }: { value: ThreadAuthor | null; agents: readonly Agent[]; onChange: (a: ThreadAuthor | null) => void }) {
+  const name = authorName(value, agents);
+  const named = agents.length > 1 || typeof value === 'number';
+  const opt = (v: ThreadAuthor | null, label: string, hint: string | null, close: () => void) => (
+    <button key={String(v)} type="button" role="menuitemradio" aria-checked={v === value} className={cx('opt', v === value && 'on')}
+      onClick={() => { close(); onChange(v); }}>
+      <span className="ck">{v === value && <Icon name="check" />}</span>
+      {label}
+      <span className="spacer" />
+      {hint && <span className="hint">{hint}</span>}
+    </button>
+  );
+  return (
+    <MenuButton className={cx('btn', value !== null && 'on-accent')} label={`Opened by: ${name}`} title="Who opened the thread" menuLabel="Opened by" align="start" width={200}
+      button={<>{value === null ? 'Anyone' : `By ${value === 'self' || value === 'agents' ? name.toLowerCase() : name}`}<Icon name="chevron" /></>}>
+      {(close) => (
+        <>
+          {opt(null, 'Anyone', null, close)}
+          {opt('self', 'You', null, close)}
+          {opt('agents', 'Agents', null, close)}
+          {named && (
+            <div className="pop-foot" role="presentation">
+              {sortAgents(agents).map((a) => opt(a.id, a.name, a.revokedAt ? 'revoked' : null, close))}
+            </div>
+          )}
+        </>
+      )}
+    </MenuButton>
   );
 }
 
@@ -391,6 +465,7 @@ const Row = memo(function Row({ t, on, cursor, open, me, onOpen, onToggle, onSta
     on && `on ${target}${t.targetTitle ? ` (${t.targetTitle})` : ''}`,
     plainPreview(t.comments[0]!.body, 120),
     replies > 0 && `${replies} ${plural(replies, 'reply', 'replies')}`,
+    t.resolvedBy && `resolved by ${principalWord(t.resolvedBy)}`,
     rel(t.updatedAt),
   ].filter(Boolean).join(', ');
   return (
@@ -404,6 +479,7 @@ const Row = memo(function Row({ t, on, cursor, open, me, onOpen, onToggle, onSta
         before={on && <span className="cv-on" title={t.targetTitle ?? undefined}>{on === 'repo' && <span className="r">{label(t.repo)}</span>}{refOf(t, providerOf)}</span>}
         after={<>
           {t.earlierPush && <span className="cv-tag" title={`Made on an earlier push (${t.commitOid.slice(0, 7)}); the ${providerOf(t.repo).pr.short} has changed since`}>earlier push</span>}
+          {resolved && t.resolvedBy && <span className="cv-by" title={t.resolvedAt ? `Resolved ${fmtDateTime(t.resolvedAt)}` : undefined}>resolved by {principalWord(t.resolvedBy)}</span>}
           <time className="cv-time" dateTime={t.updatedAt} title={fmtDateTime(t.updatedAt)}>{rel(t.updatedAt)}</time>
         </>} />
       {open && <Conversation id={convId} t={t} me={me} onOpen={onOpen} onStatus={onStatus} />}
@@ -425,7 +501,7 @@ function Conversation({ id, t, me, onOpen, onStatus }: { id: string; t: ThreadLi
             <div className="cv-c-head">
               <Avatar actor={self ? { login: me?.login ?? null, name: me?.name ?? me?.login ?? 'You', avatarUrl: null, isMe: true } : { login: null, name: c.author.name, avatarUrl: null, isMe: false }} size={16} />
               <b>{self ? 'You' : c.author.name}</b>
-              {!self && <span className="cv-agent" title="Written by an agent through the API">agent</span>}
+              {!self && <AgentMark />}
               <time dateTime={c.createdAt} title={fmtDateTime(c.createdAt)}>{rel(c.createdAt)}</time>
               {c.editedAt && <span title={`Edited ${fmtDateTime(c.editedAt)}`}>· edited</span>}
             </div>
@@ -433,6 +509,12 @@ function Conversation({ id, t, me, onOpen, onStatus }: { id: string; t: ThreadLi
           </div>
         );
       })}
+      {resolved && t.resolvedBy && (
+        <p className="cv-resolved">
+          <Icon name="check" />Resolved by <b>{t.resolvedBy.kind === 'self' ? 'you' : t.resolvedBy.name}</b>{t.resolvedBy.kind === 'agent' && <AgentMark />}
+          {t.resolvedAt && <> · <time dateTime={t.resolvedAt} title={fmtDateTime(t.resolvedAt)}>{rel(t.resolvedAt)}</time></>}
+        </p>
+      )}
       <div className="cv-foot">
         <button type="button" className="btn sm" disabled={busy} title={`${resolved ? 'Reopen' : 'Resolve'} (e)`}
           onClick={() => { setBusy(true); void onStatus(t).finally(() => setBusy(false)); }}>

@@ -722,13 +722,18 @@ a.sync:hover .sync-text { color: var(--text); text-decoration: underline; text-u
 .cv-on .r { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .cv-tag { flex: none; padding: 0 6px; border: 1px solid var(--border-strong); border-radius: 999px; font-size: 11px; font-weight: 500; line-height: 16px; color: var(--muted); white-space: nowrap; }
 .cv-time { flex: none; min-width: 52px; text-align: right; font-size: 12px; color: var(--muted); white-space: nowrap; }
+.th-by { flex: none; display: inline-flex; align-items: baseline; gap: 4px; max-width: 30%; min-width: 0; font-size: 12px; font-weight: 550; color: var(--text-2); white-space: nowrap; }
+.th-by .nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.cv-by { flex: none; font-size: 12px; color: var(--muted); white-space: nowrap; }
+.cv-resolved { display: flex; align-items: center; gap: 5px; margin: 10px 0 0; font-size: 12px; color: var(--muted); }
+.cv-resolved svg { width: 12px; height: 12px; }
+.cv-resolved b { font-weight: 600; color: var(--text-2); }
 .cv-conv { grid-row: 2; grid-column: 2; max-width: 860px; margin: 0 10px 12px 2px; padding: 2px 0 2px 14px; border-left: 2px solid var(--accent); }
 .cv-row.resolved .cv-conv { border-left-color: var(--border-strong); }
 .cv-snip { margin: 0 0 10px; padding: 6px 10px; max-height: 9em; overflow: auto; border-radius: 6px; background: var(--surface-2); font: 11.5px/1.5 var(--mono); color: var(--text-2); white-space: pre; }
 .cv-c + .cv-c { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
 .cv-c-head { display: flex; align-items: center; gap: 6px; min-height: 18px; font-size: 12px; color: var(--muted); }
 .cv-c-head b { font-weight: 600; color: var(--text); }
-.cv-agent { padding: 0 5px; border: 1px solid var(--border-strong); border-radius: 999px; font-size: 10.5px; }
 .cv-md.md { max-width: 780px; margin-top: 4px; font-size: 13px; line-height: 1.55; }
 .cv-md.md p { margin: 0 0 6px; }
 .cv-md.md pre, .cv-md.md code { font-size: 12px; }
@@ -738,6 +743,7 @@ a.sync:hover .sync-text { color: var(--text); text-decoration: underline; text-u
 /* Narrow: a row's words go under its place, and a group's counts under its title. */
 @container main (max-width: 640px) {
   .cv-row > .th-li { flex-wrap: wrap; row-gap: 2px; }
+  .cv-row .cv-by { display: none; }
   .cv-row .th-where { max-width: none; margin-right: auto; }
   .cv-row .th-text { order: 1; flex: 1 1 100%; padding-left: 21px; white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
   .cv-disc { place-items: start center; padding-top: 11px; }
@@ -752,3 +758,84 @@ a.sync:hover .sync-text { color: var(--text); text-decoration: underline; text-u
   .cv-disc, .cv-row > .th-li { min-height: 44px; }
   .cv-foot .btn { height: 36px; }
 }
+
+/* Agents (MCP): the mark after an agent's name, and what agents ask the window to show. */
+.agent-mark { flex: none; display: inline-block; padding: 0 5px; border: 1px solid var(--border-strong); border-radius: 999px; font-size: 10.5px; font-weight: 500; line-height: 15px; color: var(--muted); vertical-align: 1px; white-space: nowrap; }
+.show-t .agent-mark { margin-left: 4px; }
+.show-host { position: fixed; right: 16px; bottom: 16px; z-index: 55; display: flex; flex-direction: column; gap: 8px; width: min(360px, calc(100vw - 32px)); }
+.show-chip { padding: 10px 12px 8px; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--surface); box-shadow: var(--shadow); font-size: 12.5px; color: var(--text-2); animation: gd-toast .18s ease-out; }
+.show-l { display: flex; align-items: flex-start; gap: 8px; }
+.show-l .avatar { margin-top: 1px; }
+.show-t { margin: 0; min-width: 0; line-height: 1.45; overflow-wrap: anywhere; }
+.show-t b { color: var(--text); font-weight: 600; }
+.show-where { color: var(--text); font-family: var(--mono); font-size: 11.5px; }
+.show-on { color: var(--text); font-weight: 550; }
+.show-msg { margin: 6px 0 0 26px; color: var(--text); line-height: 1.45; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+.show-acts { display: flex; align-items: center; gap: 6px; margin: 8px 0 0 26px; }
+.show-follow { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); cursor: pointer; white-space: nowrap; }
+.switch.sm { width: 26px; height: 16px; }
+.switch.sm::after { top: 2px; left: 2px; width: 12px; height: 12px; }
+.switch.sm:checked::after { transform: translateX(10px); }
+@media (max-width: 640px) {
+  .show-host { right: 8px; left: 8px; bottom: 8px; width: auto; }
+  .show-acts .btn { height: 34px; }
+}
+.agent-row .trk-name { flex: 0 0 auto; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
+.agent-row.revoked .trk-name { color: var(--muted); font-weight: 400; }
+.agent-prefix { flex: none; padding: 0; background: none; font-size: 11.5px; color: var(--muted); }
+.agent-row .agent-st { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; display: block; }
+.agent-row .agent-prefix { flex: none; }
+.agent-row .btn.sm { flex: none; color: var(--text-2); }
+.agent-row .btn.sm + .btn.sm { margin-left: -6px; }
+.agent-add { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 14px; }
+.agent-add .input { width: 220px; max-width: 100%; }
+.agent-add .form-err { flex-basis: 100%; margin-top: 0; }
+.agent-token { margin-top: 14px; padding: 12px 14px; border-radius: 8px; background: var(--surface-2); font-size: 12.5px; color: var(--text-2); }
+.agent-token-h { display: flex; align-items: baseline; gap: 8px; margin: 0 0 8px !important; }
+.agent-token-h svg { width: 13px; height: 13px; color: var(--muted); transform: translateY(2px); }
+.agent-token-h b { color: var(--text); font-weight: 600; }
+.agent-token h3 { display: flex; align-items: baseline; gap: 8px; margin: 12px 0 6px; font-size: 12px; font-weight: 600; color: var(--text); }
+.agent-token h3 small { font: 11.5px var(--mono); font-weight: 400; color: var(--muted); }
+.agent-token > small { display: block; margin: 8px 0 6px; font-size: 12px; }
+.agent-snip { display: flex; align-items: flex-start; gap: 8px; }
+.agent-snip pre.code { flex: 1; min-width: 0; margin: 0; padding: 7px 10px; font-size: 11.5px; line-height: 1.55; background: var(--surface); white-space: pre-wrap; overflow-wrap: anywhere; word-break: normal; }
+.agent-snip > code.set-key { flex: 1; min-width: 0; padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); line-height: 1.5; }
+.agent-token .set-actions { margin-top: 12px; }
+/* Activity: comment events (a row's lines, or its one comment as the description). */
+.ev.comment .ev-ic { color: var(--accent-text); }
+.ev-text button.t { color: var(--text); font-weight: 550; text-align: left; }
+.ev-text button.t:hover { color: var(--accent-text); text-decoration: underline; text-underline-offset: 2px; }
+.c-li.cm-li { width: 100%; text-align: left; color: var(--text); }
+.c-li.cm-li > span { flex: none; }
+.c-li.cm-li > .cm-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+button.cm-li:hover .cm-text, button.cm-quote:hover { color: var(--accent-text); }
+.cm-where { max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 11.5px var(--mono); color: var(--text-2); }
+.cm-verb { font-size: 12px; color: var(--muted); }
+.cm-gone { font-size: 11px; color: var(--muted); }
+.cm-li.gone .cm-where, .cm-li.gone .cm-text, .cm-quote.gone .cm-text { color: var(--muted); text-decoration: line-through; text-decoration-color: var(--border-strong); }
+button.cm-quote { display: -webkit-box; text-align: left; }
+.cm-quote .cm-gone { margin-left: 6px; }
+@container main (max-width: 640px) {
+  .c-li.cm-li { flex-wrap: wrap; row-gap: 0; }
+  .c-li.cm-li > time { display: none; }
+  .c-li.cm-li > .cm-text { order: 1; flex: 1 1 100%; white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  .cm-where { max-width: 60%; }
+  .agent-snip .btn .lbl { display: none; }
+}
+/* Settings → Instance: the Local API's switches, their settings under them. A quiet warning under a switch. */
+.set-row.sub .set-l { padding-left: 16px; }
+.set-warn { display: flex; align-items: baseline; gap: 7px; font-size: 12px; line-height: 1.45; color: var(--text-2); }
+.set-warn::before { content: ""; flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--star); transform: translateY(-1px); }
+.set-c.stack > .set-warn { margin-top: 2px; }
+/* Settings → Agents: MCP off, the token field, a new token's form. */
+.set-sec .agent-off { align-items: center; }
+.agent-off > span { flex: 1; }
+.agent-off .btn { flex: none; }
+.agent-enabled { display: flex; align-items: center; gap: 6px; margin: -2px 0 10px !important; font-size: 12.5px; color: var(--text); }
+.agent-enabled svg { width: 13px; height: 13px; color: var(--add); }
+.agent-token-field { display: inline-flex; flex: 1 1 360px; gap: 8px; min-width: 0; }
+.agent-token-in { flex: 1; min-width: 0; font: 12px var(--mono); }
+.agent-add .agent-token-field .btn { flex: none; }
+.agent-new { padding: 12px 14px; border-radius: 8px; background: var(--surface-2); }
+.agent-new-h { flex-basis: 100%; margin: 0 !important; font-size: 12.5px; color: var(--text-2); }
+.agent-new-h b { color: var(--text); font-weight: 600; }

@@ -116,7 +116,10 @@ export interface Repo {
   addedAt: string | null;
   /** Manual repos the token can no longer read: data kept, sync skips it until readable again. */
   unavailable: { since: string; reason: string } | null;
-  /** Local comments on its PRs and commits (every author, never on the code host): removing the repo deletes them. */
+  /**
+   * Local comments on its PRs, branches and commits (every author, never on the code host): removing the repo deletes
+   * them.
+   */
   commentCount: number;
 }
 
@@ -146,7 +149,10 @@ export interface PullRequest {
   baseRef: string;
   labels: Label[];
   url: string;
-  /** Local comment threads on this PR (on list items, the detail and activity events alike; zero counts when none). */
+  /**
+   * Local comment threads the PR's view shows: its own and its branch group (see "Branch groups"). On list items, the
+   * detail and activity events alike; zero counts when none.
+   */
   comments: CommentCounts;
 }
 
@@ -999,8 +1005,9 @@ export type ThreadKindFilter = 'pr' | 'branch' | 'commit' | 'all';
 export type ThreadSort = 'recent' | 'oldest';
 
 /**
- * GET /threads: every thread in scope, across PRs and commits. The scope is source, repos, visibility and ownership
- * (not `who` or the date range: a thread stays open however old it is); `q` matches comment bodies and file paths.
+ * GET /threads: every thread in scope, across PRs, branches and commits. The scope is source, repos, visibility and
+ * ownership (not `who` or the date range: a thread stays open however old it is); `q` matches comment bodies and file
+ * paths.
  */
 export interface ThreadListQuery extends Pick<ScopeQuery, 'repos' | 'source' | 'visibility' | 'ownership' | 'q'>, PageQuery {
   /** Default 'open'. */
@@ -1145,8 +1152,9 @@ export interface ThreadListResponse extends ListResponse<ThreadListItem> {
 //          branch's current group: see "Branch groups". PR threads' lists include their branch's group the same way.)
 // POST   /api/v1/branches/:repo/:branch/threads NewBranchThread -> CommentThread   (400 for the default branch; the
 //          branch need not exist on the code host any more)
-// GET    /api/v1/threads    ThreadListQuery    -> ThreadListResponse | text/markdown   (every thread in scope, across PRs
-//          and commits: status open by default, newest activity first; format=md groups them per PR or commit)
+// GET    /api/v1/threads    ThreadListQuery    -> ThreadListResponse | text/markdown   (every thread in scope, across PRs,
+//          branches and commits: status open by default, newest activity first; format=md groups them per PR, branch
+//          or commit)
 // GET    /api/v1/threads/:id                   -> CommentThread
 // GET    /api/v1/agents                        -> { items: Agent[] }   (made and revoked only by the desktop app or the
 //          headless `agents` command, never over HTTP)

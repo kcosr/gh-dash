@@ -16,7 +16,7 @@ import type {
   Star,
 } from '../../shared/api';
 import { localDateSql, offsetSegments } from '../lib/time';
-import { SELF_PRINCIPAL_ID } from './comments';
+import { prViewSql, SELF_PRINCIPAL_ID } from './comments';
 import type { Db, Param } from './db';
 import {
   addLike,
@@ -119,14 +119,23 @@ export interface PrFilter {
 }
 
 export const PR_FROM = 'pull_requests p JOIN repos r ON r.id = p.repo_id';
-// Threads are keyed by repo and number (not p.id), so they match the PR's current row.
-const PR_THREADS = 'FROM comment_threads t WHERE t.repo_id = p.repo_id AND t.pr_number = p.number';
+// A PR's threads as its view shows them (db/comments.ts): its own, keyed by repo and number (not p.id) so they match
+// the PR's current row, and its branch group. Counted per row of a page only; filtering by them goes the other way.
+const PR_THREADS = `FROM comment_threads t WHERE (${prViewSql('t', 'p')})`;
 export const PR_SELECT =
   `p.*, ${repoKeySql('r')} AS repo, r.source_id AS source_id, ` +
   `(SELECT count(*) ${PR_THREADS}) AS threads, (SELECT count(*) ${PR_THREADS} AND t.status = 'open') AS unresolved_threads`;
+/**
+ * The ids of the PRs whose view shows a thread (an open one, for `unresolved`), found from the threads: they are few
+ * beside the PRs a filter looks through, and each finds its PRs by index (its own by number, its group's by head
+ * branch). Run once per query.
+ */
+const prsWithThreads = (f: CommentFilter) =>
+  `SELECT tp.id FROM comment_threads t JOIN pull_requests tp ON ${prViewSql('t', 'tp')}${f === 'unresolved' ? " WHERE t.status = 'open'" : ''}`;
 
-// Commit threads are keyed by repo and oid, with no PR number: a PR's own threads are not its commits'.
-const COMMIT_THREADS = 'FROM comment_threads t WHERE t.repo_id = c.repo_id AND t.pr_number IS NULL AND t.commit_oid = c.oid';
+// Commit threads are keyed by repo and oid, with no PR number or branch: a PR's or a branch's threads made on a commit
+// are not the commit's.
+const COMMIT_THREADS = 'FROM comment_threads t WHERE t.repo_id = c.repo_id AND t.pr_number IS NULL AND t.branch IS NULL AND t.commit_oid = c.oid';
 export const COMMIT_SELECT =
   `c.*, ${repoKeySql('r')} AS repo, r.source_id AS source_id, ` +
   `(SELECT count(*) ${COMMIT_THREADS}) AS threads, (SELECT count(*) ${COMMIT_THREADS} AND t.status = 'open') AS unresolved_threads`;
@@ -141,7 +150,7 @@ function prWhere(ctx: QueryCtx, scope: Scope, f: PrFilter, ignoreRepos: boolean)
       JSON.stringify(f.labels.map((l) => l.toLowerCase())),
     );
   }
-  if (f.comments) w.add(`EXISTS (SELECT 1 ${PR_THREADS}${f.comments === 'unresolved' ? " AND t.status = 'open'" : ''})`);
+  if (f.comments) w.add(`p.id IN (${prsWithThreads(f.comments)})`);
   addRange(w, 'p.activity_at', scope);
   addWho(w, scope.who, ctx, 'p.author_login');
   addText(w, scope.q, 'pull_requests', 'p', ['p.title', 'p.body']);
@@ -442,6 +451,7 @@ interface CommentEventRow {
   actor_kind: PrincipalKind;
   actor_name: string;
   pr_number: number | null;
+  branch: string | null;
   commit_oid: string;
   target_title: string | null;
   path: string | null;
@@ -452,12 +462,20 @@ interface CommentEventRow {
 }
 
 // What an event copied of its thread, plus what is known now: who the actor is, whether the thread is still there, and
-// the title of what it is on (as GET /threads finds it, the pr_commits fallback included).
+// the title of what it is on (as GET /threads finds it, the pr_commits fallback included; a branch has none).
 const COMMENT_EVENT_SELECT =
   'ce.*, (SELECT kind FROM principals WHERE id = ce.actor_id) AS actor_kind, (SELECT name FROM principals WHERE id = ce.actor_id) AS actor_name, ' +
   'EXISTS (SELECT 1 FROM comment_threads WHERE id = ce.thread_id) AS live, ' +
   'CASE WHEN ce.pr_number IS NOT NULL THEN (SELECT title FROM pull_requests WHERE repo_id = ce.repo_id AND number = ce.pr_number) ' +
+  'WHEN ce.branch IS NOT NULL THEN NULL ' +
   `ELSE COALESCE((SELECT headline FROM commits WHERE repo_id = ce.repo_id AND oid = ce.commit_oid), ${prCommitHeadlineSql('ce')}) END AS target_title`;
+
+/** What an event's thread is on, derived as a thread's kind is (db/comments.ts hydrate). */
+function eventTarget(r: CommentEventRow): CommentActivity['target'] {
+  if (r.pr_number !== null) return { kind: 'pr', number: r.pr_number, title: r.target_title };
+  if (r.branch !== null) return { kind: 'branch', branch: r.branch, title: null };
+  return { kind: 'commit', oid: r.commit_oid, title: r.target_title };
+}
 
 const toCommentActivity = (r: CommentEventRow): CommentActivity => ({
   eventId: r.id,
@@ -465,7 +483,7 @@ const toCommentActivity = (r: CommentEventRow): CommentActivity => ({
   commentId: r.comment_id,
   live: !!r.live,
   by: { id: r.actor_id, kind: r.actor_kind, name: r.actor_name },
-  target: r.pr_number !== null ? { kind: 'pr', number: r.pr_number, title: r.target_title } : { kind: 'commit', oid: r.commit_oid, title: r.target_title },
+  target: eventTarget(r),
   commitOid: r.commit_oid,
   path: r.path,
   side: r.side,

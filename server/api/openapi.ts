@@ -27,12 +27,15 @@ const SOURCE_TOKEN_SOURCE = enumOf('env', 'file', 'gh-cli', 'glab', 'app', 'none
 /** An instance setting with where it came from. */
 const setting = (value: Schema): Schema => obj({ value, source: enumOf('default', 'file', 'env') });
 
-/** A new thread's request body. A PR thread must name the head it was made on; a commit thread is on the commit. */
-function newThread(kind: 'pr' | 'commit'): Schema {
+/**
+ * A new thread's request body. A PR or branch thread must name the head it was made on (a PR's or branch's head moves);
+ * a commit thread is on the commit.
+ */
+function newThread(kind: 'pr' | 'branch' | 'commit'): Schema {
   const anchor = ['baseOid', 'path', 'side', 'startLine', 'endLine', 'snippet'];
   return {
     ...obj({
-      commitOid: str(kind === 'pr' ? 'headOid of the diff shown (full SHA)' : "Optional; if sent, the commit's own full SHA"),
+      commitOid: str(kind === 'commit' ? "Optional; if sent, the commit's own full SHA" : 'headOid of the diff shown (full SHA)'),
       baseOid: nullable(str("The diff's baseOid")),
       path: nullable(str()),
       side: nullable(enumOf('old', 'new')),
@@ -40,9 +43,9 @@ function newThread(kind: 'pr' | 'commit'): Schema {
       endLine: nullable(int()),
       snippet: nullable(str()),
       body: str('Markdown, at most 65536 characters'),
-    }, kind === 'pr' ? anchor : ['commitOid', ...anchor]),
+    }, kind === 'commit' ? ['commitOid', ...anchor] : anchor),
     description:
-      'Anchor levels: no path (the whole PR or commit); path only (a file); or path, side, startLine, endLine and snippet ' +
+      'Anchor levels: no path (the whole PR, branch or commit); path only (a file); or path, side, startLine, endLine and snippet ' +
       '(lines, at most 1000, snippet holding exactly those lines).',
   };
 }
@@ -69,7 +72,7 @@ const schemas: Record<string, Schema> = {
       ...nullable(obj({ since: dateTime, reason: str() })),
       description: 'Manual repos the token can no longer read: data kept, sync skips it until readable again',
     },
-    commentCount: { ...int(), description: 'Local comments on its pull requests and commits (every author): removing the repo deletes them too' },
+    commentCount: { ...int(), description: 'Local comments on its pull requests, branches and commits (every author): removing the repo deletes them too' },
   }),
   PullRequest: obj({
     id: str('<repo>#<number>'), repo: str(), number: int(), title: str(), body: str('Markdown'),
@@ -78,7 +81,11 @@ const schemas: Record<string, Schema> = {
     activityAt: { ...dateTime, description: 'mergedAt if merged, closedAt if closed, else createdAt' },
     additions: int(), deletions: int(), changedFiles: int(), commitCount: int(), headRef: str(), baseRef: str(),
     labels: arr(ref('Label')), url: str(),
-    comments: { ...ref('CommentCounts'), description: 'Local comment threads on this pull request (zero counts when none), on list items, the detail and activity events alike' },
+    comments: {
+      ...ref('CommentCounts'),
+      description:
+        "Local comment threads its view shows: its own, and its branch's group (see the per-PR thread list; zero counts when none), on list items, the detail and activity events alike",
+    },
   }),
   PullRequestDetail: {
     allOf: [
@@ -92,7 +99,7 @@ const schemas: Record<string, Schema> = {
   Commit: obj({
     oid: str(), shortOid: str(), repo: str(), headline: str(), body: str(), author: ref('Actor'), committedAt: dateTime,
     url: str(), additions: int(), deletions: int(), prNumber: nullable(int('Set when the commit landed via a PR')),
-    comments: { ...ref('CommentCounts'), description: 'Local comment threads on this commit itself (not on a PR it landed through; zero counts when none), on list items and activity events alike' },
+    comments: { ...ref('CommentCounts'), description: 'Local comment threads on this commit itself (not on a PR it landed through, or a branch; zero counts when none), on list items and activity events alike' },
   }),
   Issue: obj({
     id: str('<repo>#<number>'), repo: str(), number: int(), title: str(), body: str(), state: enumOf('open', 'closed'),
@@ -347,13 +354,17 @@ const schemas: Record<string, Schema> = {
   }),
   CommentThread: obj({
     id: int(),
-    kind: enumOf('pr', 'commit'),
+    kind: { ...enumOf('pr', 'branch', 'commit'), description: "What it was made on: a PR's diff, a branch's (against the default branch), or a commit's" },
     repo: str(),
-    number: nullable(int('PR number; null for commits')),
-    commitOid: str('The revision the thread was made on: the diff\'s headOid then (PR head, or the commit)'),
+    number: nullable(int('PR number; null otherwise')),
+    branch: nullable(str(
+      "The branch whose line of work it belongs to (its branch group): always set for kind 'branch'; for kind 'pr', the PR's head branch when the PR is " +
+        'from the same repository (null for a PR from a fork, or one made before the sync knew which); null for commits',
+    )),
+    commitOid: str('The revision the thread was made on: the diff\'s headOid then (PR head, branch head, or the commit)'),
     baseOid: nullable(str("The diff's baseOid then (merge base or first parent)")),
-    path: nullable(str('File (DiffFile.path); null for a PR- or commit-level thread')),
-    side: nullable({ ...enumOf('old', 'new'), description: 'null for a file- or PR-level thread' }),
+    path: nullable(str('File (DiffFile.path); null for a thread on the whole PR, branch or commit')),
+    side: nullable({ ...enumOf('old', 'new'), description: 'null for a file-level thread, or one on the whole PR, branch or commit' }),
     startLine: nullable(int('1-based, on side')),
     endLine: nullable(int('Inclusive')),
     snippet: nullable(str('The anchored lines as they were, joined with \\n (endLine - startLine + 1 lines)')),
@@ -366,13 +377,20 @@ const schemas: Record<string, Schema> = {
   }),
   ThreadListItem: {
     allOf: [ref('CommentThread'), obj({
-      targetTitle: nullable(str("The PR's title or the commit's headline; null when that isn't synced (a thread can outlive its PR's row). A commit the sync doesn't hold takes its headline from a synced PR that lists it (the newest one), else null")),
-      prState: nullable({ ...enumOf('open', 'merged', 'closed'), description: "The PR's state; null for a commit thread, or a PR that isn't synced" }),
-      targetUrl: str("The PR or commit on its code host: the synced row's url, else built from the repo's url"),
-      earlierPush: { ...bool, description: "A PR thread made on an earlier push than the PR's current head (false for commits, or when the head isn't known)" },
+      targetTitle: nullable(str(
+        "The PR's title or the commit's headline; null when that isn't synced (a thread can outlive its PR's row), and for a branch thread (`branch` names it). " +
+          "A commit the sync doesn't hold takes its headline from a synced PR that lists it (the newest one), else null",
+      )),
+      prState: nullable({ ...enumOf('open', 'merged', 'closed'), description: "The PR's state; null for a branch or commit thread, or a PR that isn't synced" }),
+      targetUrl: str(
+        "The PR or commit on its code host (the synced row's url, else built from the repo's url), or the branch's compare page against the default branch " +
+          "(the repository's page while the default branch isn't known)",
+      ),
+      earlierPush: { ...bool, description: "A PR thread made on an earlier push than the PR's current head (false for branches and commits, or when the head isn't known)" },
     })],
   },
   NewPrThread: newThread('pr'),
+  NewBranchThread: newThread('branch'),
   NewThread: newThread('commit'),
   CommentEventKind: enumOf('thread_opened', 'replied', 'edited', 'comment_deleted', 'resolved', 'reopened', 'thread_deleted'),
   CommentActivity: obj({
@@ -384,6 +402,7 @@ const schemas: Record<string, Schema> = {
     target: {
       oneOf: [
         obj({ kind: enumOf('pr'), number: int(), title: nullable(str("The PR's title; null when not synced")) }),
+        obj({ kind: enumOf('branch'), branch: str(), title: { type: 'null', description: 'None: the branch names it' } }),
         obj({ kind: enumOf('commit'), oid: str(), title: nullable(str("The commit's headline (or a synced PR's listing of it); null when not synced")) }),
       ],
     },
@@ -467,6 +486,7 @@ function commentEndpoints(): EndpointDoc[] {
   const repo = p('repo', 'Repo name');
   const format = q('format', "'md' returns the threads as text/markdown.", { ...enumOf('json', 'md'), default: 'json' });
   const id = (what: string) => p('id', `${what} id`, int());
+  const branch = { ...p('branch', 'Branch name, URL-encoded as one segment (`fix%2Flogin`)'), example: 'fix%2Flogin' };
   const threads = obj({ items: arr(ref('CommentThread')) });
   const example = { commitOid: '0123456789abcdef0123456789abcdef01234567', path: 'src/app.ts', side: 'new', startLine: 12, endLine: 13, snippet: 'const a = 1;\nconst b = 2;', body: 'Why two?' };
   const threadList = obj({
@@ -475,7 +495,7 @@ function commentEndpoints(): EndpointDoc[] {
   });
   const listParams = [
     q('status', "'open' (unresolved) by default; 'all' for both.", { ...enumOf('open', 'resolved', 'all'), default: 'open' }),
-    q('kind', 'Threads on pull requests (merge requests), on commits, or both.', { ...enumOf('pr', 'commit', 'all'), default: 'all' }),
+    q('kind', 'Threads on pull requests (merge requests), on branches, on commits, or all of them.', { ...enumOf('pr', 'branch', 'commit', 'all'), default: 'all' }),
     q('sort', "By last activity (`updatedAt`): 'recent' newest first, 'oldest' the reverse. Ties by thread id in the same direction.", { ...enumOf('recent', 'oldest'), default: 'recent' }),
     q('author', "Who opened the thread (its first comment's author): 'self' (you), 'agents' (any agent), or one agent's id (GET /agents; 400 for an id nobody has). Default: anyone.", str(), 'agents'),
     q('waiting', "'you': open threads whose last comment isn't yours (someone is waiting on you).", enumOf('you')),
@@ -483,11 +503,11 @@ function commentEndpoints(): EndpointDoc[] {
     q('q', 'Case-insensitive substring (ASCII) of any comment of the thread, or of its file path.', str(), 'typo'),
     PAGE[0]!,
     q('cursor', 'Opaque cursor from a previous nextCursor. It belongs to the `sort` it was made under (400 under the other).', str()),
-    q('format', "'md' (text/markdown) returns every matching thread, ignoring limit/cursor: a section per PR or commit.", { ...enumOf('json', 'md'), default: 'json' }),
+    q('format', "'md' (text/markdown) returns every matching thread, ignoring limit/cursor: a section per PR, branch or commit.", { ...enumOf('json', 'md'), default: 'json' }),
   ];
   return [
     {
-      method: 'get', path: '/api/v1/threads', tag, summary: 'Every comment thread in scope, across PRs and commits',
+      method: 'get', path: '/api/v1/threads', tag, summary: 'Every comment thread in scope, across PRs, branches and commits',
       description:
         'Scoped like the PR list (source, repos, visibility, ownership; removed repositories are hidden), but not by `who` or the date range: a thread stays open however old it is. ' +
         '`who`, `from`, `to`, `range` and `tz` are accepted and ignored. Each thread carries its comments, and what it is on when that is synced. ' +
@@ -496,7 +516,11 @@ function commentEndpoints(): EndpointDoc[] {
     },
     {
       method: 'get', path: '/api/v1/prs/{repo}/{number}/threads', tag, summary: "A pull request's comment threads, with their comments",
-      description: 'Oldest first. Anchors are as made; the diff viewer places them in the current diff (outdated or moved).',
+      description:
+        'Oldest first. Anchors are as made; the diff viewer places them in the current diff (outdated or moved). ' +
+        "Its own threads, and its branch group: for a PR from a branch of the same repository, the branch's threads (those of its review and of the " +
+        "other PRs from it) made after the branch's last merge before this PR ended (merged, or closed; an open PR hasn't), up to the branch's first " +
+        'merge at or after that (this PR\'s own, for a merged PR). A PR from a fork shares nothing. The group needs the PR synced; its own threads don\'t.',
       params: [repo, p('number', 'PR number', int()), format], response: { status: 200, schema: threads }, textFormats: 'md',
     },
     {
@@ -513,6 +537,20 @@ function commentEndpoints(): EndpointDoc[] {
       description: 'The commit need not be synced.',
       params: [repo, p('oid', 'Full commit SHA (40 characters, or 64 for SHA-256)')], body: { schema: ref('NewThread'), example: { path: 'README.md', body: 'Typo in the intro' } },
       response: { status: 200, schema: ref('CommentThread') },
+    },
+    {
+      method: 'get', path: '/api/v1/branches/{repo}/{branch}/threads', tag, summary: "A branch's comment threads (its review against the default branch), with their comments",
+      description:
+        "Oldest first. The branch's current group: its threads, and those of the PRs from it (same repository), made after the branch's last merge (all of " +
+        'them, for a branch never merged). The branch need not be on the code host any more. 400 for an invalid branch name, or the default branch.',
+      params: [repo, branch, format], response: { status: 200, schema: threads }, textFormats: 'md',
+    },
+    {
+      method: 'post', path: '/api/v1/branches/{repo}/{branch}/threads', tag, summary: "Start a thread on a branch's review with its first comment",
+      description:
+        "Shared with the PRs from the branch until one of them is merged (see the per-PR thread list). The branch need not be on the code host any more. " +
+        '400 for an invalid branch name, or the default branch. Rejected from other origins (403).',
+      params: [repo, branch], body: { schema: ref('NewBranchThread'), example }, response: { status: 200, schema: ref('CommentThread') },
     },
     { method: 'get', path: '/api/v1/threads/{id}', tag, summary: 'One thread', params: [id('Thread')], response: { status: 200, schema: ref('CommentThread') } },
     {
@@ -742,8 +780,9 @@ export const ENDPOINTS: EndpointDoc[] = [
   {
     method: 'get', path: '/api/v1/stream', tag: 'Comments', summary: 'What changes, as it happens (server-sent events)',
     description:
-      'text/event-stream: one `data: <json>` event per StreamMessage, nothing replayed. `comments`: a thread changed (repo, kind, number, commitOid, threadId, ' +
-      'event, by); `show`: an agent asks the app to show something (id, agent, target {repo, pr?, commit?, threadId?, path?}, message, at); `agents`: an agent ' +
+      'text/event-stream: one `data: <json>` event per StreamMessage, nothing replayed. `comments`: a thread changed (repo, kind, number, branch, commitOid, ' +
+      'threadId, event, by; views of its branch, and of the PRs from it, list it too); `show`: an agent asks the app to show something (id, agent, target ' +
+      '{repo, pr?, branch?, commit?, threadId?, path?}, message, at); `agents`: an agent ' +
       'was added, given a new token or revoked. A comment line (`: ping`) every 25 s keeps proxies from closing an idle stream; behind nginx, turn ' +
       'proxy_buffering off for it (deploy/nginx.conf.example). At most 32 streams are open at once (503 with Retry-After beyond), and a client ' +
       'that stops reading is disconnected once 256 KB wait for it: reconnect and refetch.',

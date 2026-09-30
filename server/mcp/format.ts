@@ -3,6 +3,7 @@
 
 import { z } from 'zod';
 import type { Principal, ProviderKind } from '../../shared/api';
+import { branchRef } from '../../shared/comment-markdown';
 import { refText } from '../../shared/provider';
 
 /** Who wrote something, as the calling agent reads it: "me", "you" (the user), or "agent:<name>" for another agent. */
@@ -23,9 +24,13 @@ export function clip(text: string, max: number): string {
   return t.length > max ? `${t.slice(0, max).trimEnd()}… (${t.length - max} more characters)` : t;
 }
 
-/** A PR as its host writes it (`alice/app#2`, `gitlab.example.com/g/app!2`), or a commit (`alice/app@1a2b3c4`). */
-export function targetRef(kind: ProviderKind, repo: string, target: { number: number } | { oid: string }): string {
-  return 'number' in target ? refText(kind, repo, target.number, 'pr') : `${repo}@${target.oid.slice(0, 7)}`;
+/**
+ * A PR as its host writes it (`alice/app#2`, `gitlab.example.com/g/app!2`), a branch (`alice/app branch fix/x`), or a
+ * commit (`alice/app@1a2b3c4`).
+ */
+export function targetRef(kind: ProviderKind, repo: string, target: { number: number } | { branch: string } | { oid: string }): string {
+  if ('number' in target) return refText(kind, repo, target.number, 'pr');
+  return 'branch' in target ? branchRef(repo, target.branch) : `${repo}@${target.oid.slice(0, 7)}`;
 }
 
 // Argument schemas shared by the tools. Descriptions are what the agent reads next to each parameter.

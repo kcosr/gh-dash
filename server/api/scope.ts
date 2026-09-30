@@ -43,7 +43,7 @@ export const threadQuerySchema = scopeSchema
   .extend({
     format: z.enum(['json', 'md']).optional(),
     status: z.enum(['open', 'resolved', 'all']).optional(),
-    kind: z.enum(['pr', 'commit', 'all']).optional(),
+    kind: z.enum(['pr', 'branch', 'commit', 'all']).optional(),
     sort: z.enum(['recent', 'oldest']).optional(),
     author: z
       .string()

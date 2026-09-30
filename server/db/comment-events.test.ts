@@ -68,6 +68,20 @@ describe('comment events after a cursor', () => {
     expect(commentEventsAfter(db, 0)).toHaveLength(5);
   });
 
+  it("names a branch thread's target by its branch, and keeps it out of the scope of the commit it was made on", () => {
+    const onBranch = createThread(db, { repoId: app, kind: 'branch', branch: 'fix/login' }, { commitOid: C3, baseOid: null, anchor: general, body: 'On the branch' }, me);
+    const onPr = createThread(db, { repoId: app, kind: 'pr', number: 2 }, { commitOid: C3, baseOid: null, anchor: general, body: 'On the PR', prBranch: 'fix/login' }, me);
+    const onCommit = open({ repoId: app, kind: 'commit', oid: C3 }, 'On the commit', me);
+    expect(commentEventsAfter(db, 0).map((e) => [e.threadId, e.target])).toEqual([
+      [onBranch.id, { kind: 'branch', branch: 'fix/login' }],
+      [onPr.id, { kind: 'pr', number: 2 }],
+      [onCommit.id, { kind: 'commit', oid: C3 }],
+    ]);
+    expect(brief(commentEventsAfter(db, 0, { scope: { repoId: app, commitOid: C3 } }))).toEqual([`You thread_opened ${onCommit.id}`]);
+    // A PR's scope is its own threads' (a branch group is a view's, not the log's).
+    expect(brief(commentEventsAfter(db, 0, { scope: { repoId: app, prNumber: 2 } }))).toEqual([`You thread_opened ${onPr.id}`]);
+  });
+
   it('says when the thread is gone, and no longer what deleted comments said', () => {
     const t = open({ repoId: app, kind: 'pr', number: 2 }, 'Why?', claude);
     const reply = addComment(db, t.id, me, 'Oops, a secret')!.comments[1]!;

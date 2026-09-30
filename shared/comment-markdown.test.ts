@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { CommentThread, Principal } from './api';
-import { commentExcerpt, threadsMarkdown } from './comment-markdown';
+import { branchRef, commentExcerpt, threadsMarkdown } from './comment-markdown';
 import { PROVIDERS } from './provider';
 
 const you: Principal = { id: 1, kind: 'self', name: 'You' };
@@ -63,7 +63,40 @@ describe('threadsMarkdown', () => {
     expect(threadsMarkdown([thread({})])).toBe('### Pull request\n\n- **You**: Why?\n');
     expect(threadsMarkdown([thread({})], { provider: PROVIDERS.gitlab })).toBe('### Merge request\n\n- **You**: Why?\n');
     expect(threadsMarkdown([thread({ kind: 'commit', number: null })])).toMatch(/^### Commit\n/);
+    expect(threadsMarkdown([thread({ kind: 'branch', number: null, branch: 'fix/login' })])).toMatch(/^### Branch\n/);
     expect(threadsMarkdown([])).toBe('');
+  });
+
+  it("says where a thread of the target's branch group was made, when it wasn't on the target itself", () => {
+    const own = thread({ path: 'a.ts', branch: 'fix/login' }, [[you, 'Own']]);
+    const otherPr = thread({ number: 1, path: 'a.ts', side: 'new', startLine: 2, endLine: 2, snippet: 'x', status: 'resolved', branch: 'fix/login' }, [[you, 'On #1']]);
+    const otherPrWhole = thread({ number: 1, branch: 'fix/login' }, [[you, 'All of #1']]);
+    const onBranch = thread({ kind: 'branch', number: null, branch: 'fix/login', path: 'b.ts' }, [[bot, 'On the branch']]);
+    const onBranchWhole = thread({ kind: 'branch', number: null, branch: 'fix/login' }, [[bot, 'All of the branch']]);
+    const all = [own, otherPr, otherPrWhole, onBranch, onBranchWhole];
+    const headings = (md: string) => md.split('\n').filter((l) => l.startsWith('#'));
+    expect(headings(threadsMarkdown(all, { title: 'app#2', target: { kind: 'pr', number: 2 } }))).toEqual([
+      '# app#2',
+      '### Pull request · from #1',
+      '### Branch',
+      '### `a.ts`',
+      '### `a.ts` line 2 (new) · from #1 · resolved',
+      '### `b.ts` · from the branch review',
+    ]);
+    expect(headings(threadsMarkdown(all, { target: { kind: 'branch', number: null } }))).toEqual([
+      '### Pull request · from #1',
+      '### Branch',
+      '### `a.ts` · from #2',
+      '### `a.ts` line 2 (new) · from #1 · resolved',
+      '### `b.ts`',
+    ]);
+    expect(headings(threadsMarkdown([otherPr], { target: { kind: 'pr', number: 2 }, provider: PROVIDERS.gitlab }))).toEqual(['### `a.ts` line 2 (new) · from !1 · resolved']);
+    // Without a target (the list of one target's own threads, as before branch groups), nothing is noted.
+    expect(headings(threadsMarkdown(all))).toEqual(['### Pull request', '### Branch', '### `a.ts`', '### `a.ts` line 2 (new) · resolved', '### `b.ts`']);
+  });
+
+  it('names a branch as the other refs are named', () => {
+    expect(branchRef('alice/app', 'fix/login')).toBe('alice/app branch fix/login');
   });
 });
 

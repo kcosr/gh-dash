@@ -4,7 +4,18 @@
 // committed, the bus hears of it (GET /stream tells the windows, wait_for_reply wakes up).
 
 import { z } from 'zod';
-import type { CommentEventKind, CommentThread, NewPrThread, NewThread, Principal, ProviderKind, ThreadAnchor, ThreadStatus } from '../../shared/api';
+import type {
+  CommentEventKind,
+  CommentThread,
+  NewBranchThread,
+  NewPrThread,
+  NewThread,
+  Principal,
+  ProviderKind,
+  ThreadAnchor,
+  ThreadStatus,
+} from '../../shared/api';
+import { isBranchName } from '../../shared/branch';
 import type { CommentBus } from '../comments/bus';
 import * as store from '../db/comments';
 import type { ThreadTarget } from '../db/comments';
@@ -74,7 +85,7 @@ const checkAnchor = (f: ThreadFields, ctx: z.RefinementCtx) => {
   if (problem) ctx.addIssue({ code: 'custom', message: problem });
 };
 
-/** A new PR thread: `commitOid` is the head of the diff the thread is made on. */
+/** A new PR or branch thread: `commitOid` is the head of the diff the thread is made on. */
 const prThreadBody = z.object({ ...threadFields, commitOid: fullOid }).strict().superRefine(checkAnchor);
 /** A new commit thread: the commit is the revision; a `commitOid` sent anyway must be it. */
 const commitThreadBody = z.object({ ...threadFields, commitOid: fullOid.optional() }).strict().superRefine(checkAnchor);
@@ -85,10 +96,13 @@ const statusValue = z.enum(['open', 'resolved']);
 export const statusBody = z.object({ status: statusValue }).strict();
 
 // The request bodies (shared/api.ts), validated here: the anchor's fields, the body, the full head SHA.
-export type { NewPrThread, NewThread };
+export type { NewBranchThread, NewPrThread, NewThread };
 
-/** What a thread is on, by repo key: a PR by number, or a commit by full oid. */
-export type TargetRef = { repo: string; kind: 'pr'; number: number } | { repo: string; kind: 'commit'; oid: string };
+/** What a thread is on, by repo key: a PR by number, a branch by name, or a commit by full oid. */
+export type TargetRef =
+  | { repo: string; kind: 'pr'; number: number }
+  | { repo: string; kind: 'branch'; branch: string }
+  | { repo: string; kind: 'commit'; oid: string };
 
 // ---------------------------------------------------------------------------
 // Lookups
@@ -135,11 +149,29 @@ export function parseOid(value: string): string {
   return oid.data;
 }
 
-/** A target by repo key, for db/comments.ts: 404 for an unknown or removed repo, 400 for a bad number or oid. */
+/** A branch name as git allows one (shared/branch.ts); 400 otherwise. */
+export function parseBranch(value: string): string {
+  if (!isBranchName(value)) throw new HttpError(400, 'Invalid branch name');
+  return value;
+}
+
+/**
+ * A target by repo key, for db/comments.ts: 404 for an unknown or removed repo, 400 for a bad number, oid or branch name.
+ * Also 400 for the repo's default branch: branches are compared against it, so it has no review of its own. (While the
+ * sync doesn't know the default branch, no name is it.)
+ */
 export function resolveTarget({ db }: CommentDeps, target: TargetRef): ThreadTarget {
   if (target.kind === 'pr') {
     const number = prNumber(target.number);
     return { repoId: repoIdForKey(db, target.repo), kind: 'pr', number };
+  }
+  if (target.kind === 'branch') {
+    const branch = parseBranch(target.branch);
+    const repoId = repoIdForKey(db, target.repo);
+    if (db.get('SELECT 1 FROM repos WHERE id = ? AND default_branch = ?', [repoId, branch])) {
+      throw new HttpError(400, `${branch} is the default branch: branches are compared against it`);
+    }
+    return { repoId, kind: 'branch', branch };
   }
   const oid = parseOid(target.oid);
   return { repoId: repoIdForKey(db, target.repo), kind: 'commit', oid };
@@ -151,7 +183,11 @@ export function providerKindOf(db: Db, repoId: number): ProviderKind {
   return row?.kind === 'gitlab' ? 'gitlab' : 'github';
 }
 
-/** A PR's or commit's threads, oldest first. A PR's are listed whether or not its row is still synced; a commit need not be synced. */
+/**
+ * A PR's, branch's or commit's threads, oldest first, as its view shows them: a PR's own and its branch group, a
+ * branch's current group (shared/api.ts, "Branch groups"). A PR's own are listed whether or not its row is still
+ * synced; a branch need not be on the code host any more, nor a commit synced.
+ */
 export function listTargetThreads(deps: CommentDeps, target: TargetRef): CommentThread[] {
   return store.listThreads(deps.db, resolveTarget(deps, target));
 }
@@ -191,15 +227,36 @@ function announce(
   deps.bus?.emit({ type: 'comments', repo, kind, number, branch, commitOid, threadId, event, by });
 }
 
-/** Opens a thread on a PR the dashboard knows (404 for one the sync never saw, or has dropped). */
+/**
+ * Opens a thread on a PR the dashboard knows (404 for one the sync never saw, or has dropped). A PR from a branch of the
+ * same repo gives the thread that branch, so the branch's review and its other PRs share it (see "Branch groups"); one
+ * from a fork, or one the sync hasn't said of yet, keeps it to itself.
+ */
 export function createPrThread(deps: CommentDeps, actor: Principal, repo: string, number: number, input: NewPrThread): CommentThread {
   const n = prNumber(number);
   const f = parseWith(prThreadBody, input);
   const target = resolveTarget(deps, { repo, kind: 'pr', number: n });
   // Listing works for a PR the sync has since dropped; a new thread needs one the dashboard knows.
-  if (!deps.db.get('SELECT 1 FROM pull_requests WHERE repo_id = ? AND number = ?', [target.repoId, n])) {
-    throw new HttpError(404, 'Pull request not found');
-  }
+  const pr = deps.db.get<{ head_ref: string; cross_repo: number | null }>(
+    'SELECT head_ref, cross_repo FROM pull_requests WHERE repo_id = ? AND number = ?',
+    [target.repoId, n],
+  );
+  if (!pr) throw new HttpError(404, 'Pull request not found');
+  const prBranch = pr.cross_repo === 0 && pr.head_ref !== '' ? pr.head_ref : null;
+  const thread = store.createThread(deps.db, target, { commitOid: f.commitOid, baseOid: f.baseOid ?? null, anchor: toAnchor(f), body: f.body, prBranch }, actor);
+  announce(deps, thread, 'thread_opened', actor);
+  return thread;
+}
+
+/**
+ * Opens a thread on a branch's review (its diff against the default branch): 400 for an invalid name or the default
+ * branch itself. As for a PR, `commitOid` is the head of the diff shown. The branch need not be on the code host any
+ * more: the diff may be older than its deletion.
+ */
+export function createBranchThread(deps: CommentDeps, actor: Principal, repo: string, branch: string, input: NewBranchThread): CommentThread {
+  const name = parseBranch(branch);
+  const f = parseWith(prThreadBody, input);
+  const target = resolveTarget(deps, { repo, kind: 'branch', branch: name });
   const thread = store.createThread(deps.db, target, { commitOid: f.commitOid, baseOid: f.baseOid ?? null, anchor: toAnchor(f), body: f.body }, actor);
   announce(deps, thread, 'thread_opened', actor);
   return thread;

@@ -6,6 +6,7 @@ import { ensureSource } from './sources';
 import {
   addManual,
   JOIN_BRANCH_GROUP,
+  LEAVE_BRANCH_GROUP,
   linkCommitsToPrs,
   markReposRemoved,
   markUnavailable,
@@ -465,6 +466,26 @@ describe('upsertPr: cross_repo and branch groups', () => {
     made('2026-09-21T12:00:00.001Z');
     upsertPr(db, app, pr(1, { state: 'merged', mergedAt: '2026-09-21T12:00:00Z', headRef: 'feature/x', crossRepo: false }));
     expect(branches(db)).toEqual(['feature/x', 'feature/x', null]);
+  });
+
+  it('takes a thread made on a PR after the host merged it out of the branch group once the merge is synced', () => {
+    const { db, app } = repos();
+    const made = (time: string) =>
+      db.run(`INSERT INTO comment_threads (repo_id, pr_number, commit_oid, branch, created_at, updated_at) VALUES (?, 1, ?, 'feature/x', ?, ?)`, [app, sha('a'), time, time]);
+    // Made while the dashboard still had the PR open (createPrThread gave them the branch); the host merged it at noon.
+    made('2026-09-21T11:59:59.999Z');
+    made('2026-09-21T12:00:00.000Z');
+    made('2026-09-21T12:00:00.001Z');
+    db.run(`INSERT INTO comment_threads (repo_id, pr_number, commit_oid, branch, created_at, updated_at) VALUES (?, NULL, ?, 'feature/x', '2026-09-22T00:00:00.000Z', '2026-09-22T00:00:00.000Z')`, [app, sha('a')]);
+    upsertPr(db, app, pr(1, { headRef: 'feature/x', crossRepo: false }));
+    expect(branches(db)).toEqual(['feature/x', 'feature/x', 'feature/x', 'feature/x']);
+    upsertPr(db, app, pr(1, { state: 'merged', mergedAt: '2026-09-21T12:00:00Z', headRef: 'feature/x', crossRepo: false }));
+    // The PR's own after the merge; the branch's own thread is the next line of work's, as it was.
+    expect(branches(db)).toEqual(['feature/x', 'feature/x', null, 'feature/x']);
+    // By the PR's threads, not every thread of the repo that has a branch.
+    expect(db.all<{ detail: string }>(`EXPLAIN QUERY PLAN ${LEAVE_BRANCH_GROUP}`, [1, 1, 'x']).map((r) => r.detail)).toEqual([
+      expect.stringMatching(/^SEARCH comment_threads USING INDEX comment_threads_target \(repo_id=\? AND pr_number=\?\)$/),
+    ]);
   });
 
   it('never replaces a branch a thread has', () => {

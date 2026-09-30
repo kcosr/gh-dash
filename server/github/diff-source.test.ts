@@ -241,6 +241,13 @@ describe('GitHubDiffSource: branches', () => {
     expect(gh.requests).toEqual([COMPARE_JSON, COMPARE_DIFF]);
     expect(out.files.map((f) => [f.path, f.additions, f.deletions, f.patch !== null])).toEqual([['src/f1.ts', 2, 1, true], ['src/f2.ts', 2, 1, true], ['src/f3.ts', 2, 1, true]]);
     expect(out).toMatchObject({ totalFiles: 3, additions: 6, deletions: 3 });
+    // A renamed file with changes GitHub counted but left out (it alone is too large); a pure rename has none to fetch.
+    const renamed = setup({
+      [COMPARE_JSON]: jsonCompare([noPatch(1, { status: 'renamed', previous_filename: 'old/f1.ts', additions: 900, deletions: 4 })]),
+      [COMPARE_DIFF]: { text: diffText(1) },
+    });
+    expect((await renamed.source.compare(REPO, 'main', HEAD, signal)).files[0]!.patch).not.toBeNull();
+    expect(renamed.gh.requests).toEqual([COMPARE_JSON, COMPARE_DIFF]);
     // An added or removed file the same way, and a binary file (which no request can tell from those).
     for (const status of ['added', 'removed']) {
       const one = setup({ [COMPARE_JSON]: jsonCompare([noPatch(1, { status })]), [COMPARE_DIFF]: { text: diffText(1) } });

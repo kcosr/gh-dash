@@ -226,6 +226,14 @@ const UPSERT_PR = upsertSql(
 export const JOIN_BRANCH_GROUP =
   "UPDATE comment_threads SET branch = ? WHERE repo_id = ? AND pr_number = ? AND branch IS NULL AND (? IS NULL OR created_at <= strftime('%Y-%m-%dT%H:%M:%fZ', ?))";
 
+// The other side of that rule: a thread made on the PR after the host merged it but before the sync knew (the PR still
+// open here, so createPrThread gave it the branch) leaves the branch's group once the merge is synced, so it isn't shown
+// with the branch's next line of work. The one time a thread's branch changes; its events keep the branch they were
+// written with. By the PR's threads, as JOIN_BRANCH_GROUP: left to itself, SQLite would read every thread of the repo
+// that has a branch (comment_threads_branch). Binds: repo id, PR number, merged_at.
+export const LEAVE_BRANCH_GROUP =
+  "UPDATE comment_threads INDEXED BY comment_threads_target SET branch = NULL WHERE repo_id = ? AND pr_number = ? AND branch IS NOT NULL AND created_at > strftime('%Y-%m-%dT%H:%M:%fZ', ?)";
+
 export function upsertPr(db: Db, repoId: number, p: PrRecord): boolean {
   // One transaction, so a PR's row and its threads' branch never disagree; inside the sync's write transaction it joins that.
   return db.tx(() => {
@@ -245,6 +253,7 @@ export function upsertPr(db: Db, repoId: number, p: PrRecord): boolean {
       );
     });
     if (p.crossRepo === false && p.headRef) db.run(JOIN_BRANCH_GROUP, [p.headRef, repoId, p.number, p.mergedAt, p.mergedAt]);
+    if (p.mergedAt) db.run(LEAVE_BRANCH_GROUP, [repoId, p.number, p.mergedAt]);
     return isNew;
   });
 }

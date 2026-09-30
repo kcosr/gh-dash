@@ -58,6 +58,12 @@ interface RestCompare {
 /** What a file of this status shows: without a patch it is binary, or GitHub left the patch out (see compare). */
 const HAS_CONTENT = new Set<DiffFileStatus>(['added', 'removed', 'modified']);
 
+/**
+ * Whether GitHub may have left a file's patch out (see compare): a file of a status that shows content, or any file
+ * whose lines GitHub counted (a renamed or copied file with changes: its patch has lines, a pure rename's has none).
+ */
+const mayLackPatch = (f: DiffFile) => f.patch === null && (HAS_CONTENT.has(f.status) || f.additions + f.deletions > 0);
+
 /** `pulls/N` with its ETag: a PrRevision's handle, for the conditional re-read that proves a snapshot of its files. */
 interface Pull {
   body: RestPull;
@@ -284,7 +290,7 @@ export class GitHubDiffSource implements DiffSource {
     const changes = (files: DiffFile[], totalFiles: number): CompareDiff => ({
       baseOid: mergeBase, headOid: head, files: files.slice(0, MAX_FILES), totalFiles, additions: sum(files, 'additions'), deletions: sum(files, 'deletions'),
     });
-    if (listed.length < COMPARE_FILES && !listed.some((f) => HAS_CONTENT.has(f.status) && f.patch === null)) return changes(listed, listed.length);
+    if (listed.length < COMPARE_FILES && !listed.some(mayLackPatch)) return changes(listed, listed.length);
 
     const diff = await this.rest.diff(`${path}/compare/${mergeBase}...${head}`, MAX_COMPARE_DIFF_BYTES, { signal }).catch((err: unknown) => {
       // GitHub answers a diff it won't build (say, a pull request's: 406) with a client error.

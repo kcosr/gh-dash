@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import { Db, openDb } from './db';
+import { getThread } from './comments';
 import { migrate, SCHEMA_VERSION, versionOf } from './schema';
 
 /** The repos rebuild's tests look at the database it leaves: they stop there. */
@@ -610,14 +611,17 @@ describe('migration to agents (v8)', () => {
     return db;
   }
 
-  it('adds who resolved a thread (unknown for earlier ones), agent tokens and the comment event log', () => {
+  it('adds who resolved a thread (the dashboard user, the only writer so far, for resolved ones), agent tokens and the comment event log', () => {
     const db = v7();
     migrate(db, true);
     expect(version(db)).toBe(AGENTS);
     expect(db.all('SELECT id, status, resolved_by FROM comment_threads ORDER BY id')).toEqual([
-      { id: 1, status: 'resolved', resolved_by: null },
+      { id: 1, status: 'resolved', resolved_by: 1 },
       { id: 2, status: 'open', resolved_by: null },
     ]);
+    // Read back as the principal.
+    expect(getThread(db, 1)!.resolvedBy).toEqual({ id: 1, kind: 'self', name: 'You' });
+    expect(getThread(db, 2)!.resolvedBy).toBeNull();
     for (const table of ['agent_tokens', 'comment_events']) expect(db.get(`SELECT count(*) AS n FROM ${table}`), table).toBeDefined();
     expect(db.all<{ name: string }>(`SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'comment_events' AND sql IS NOT NULL ORDER BY name`).map((i) => i.name))
       .toEqual(['comment_events_at', 'comment_events_repo', 'comment_events_thread']);

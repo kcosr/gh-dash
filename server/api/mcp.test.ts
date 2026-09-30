@@ -80,6 +80,21 @@ describe('POST /mcp', () => {
   });
 });
 
+describe('OAuth discovery', () => {
+  it("says there is none, in JSON, whatever the password: clients without the token don't read the web app as metadata", async () => {
+    for (const over of [{}, { password: 'pw' }]) {
+      const { app } = mcpHarness({ config: over });
+      for (const path of ['/.well-known/oauth-protected-resource/mcp', '/.well-known/oauth-protected-resource', '/.well-known/oauth-authorization-server', '/.well-known/openid-configuration']) {
+        const res = await app.request(`http://localhost${path}`);
+        expect(res.status, path).toBe(404);
+        expect(await res.json()).toEqual({ error: expect.stringContaining('gh-dash has no OAuth') });
+      }
+      // Anything else under /.well-known is the web app's, behind the password as before.
+      expect((await app.request('http://localhost/.well-known/security.txt')).status).toBe('password' in over ? 303 : 200);
+    }
+  });
+});
+
 describe('/mcp and the password or API key', () => {
   for (const over of [{ password: 'pw' }, { apiKey: 'k3y' }, { password: 'pw', apiKey: 'k3y' }]) {
     it(`lets an agent token through /mcp and nowhere else (${Object.keys(over).join(' + ')})`, async () => {

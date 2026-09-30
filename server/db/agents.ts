@@ -59,18 +59,26 @@ export function getAgent(db: Db, id: number): Agent | null {
   return row ? toAgent(row) : null;
 }
 
-/** An agent by id (all digits) or by name (any case); null when none matches. */
-export function findAgent(db: Db, idOrName: string): Agent | null {
-  const text = idOrName.trim();
-  if (/^\d+$/.test(text)) return getAgent(db, Number(text));
-  const row = db.get<AgentRow>(`${AGENT_SELECT} AND p.name = ? COLLATE NOCASE`, [text]);
+/** An agent by name (any case); null when none has it. */
+export function agentByName(db: Db, name: string): Agent | null {
+  const row = db.get<AgentRow>(`${AGENT_SELECT} AND p.name = ? COLLATE NOCASE`, [name.trim()]);
   return row ? toAgent(row) : null;
 }
 
-/** A name for a new agent: trimmed, 1–64 characters, no control characters, not "You" (the dashboard user). 400 otherwise. */
+/** An agent by id (all digits: names never are) or by name (any case); null when none matches. */
+export function findAgent(db: Db, idOrName: string): Agent | null {
+  const text = idOrName.trim();
+  return /^\d+$/.test(text) ? getAgent(db, Number(text)) : agentByName(db, text);
+}
+
+/**
+ * A name for a new agent: trimmed, 1–64 characters, not all digits (those name an agent by id), no control characters,
+ * not "You" (the dashboard user). 400 otherwise.
+ */
 export function agentName(input: string): string {
   const name = input.trim();
   if (!name) throw new HttpError(400, 'An agent needs a name');
+  if (/^\d+$/.test(name)) throw new HttpError(400, "An agent's name can't be only digits (those are ids)");
   if (Array.from(name).length > MAX_NAME_CHARS) throw new HttpError(400, `An agent's name has at most ${MAX_NAME_CHARS} characters`);
   if (/[\u0000-\u001f\u007f]/.test(name)) throw new HttpError(400, "An agent's name can't hold control characters");
   if (name.toLowerCase() === 'you') throw new HttpError(400, '"You" is the dashboard user; give the agent another name');
@@ -84,10 +92,18 @@ export function agentName(input: string): string {
 export function createAgent(db: Db, nameInput: string, now = nowIso()): { agent: Agent; token: string } {
   const name = agentName(nameInput);
   const { token, hash, prefix } = newToken();
+  const taken = (existing: Agent) => new HttpError(409, `There is already an agent called ${existing.name} (id ${existing.id}); regenerate its token instead`);
   const id = db.tx(() => {
-    const existing = findAgent(db, name);
-    if (existing) throw new HttpError(409, `There is already an agent called ${existing.name} (id ${existing.id}); regenerate its token instead`);
-    const principal = db.run(`INSERT INTO principals (kind, name, created_at) VALUES ('agent', ?, ?)`, [name, now]).lastInsertRowid;
+    const existing = agentByName(db, name);
+    if (existing) throw taken(existing);
+    let principal: number;
+    try {
+      principal = db.run(`INSERT INTO principals (kind, name, created_at) VALUES ('agent', ?, ?)`, [name, now]).lastInsertRowid;
+    } catch (err) {
+      // principals_agent_name: another process made it since the lookup.
+      const other = /UNIQUE/.test((err as Error).message) ? agentByName(db, name) : null;
+      throw other ? taken(other) : err;
+    }
     db.run('INSERT INTO agent_tokens (principal_id, token_hash, prefix, created_at) VALUES (?, ?, ?, ?)', [principal, hash, prefix, now]);
     return principal;
   });
@@ -123,7 +139,7 @@ export function revokeAgent(db: Db, id: number, now = nowIso()): Agent | null {
 /**
  * The agent a bearer token belongs to; null for anything else (malformed, unknown, revoked). Looked up by the token's
  * sha256, so the time taken says nothing about how close a guess came; the stored hash is compared in constant time
- * all the same. Marks the token used, at most once a minute.
+ * all the same. Marks the token used, at most once a minute. `now` is in ms (the others here take ISO strings).
  */
 export function principalForToken(db: Db, token: string, now = Date.now()): Principal | null {
   if (!TOKEN_SHAPE.test(token)) return null;
@@ -136,7 +152,10 @@ export function principalForToken(db: Db, token: string, now = Date.now()): Prin
   if (!row || row.revoked_at !== null) return null;
   if (!timingSafeEqual(Buffer.from(row.token_hash, 'hex'), Buffer.from(hash, 'hex'))) return null;
   if (row.last_used_at === null || now - Date.parse(row.last_used_at) >= LAST_USED_EVERY_MS) {
-    db.run('UPDATE agent_tokens SET last_used_at = ? WHERE principal_id = ?', [new Date(now).toISOString(), row.principal_id]);
+    // Best effort: a database another process holds for a while mustn't turn a valid token into an error.
+    try {
+      db.run('UPDATE agent_tokens SET last_used_at = ? WHERE principal_id = ?', [new Date(now).toISOString(), row.principal_id]);
+    } catch { /* kept for the next request */ }
   }
   return { id: row.principal_id, kind: 'agent', name: row.name };
 }

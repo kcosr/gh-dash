@@ -453,9 +453,11 @@ function moveViewerMeta(db: Db): void {
 // (the token is shown once); revoking keeps the principal, so its comments stay attributed to it. comment_events records
 // every comment write with the thread's place copied in, so an event still reads right once its thread is gone (no
 // foreign key to the thread or comment); a removed repo takes its events along. Agent names are unique (any case): the
-// `agents` command and tools name an agent by it.
+// `agents` command and tools name an agent by it. Until now only the dashboard's user (principal 1) could write, so it
+// resolved every thread that is resolved.
 const AGENTS = `
 ALTER TABLE comment_threads ADD COLUMN resolved_by INTEGER REFERENCES principals(id);
+UPDATE comment_threads SET resolved_by = 1 WHERE status = 'resolved' AND resolved_by IS NULL;
 CREATE UNIQUE INDEX principals_agent_name ON principals(name COLLATE NOCASE) WHERE kind = 'agent';
 CREATE TABLE agent_tokens (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

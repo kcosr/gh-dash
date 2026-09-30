@@ -151,6 +151,15 @@ describe('comment services', () => {
     expect(events()).toHaveLength(1);
   });
 
+  it('tells nobody of an edit that keeps the words', () => {
+    const t = createPrThread(deps, claude, 'app', 2, { commitOid: HEAD, body: 'Why?' });
+    heard.length = 0;
+    expect(editComment(deps, claude, t.comments[0]!.id, 'Why?').comments[0]!.editedAt).toBeNull();
+    expect(heard).toEqual([]);
+    editComment(deps, claude, t.comments[0]!.id, 'Why not?');
+    expect(told()).toEqual([['edited', 'Claude', t.id]]);
+  });
+
   it('works without a bus', () => {
     const t = createPrThread({ db }, me, 'app', 2, { commitOid: HEAD, body: 'Why?' });
     expect(reply({ db }, claude, t.id, 'Because.').comments).toHaveLength(2);

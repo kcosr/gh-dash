@@ -37,15 +37,17 @@ export const EXCERPT_CHARS = 280;
  * whitespace collapses. Counted in code points, so a cut never splits one.
  */
 export function commentExcerpt(body: string, max = EXCERPT_CHARS): string {
+  // Only the start can show: a bounded input keeps the patterns below cheap on any body (a 64k run of `[` included).
   const plain = body
+    .slice(0, max * 16)
     .replace(/\r\n?/g, '\n')
     .replace(/<!--[\s\S]*?-->/g, '')
     .replace(/^[ \t]*(?:```|~~~).*$/gm, '')
     .replace(/^[ \t]*>[ \t]?/gm, '')
     .replace(/^[ \t]*#{1,6}[ \t]+/gm, '')
     .replace(/^[ \t]*(?:[-*+]|\d+[.)])[ \t]+(?:\[[ xX]\][ \t]+)?/gm, '')
-    .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
-    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/!\[([^\]\n]*)\]\([^)\n]*\)/g, '$1')
+    .replace(/\[([^\]\n]+)\]\([^)\n]*\)/g, '$1')
     .replace(/<\/?[A-Za-z][^<>\n]*>/g, '')
     .replace(/(\*\*|__)(.+?)\1/g, '$2')
     .replace(/~~(.+?)~~/g, '$1')

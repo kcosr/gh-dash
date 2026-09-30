@@ -505,7 +505,8 @@ export class Desktop {
   // -------------------------------------------------------------------------
 
   addAgent(input: unknown): Promise<DesktopAgentToken> {
-    if (typeof input !== 'string' || !input.trim() || input.length > 200) throw new ConfigInputError('Give the agent a name.');
+    if (typeof input !== 'string' || !input.trim()) throw new ConfigInputError('Give the agent a name.');
+    if (input.length > 200) throw new ConfigInputError("That name is too long for an agent's.");
     return this.exclusive(async () => {
       const made = await this.agentRequest(() => this.d.child.addAgent(input));
       this.d.log(`[agents] added ${made.agent.name} (id ${made.agent.id})`);

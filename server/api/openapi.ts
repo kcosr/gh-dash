@@ -359,7 +359,7 @@ const schemas: Record<string, Schema> = {
     snippet: nullable(str('The anchored lines as they were, joined with \\n (endLine - startLine + 1 lines)')),
     status: enumOf('open', 'resolved'),
     resolvedAt: nullable(dateTime),
-    resolvedBy: { ...nullable(ref('Principal')), description: 'Who resolved it; null while open, and for threads resolved before gh-dash recorded it' },
+    resolvedBy: { ...nullable(ref('Principal')), description: 'Who resolved it; null while open (threads resolved before gh-dash recorded it read as the dashboard user)' },
     createdAt: dateTime,
     updatedAt: { ...dateTime, description: 'Last comment added, edited or deleted, or status change' },
     comments: { ...arr(ref('ThreadComment')), description: 'Oldest first; never empty' },
@@ -391,7 +391,7 @@ const schemas: Record<string, Schema> = {
     side: nullable(enumOf('old', 'new')),
     startLine: nullable(int()),
     endLine: nullable(int()),
-    excerpt: nullable(str("Plain text, at most 280 characters: the comment's (for comment events) or the thread's first comment's (thread events)")),
+    excerpt: nullable(str("Plain text, at most 280 characters: the comment's (for comment events) or the thread's first comment's (thread events). null once that comment or its thread is deleted, and on the delete events")),
   }),
   Agent: obj({
     id: int("The agent's principal id (comments' author.id)"),

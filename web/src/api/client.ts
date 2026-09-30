@@ -5,6 +5,7 @@ import type {
   Agent,
   AddRepoResponse,
   ActivityResponse,
+  BranchListResponse,
   Commit,
   CommentThread,
   Diff,
@@ -14,6 +15,7 @@ import type {
   IssueQuery,
   ListResponse,
   Me,
+  NewBranchThread,
   NewPrThread,
   NewThread,
   PageQuery,
@@ -200,6 +202,12 @@ export const api = {
     get<Diff>(apiUrl(`prs/${enc(repo)}/${number}/diff`, { refresh: refresh ? '1' : undefined })),
   commitDiff: (repo: string, oid: string, refresh = false) =>
     get<Diff>(apiUrl(`commits/${enc(repo)}/${enc(oid)}/diff`, { refresh: refresh ? '1' : undefined })),
+  /** A pushed branch against the repo's default branch. The name is one path segment: its slashes are encoded too. */
+  branchDiff: (repo: string, branch: string, refresh = false) =>
+    get<Diff>(apiUrl(`branches/${enc(repo)}/${enc(branch)}/diff`, { refresh: refresh ? '1' : undefined })),
+  /** The code host's branches, newest first (at most 100; `q` narrows them by name). */
+  branches: (repo: string, q?: string, refresh = false) =>
+    get<BranchListResponse>(apiUrl(`branches/${enc(repo)}`, { q: q || undefined, refresh: refresh ? '1' : undefined })),
   /** A file's contents at a commit; null when it doesn't exist there, is binary, or is too large. */
   blob: (repo: string, ref: string, path: string) =>
     getText(apiUrl(`blob/${enc(repo)}`, { ref, path })).catch((e: unknown) => {
@@ -209,17 +217,23 @@ export const api = {
   diffCache: () => get<DiffCacheStats>('/api/v1/diff-cache'),
   clearDiffCache: () => request<DiffCacheStats>('DELETE', '/api/v1/diff-cache'),
 
-  /** Local comment threads (never sent to GitHub). A commit's need its full oid. */
+  /**
+   * Local comment threads (never sent to GitHub). A commit's need its full oid. A PR's and a branch's include their
+   * branch group's (see "Branch groups" in shared/api.ts).
+   */
   prThreads: (repo: string, number: number) => get<{ items: CommentThread[] }>(`/api/v1/prs/${enc(repo)}/${number}/threads`),
+  branchThreads: (repo: string, branch: string) => get<{ items: CommentThread[] }>(`/api/v1/branches/${enc(repo)}/${enc(branch)}/threads`),
   commitThreads: (repo: string, oid: string) => get<{ items: CommentThread[] }>(`/api/v1/commits/${enc(repo)}/${enc(oid)}/threads`),
   createPrThread: (repo: string, number: number, body: NewPrThread) => request<CommentThread>('POST', `/api/v1/prs/${enc(repo)}/${number}/threads`, body),
+  createBranchThread: (repo: string, branch: string, body: NewBranchThread) =>
+    request<CommentThread>('POST', `/api/v1/branches/${enc(repo)}/${enc(branch)}/threads`, body),
   createCommitThread: (repo: string, oid: string, body: NewThread) => request<CommentThread>('POST', `/api/v1/commits/${enc(repo)}/${enc(oid)}/threads`, body),
   reply: (threadId: number, body: string) => request<CommentThread>('POST', `/api/v1/threads/${threadId}/comments`, { body }),
   setThreadStatus: (threadId: number, status: 'open' | 'resolved') => request<CommentThread>('PATCH', `/api/v1/threads/${threadId}`, { status }),
   deleteThread: (threadId: number) => request<void>('DELETE', `/api/v1/threads/${threadId}`),
   editComment: (commentId: number, body: string) => request<CommentThread>('PATCH', `/api/v1/comments/${commentId}`, { body }),
   deleteComment: (commentId: number) => request<{ thread: CommentThread | null }>('DELETE', `/api/v1/comments/${commentId}`),
-  /** Every thread in scope, across PRs and commits (the Comments list). */
+  /** Every thread in scope, across PRs, branches and commits (the Comments list). */
   threadList: (q: ThreadListQuery) => get<ThreadListResponse>(apiUrl('threads', { ...q })),
   /** The agents that may write comments through MCP (no tokens: those are shown once, where they are made). */
   agents: () => get<{ items: Agent[] }>('/api/v1/agents'),

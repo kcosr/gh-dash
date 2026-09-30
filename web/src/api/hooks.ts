@@ -5,6 +5,8 @@ import { useCallback, useMemo } from 'react';
 import type {
   ActivityQuery,
   ActivityResponse,
+  BranchListResponse,
+  BranchSummary,
   Commit,
   CommentThread,
   Diff,
@@ -34,6 +36,7 @@ import type { SourceInfo } from '../lib/contexts';
 import { sourceStatuses, workSources } from '../lib/sources';
 import type { WorkSource } from '../lib/sources';
 import { parseDiffId } from '../lib/urlState';
+import type { DiffTarget } from '../lib/urlState';
 
 export const qk = {
   repos: ['repos'] as const,
@@ -51,12 +54,21 @@ export const qk = {
   prs: (q: PrQuery) => ['prs', q] as const,
   issues: (q: IssueQuery) => ['issues', q] as const,
   pr: (repo: string, n: number) => ['pr', repo, n] as const,
+  /** Every PR's details in a repo (their comment counts take in their branch groups). */
+  prsIn: (repo: string) => ['pr', repo] as const,
   activity: (q: ActivityQuery) => ['activity', q] as const,
   releases: (q: ScopeQuery) => ['releases', q] as const,
   stats: (q: StatsQuery) => ['stats', q] as const,
   diff: (id: string) => ['diff', id] as const,
-  /** A PR's ("<repo>#<n>") or a commit's ("<repo>@<full oid>") comment threads. */
-  threads: (id: string) => ['threads', id] as const,
+  /**
+   * A PR's ("<repo>#<n>"), a branch's ("<repo>~<branch>") or a commit's ("<repo>@<full oid>") comment threads, under
+   * their repo: a change in a branch group reaches its branch's and its PRs' lists alike (threadsIn).
+   */
+  threads: (id: string) => ['threads', parseDiffId(id)?.repo ?? '', id] as const,
+  /** Every target's threads in a repo. */
+  threadsIn: (repo: string) => ['threads', repo] as const,
+  /** GET /branches/:repo: the code host's branches (`q` narrows them by name). */
+  branches: (repo: string, q: string) => ['branches', repo, q] as const,
   /** GET /threads: the Comments list, and the tab's count (a synced PR's title and state come with each thread). */
   threadList: (q: ThreadListQuery) => ['thread-list', q] as const,
   /** GET /agents: who may write comments through MCP. */
@@ -72,7 +84,8 @@ export const qk = {
 /**
  * Queries a finished sync (or a settings change) should refetch. Diffs and file contents are fetched
  * from GitHub on demand, so a sync doesn't swap an open diff under the reader (the diff view has a
- * refresh); a PR diff is revalidated when it's next opened (useDiff).
+ * refresh); a PR or branch diff is revalidated when it's next opened (useDiff). A branch list on screen
+ * is asked for again: the sync may have brought a PR from one of its branches, or the default branch.
  */
 export const refetchAfterSync = (q: Query) =>
   !['sync-status', 'diff', 'blob', 'threads', 'instance', 'desktop-state', 'repo-candidates', 'repo-lookup', 'agents'].includes(q.queryKey[0] as string);
@@ -415,7 +428,8 @@ export function findCachedCommit(qc: QueryClient, repo: string, oid: string): Pi
 /**
  * The diff for a `diff` URL param. Fetched only when the diff view opens. A commit's diff never
  * changes. A PR's can (new pushes, a moved base), so reopening one asks the server again: it answers
- * from its own cache, checking GitHub only when the synced PR says the diff may be out of date.
+ * from its own cache, checking GitHub only when the synced PR says the diff may be out of date. A
+ * branch's too: the server asks the code host for its head first (free on GitHub while unchanged).
  */
 export function useDiff(id: string) {
   const t = parseDiffId(id);
@@ -432,7 +446,8 @@ export function useDiff(id: string) {
 function fetchDiff(id: string, refresh: boolean): Promise<Diff> {
   const t = parseDiffId(id);
   if (!t) return Promise.reject(new Error(`Not a diff: ${id}`));
-  return t.kind === 'pr' ? api.prDiff(t.repo, t.number, refresh) : api.commitDiff(t.repo, t.oid, refresh);
+  if (t.kind === 'pr') return api.prDiff(t.repo, t.number, refresh);
+  return t.kind === 'branch' ? api.branchDiff(t.repo, t.branch, refresh) : api.commitDiff(t.repo, t.oid, refresh);
 }
 
 /**
@@ -466,6 +481,45 @@ export function useLoadFile(repo: string) {
   );
 }
 
+// ---------------------------------------------------------------- branches
+
+/**
+ * A repo's branches on its code host, newest first (GET /branches/:repo): at most 100, the default branch left out,
+ * each with its newest PR from the same repo. `q` narrows them by name, on the host. Asked of the host (the server
+ * keeps each answer a minute), so nothing refetches it but a remount after a minute. Idle while `repo` is null.
+ */
+export function useBranches(repo: string | null, q = '') {
+  return useQuery({
+    queryKey: qk.branches(repo ?? '', q),
+    queryFn: () => api.branches(repo!, q),
+    enabled: !!repo,
+    staleTime: 60_000,
+    placeholderData: (prev, prevQuery) => (prevQuery?.queryKey[1] === repo ? prev : undefined),
+    // A 4xx (no default branch yet, an unknown repo) and the rate limit won't change on a retry.
+    retry: (count, err) => count < 1 && !isClientError(err),
+  });
+}
+
+/** A branch as a list already loaded names it (the repo page's, the palette's), to show before or without asking. */
+export function findCachedBranch(qc: QueryClient, repo: string, branch: string): BranchSummary | undefined {
+  for (const [, data] of qc.getQueriesData<BranchListResponse>({ queryKey: ['branches', repo] })) {
+    const hit = data?.items.find((b) => b.name === branch);
+    if (hit) return hit;
+  }
+  return undefined;
+}
+
+/**
+ * One branch's summary (its head, date and PR): from a list already loaded, else asked for by its exact name. Undefined
+ * while unknown, and for a branch the host doesn't list.
+ */
+export function useBranch(repo: string, branch: string | null): BranchSummary | undefined {
+  const qc = useQueryClient();
+  const cached = branch ? findCachedBranch(qc, repo, branch) : undefined;
+  const list = useBranches(branch && !cached ? repo : null, branch ?? '');
+  return cached ?? list.data?.items.find((b) => b.name === branch);
+}
+
 export function useDiffCacheStats() {
   return useQuery({ queryKey: qk.diffCache, queryFn: api.diffCache, staleTime: 0 });
 }
@@ -485,16 +539,26 @@ export function useClearDiffCache() {
 
 // ---------------------------------------------------------------- comment threads
 
-/** Threads of a PR ("<repo>#<n>") or a commit (commitDiffId with the full oid, as a diff's headOid gives it). */
+/**
+ * Threads of a PR ("<repo>#<n>"), a branch (branchDiffId) or a commit (commitDiffId with the full oid, as a diff's
+ * headOid gives it).
+ */
 export function useThreads(id: string | null) {
   const t = parseDiffId(id);
   return useQuery({
     queryKey: qk.threads(id ?? ''),
-    queryFn: () => (t!.kind === 'pr' ? api.prThreads(t!.repo, t!.number) : api.commitThreads(t!.repo, t!.oid)).then((r) => r.items),
+    queryFn: () => fetchThreads(t!).then((r) => r.items),
     // Commit threads need the full oid; an abbreviated one waits for the diff.
-    enabled: !!t && (t.kind === 'pr' || t.oid.length === 40 || t.oid.length === 64),
+    enabled: !!t && (t.kind !== 'commit' || t.oid.length === 40 || t.oid.length === 64),
     staleTime: 30_000,
+    // A 4xx (no such PR or repo, the default branch as a branch) won't change on a retry.
+    retry: (count, err) => count < 1 && !isClientError(err),
   });
+}
+
+function fetchThreads(t: DiffTarget) {
+  if (t.kind === 'pr') return api.prThreads(t.repo, t.number);
+  return t.kind === 'branch' ? api.branchThreads(t.repo, t.branch) : api.commitThreads(t.repo, t.oid);
 }
 
 /**
@@ -502,13 +566,18 @@ export function useThreads(id: string | null) {
  * stream): the target's threads, the Comments list with the tab's count, a PR's counts (lists and its details), the
  * Activity feed (its comment events, and its PR and commit counts), and when comments came or went, repos' comment
  * counts (the Remove confirmation quotes them). `id`: the target, as the `diff` param names it.
+ *
+ * A thread in a branch group (a branch's, or a PR's with `branch` set) is on the branch's list and on its PRs' too, and
+ * in their counts (see "Branch groups" in shared/api.ts): then every thread list of the repo, and every PR's details
+ * there, rather than working out which PRs are from the branch.
  */
-export function threadChangeKeys(id: string, change: { comments?: boolean } = {}): QueryKey[] {
+export function threadChangeKeys(id: string, change: { comments?: boolean; branch?: string | null } = {}): QueryKey[] {
   const t = parseDiffId(id);
+  const group = !!t && (t.kind === 'branch' || (t.kind === 'pr' && !!change.branch));
   return [
-    qk.threads(id),
+    group ? qk.threadsIn(t.repo) : qk.threads(id),
     ['thread-list'],
-    ...(t?.kind === 'pr' ? [['prs'], qk.pr(t.repo, t.number)] : []),
+    ...(group ? [['prs'], qk.prsIn(t.repo)] : t?.kind === 'pr' ? [['prs'], qk.pr(t.repo, t.number)] : []),
     ['activity'],
     ...(change.comments ? [qk.repos] : []),
   ];
@@ -541,24 +610,36 @@ export function threadActions(qc: QueryClient, id: string) {
       list && (list.some((x) => x.id === thread.id) ? list.map((x) => (x.id === thread.id ? thread : x)) : [...list, thread]));
   };
   const drop = (threadId: number) => qc.setQueryData<CommentThread[]>(key, (list) => list?.filter((x) => x.id !== threadId));
-  /** `comments`: comments came or went. */
-  const done = async <T,>(p: Promise<T>, apply: (v: T) => void, change: { comments?: boolean } = {}) => {
+  /** A thread's branch as the list on screen has it, for a change whose answer doesn't carry the thread (a delete). */
+  const branchOf = (threadId: number) => qc.getQueryData<CommentThread[]>(key)?.find((x) => x.id === threadId)?.branch ?? null;
+  /** `comments`: comments came or went. `branch`: the thread's (its answer's, else as known before the change). */
+  const done = async <T,>(p: Promise<T>, apply: (v: T) => void, change: { comments?: boolean; branch?: (v: T) => string | null } = {}) => {
     const v = await p;
     await qc.cancelQueries({ queryKey: key });
     apply(v);
-    for (const queryKey of threadChangeKeys(id, change)) void qc.invalidateQueries({ queryKey });
+    for (const queryKey of threadChangeKeys(id, { comments: change.comments, branch: change.branch?.(v) })) void qc.invalidateQueries({ queryKey });
     return v;
   };
+  const own = (x: CommentThread) => x.branch;
+  const create = (body: NewPrThread) => {
+    if (!t) return Promise.reject(new Error(`Not a diff: ${id}`));
+    if (t.kind === 'pr') return api.createPrThread(t.repo, t.number, body);
+    return t.kind === 'branch' ? api.createBranchThread(t.repo, t.branch, body) : api.createCommitThread(t.repo, t.oid, body);
+  };
   return {
-    create: (body: NewPrThread) =>
-      done(t?.kind === 'pr' ? api.createPrThread(t.repo, t.number, body) : api.createCommitThread(t!.repo, (t as { oid: string }).oid, body), put, { comments: true }),
-    reply: (threadId: number, body: string) => done(api.reply(threadId, body), put, { comments: true }),
-    setStatus: (threadId: number, status: 'open' | 'resolved') => done(api.setThreadStatus(threadId, status), put),
-    edit: (commentId: number, body: string) => done(api.editComment(commentId, body), put),
+    create: (body: NewPrThread) => done(create(body), put, { comments: true, branch: own }),
+    reply: (threadId: number, body: string) => done(api.reply(threadId, body), put, { comments: true, branch: own }),
+    setStatus: (threadId: number, status: 'open' | 'resolved') => done(api.setThreadStatus(threadId, status), put, { branch: own }),
+    edit: (commentId: number, body: string) => done(api.editComment(commentId, body), put, { branch: own }),
     // Deleting a thread's first comment deletes the thread.
-    deleteComment: (threadId: number, commentId: number) =>
-      done(api.deleteComment(commentId), (r) => (r.thread ? put(r.thread) : drop(threadId)), { comments: true }),
-    deleteThread: (threadId: number) => done(api.deleteThread(threadId), () => drop(threadId), { comments: true }),
+    deleteComment: (threadId: number, commentId: number) => {
+      const branch = branchOf(threadId);
+      return done(api.deleteComment(commentId), (r) => (r.thread ? put(r.thread) : drop(threadId)), { comments: true, branch: (r) => r.thread?.branch ?? branch });
+    },
+    deleteThread: (threadId: number) => {
+      const branch = branchOf(threadId);
+      return done(api.deleteThread(threadId), () => drop(threadId), { comments: true, branch: () => branch });
+    },
   };
 }
 

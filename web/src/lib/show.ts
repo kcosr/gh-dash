@@ -1,20 +1,22 @@
 /**
- * An agent's `show` (MCP): it asks the window to open a thread, or a file of a PR's or commit's diff. The window offers
+ * An agent's `show` (MCP): it asks the window to open a thread, or a file of a PR's, branch's or commit's diff. The window offers
  * it as a chip (ShowChips), or opens it at once while it follows agents (a preference kept in the browser). Opening is
  * what a Comments row does: the diff over the view you're on, at the thread (or the file). Pure parts here, for tests.
  */
 import { useSyncExternalStore } from 'react';
 import type { Principal, ShowTarget, StreamMessage } from '../../../shared/api';
+import { branchRef } from '../../../shared/comment-markdown';
 import { repoPath } from '../../../shared/repos';
 import { threadPlace } from './threadList';
-import { commitDiffId, contextSearch, orderedSearch, paramsExcept } from './urlState';
+import { branchDiffId, commitDiffId, contextSearch, orderedSearch, paramsExcept } from './urlState';
 import type { UrlPatch, UrlState } from './urlState';
 
 export type ShowMessage = Extract<StreamMessage, { type: 'show' }>;
 
-/** The diff a target opens ("<repo>#<n>" or "<repo>@<oid>"); null for a repo alone. */
+/** The diff a target opens ("<repo>#<n>", "<repo>~<branch>" or "<repo>@<oid>"); null for a repo alone. */
 export function showDiffId(t: ShowTarget): string | null {
   if (t.pr !== undefined && t.pr !== null) return `${t.repo}#${t.pr}`;
+  if (t.branch) return branchDiffId(t.repo, t.branch);
   if (t.commit) return commitDiffId(t.repo, t.commit);
   return null;
 }
@@ -32,10 +34,13 @@ export function showPatch(t: ShowTarget, cur: Pick<UrlState, 'diff' | 'only'>): 
 
 /**
  * How the chip names what it shows: the place ("host.ts:42–44", the file's name and the thread's lines when known; "a
- * thread") and what it is on ("app#17", "app@3f2a91c", "app"). `path`: the place in full, for its title.
+ * thread") and what it is on ("app#17", "app branch fix/login", "app@3f2a91c", "app"). `path`: the place in full, for
+ * its title.
  */
 export function showWhat(t: ShowTarget, o: { label: string; prRef: string; thread?: Parameters<typeof threadPlace>[0] | null }): { place: string | null; on: string; path: string | null } {
-  const on = t.pr !== undefined && t.pr !== null ? `${o.label}${o.prRef}${t.pr}` : t.commit ? `${o.label}@${t.commit.slice(0, 7)}` : o.label;
+  const on = t.pr !== undefined && t.pr !== null ? `${o.label}${o.prRef}${t.pr}`
+    : t.branch ? branchRef(o.label, t.branch)
+      : t.commit ? `${o.label}@${t.commit.slice(0, 7)}` : o.label;
   if (o.thread && o.thread.path === null) return { place: 'a comment', on, path: null };
   const full = o.thread ? threadPlace(o.thread) : t.path ?? null;
   const place = full ? full.slice(full.lastIndexOf('/', full.search(/:\d|$/)) + 1) : t.threadId ? 'a thread' : null;

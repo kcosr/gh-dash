@@ -200,6 +200,16 @@ a.iss-li:hover .iss-t { color: var(--accent-text); text-decoration: underline; t
 .dv-title { flex: 0 1 auto; min-width: 0; margin: 0 4px; font-size: 14.5px; font-weight: 600; line-height: 1.35; letter-spacing: -.005em; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dv-head .diffstat, .dv-files { flex: none; white-space: nowrap; }
 .dv-files { font-size: 12.5px; color: var(--muted); }
+/* A branch's diff: its mark in place of a number, what it's compared with, and its PR. */
+.dv-br { display: inline-flex; flex: none; color: var(--muted); }
+.dv-br svg { width: 14px; height: 14px; }
+.dv-base { flex: none; font-size: 12.5px; color: var(--muted); white-space: nowrap; }
+.dv-base code { font-size: 11.5px; color: var(--text-2); }
+.dv-pr { display: inline-flex; flex: none; align-items: center; gap: 3px; height: 22px; padding: 0 6px 0 4px; border-radius: 6px; }
+.dv-pr:hover { background: var(--surface-2); }
+.dv-pr:hover .num { color: var(--accent-text); }
+.dv-pr .pr-ic { display: inline-flex; padding-top: 0; }
+.dv-pr .pr-ic svg { width: 13px; height: 13px; }
 .dv-actions { display: flex; align-items: center; gap: 4px; flex: none; margin-left: auto; padding-left: 8px; }
 .dv-note { margin: 0; border-radius: 0; padding: 7px 22px; border-bottom: 1px solid var(--border); }
 .dv-note a { color: var(--accent-text); }
@@ -509,7 +519,7 @@ a.sync:hover .sync-text { color: var(--text); text-decoration: underline; text-u
   .dv-head { flex-wrap: wrap; row-gap: 2px; padding: 4px 8px 10px 16px; }
   .dv-head .repo-chip { flex: 0 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; }
   .dv-title { order: 1; flex: 1 0 100%; margin: 0; white-space: normal; overflow-wrap: anywhere; }
-  .dv-head .diffstat, .dv-files { order: 2; }
+  .dv-head .diffstat, .dv-files, .dv-base, .dv-pr { order: 2; }
   .dv-actions .btn { min-width: 40px; min-height: 40px; justify-content: center; }
   .dv-lbl { display: none; }
   .dv-note { padding: 7px 16px; }

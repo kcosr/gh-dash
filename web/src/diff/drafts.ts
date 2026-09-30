@@ -128,9 +128,11 @@ export function setSendingDraft(key: string, on: boolean): void {
 export function listNewDrafts(scope: string): NewThreadDraft[] {
   const out: NewThreadDraft[] = [];
   try {
+    const prefix = `${NEW}${scope}|`;
     for (let i = 0; i < sessionStorage.length; i++) {
       const k = sessionStorage.key(i);
-      if (!k?.startsWith(`${NEW}${scope}|`)) continue;
+      // The revision follows the scope: a branch's name may hold '|', so another branch's scope can start with this one.
+      if (!k?.startsWith(prefix) || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})\|/.test(k.slice(prefix.length))) continue;
       const d = loadNewDraft(k.slice(NEW.length));
       if (d) out.push(d);
     }

@@ -13,7 +13,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import type { QueryClient, QueryKey } from '@tanstack/react-query';
 import { useEffect } from 'react';
 import type { CommentEventKind, StreamMessage } from '../../../shared/api';
-import { commitDiffId } from '../lib/urlState';
+import { branchDiffId, commitDiffId } from '../lib/urlState';
 import { qk, threadChangeKeys } from './hooks';
 
 export const STREAM_URL = '/api/v1/stream';
@@ -21,12 +21,17 @@ export const STREAM_URL = '/api/v1/stream';
 /** Events after which a thread has more or fewer comments (a repo's comment counts change). */
 const COMMENTS_CHANGE: readonly CommentEventKind[] = ['thread_opened', 'replied', 'comment_deleted', 'thread_deleted'];
 
-/** The queries a message makes stale: for `comments`, what threadActions refetches after the same change; none for `show`. */
+/**
+ * The queries a message makes stale: for `comments`, what threadActions refetches after the same change (a thread with
+ * a branch reaches its branch's view and its PRs'); none for `show`.
+ */
 export function streamInvalidations(msg: StreamMessage): QueryKey[] {
   if (msg.type === 'agents') return [qk.agents];
   if (msg.type !== 'comments') return [];
-  const id = msg.kind === 'pr' && msg.number !== null ? `${msg.repo}#${msg.number}` : commitDiffId(msg.repo, msg.commitOid);
-  return threadChangeKeys(id, { comments: COMMENTS_CHANGE.includes(msg.event) });
+  const id = msg.kind === 'pr' && msg.number !== null ? `${msg.repo}#${msg.number}`
+    : msg.kind === 'branch' && msg.branch ? branchDiffId(msg.repo, msg.branch)
+      : commitDiffId(msg.repo, msg.commitOid);
+  return threadChangeKeys(id, { comments: COMMENTS_CHANGE.includes(msg.event), branch: msg.branch });
 }
 
 /** What a missed stretch may have changed (after a reconnect): every list and count the stream would have refetched. */

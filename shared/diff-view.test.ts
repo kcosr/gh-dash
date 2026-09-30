@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ApiError, api, isClientError, isUnreachable, rateLimitResetAt } from '../web/src/api/client';
 import { fmtBytes } from '../web/src/lib/time';
-import { OVERLAY_KEYS, canonicalQuery, carrySearch, commitDiffId, parseDiffId, parseUrlState, patchSearch } from '../web/src/lib/urlState';
+import { OVERLAY_KEYS, branchDiffId, canonicalQuery, carrySearch, commitDiffId, parseDiffId, parseUrlState, patchSearch } from '../web/src/lib/urlState';
 
 describe('diff URL state', () => {
   it('parses PR and commit diff ids and rejects malformed ones', () => {
@@ -13,6 +13,27 @@ describe('diff URL state', () => {
     for (const bad of [null, '', 'kcosr/gh-dash', 'kcosr/gh-dash#0', 'kcosr/gh-dash#x', '#12', 'kcosr/gh-dash@6df215', 'kcosr/gh-dash@xyz1234', `kcosr/gh-dash@${'a'.repeat(65)}`, 'a b#1', 'a#1@abcdefg']) {
       expect(parseDiffId(bad)).toBeNull();
     }
+  });
+
+  it("parses a branch's diff id at its first '~', before a '#' or '@' in the name could make it a PR or commit", () => {
+    expect(parseDiffId('kcosr/gh-dash~fix/login')).toEqual({ kind: 'branch', repo: 'kcosr/gh-dash', branch: 'fix/login' });
+    expect(parseDiffId(branchDiffId('gitlab.example.com/alice/app', 'feature/x'))).toEqual({ kind: 'branch', repo: 'gitlab.example.com/alice/app', branch: 'feature/x' });
+    // Git allows '#' and '@' in a name (not "@{", not a lone "@"): still the branch.
+    for (const branch of ['issue#12', 'user@host', 'a#1@abcdef1', 'release/1.2', 'x|y']) {
+      expect(parseDiffId(branchDiffId('alice/app', branch)), branch).toEqual({ kind: 'branch', repo: 'alice/app', branch });
+    }
+    // The repo part: not empty, no whitespace. The branch: a name git allows (no second '~', '..', a space, "@", …).
+    for (const bad of ['~fix', 'a b~fix', 'alice/app~', 'alice/app~a~b', 'alice/app~a..b', 'alice/app~a b', 'alice/app~@', 'alice/app~a@{1}', 'alice/app~-x', 'alice/app~x.lock', 'alice/app~/x']) {
+      expect(parseDiffId(bad), bad).toBeNull();
+    }
+  });
+
+  it("writes a branch's diff readable, its '#' escaped, and reads it back with its file and thread", () => {
+    const open = patchSearch('?state=open', 'prs', { diff: branchDiffId('alice/app', 'fix/issue#12'), file: 'src/a.ts', thread: 4 });
+    expect(open).toBe('?state=open&diff=alice/app~fix/issue%2312&file=src/a.ts&thread=4');
+    expect(parseUrlState(open, 'prs')).toMatchObject({ diff: 'alice/app~fix/issue#12', file: 'src/a.ts', thread: 4 });
+    expect(parseUrlState('?diff=alice/app~a..b&file=a.ts&thread=4', 'prs')).toMatchObject({ diff: null, file: null, thread: null });
+    expect(canonicalQuery(`?who=me${open.replace('?', '&')}`)).toBe('state=open&who=me');
   });
 
   it('keeps diff and file next to pr, and ignores a file without a valid diff', () => {
@@ -61,11 +82,34 @@ describe('diff API helpers', () => {
     await api.prDiff('kcosr/gh-dash', 2);
     await api.prDiff('kcosr/gh-dash', 2, true);
     await api.commitDiff('kcosr/gh-dash', '6df2155', true);
+    await api.branchDiff('kcosr/gh-dash', 'fix/a#b');
+    await api.branchDiff('kcosr/gh-dash', 'fix/a#b', true);
     expect(fetch.mock.calls.map((c) => c[0])).toEqual([
       '/api/v1/prs/kcosr%2Fgh-dash/2/diff',
       '/api/v1/prs/kcosr%2Fgh-dash/2/diff?refresh=1',
       '/api/v1/commits/kcosr%2Fgh-dash/6df2155/diff?refresh=1',
+      // A branch's name is one path segment, its slashes encoded like the repo's.
+      '/api/v1/branches/kcosr%2Fgh-dash/fix%2Fa%23b/diff',
+      '/api/v1/branches/kcosr%2Fgh-dash/fix%2Fa%23b/diff?refresh=1',
     ]);
+  });
+
+  it("asks for a repo's branches, narrowed by name on the host, and a branch's threads", async () => {
+    const fetch = vi.fn(async (_url: string, _init?: RequestInit) => new Response('{"items":[]}', { status: 200, headers: { 'content-type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetch);
+    await api.branches('gitlab.example.com/alice/app');
+    await api.branches('gitlab.example.com/alice/app', 'fix/');
+    await api.branches('alice/app', '', true);
+    await api.branchThreads('alice/app', 'fix/login');
+    await api.createBranchThread('alice/app', 'fix/login', { commitOid: 'a'.repeat(40), body: 'x' });
+    expect(fetch.mock.calls.map((c) => c[0])).toEqual([
+      '/api/v1/branches/gitlab.example.com%2Falice%2Fapp',
+      '/api/v1/branches/gitlab.example.com%2Falice%2Fapp?q=fix%2F',
+      '/api/v1/branches/alice%2Fapp?refresh=1',
+      '/api/v1/branches/alice%2Fapp/fix%2Flogin/threads',
+      '/api/v1/branches/alice%2Fapp/fix%2Flogin/threads',
+    ]);
+    expect(fetch.mock.calls[4]![1]).toMatchObject({ method: 'POST', body: JSON.stringify({ commitOid: 'a'.repeat(40), body: 'x' }) });
   });
 
   it('tells server errors from an unreachable server, and reads the rate limit reset', async () => {

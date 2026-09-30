@@ -40,6 +40,13 @@ describe('rewriteRepoParams', () => {
     expect(rewriteRepoParams('pr=12', resolve)).toBe('pr=12');
   });
 
+  it("maps a branch diff's repo part, whatever the branch's name holds", () => {
+    expect(rewriteRepoParams('diff=a~fix/login', resolve)).toBe('diff=alice/a~fix/login');
+    // The repo part ends at the '~', not at a '#' or '@' in the branch's name.
+    expect(rewriteRepoParams('diff=a~fix%2312@home', resolve)).toBe('diff=alice/a~fix%2312@home');
+    expect(rewriteRepoParams('diff=nope~fix/login', resolve)).toBe('diff=nope~fix/login');
+  });
+
   it('keeps every other byte, including params it does not rewrite', () => {
     const rest = 'who=me&range=custom&from=2026-09-01&to=2026-09-27&q=a%20b+c&types=pr,commit&file=src/x.ts&rel=0&flag&x=%7E&=v';
     expect(rewriteRepoParams(`${rest}&repos=a`, resolve)).toBe(`${rest}&repos=alice/a`);

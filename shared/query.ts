@@ -27,10 +27,10 @@ function rewriteList(value: string, resolve: RepoResolver): string {
   return keys.some((k, i) => k !== entries[i]) ? [...new Set(keys)].join(',') : value;
 }
 
-/** "<repo>#<n>" or "<repo>@<oid>" (the `pr` and `diff` params) with its repo part resolved. */
+/** "<repo>#<n>", "<repo>~<branch>" or "<repo>@<oid>" (the `pr` and `diff` params) with its repo part resolved. */
 function rewriteRef(value: string, resolve: RepoResolver): string {
-  // Keys never contain '#' or '@', so the repo part ends at the first of them.
-  const m = /^([^#@]+)([#@][\s\S]*)$/.exec(value);
+  // Keys never contain '#', '~' or '@', so the repo part ends at the first of them (a branch's name may hold the others).
+  const m = /^([^#~@]+)([#~@][\s\S]*)$/.exec(value);
   const key = m && resolve(m[1]!);
   return m && key ? key + m[2] : value;
 }

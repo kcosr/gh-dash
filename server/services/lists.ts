@@ -6,6 +6,7 @@ import type { z } from 'zod';
 import type {
   ActivityEvent,
   ActivityResponse,
+  BranchesResponse,
   Commit,
   Issue,
   ListFormat,
@@ -18,6 +19,7 @@ import type {
 } from '../../shared/api';
 import {
   activityQuerySchema,
+  branchQuerySchema,
   decodeCursor,
   encodeCursor,
   issueQuerySchema,
@@ -30,6 +32,7 @@ import {
   statsQuerySchema,
 } from '../api/scope';
 import type { Config } from '../config';
+import { listBranches } from '../db/branches';
 import type { Db } from '../db/db';
 import { loadQueryCtx, type QueryCtx, type Scope } from '../db/filters';
 import { getPrDetail, listActivity, listCommits, listIssues, listPrs, listReleases, listStars, type Page } from '../db/lists';
@@ -107,6 +110,13 @@ export function queryPrs({ db, config }: QueryDeps, q: z.infer<typeof prQuerySch
   }
   const res = listPrs(db, ctx, scope, filter, page(q, 3));
   return json({ ...res, nextCursor: encodeCursor(res.nextCursor) });
+}
+
+/** Branches with no PR yet, from the sync (no code host request): JSON only, as branchQuerySchema allows. */
+export function queryBranches({ db, config }: QueryDeps, q: z.infer<typeof branchQuerySchema>): BranchesResponse {
+  const { scope, ctx } = scopedQuery(db, config, q);
+  const res = listBranches(db, ctx, scope, page(q, 3));
+  return { ...res, nextCursor: encodeCursor(res.nextCursor) };
 }
 
 /** One pull request (or merge request) with its commits and linked issues; `repo` is a key; 400 / 404. */

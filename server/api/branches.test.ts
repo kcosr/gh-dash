@@ -1,12 +1,13 @@
 import { gunzipSync } from 'node:zlib';
 import { Hono } from 'hono';
 import { describe, expect, it } from 'vitest';
-import type { BranchListResponse, Diff } from '../../shared/api';
+import type { BranchesResponse, BranchListResponse, Diff } from '../../shared/api';
 import { loadConfig } from '../config';
 import { DiffCache } from '../diff/cache';
 import { DiffService } from '../diff/service';
 import { GitHubDiffSources } from '../github/diff-source';
 import { SyncManager } from '../sync/manager';
+import { addBranch } from '../test/branches';
 import { fakeGitHub, type Handler, type Reply, restFile, sha } from '../test/github';
 import { seedDb } from '../test/seed';
 import { testTokens } from '../test/tokens';
@@ -164,6 +165,47 @@ describe('GET /branches/:repo', () => {
   });
 });
 
+describe('GET /branches', () => {
+  it('lists the branches with no PR yet from the database, paged, without asking the code host', async () => {
+    const { app, gh, db } = branchApp({ '/graphql': refs([]) });
+    addBranch(db, 'alice/app', 'main', { head: sha('1'), at: '2026-09-27T00:00:00Z' });
+    addBranch(db, 'alice/app', 'fix/login', { head: A, at: '2026-09-26T00:00:00Z' });
+    addBranch(db, 'alice/app', 'docs', { head: sha('b'), at: '2026-09-25T00:00:00Z', by: { login: 'bob', name: 'Bob' } });
+    // From app#2, open: reviewed there.
+    addBranch(db, 'alice/app', 'feature', { head: sha('2'), at: '2026-09-25T00:00:00Z' });
+    const get = async (query: string) => {
+      const res = await app.request(`/api/v1/branches?${query}`);
+      expect(res.status, query).toBe(200);
+      return (await res.json()) as BranchesResponse;
+    };
+    const first = await get('from=2026-09-01&to=2026-09-30&limit=1');
+    expect(first).toMatchObject({ total: 2, items: [{ id: 'alice/app~fix/login', url: 'https://github.com/alice/app/compare/main...fix/login', comments: { threads: 0, unresolved: 0 } }] });
+    const rest = await get(`from=2026-09-01&to=2026-09-30&limit=1&cursor=${first.nextCursor}`);
+    expect(rest).toMatchObject({ total: 2, nextCursor: null, items: [{ id: 'alice/app~docs', author: { login: 'bob', isMe: false } }] });
+    expect((await get('from=2026-09-01&to=2026-09-30&who=me&q=LOG')).items.map((b) => b.id)).toEqual(['alice/app~fix/login']);
+    expect((await get('from=2026-09-01&to=2026-09-30&format=json')).total).toBe(2);
+    // Not the owner's quota: a cross-site read is a list like the others.
+    expect((await app.request('/api/v1/branches', { headers: { 'sec-fetch-site': 'cross-site' } })).status).toBe(200);
+    expect(gh.requests).toEqual([]);
+    // Next to it, one repo's branches are still the code host's (the sync hasn't listed them).
+    expect((await app.request('/api/v1/branches/alice%2Fapp')).status).toBe(200);
+    expect(gh.requests).toEqual(['/graphql']);
+  });
+
+  it('has no Markdown or CSV form, and validates the scope and the cursor', async () => {
+    const { app } = branchApp();
+    for (const format of ['md', 'csv']) {
+      const res = await app.request(`/api/v1/branches?format=${format}`);
+      expect(res.status, format).toBe(400);
+      expect(await res.json()).toMatchObject({ error: 'format: only json: branches have no Markdown or CSV export' });
+    }
+    expect((await app.request('/api/v1/branches?cursor=nope')).status).toBe(400);
+    expect((await app.request('/api/v1/branches?limit=0')).status).toBe(400);
+    expect((await app.request('/api/v1/branches?from=2026-09-30&to=2026-09-01')).status).toBe(400);
+    expect((await app.request('/api/v1/branches?source=nowhere.example')).status).toBe(400);
+  });
+});
+
 describe('the branch routes', () => {
   it("decode the repo and the branch alike, whatever characters the branch has, and leave the threads' route (mounted next to them) alone", async () => {
     const seen: string[] = [];
@@ -201,5 +243,21 @@ describe('the OpenAPI document', () => {
     expect(doc.components.schemas.Diff!.required).not.toContain('branch');
     expect(doc.components.schemas.Diff!.properties.kind).toMatchObject({ enum: ['pr', 'commit', 'branch'] });
     expect(Object.keys(doc.components.schemas.BranchSummary!.properties)).toEqual(['name', 'headOid', 'committedAt', 'pr']);
+  });
+
+  it('describes GET /branches: the scope and a page, JSON only', async () => {
+    const { app } = branchApp();
+    type Op = { parameters: { name: string; in: string }[]; responses: Record<string, { content: Record<string, { schema: { properties: { items: unknown } } }> }> };
+    const doc = (await (await app.request('/api/v1/openapi.json')).json()) as {
+      paths: Record<string, { get: Op }>;
+      components: { schemas: Record<string, { properties: Record<string, unknown> }> };
+    };
+    const list = doc.paths['/api/v1/branches']!.get;
+    expect(list.parameters.map((p) => `${p.in}:${p.name}`)).toEqual([
+      'query:repos', 'query:source', 'query:visibility', 'query:ownership', 'query:who', 'query:from', 'query:to', 'query:tz', 'query:q', 'query:limit', 'query:cursor',
+    ]);
+    expect(Object.keys(list.responses['200']!.content)).toEqual(['application/json']);
+    expect(list.responses['200']!.content['application/json']!.schema.properties.items).toEqual({ type: 'array', items: { $ref: '#/components/schemas/Branch' } });
+    expect(Object.keys(doc.components.schemas.Branch!.properties)).toEqual(['id', 'repo', 'name', 'headOid', 'committedAt', 'author', 'url', 'comments']);
   });
 });

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { BranchListResponse, Diff } from '../../shared/api';
 import { HttpError } from '../api/http';
 import { GitHubDiffSources } from '../github/diff-source';
+import { addBranch, branchesSynced } from '../test/branches';
 import { fakeGitHub, type Handler as Route, restFile, sha } from '../test/github';
 import { branchKey, fakeCode, serveBranch } from '../test/mcp';
 import { seedDb } from '../test/seed';
@@ -435,6 +436,73 @@ describe('branch lists', () => {
     expect(await failure(svc.branchList('app', 'x'.repeat(256)))).toMatchObject({ status: 400, message: 'Invalid q' });
     expect(await failure(svc.branchList('app', 'a\nb'))).toMatchObject({ status: 400 });
     expect(await asked(() => status(svc.branchList('nope', null)))).toEqual({ out: 404, requests: [] });
+    db.run("UPDATE repos SET default_branch = NULL WHERE name = 'app'");
+    expect(await asked(() => failure(svc.branchList('app', null)))).toMatchObject({ out: { status: 409 }, requests: [] });
+  });
+
+  it("reads the sync's list once it has listed the repo completely, asking the code host only with refresh", async () => {
+    const { svc, db, asked, code } = listing();
+    // The sync's list, older than the host's (no feature/x yet), in the order the host would list it.
+    addBranch(db, 'alice/app', 'main', { head: sha('1'), at: day(30) });
+    addBranch(db, 'alice/app', 'feature', { head: sha('2'), at: day(20) });
+    addBranch(db, 'alice/app', 'undated', { head: sha('5'), at: null });
+    addBranch(db, 'alice/app', 'old-branch', { head: sha('4'), at: day(2) });
+    addBranch(db, 'alice/app', 'Fix_%', { head: sha('6'), at: day(2) });
+    db.run("UPDATE pull_requests SET cross_repo = 0 WHERE number = 2 AND repo_id = (SELECT id FROM repos WHERE name = 'app')");
+    // Not listed yet, then listed but capped: only the code host knows them all.
+    expect((await asked(() => svc.branchList('app', null))).requests).toEqual(['branches alice/app']);
+    branchesSynced(db, 'alice/app', false);
+    expect((await asked(() => svc.branchList('app', null, true))).requests).toEqual(['branches alice/app']);
+
+    branchesSynced(db, 'alice/app', true);
+    const synced = await asked(() => svc.branchList('app', null));
+    expect(synced.requests).toEqual([]);
+    expect(synced.out).toEqual({
+      defaultBranch: 'main',
+      more: false,
+      items: [
+        { name: 'feature', headOid: sha('2'), committedAt: day(20), pr: { number: 2, state: 'open', title: 'Add parser' } },
+        { name: 'Fix_%', headOid: sha('6'), committedAt: day(2), pr: null },
+        { name: 'old-branch', headOid: sha('4'), committedAt: day(2), pr: null },
+        { name: 'undated', headOid: sha('5'), committedAt: null, pr: null },
+      ],
+    });
+    // `q` as the hosts take it: a part of the name, whatever its case, wildcards as themselves.
+    const named = async (q: string) => (await asked(() => svc.branchList('app', q))).out.items.map((b) => b.name);
+    expect(await named(' FEATURE ')).toEqual(['feature']);
+    expect(await named('_%')).toEqual(['Fix_%']);
+    expect(await named('main')).toEqual([]);
+    expect(code.requests).toEqual([]);
+    // refresh asks the code host, which has feature/x; the sync's list is read again after.
+    const fresh = await asked(() => svc.branchList('app', null, true));
+    expect(fresh.requests).toEqual(['branches alice/app']);
+    expect(fresh.out.items.map((b) => b.name)).toEqual(['feature/x', 'feature', 'old-branch', 'undated']);
+    expect((await asked(() => svc.branchList('app', null))).out.items[0]!.name).toBe('feature');
+    expect(code.requests).toEqual([]);
+  });
+
+  it("says when the sync's list has more than a list holds, the default branch not among them", async () => {
+    const { svc, db, asked } = listing();
+    branchesSynced(db, 'alice/app', true);
+    addBranch(db, 'alice/app', 'main', { head: sha('1'), at: day(30) });
+    for (let i = 0; i < BRANCH_LIST_LIMIT; i++) addBranch(db, 'alice/app', `b${String(i).padStart(3, '0')}`, { head: sha('2'), at: day(1 + (i % 28)) });
+    let list = (await asked(() => svc.branchList('app', null))).out;
+    expect([list.items.length, list.more, list.items.some((b) => b.name === 'main')]).toEqual([BRANCH_LIST_LIMIT, false, false]);
+    addBranch(db, 'alice/app', 'b-over', { head: sha('2'), at: '2026-08-31T09:00:00Z' });
+    list = (await asked(() => svc.branchList('app', null))).out;
+    expect([list.items.length, list.more]).toEqual([BRANCH_LIST_LIMIT, true]);
+    // Newest first: the oldest is the one left over.
+    expect(list.items[0]!.committedAt).toBe(day(28));
+    expect(list.items.map((b) => b.name)).not.toContain('b-over');
+    expect((await asked(() => svc.branchList('app', 'b-'))).out).toMatchObject({ items: [{ name: 'b-over' }], more: false });
+  });
+
+  it("reads another repo's list from the host until the sync has listed that one", async () => {
+    const { svc, db, asked, code } = listing();
+    branchesSynced(db, 'alice/app', true);
+    serveBranch(code, 'alice/secret', 'spike', sha('7'), MERGE_BASE, [], day(29));
+    expect(await asked(() => svc.branchList('secret', null))).toMatchObject({ requests: ['branches alice/secret'], out: { items: [{ name: 'spike' }] } });
+    // The repo checks come first: a default branch that isn't known is a 409 whichever list would be read.
     db.run("UPDATE repos SET default_branch = NULL WHERE name = 'app'");
     expect(await asked(() => failure(svc.branchList('app', null)))).toMatchObject({ out: { status: 409 }, requests: [] });
   });

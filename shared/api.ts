@@ -1184,8 +1184,9 @@ export interface ThreadListResponse extends ListResponse<ThreadListItem> {
 //          refresh=1 re-checks the code host for a PR's current head instead of using the last synced one.
 // GET    /api/v1/branches       BranchQuery    -> BranchesResponse   (pushed branches with no PR yet, across the repos in scope,
 //          from the sync: see BranchQuery. No code host request.)
-// GET    /api/v1/branches/:repo {q?, refresh?: '1'} -> BranchListResponse   (the code host's branches, newest first, at most
-//          100; `q` narrows them by name. Cached for a minute per repo and q unless refresh=1.)
+// GET    /api/v1/branches/:repo {q?, refresh?: '1'} -> BranchListResponse   (the repo's branches, newest first, at most 100;
+//          `q` narrows them by name. The sync's when its last listing was complete, else the code host's, cached for a
+//          minute per repo and q; refresh=1 asks the code host.)
 // GET    /api/v1/branches/:repo/:branch/diff {refresh?: '1'} -> Diff   (kind 'branch': :branch, URL-encoded, against the
 //          repo's default branch, three-dot. 400 for an invalid name or the default branch itself; 404 unknown repo or a
 //          branch the code host doesn't have. refresh=1 asks the code host even when the cached copy looks current.)

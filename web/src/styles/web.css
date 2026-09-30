@@ -136,6 +136,8 @@ a.btn { text-decoration: none; }
 .list > section, .day-sec { content-visibility: auto; contain-intrinsic-size: auto 900px; }
 .pr { scroll-margin-top: 52px; scroll-margin-bottom: 12px; }
 .pr.rel { cursor: default; }
+/* "No PR yet": a branch's icon stays quiet, as in the Branches card; no state to color. */
+.pr-ic.branch { color: var(--muted); }
 .pr.rel .pr-title a:hover, .pr.t.rel .t-title a:hover { color: var(--accent-text); text-decoration: underline; text-underline-offset: 2px; }
 .pr .md :where(h1, h2, h3, h4, h5, h6) { font-size: 13px; }
 .pr-title { overflow-wrap: anywhere; }
@@ -488,6 +490,8 @@ a.sync:hover .sync-text { color: var(--text); text-decoration: underline; text-u
 
 /* Summary text absorbs spare toolbar width (ellipsis) instead of pushing buttons onto a new line. */
 .toolbar .summary.grow { flex: 1 1 0; min-width: 240px; }
+/* The PR list's state control has a fifth option (No PR yet): its summary, whose date drops first, gives way further. */
+.toolbar .pr-summary.grow { min-width: 180px; }
 /* Real repo names are long; 3 cards across at 1440 px keeps names and stats on one line. */
 .repo-grid { grid-template-columns: repeat(auto-fill, minmax(min(100%, 360px), 1fr)); }
 .rcard { min-width: 0; }

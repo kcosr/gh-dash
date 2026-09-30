@@ -248,6 +248,14 @@ describe('comment event log', () => {
     expect(events()).toEqual([]);
   });
 
+  it('records nothing for an edit that keeps the words', () => {
+    const t = open(pr(), general, 'Why?', me, T0);
+    const same = editComment(db, t.comments[0]!.id, 'Why?', me, T1)!;
+    expect(same.comments[0]!.editedAt).toBeNull();
+    expect(same.updatedAt).toBe(T0);
+    expect(brief()).toEqual([['thread_opened', me.id, t.comments[0]!.id, 'Why?']]);
+  });
+
   it('records nothing when the write fails or finds nothing', () => {
     expect(() => open(pr(), { ...general, side: 'new' })).toThrow(/CHECK constraint/);
     expect(addComment(db, 9999, me, 'x')).toBeNull();

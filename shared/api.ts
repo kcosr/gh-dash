@@ -886,7 +886,7 @@ export interface CommentThread extends ThreadAnchor {
   baseOid: string | null;
   status: ThreadStatus;
   resolvedAt: string | null;
-  /** Who resolved it; null while open (and for threads resolved before this was recorded). */
+  /** Who resolved it; null while open. Threads resolved before this was recorded (schema v8) read as the dashboard user. */
   resolvedBy: Principal | null;
   createdAt: string;
   /** Last activity: a comment added, edited or deleted, or the status changed. */
@@ -948,7 +948,7 @@ export interface ShowTarget {
 /**
  * GET /stream (text/event-stream): what the server tells open windows as it happens. `comments`: a thread changed, so
  * lists, counts and the diff's threads are refetched. `show`: an agent asks the window to open something (a chip,
- * unless the window follows agents). `agents`: an agent was added or revoked.
+ * unless the window follows agents). `agents`: an agent was added, given a new token or revoked.
  */
 export type StreamMessage =
   | { type: 'comments'; repo: string; kind: 'pr' | 'commit'; number: number | null; commitOid: string; threadId: number; event: CommentEventKind; by: Principal }

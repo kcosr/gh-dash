@@ -31,7 +31,7 @@ export interface ThreadRow {
   snippet: string | null;
   status: ThreadStatus;
   resolved_at: string | null;
-  /** Who resolved it (schema v8 on); null while open, and for threads resolved before it was recorded. */
+  /** Who resolved it; null while open (v8 attributed the threads resolved before it to the dashboard user). */
   resolved_by: number | null;
   created_at: string;
   updated_at: string;
@@ -210,12 +210,15 @@ export const mayEdit = (actor: Principal, authorId: number): boolean => actor.id
  */
 export const mayDelete = (actor: Principal, authorId: number): boolean => actor.kind === 'self' || actor.id === authorId;
 
-/** Changes a comment's words, as `actor` (its author: the caller checks). null when there is no such comment. */
+/**
+ * Changes a comment's words, as `actor` (its author: the caller checks). The same words again change nothing, and
+ * record nothing. null when there is no such comment.
+ */
 export function editComment(db: Db, id: number, body: string, actor: Principal, now = nowIso()): CommentThread | null {
   const ref = getCommentRef(db, id);
   if (!ref) return null;
   db.tx(() => {
-    db.run('UPDATE comments SET body = ?, edited_at = ? WHERE id = ?', [body, now, id]);
+    if (!db.run('UPDATE comments SET body = ?, edited_at = ? WHERE id = ? AND body <> ?', [body, now, id, body]).changes) return;
     touch(db, ref.threadId, now);
     logEvent(db, actor, 'edited', ref.threadId, id, body, now);
   });

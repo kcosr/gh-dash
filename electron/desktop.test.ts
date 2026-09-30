@@ -196,7 +196,8 @@ describe('agents', () => {
   });
 
   it("refuses what isn't a name or an id before asking the child, and passes its refusals on as the user's to read", async () => {
-    for (const bad of [undefined, 3, '', '   ', 'x'.repeat(201)]) expect(() => desktop.addAgent(bad), String(bad)).toThrow('Give the agent a name.');
+    for (const bad of [undefined, 3, '', '   ']) expect(() => desktop.addAgent(bad), String(bad)).toThrow('Give the agent a name.');
+    expect(() => desktop.addAgent('x'.repeat(201))).toThrow("That name is too long for an agent's.");
     for (const bad of ['2', 0, -1, 1.5, null]) {
       expect(() => desktop.regenerateAgentToken(bad), String(bad)).toThrow('That is not an agent.');
       expect(() => desktop.revokeAgent(bad), String(bad)).toThrow('That is not an agent.');

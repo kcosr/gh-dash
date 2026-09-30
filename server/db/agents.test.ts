@@ -36,15 +36,21 @@ describe('agents', () => {
     expect(() => createAgent(db, 'x'.repeat(65))).toThrow('at most 64 characters');
     expect(() => createAgent(db, 'a\u0007b')).toThrow("can't hold control characters");
     expect(() => createAgent(db, 'you')).toThrow('"You" is the dashboard user');
+    // Digits alone are how the CLI and tools name an agent by id.
+    expect(() => createAgent(db, ' 42 ')).toThrow("An agent's name can't be only digits (those are ids)");
+    expect(createAgent(db, 'Agent 2').agent.name).toBe('Agent 2');
     expect(() => createAgent(db, 'CLAUDE')).toThrow('There is already an agent called Claude (id 2); regenerate its token instead');
     expect(createAgent(db, 'x'.repeat(64)).agent.name).toHaveLength(64);
-    expect(listAgents(db).map((a) => a.name)).toEqual(['Claude', 'x'.repeat(64)]);
+    expect(listAgents(db).map((a) => a.name)).toEqual(['Claude', 'Agent 2', 'x'.repeat(64)]);
   });
 
   it('lists agents oldest first and finds one by id or name', () => {
     const a = createAgent(db, 'Claude', T0).agent;
     const b = createAgent(db, 'Codex', T1).agent;
-    expect(listAgents(db)).toEqual([a, b]);
+    // A name that looks like another agent's id is a name.
+    expect(createAgent(db, '3x').agent).toMatchObject({ id: 4, name: '3x' });
+    expect(findAgent(db, '3x')).toMatchObject({ id: 4 });
+    expect(listAgents(db).slice(0, 2)).toEqual([a, b]);
     expect(findAgent(db, String(b.id))).toEqual(b);
     expect(findAgent(db, ' claude ')).toEqual(a);
     expect(findAgent(db, '1')).toBeNull(); // the dashboard user isn't an agent

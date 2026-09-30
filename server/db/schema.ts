@@ -455,6 +455,9 @@ function moveViewerMeta(db: Db): void {
 // foreign key to the thread or comment); a removed repo takes its events along. Agent names are unique (any case): the
 // `agents` command and tools name an agent by it. Until now only the dashboard's user (principal 1) could write, so it
 // resolved every thread that is resolved.
+// Since then (db/agents.ts), revoking became disabling: agent_tokens.revoked_at is when the agent was disabled, NULL while
+// enabled, and enabling clears it, the same token working again. Deleting an agent drops its agent_tokens row and
+// renames its principal "Deleted agent #<id>"; the principal stays, for its comments.
 const AGENTS = `
 ALTER TABLE comment_threads ADD COLUMN resolved_by INTEGER REFERENCES principals(id);
 UPDATE comment_threads SET resolved_by = 1 WHERE status = 'resolved' AND resolved_by IS NULL;

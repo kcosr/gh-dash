@@ -1,11 +1,12 @@
 // `gh-dash agents …` for the headless server (node dist/server/index.mjs agents …): make, list, regenerate, limit to
-// some sources and revoke the agents that comment through MCP. Tokens and sources are set here or in the desktop app
-// only, never over HTTP. It opens the database the server uses (GH_DASH_DB, config.json, the env file), so it works
-// whether or not the server is running.
+// some sources, disable, enable and delete the agents that comment through MCP. Agents, their tokens and sources are
+// changed here or in the desktop app only, never over HTTP. It opens the database the server uses (GH_DASH_DB,
+// config.json, the env file), so it works whether or not the server is running.
 
+import { agentDeletionSentences, warningText } from '../shared/agents';
 import type { Agent } from '../shared/api';
 import { loadServerConfig } from './config';
-import { createAgent, findAgent, listAgents, regenerateAgentToken, revokeAgent, setAgentSources } from './db/agents';
+import { agentFootprint, createAgent, deleteAgent, findAgent, listAgents, regenerateAgentToken, setAgentEnabled, setAgentSources } from './db/agents';
 import { type Db, openDb } from './db/db';
 import { HttpError } from './lib/errors';
 import { localApiUrl } from './start';
@@ -23,11 +24,19 @@ const USAGE = `Usage: gh-dash agents <command>
 
   add <name> [--source <host>]... [--token-stdin]
                                         Make an agent and print its token (shown once)
-  list                                  List the agents (never their tokens) and the sources they reach
-  regenerate <id|name> [--token-stdin]  Give an agent a new token (the old one stops working) and print it
+  list                                  List the agents (never their tokens), whether each is active or disabled,
+                                        and the sources they reach
+  regenerate <id|name> [--token-stdin]  Give an agent a new token (the old one stops working) and print it; a
+                                        disabled agent is enabled with it
   scope <id|name> --source <host>... | --all
                                         Limit an agent to some sources, or let it reach every one again
-  revoke <id|name>                      Revoke an agent's token; its comments stay
+  disable <id|name>                     Refuse an agent's token until it's enabled again; its token, sources and
+                                        comments stay (revoke: the same)
+  enable <id|name>                      Accept a disabled agent's token again (if it may have leaked, regenerate
+                                        instead)
+  delete <id|name> [--yes]              Delete an agent: its token stops working, its name is free again, and its
+                                        comments stay, as by "Deleted agent #<id>". Says what it wrote first, and
+                                        needs --yes when it wrote anything
 
 --source: a source the agent may reach through MCP, by its host (github.com, gitlab.example.com: see the sources in
 Settings, or GET /api/v1/sources); repeat it for more. Without it, an agent reaches every source, those added later
@@ -41,6 +50,7 @@ Agents comment through MCP at <server>/mcp with "Authorization: Bearer <token>".
 const TOKEN_STDIN = '--token-stdin';
 const SOURCE = '--source';
 const ALL = '--all';
+const YES = '--yes';
 
 /** The hosts of `--source <host>` and `--source=<host>`, any number of them, and the arguments left. */
 function takeSources(args: string[]): { hosts: string[]; rest: string[] } {
@@ -87,7 +97,8 @@ export async function runAgentsCommand(args: string[], io: CliIo = { out: consol
   try {
     const fromStdin = given.includes(TOKEN_STDIN);
     const all = given.includes(ALL);
-    const { hosts, rest } = takeSources(given.filter((a) => a !== TOKEN_STDIN && a !== ALL));
+    const yes = given.includes(YES);
+    const { hosts, rest } = takeSources(given.filter((a) => a !== TOKEN_STDIN && a !== ALL && a !== YES));
     const { config } = loadServerConfig(io.env);
     const open = () => (opened.db ??= openDb(config.dbPath, { allowDestructiveMigrations: config.syncEnabled }));
     const mcpUrl = `${localApiUrl(config.host, config.port)}/mcp`;
@@ -97,6 +108,7 @@ export async function runAgentsCommand(args: string[], io: CliIo = { out: consol
     if (fromStdin && command !== 'add' && command !== 'regenerate') throw new UsageError(`${TOKEN_STDIN} goes with add or regenerate`);
     if (hosts.length && command !== 'add' && command !== 'scope') throw new UsageError(`${SOURCE} goes with add or scope`);
     if (all && command !== 'scope') throw new UsageError(`${ALL} goes with scope (an agent added without ${SOURCE} reaches every source)`);
+    if (yes && command !== 'delete') throw new UsageError(`${YES} goes with delete`);
     /** The token piped in (its first line), or undefined for a generated one. Checked where it is stored. */
     const chosenToken = async () => {
       if (!fromStdin) return undefined;
@@ -137,7 +149,7 @@ export async function runAgentsCommand(args: string[], io: CliIo = { out: consol
         }
         const rows = agents.map((a) => [
           String(a.id), a.name, a.tokenPrefix ? `${a.tokenPrefix}…` : '-', a.createdAt, a.lastUsedAt ?? 'never',
-          a.builtIn ? 'built in (no token)' : a.revokedAt ? `revoked ${a.revokedAt}` : 'active',
+          a.builtIn ? 'built in (no token)' : a.disabledAt ? `disabled ${a.disabledAt}` : 'active',
           a.sources === null ? 'all' : a.sources.join(',') || 'none',
         ]);
         for (const line of table(['ID', 'NAME', 'TOKEN', 'CREATED', 'LAST USED', 'STATUS', 'SOURCES'], rows)) io.out(line);
@@ -157,10 +169,36 @@ export async function runAgentsCommand(args: string[], io: CliIo = { out: consol
         io.out(`${agent.name} (id ${agent.id}) now reaches ${reachOf(agent)}, from its next request.`);
         return 0;
       }
+      // revoke: what disabling was called before it could be undone, for the scripts that use it.
+      case 'disable':
       case 'revoke': {
         const before = agentBy(one('agent id or name'));
-        const agent = revokeAgent(open(), before.id)!;
-        io.out(before.revokedAt ? `${agent.name} (id ${agent.id}) was already revoked.` : `Revoked ${agent.name} (id ${agent.id}); its comments stay.`);
+        const agent = setAgentEnabled(open(), before.id, false)!;
+        io.out(before.disabledAt
+          ? `${agent.name} (id ${agent.id}) was already disabled.`
+          : `Disabled ${agent.name} (id ${agent.id}): its token is refused until you enable it again. Its comments stay.`);
+        return 0;
+      }
+      case 'enable': {
+        const before = agentBy(one('agent id or name'));
+        const agent = setAgentEnabled(open(), before.id, true)!;
+        io.out(before.disabledAt ? `Enabled ${agent.name} (id ${agent.id}): its token works again.` : `${agent.name} (id ${agent.id}) is already enabled.`);
+        return 0;
+      }
+      case 'delete': {
+        const target = agentBy(one('agent id or name'));
+        const who = { id: target.id, disabled: !!target.disabledAt };
+        // What it wrote decides whether to ask: nothing lost, nothing to confirm.
+        if (!target.builtIn && !yes) {
+          const footprint = agentFootprint(open(), target.id);
+          if (footprint.comments > 0) {
+            io.err(`Delete ${target.name} (id ${target.id})? ${warningText(agentDeletionSentences(who, footprint))}`);
+            io.err(`Run again with ${YES} to delete it: gh-dash agents delete ${target.id} ${YES}`);
+            return 1;
+          }
+        }
+        const deleted = deleteAgent(open(), target.id)!;
+        io.out(`Deleted ${deleted.name} (id ${deleted.id}). ${warningText(agentDeletionSentences(who, deleted.footprint, true))}`);
         return 0;
       }
       default:

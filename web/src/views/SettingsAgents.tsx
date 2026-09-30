@@ -1,12 +1,13 @@
 /**
  * Settings → Agents (`/settings#agents`): the coding agents that read and write comments here through MCP, each with a
  * token of its own and the sources it may reach, and how to connect one. The desktop app adds agents, makes new tokens,
- * chooses their sources and revokes them (a token is shown once, with ready-to-paste config); a headless server does
- * that with its `agents` command, and lists them here.
+ * chooses their sources, disables and enables them, and deletes them (a token is shown once, with ready-to-paste
+ * config); a headless server does that with its `agents` command, and lists them here.
  */
-import { useState } from 'react';
+import { Fragment, useState } from 'react';
 import type { FormEvent, KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { Link } from 'react-router';
+import { agentDeletionSentences } from '../../../shared/agents';
 import type { Agent } from '../../../shared/api';
 import { useAgentActions, useDesktop } from '../api/desktop';
 import { useAgents, useInstance, useSources, useWorkSources } from '../api/hooks';
@@ -55,18 +56,19 @@ function Reach({ a, known, onSources }: { a: Agent; known: readonly AgentSource[
 }
 
 /**
- * One agent: its name, token prefix, when it was added and last used (or revoked), and the sources it reaches; the
+ * One agent: its name, token prefix, when it was added and last used (or disabled), and the sources it reaches; the
  * desktop app's actions.
  */
-function AgentRow({ a, now, known, onSources, onNewToken, onRevoke }: {
+function AgentRow({ a, now, known, onSources, onNewToken, onToggle, onDelete }: {
   a: Agent;
   now: number;
   known: readonly AgentSource[];
   onSources?: (a: Agent) => void;
   onNewToken?: (a: Agent) => void;
-  onRevoke?: (a: Agent) => void;
+  onToggle?: (a: Agent) => void;
+  onDelete?: (a: Agent) => void;
 }) {
-  const revoked = !!a.revokedAt;
+  const disabled = !!a.disabledAt;
   // The desktop app's is a button, with the other actions; a server's, text after the status.
   const reach = <Reach a={a} known={known} onSources={onSources} />;
   if (a.builtIn) {
@@ -82,21 +84,35 @@ function AgentRow({ a, now, known, onSources, onNewToken, onRevoke }: {
     );
   }
   return (
-    <li className={cx('trk-row agent-row', revoked && 'revoked', (onSources || onNewToken || onRevoke) && 'acts')}>
+    <li className={cx('trk-row agent-row', disabled && 'disabled', (onSources || onNewToken || onToggle || onDelete) && 'acts')}>
       <span className="trk-name" title={a.name}>{a.name}</span>
       {a.tokenPrefix && <code className="agent-prefix" title="The token's first characters, to tell tokens apart">{a.tokenPrefix}…</code>}
-      <span className="trk-st agent-st" title={[`Added ${fmtDateTime(a.createdAt)}`, a.lastUsedAt && `last used ${fmtDateTime(a.lastUsedAt)}`, a.revokedAt && `revoked ${fmtDateTime(a.revokedAt)}`].filter(Boolean).join(', ')}>
-        {revoked ? `Revoked ${relLong(a.revokedAt!, now)}` : a.lastUsedAt ? `Used ${relLong(a.lastUsedAt, now)}` : `Added ${relLong(a.createdAt, now)} · not used yet`}
+      <span className="trk-st agent-st" title={[`Added ${fmtDateTime(a.createdAt)}`, a.lastUsedAt && `last used ${fmtDateTime(a.lastUsedAt)}`, a.disabledAt && `disabled ${fmtDateTime(a.disabledAt)}`].filter(Boolean).join(', ')}>
+        {disabled ? `Disabled ${relLong(a.disabledAt!, now)}` : a.lastUsedAt ? `Used ${relLong(a.lastUsedAt, now)}` : `Added ${relLong(a.createdAt, now)} · not used yet`}
       </span>
       {!onSources && reach}
       <span className="spacer" />
       {onSources && reach}
       {onNewToken && (
-        <button type="button" className="btn sm ghost" onClick={() => onNewToken(a)} title={revoked ? 'Give it a token again: it can write here once more' : 'Replace its token'}>
+        <button type="button" className="btn sm ghost" onClick={() => onNewToken(a)}
+          title={disabled ? 'Replace its token, and enable it: it can write here again with the new one' : 'Replace its token'}>
           New token…
         </button>
       )}
-      {!revoked && onRevoke && <button type="button" className="btn sm ghost" onClick={() => onRevoke(a)}>Revoke…</button>}
+      {onToggle && (
+        <button type="button" className="btn sm ghost" onClick={() => onToggle(a)} aria-label={`${disabled ? 'Enable' : 'Disable'} ${a.name}`}
+          title={disabled
+            ? 'Accept its token again. If it may have leaked, give it a new token instead'
+            : 'Refuse its token until you enable it again. Its token, sources and comments stay'}>
+          {disabled ? 'Enable' : 'Disable'}
+        </button>
+      )}
+      {onDelete && (
+        <button type="button" className="btn sm ghost" onClick={() => onDelete(a)} aria-label={`Delete ${a.name}…`}
+          title="Delete it: its token stops working and its name is free again. What it wrote stays">
+          Delete…
+        </button>
+      )}
     </li>
   );
 }
@@ -245,7 +261,7 @@ function NewToken({ agent, onMade, onCancel }: { agent: Agent; onMade: (s: Shown
     <form className="agent-add agent-new" onSubmit={submit} onKeyDown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); onCancel(); } }}
       aria-label={`New token for ${agent.name}`}>
       <p className="agent-new-h">
-        New token for <b>{agent.name}</b>. {agent.revokedAt ? `${agent.name} can write here again with it.` : 'The one it uses now stops working at once.'}
+        New token for <b>{agent.name}</b>. {agent.disabledAt ? `${agent.name} is enabled with it, and can write here again.` : 'The one it uses now stops working at once.'}
       </p>
       <TokenField id="agent-new-token" value={token} onChange={setToken} problem={problem} />
       <button type="submit" className="btn primary" disabled={regenerate.isPending || !!problem}>Make new token</button>
@@ -285,7 +301,7 @@ export function AgentsSection() {
   const agents = useAgents();
   const { bridge, state } = useDesktop();
   const instance = useInstance().data;
-  const { revoke, enableMcp } = useAgentActions();
+  const { setEnabled, footprint, remove, enableMcp } = useAgentActions();
   const { openConfirm } = useUI();
   const toast = useToast();
   const now = useNow(60_000);
@@ -309,17 +325,38 @@ export function AgentsSection() {
     onSuccess: (st) => toast(st.mcpUrl ? (portOff ? 'Local API on, for agents only' : 'MCP on') : `Couldn't turn it on${st.serverError ? `: ${st.serverError}` : ''}`, { error: !st.mcpUrl }),
     onError: (e) => toast(bridgeError(e), { error: true }),
   });
-  const revokeAgent = (a: Agent) => openConfirm({
-    title: `Revoke ${a.name}?`,
-    body: `Its token stops working at once. What ${a.name} wrote stays, under its name.`,
-    confirmLabel: 'Revoke',
-    danger: true,
-    onConfirm: async () => {
-      await revoke.mutateAsync(a.id).catch((e: unknown) => { throw new Error(bridgeError(e)); });
-      if (shown?.agent.id === a.id) setShown(null);
-      toast(`${a.name} revoked`);
-    },
+  // Disable / Enable: at once, nothing to confirm (it's undone the same way).
+  const toggleAgent = (a: Agent) => setEnabled.mutate({ id: a.id, enabled: !!a.disabledAt }, {
+    onSuccess: (x) => toast(x.disabledAt ? `${x.name} disabled` : `${x.name} enabled`),
+    onError: (e) => toast(bridgeError(e), { error: true }),
   });
+  // Delete…: what it wrote first (asked now: it changes with every comment), then the confirmation that says so.
+  const deleteAgent = async (a: Agent) => {
+    let f;
+    try {
+      f = await footprint(a.id);
+    } catch (e) {
+      toast(bridgeError(e), { error: true });
+      return;
+    }
+    // The quoted name ("Deleted agent #4") on one line.
+    const sentences = agentDeletionSentences({ id: a.id, disabled: !!a.disabledAt }, f).map((x) => ({ ...x, text: x.text.replace(/“[^”]*”/g, (q) => q.replace(/ /g, '\u00a0')) }));
+    openConfirm({
+      title: `Delete ${a.name}?`,
+      body: sentences.map((x, i) => (
+        <Fragment key={i}>{i > 0 && ' '}{x.stress ? <span className="confirm-stress">{x.text}</span> : x.text}</Fragment>
+      )),
+      confirmLabel: 'Delete',
+      danger: true,
+      onConfirm: async () => {
+        await remove.mutateAsync(a.id).catch((e: unknown) => { throw new Error(bridgeError(e)); });
+        if (shown?.agent.id === a.id) setShown(null);
+        if (renewing?.id === a.id) setRenewing(null);
+        if (scoping?.id === a.id) setScoping(null);
+        toast(`${a.name} deleted`);
+      },
+    });
+  };
   const show = (s: Shown) => { setAdding(false); setRenewing(null); setScoping(null); setShown(s); };
   const scoped = (a: Agent) => { setScoping(null); toast(`${a.name}: ${agentReach(a.sources, known)}`); };
 
@@ -360,7 +397,7 @@ export function AgentsSection() {
           </span>
         </div>
         <div className="set-row top">
-          <span className="set-l">Added agents<small>Revoked ones stay listed: what they wrote is still theirs.</small></span>
+          <span className="set-l">Added agents<small>Disabled ones stay listed. What a deleted one wrote stays, as by “Deleted agent #…”.</small></span>
           <span className="set-c grow stack">
             {agents.isError ? <span className="muted">Couldn't load agents: {(agents.error as Error).message}</span>
               : !agents.data ? <span className="muted">Loading…</span>
@@ -370,7 +407,7 @@ export function AgentsSection() {
                       <AgentRow key={a.id} a={a} now={now} known={known}
                         onSources={desktop ? (x) => { setShown(null); setAdding(false); setRenewing(null); setScoping(x); } : undefined}
                         onNewToken={desktop ? (x) => { setShown(null); setAdding(false); setScoping(null); setRenewing(x); } : undefined}
-                        onRevoke={desktop ? revokeAgent : undefined} />
+                        onToggle={desktop ? toggleAgent : undefined} onDelete={desktop ? (x) => void deleteAgent(x) : undefined} />
                     ))}
                   </ul>
                 ) : <span className="muted">None yet.</span>}
@@ -393,8 +430,9 @@ export function AgentsSection() {
           Agents are added where the server runs: <code>node dist/server/index.mjs agents add &lt;name&gt;</code> prints the
           new agent's token once (<code>--token-stdin</code> takes one of yours, <code>--source &lt;host&gt;</code> limits it to
           that source); <code>agents list</code> shows them, <code>agents regenerate &lt;name&gt;</code> makes one a new
-          token, <code>agents scope &lt;name&gt; --source &lt;host&gt;</code> (or <code>--all</code>) chooses its sources, and{' '}
-          <code>agents revoke &lt;name&gt;</code> stops it.
+          token, <code>agents scope &lt;name&gt; --source &lt;host&gt;</code> (or <code>--all</code>) chooses its sources,{' '}
+          <code>agents disable &lt;name&gt;</code> stops it until <code>agents enable &lt;name&gt;</code>, and{' '}
+          <code>agents delete &lt;name&gt;</code> deletes it, keeping what it wrote.
         </p>
       )}
     </section>

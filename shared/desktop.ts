@@ -6,6 +6,7 @@
  *
  * The web app must work without the bridge (headless server in a browser); desktop-only UI checks for it.
  */
+import type { AgentFootprint, DeletedAgent } from './agents';
 import type { AccountStatus, Agent, SourceAccount, SourceCheck, TokenChoice } from './api';
 
 /** The window loads app://gh-dash/...; main forwards every request to the server child. */
@@ -87,8 +88,15 @@ export type MainToServer =
   | { type: 'add-agent'; id: number; name: string; token?: string | null; sources?: string[] | null }
   /** A new token for the agent with principal id `agent` (`token`, or generated); the old one stops working. Answered with `agent-result` (the token). */
   | { type: 'regenerate-agent-token'; id: number; agent: number; token?: string | null }
-  /** Revoke the agent's token; its comments stay. Answered with `agent-result` (no token). */
-  | { type: 'revoke-agent'; id: number; agent: number }
+  /**
+   * Disable the agent (its token refused until it's enabled again) or enable it (the same token works again). Answered
+   * with `agent-result` (no token).
+   */
+  | { type: 'set-agent-enabled'; id: number; agent: number; enabled: boolean }
+  /** What the agent has written, for the warning before it is deleted. Answered with `agent-footprint`. */
+  | { type: 'agent-footprint'; id: number; agent: number }
+  /** Delete the agent: its token and sources go, its comments stay as by "Deleted agent #<id>". Answered with `agent-deleted`. */
+  | { type: 'delete-agent'; id: number; agent: number }
   /**
    * Limit the agent with principal id `agent` (or the built-in agent, made if it isn't yet) to the sources with these
    * hosts, or let it reach every source again (null). Answered with `agent-result` (no token).
@@ -121,10 +129,14 @@ export type ServerToMain =
   /** Result of sync-source. */
   | { type: 'sync-started'; id: number; result: 'started' | 'queued' }
   /**
-   * Result of add-agent, regenerate-agent-token, revoke-agent and set-agent-sources: the agent as it is now, and its new
-   * token (null for the last two). The token goes to the renderer once, to be shown to the user; nobody logs it.
+   * Result of add-agent, regenerate-agent-token, set-agent-enabled and set-agent-sources: the agent as it is now, and its
+   * new token (null for the last two). The token goes to the renderer once, to be shown to the user; nobody logs it.
    */
   | { type: 'agent-result'; id: number; agent: Agent; token: string | null }
+  /** Result of agent-footprint. */
+  | { type: 'agent-footprint'; id: number; footprint: AgentFootprint }
+  /** Result of delete-agent: who it was, and what it had written. */
+  | { type: 'agent-deleted'; id: number; deleted: DeletedAgent }
   /** A request with an `id` failed (an unknown source, one still configured...): `message` says why, for the user. */
   | { type: 'request-failed'; id: number; message: string }
   /** Startup failed (bad config, database locked, port in use...). The child exits after sending it. */
@@ -307,9 +319,9 @@ export interface DesktopBridge {
    */
   addAgent(name: string, token?: string, sources?: string[] | null): Promise<DesktopAgentToken>;
   /**
-   * A new token for an agent (by its id), revoked or not; the old token stops working at once. Shown once, like
-   * addAgent's. `token`: one the user chose (24–256 printable ASCII characters without spaces, no other agent's), else
-   * generated; it travels only in this call.
+   * A new token for an agent (by its id), disabled or not (it's enabled then); the old token stops working at once.
+   * Shown once, like addAgent's. `token`: one the user chose (24–256 printable ASCII characters without spaces, no other
+   * agent's), else generated; it travels only in this call.
    */
   regenerateAgentToken(id: number, token?: string): Promise<DesktopAgentToken>;
   /**
@@ -317,8 +329,18 @@ export interface DesktopBridge {
    * (off, if the Local API was). Restarts the server when that changes anything.
    */
   enableMcp(): Promise<DesktopState>;
-  /** Revokes an agent's token at once; the agent and its comments stay (GET /agents lists it as revoked). */
-  revokeAgent(id: number): Promise<Agent>;
+  /**
+   * Disables an agent (by its id) at once, its token refused until it's enabled again, or enables it: the same token
+   * works again. Its token, sources and comments stay either way (GET /agents lists it as disabled).
+   */
+  setAgentEnabled(id: number, enabled: boolean): Promise<Agent>;
+  /** What an agent (by its id) has written, for the warning before deleting it (shared/agents.ts agentDeletionSentences). */
+  agentFootprint(id: number): Promise<AgentFootprint>;
+  /**
+   * Deletes an agent (by its id; not the built-in one): its token stops working at once, its name is free again, and
+   * its comments stay, as by "Deleted agent #<id>". GET /agents no longer lists it.
+   */
+  deleteAgent(id: number): Promise<DeletedAgent>;
   /**
    * Limits an agent (by its id; 'built-in' for the built-in agent, listed or not yet) to the sources with these hosts
    * (Source.host, at least one), or lets it reach every source again, those added later too (null). It applies from the
@@ -346,7 +368,9 @@ export const DESKTOP_IPC = {
   chooseTokenFile: 'gh-dash:choose-token-file',
   addAgent: 'gh-dash:add-agent',
   regenerateAgentToken: 'gh-dash:regenerate-agent-token',
-  revokeAgent: 'gh-dash:revoke-agent',
+  setAgentEnabled: 'gh-dash:set-agent-enabled',
+  agentFootprint: 'gh-dash:agent-footprint',
+  deleteAgent: 'gh-dash:delete-agent',
   setAgentSources: 'gh-dash:set-agent-sources',
   enableMcp: 'gh-dash:enable-mcp',
 } as const;

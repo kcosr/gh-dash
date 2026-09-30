@@ -390,7 +390,7 @@ function AuthorMenu({ value, agents, onChange }: { value: ThreadAuthor | null; a
           {opt('agents', 'Agents', null, close)}
           {named && (
             <div className="pop-foot" role="presentation">
-              {sortAgents(agents).map((a) => opt(a.id, a.name, a.revokedAt ? 'revoked' : null, close))}
+              {sortAgents(agents).map((a) => opt(a.id, a.name, a.disabledAt ? 'disabled' : null, close))}
             </div>
           )}
         </>

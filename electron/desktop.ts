@@ -9,6 +9,7 @@ import { accessSync, constants, mkdirSync, rmSync, statSync } from 'node:fs';
 import { basename, isAbsolute } from 'node:path';
 import { isDeepStrictEqual, promisify } from 'node:util';
 import { type ConfigFile, type LoadedConfigFile, readConfigFile, sourceUrl, writeConfigFile } from '../server/config-file';
+import type { AgentFootprint, DeletedAgent } from '../shared/agents';
 import type { AccountStatus, Agent, SourceAccount, SourceCheck, TokenChoice } from '../shared/api';
 import type {
   CredentialDraft,
@@ -558,12 +559,30 @@ export class Desktop {
     });
   }
 
-  revokeAgent(input: unknown): Promise<Agent> {
+  /** Settings → Agents, Disable / Enable: the token refused until enabled again, or accepted again. Nothing else changes. */
+  setAgentEnabled(input: unknown, enabledInput: unknown): Promise<Agent> {
+    const id = agentId(input);
+    if (typeof enabledInput !== 'boolean') throw new ConfigInputError('Say whether to enable the agent or disable it.');
+    return this.exclusive(async () => {
+      const agent = await this.agentRequest(() => this.d.child.setAgentEnabled(id, enabledInput));
+      this.d.log(`[agents] ${enabledInput ? 'enabled' : 'disabled'} ${agent.name} (id ${id})`);
+      return agent;
+    });
+  }
+
+  /** What an agent has written, for Delete…'s warning. Only reads: it waits for no change in progress. */
+  agentFootprint(input: unknown): Promise<AgentFootprint> {
+    const id = agentId(input);
+    return this.agentRequest(() => this.d.child.agentFootprint(id));
+  }
+
+  /** Settings → Agents, Delete… (once confirmed): its token and sources go, its comments stay under "Deleted agent #<id>". */
+  deleteAgent(input: unknown): Promise<DeletedAgent> {
     const id = agentId(input);
     return this.exclusive(async () => {
-      const agent = await this.agentRequest(() => this.d.child.revokeAgent(id));
-      this.d.log(`[agents] revoked ${agent.name} (id ${id})`);
-      return agent;
+      const deleted = await this.agentRequest(() => this.d.child.deleteAgent(id));
+      this.d.log(`[agents] deleted ${deleted.name} (id ${id}); its comments stay, as by ${deleted.deletedAs}`);
+      return deleted;
     });
   }
 

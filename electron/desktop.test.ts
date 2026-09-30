@@ -34,12 +34,14 @@ const fakeChild = () => {
   /** Every set-token the child got, in order (setToken and sendSetToken both send one). */
   const sent: [TokenChoice | null, string | null | undefined][] = [];
   const send = (choice: TokenChoice | null, token?: string | null) => (sent.push([choice, token]), validate(choice, token));
-  const agent = (id: number, name = 'Claude'): Agent => ({ id, name, tokenPrefix: 'ghd_abcd', createdAt: 'x', lastUsedAt: null, revokedAt: null, builtIn: false, sources: null });
+  const agent = (id: number, name = 'Claude'): Agent => ({ id, name, tokenPrefix: 'ghd_abcd', createdAt: 'x', lastUsedAt: null, disabledAt: null, builtIn: false, sources: null });
   return {
     status: 'running', apiUrl: null as string | null, mcpUrl: null as string | null, lastError: null as string | null, sent, setToken: vi.fn(send), sendSetToken: vi.fn(send),
     addAgent: vi.fn(async (name: string) => ({ agent: agent(2, name), token: 'ghd_secret1' })),
     regenerateAgentToken: vi.fn(async (id: number) => ({ agent: agent(id), token: 'ghd_secret2' })),
-    revokeAgent: vi.fn(async (id: number) => ({ ...agent(id), tokenPrefix: null, revokedAt: 'y' })),
+    setAgentEnabled: vi.fn(async (id: number, enabled: boolean) => ({ ...agent(id), disabledAt: enabled ? null : 'y' })),
+    agentFootprint: vi.fn(async () => ({ comments: 2, threads: 1, openThreads: 1, opened: 1 })),
+    deleteAgent: vi.fn(async (id: number) => ({ id, name: 'Claude', deletedAs: `Deleted agent #${id}`, footprint: { comments: 2, threads: 1, openThreads: 1, opened: 1 } })),
     setAgentSources: vi.fn(async (id: number | 'built-in', sources: string[] | null) => ({ ...agent(id === 'built-in' ? 5 : id, id === 'built-in' ? 'Agent' : 'Claude'), sources })),
   };
 };
@@ -187,11 +189,19 @@ describe('agents', () => {
     writeFileSync(configPath, JSON.stringify({ listen: true }));
     expect(await desktop.addAgent('Claude')).toEqual({ agent: expect.objectContaining({ id: 2, name: 'Claude' }), token: 'ghd_secret1' });
     expect(await desktop.regenerateAgentToken(2)).toMatchObject({ agent: { id: 2 }, token: 'ghd_secret2' });
-    expect(await desktop.revokeAgent(2)).toMatchObject({ id: 2, tokenPrefix: null, revokedAt: 'y' });
+    expect(await desktop.setAgentEnabled(2, false)).toMatchObject({ id: 2, tokenPrefix: 'ghd_abcd', disabledAt: 'y' });
+    expect(await desktop.setAgentEnabled(2, true)).toMatchObject({ id: 2, disabledAt: null });
+    expect(await desktop.agentFootprint(2)).toEqual({ comments: 2, threads: 1, openThreads: 1, opened: 1 });
+    expect(await desktop.deleteAgent(2)).toMatchObject({ id: 2, name: 'Claude', deletedAs: 'Deleted agent #2' });
     expect(child.addAgent).toHaveBeenCalledWith('Claude', undefined, null);
     expect(child.regenerateAgentToken).toHaveBeenCalledWith(2, undefined);
-    expect(child.revokeAgent).toHaveBeenCalledWith(2);
-    expect(lines).toEqual(['[agents] added Claude (id 2)', '[agents] new token for Claude (id 2)', '[agents] revoked Claude (id 2)']);
+    expect(child.setAgentEnabled.mock.calls).toEqual([[2, false], [2, true]]);
+    expect(child.agentFootprint).toHaveBeenCalledWith(2);
+    expect(child.deleteAgent).toHaveBeenCalledWith(2);
+    expect(lines).toEqual([
+      '[agents] added Claude (id 2)', '[agents] new token for Claude (id 2)', '[agents] disabled Claude (id 2)', '[agents] enabled Claude (id 2)',
+      '[agents] deleted Claude (id 2); its comments stay, as by Deleted agent #2',
+    ]);
     expect(lines.join('\n')).not.toContain('ghd_secret');
     // Nothing touches config.json or restarts the server.
     expect(readConfig()).toEqual({ listen: true });
@@ -278,7 +288,9 @@ describe('agents', () => {
     expect(() => desktop.addAgent('x'.repeat(201))).toThrow("That name is too long for an agent's.");
     for (const bad of ['2', 0, -1, 1.5, null]) {
       expect(() => desktop.regenerateAgentToken(bad), String(bad)).toThrow('That is not an agent.');
-      expect(() => desktop.revokeAgent(bad), String(bad)).toThrow('That is not an agent.');
+      expect(() => desktop.setAgentEnabled(bad, false), String(bad)).toThrow('That is not an agent.');
+      expect(() => desktop.agentFootprint(bad), String(bad)).toThrow('That is not an agent.');
+      expect(() => desktop.deleteAgent(bad), String(bad)).toThrow('That is not an agent.');
     }
     expect(child.addAgent).not.toHaveBeenCalled();
     child.addAgent.mockRejectedValueOnce(new Error('There is already an agent called Claude (id 2); regenerate its token instead'));
@@ -291,7 +303,7 @@ describe('agents', () => {
     const lines: string[] = [];
     desktop = new Desktop({ child: child as unknown as ServerChild, tokens: tokens as unknown as TokenStore, configPath, dataDir: join(dir, 'data'), version: '1', restart, log: (l) => lines.push(l) });
     writeFileSync(configPath, JSON.stringify({ listen: true }));
-    const work: Agent = { id: 2, name: 'Work', tokenPrefix: 'ghd_abcd', createdAt: 'x', lastUsedAt: null, revokedAt: null, builtIn: false, sources: ['gitlab.example.com'] };
+    const work: Agent = { id: 2, name: 'Work', tokenPrefix: 'ghd_abcd', createdAt: 'x', lastUsedAt: null, disabledAt: null, builtIn: false, sources: ['gitlab.example.com'] };
     child.addAgent.mockImplementationOnce(async () => ({ agent: work, token: 'ghd_secret1' }));
     expect(await desktop.addAgent('Work', undefined, [' GitLab.example.com '])).toMatchObject({ agent: { sources: ['gitlab.example.com'] } });
     expect(child.addAgent).toHaveBeenCalledWith('Work', undefined, ['gitlab.example.com']);

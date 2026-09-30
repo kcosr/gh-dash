@@ -4,15 +4,16 @@
 import { z } from 'zod';
 import type { Diff, ProviderKind, PullRequest } from '../../../shared/api';
 import { isBranchName } from '../../../shared/branch';
+import { encodeCursor } from '../../api/scope';
 import type { Db } from '../../db/db';
 import { isMeFn, loadQueryCtx } from '../../db/filters';
-import { PR_FROM, PR_SELECT } from '../../db/lists';
-import { resolveRepo } from '../../db/repo-key';
+import { listPrs as listPrRows, PR_FROM, PR_SELECT } from '../../db/lists';
 import { type PrRow, toPr } from '../../db/rows';
 import { HttpError } from '../../lib/errors';
-import { prDetail, queryPrs, repoKinds } from '../../services/lists';
+import { page, prDetail, repoKinds } from '../../services/lists';
 import { loadDiff } from '../diffs';
 import { clip, commitArg, limitArg, prArg, repoArg, targetRef } from '../format';
+import { reachScope, requireRepo } from '../reach';
 import { readTool, type ToolContext } from '../tool';
 
 /** The compact PR every tool returns. */
@@ -45,13 +46,6 @@ function headOids(db: Db, ids: string[]): Map<string, string | null> {
   return new Map(rows.map((r) => [r.id, r.head_oid]));
 }
 
-/** The live repo a tool argument names; 404 names it. */
-export function requireRepo(db: Db, key: string) {
-  const ref = resolveRepo(db, key);
-  if (!ref) throw new HttpError(404, `Repository ${key} isn't tracked in gh-dash (list_repos lists the ones that are)`);
-  return ref;
-}
-
 export const listPrs = readTool({
   name: 'list_prs',
   title: 'List pull requests',
@@ -69,15 +63,15 @@ export const listPrs = readTool({
       cursor: z.string().max(2000).optional(),
     })
     .strict(),
-  run: ({ repo, state, comments, q, limit, cursor }, { deps }) => {
-    if (repo) requireRepo(deps.db, repo);
-    // Every date: an open PR stays open however old it is (the range is the API's widest).
-    const out = queryPrs(deps, { repos: repo, state, comments, q, limit, cursor, from: '-20y' });
-    if (out.format !== 'json') throw new Error('unreachable');
-    const { items, nextCursor, total } = out.body;
-    const kindOf = repoKinds(deps.db);
-    const heads = headOids(deps.db, items.map((p) => p.id));
-    return { items: items.map((p) => prItem(p, kindOf(p.repo), heads.get(p.id) ?? null)), total, nextCursor };
+  run: ({ repo, state, comments, q, limit, cursor }, ctx) => {
+    const { db } = ctx.deps;
+    if (repo) requireRepo(ctx, repo);
+    // Every date: an open PR stays open however old it is (the range is the API's widest). The PRs the agent may reach.
+    const { scope, ctx: qctx } = reachScope(ctx, { repos: repo, q, from: '-20y' });
+    const { items, nextCursor, total } = listPrRows(db, qctx, scope, { state, labels: null, comments }, page({ limit, cursor }, 3));
+    const kindOf = repoKinds(db);
+    const heads = headOids(db, items.map((p) => p.id));
+    return { items: items.map((p) => prItem(p, kindOf(p.repo), heads.get(p.id) ?? null)), total, nextCursor: encodeCursor(nextCursor) };
   },
 });
 
@@ -100,9 +94,10 @@ export const findPr = readTool({
     })
     .strict()
     .refine((a) => (a.branch === undefined) !== (a.commit === undefined), 'give exactly one of branch or commit'),
-  run: ({ repo, branch, commit }, { deps }) => {
+  run: ({ repo, branch, commit }, ctx) => {
+    const { deps } = ctx;
     const { db } = deps;
-    const ref = requireRepo(db, repo);
+    const ref = requireRepo(ctx, repo);
     type Row = PrRow & { match: 'branch' | 'head' | 'merged' | 'commit' };
     let rows: Row[];
     const order = "ORDER BY p.state = 'open' DESC, p.updated_at DESC LIMIT 20";
@@ -175,7 +170,7 @@ export const getPr = readTool({
   run: async ({ repo, number }, ctx: ToolContext) => {
     const { deps, signal } = ctx;
     const { db } = deps;
-    const ref = requireRepo(db, repo);
+    const ref = requireRepo(ctx, repo);
     const pr = prDetail(deps, ref.key, number);
     const kind = repoKinds(db)(ref.key);
     const syncedHead = db.get<{ head_oid: string | null }>('SELECT head_oid FROM pull_requests WHERE repo_id = ? AND number = ?', [ref.id, number])?.head_oid ?? null;

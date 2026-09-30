@@ -4,6 +4,7 @@
  * shared/desktop.ts (MainToServer/ServerToMain).
  */
 import { utilityProcess, type UtilityProcess } from 'electron';
+import type { AgentFootprint, DeletedAgent } from '../shared/agents';
 import type { AccountStatus, Agent, SourceAccount, SourceCheck, TokenChoice } from '../shared/api';
 import type { MainToServer, ServerToMain, SourceTestDraft } from '../shared/desktop';
 
@@ -180,10 +181,10 @@ export class ServerChild {
     return expect(await this.request({ type: 'sync-source', source }), 'sync-started').result;
   }
 
-  /** Makes an agent in the child's database; the answer carries its token, once. */
-  async addAgent(name: string, token?: string | null): Promise<{ agent: Agent; token: string }> {
+  /** Makes an agent in the child's database, reaching `sources` (hosts; absent or null, every source); the answer carries its token, once. */
+  async addAgent(name: string, token?: string | null, sources?: string[] | null): Promise<{ agent: Agent; token: string }> {
     await this.running();
-    return withToken(expect(await this.request({ type: 'add-agent', name, ...(token ? { token } : {}) }), 'agent-result'));
+    return withToken(expect(await this.request({ type: 'add-agent', name, ...(token ? { token } : {}), ...(sources ? { sources } : {}) }), 'agent-result'));
   }
 
   /** A new token for an agent (the one given, else generated); the old one stops working. */
@@ -192,10 +193,34 @@ export class ServerChild {
     return withToken(expect(await this.request({ type: 'regenerate-agent-token', agent, ...(token ? { token } : {}) }), 'agent-result'));
   }
 
-  /** Revokes an agent's token. */
-  async revokeAgent(agent: number): Promise<Agent> {
+  /** Disables an agent (its token refused until it's enabled again) or enables it. */
+  async setAgentEnabled(agent: number, enabled: boolean): Promise<Agent> {
     await this.running();
-    return expect(await this.request({ type: 'revoke-agent', agent }), 'agent-result').agent;
+    return expect(await this.request({ type: 'set-agent-enabled', agent, enabled }), 'agent-result').agent;
+  }
+
+  /** What an agent has written, for the warning before deleting it. */
+  async agentFootprint(agent: number): Promise<AgentFootprint> {
+    await this.running();
+    return expect(await this.request({ type: 'agent-footprint', agent }), 'agent-footprint').footprint;
+  }
+
+  /** Whether the agent's token is the one with this sha256 (hex): the token itself stays here. */
+  async checkAgentToken(agent: number, hash: string): Promise<boolean> {
+    await this.running();
+    return expect(await this.request({ type: 'check-agent-token', agent, hash }), 'agent-token-checked').matches === true;
+  }
+
+  /** Deletes an agent; its comments stay, as by "Deleted agent #<id>". */
+  async deleteAgent(agent: number): Promise<DeletedAgent> {
+    await this.running();
+    return expect(await this.request({ type: 'delete-agent', agent }), 'agent-deleted').deleted;
+  }
+
+  /** Limits an agent (or the built-in one) to the sources with these hosts, or lets it reach every one (null). */
+  async setAgentSources(agent: number | 'built-in', sources: string[] | null): Promise<Agent> {
+    await this.running();
+    return expect(await this.request({ type: 'set-agent-sources', agent, sources }), 'agent-result').agent;
   }
 
   private async running(): Promise<void> {

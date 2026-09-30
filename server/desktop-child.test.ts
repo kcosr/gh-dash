@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -7,9 +7,11 @@ import type { StreamMessage } from '../shared/api';
 import { DESKTOP_ENV, type ServerToMain } from '../shared/desktop';
 import { CommentBus } from './comments/bus';
 import { writeConfigFile } from './config-file';
-import { principalForToken } from './db/agents';
+import { agentForToken, agentSourceIds, builtInAgent, listAgents, principalForToken, setAgentEnabled } from './db/agents';
+import { createThread, getPrincipal, getThread } from './db/comments';
 import { openDb } from './db/db';
-import { listSources, tryClaimViewer } from './db/sources';
+import { getMeta } from './db/meta';
+import { ensureSource, listSources, tryClaimViewer } from './db/sources';
 import { mainMessageHandler, type ParentPort, runDesktopChild } from './desktop-child';
 import { GitHubDiffSources } from './github/diff-source';
 import { SourceRegistry, type SourceRuntime } from './sources/registry';
@@ -195,11 +197,11 @@ describe('main → server messages for agents', () => {
     return { db, handle, posted, heard };
   }
 
-  it('adds, regenerates and revokes agents, answering with the token when there is a new one, and tells the windows', async () => {
+  it('adds, regenerates, disables and enables agents, answering with the token when there is a new one, and tells the windows', async () => {
     const { db, handle, posted, heard } = setup();
     await handle({ type: 'add-agent', id: 1, name: 'Claude' });
     const added = posted[0] as Extract<ServerToMain, { type: 'agent-result' }>;
-    expect(added).toEqual({ type: 'agent-result', id: 1, agent: expect.objectContaining({ id: 2, name: 'Claude', revokedAt: null }), token: expect.stringMatching(/^ghd_/) });
+    expect(added).toEqual({ type: 'agent-result', id: 1, agent: expect.objectContaining({ id: 2, name: 'Claude', disabledAt: null }), token: expect.stringMatching(/^ghd_/) });
     expect(principalForToken(db, added.token!)).toMatchObject({ id: 2, kind: 'agent' });
 
     await handle({ type: 'regenerate-agent-token', id: 2, agent: 2 });
@@ -208,10 +210,80 @@ describe('main → server messages for agents', () => {
     expect(regenerated.token).not.toBe(added.token);
     expect(principalForToken(db, added.token!)).toBeNull();
 
-    await handle({ type: 'revoke-agent', id: 3, agent: 2 });
-    expect(posted[2]).toEqual({ type: 'agent-result', id: 3, agent: expect.objectContaining({ id: 2, tokenPrefix: null, revokedAt: expect.any(String) }), token: null });
+    await handle({ type: 'set-agent-enabled', id: 3, agent: 2, enabled: false });
+    expect(posted[2]).toEqual({
+      type: 'agent-result', id: 3, agent: expect.objectContaining({ id: 2, tokenPrefix: regenerated.token!.slice(0, 8), disabledAt: expect.any(String) }), token: null,
+    });
     expect(principalForToken(db, regenerated.token!)).toBeNull();
-    expect(heard).toEqual([{ type: 'agents' }, { type: 'agents' }, { type: 'agents' }]);
+    expect(agentForToken(db, regenerated.token!)).toMatchObject({ disabled: true });
+    // Enabled: the same token again.
+    await handle({ type: 'set-agent-enabled', id: 4, agent: 2, enabled: true });
+    expect(posted[3]).toEqual({ type: 'agent-result', id: 4, agent: expect.objectContaining({ id: 2, disabledAt: null }), token: null });
+    expect(principalForToken(db, regenerated.token!)).toMatchObject({ id: 2 });
+    expect(heard).toEqual([{ type: 'agents' }, { type: 'agents' }, { type: 'agents' }, { type: 'agents' }]);
+  });
+
+  it("says whether a token main kept (by its sha256) is still the agent's, disabled or not", async () => {
+    const { db, handle, posted, heard } = setup();
+    const sha = (t: string) => createHash('sha256').update(t).digest('hex');
+    await handle({ type: 'add-agent', id: 1, name: 'Claude' });
+    await handle({ type: 'add-agent', id: 2, name: 'Codex' });
+    const [claude, codex] = posted.map((m) => (m as Extract<ServerToMain, { type: 'agent-result' }>).token!);
+    const check = async (agent: number, hash: string) => {
+      await handle({ type: 'check-agent-token', id: 9, agent, hash });
+      return (posted.at(-1) as Extract<ServerToMain, { type: 'agent-token-checked' }>).matches;
+    };
+    expect(await check(2, sha(claude!))).toBe(true);
+    expect(await check(2, sha(claude!).toUpperCase())).toBe(true);
+    // Another agent's token, a token that isn't a hash, the token itself: no.
+    expect(await check(2, sha(codex!))).toBe(false);
+    expect(await check(3, sha(claude!))).toBe(false);
+    expect(await check(2, claude!)).toBe(false);
+    expect(await check(2, 'zz'.repeat(32))).toBe(false);
+    expect(await check(1, sha(claude!))).toBe(false);
+    setAgentEnabled(db, 2, false);
+    expect(await check(2, sha(claude!))).toBe(true);
+    // Replaced since: the old one isn't its token any more.
+    await handle({ type: 'regenerate-agent-token', id: 10, agent: 2 });
+    expect(await check(2, sha(claude!))).toBe(false);
+    // Asking changes nothing and tells no one.
+    expect(heard).toHaveLength(3);
+    expect(principalForToken(db, codex!)).toMatchObject({ name: 'Codex' });
+  });
+
+  it("says what an agent wrote, then deletes it, keeping its comments under its new name, and tells the windows which", async () => {
+    const { db, handle, posted, heard } = setup();
+    await handle({ type: 'add-agent', id: 1, name: 'Claude' });
+    const { token } = posted[0] as Extract<ServerToMain, { type: 'agent-result' }>;
+    db.run(`INSERT INTO repos (source_id, key, node_id, name, name_with_owner, owner, url, visibility, created_at)
+      VALUES (1, 'alice/app', 'R_app', 'app', 'alice/app', 'alice', 'https://github.com/alice/app', 'public', '2026-09-01T00:00:00Z')`);
+    const repoId = db.get<{ id: number }>("SELECT id FROM repos WHERE key = 'alice/app'")!.id;
+    const general = { path: null, side: null, startLine: null, endLine: null, snippet: null };
+    const thread = createThread(db, { repoId, kind: 'pr', number: 2 }, { commitOid: 'a'.repeat(40), baseOid: null, anchor: general, body: 'Hm' }, getPrincipal(db, 2)!);
+    await handle({ type: 'agent-footprint', id: 2, agent: 2 });
+    expect(posted[1]).toEqual({ type: 'agent-footprint', id: 2, footprint: { comments: 1, threads: 1, openThreads: 1, opened: 1 } });
+    await handle({ type: 'delete-agent', id: 3, agent: 2 });
+    expect(posted[2]).toEqual({
+      type: 'agent-deleted', id: 3, deleted: { id: 2, name: 'Claude', deletedAs: 'Deleted agent #2', footprint: { comments: 1, threads: 1, openThreads: 1, opened: 1 } },
+    });
+    expect(agentForToken(db, token!)).toBeNull();
+    expect(listAgents(db)).toEqual([]);
+    expect(getThread(db, thread.id)!.comments[0]!.author).toEqual({ id: 2, kind: 'agent', name: 'Deleted agent #2' });
+    // Asking what it wrote changes nothing, and tells no one.
+    expect(heard).toEqual([{ type: 'agents' }, { type: 'agents', deleted: 2 }]);
+    // Its token is no one's now: a token main kept for it isn't shown.
+    const sha = (t: string) => createHash('sha256').update(t).digest('hex');
+    await handle({ type: 'check-agent-token', id: 40, agent: 2, hash: sha(token!) });
+    expect(posted.at(-1)).toEqual({ type: 'agent-token-checked', id: 40, matches: false });
+    posted.pop();
+    // Gone: not found again, for anything.
+    await handle({ type: 'delete-agent', id: 4, agent: 2 });
+    await handle({ type: 'agent-footprint', id: 5, agent: 2 });
+    await handle({ type: 'set-agent-enabled', id: 6, agent: 2, enabled: true });
+    await handle({ type: 'regenerate-agent-token', id: 7, agent: 2 });
+    await handle({ type: 'set-agent-sources', id: 8, agent: 2, sources: null });
+    expect(posted.slice(3).map((m) => m.type === 'request-failed' && m.message)).toEqual(Array(5).fill('There is no agent with id 2.'));
+    expect(heard).toHaveLength(2);
   });
 
   it('uses a token the user chose, checked there, and never tells anyone but main', async () => {
@@ -230,18 +302,61 @@ describe('main → server messages for agents', () => {
     ]);
   });
 
+  it('limits agents to sources, the built-in one too (made if need be), or lets them reach every one, and tells the windows', async () => {
+    const { db, handle, posted, heard } = setup();
+    const gitlab = ensureSource(db, { kind: 'gitlab', host: 'gitlab.example.com', baseUrl: 'https://gitlab.example.com' }).id;
+    await handle({ type: 'add-agent', id: 1, name: 'Work', sources: ['gitlab.example.com'] });
+    expect(posted[0]).toMatchObject({ type: 'agent-result', id: 1, agent: { id: 2, sources: ['gitlab.example.com'] }, token: expect.stringMatching(/^ghd_/) });
+    expect(agentSourceIds(db, 2)).toEqual([gitlab]);
+    await handle({ type: 'set-agent-sources', id: 2, agent: 2, sources: ['github.com', 'gitlab.example.com'] });
+    expect(posted[1]).toEqual({ type: 'agent-result', id: 2, agent: expect.objectContaining({ id: 2, sources: ['github.com', 'gitlab.example.com'] }), token: null });
+    await handle({ type: 'set-agent-sources', id: 3, agent: 2, sources: null });
+    expect(agentSourceIds(db, 2)).toBeNull();
+    // The built-in agent, before any request made it.
+    expect(getMeta(db, 'builtInAgentId')).toBeNull();
+    await handle({ type: 'set-agent-sources', id: 4, agent: 'built-in', sources: ['github.com'] });
+    expect(posted[3]).toMatchObject({ type: 'agent-result', id: 4, agent: { name: 'Agent', builtIn: true, sources: ['github.com'] }, token: null });
+    expect(agentSourceIds(db, builtInAgent(db).id)).toEqual([1]);
+    expect(heard).toEqual([{ type: 'agents' }, { type: 'agents' }, { type: 'agents' }, { type: 'agents' }]);
+    // Refused: an unknown host (naming the sources), no source, no such agent; nothing changes then.
+    await handle({ type: 'set-agent-sources', id: 5, agent: 2, sources: ['gitlab.nope'] });
+    await handle({ type: 'set-agent-sources', id: 6, agent: 9, sources: null });
+    await handle({ type: 'set-agent-sources', id: 7, agent: 1, sources: ['github.com'] });
+    await handle({ type: 'add-agent', id: 8, name: 'Codex', sources: [] });
+    expect(posted.slice(4)).toEqual([
+      { type: 'request-failed', id: 5, message: "gitlab.nope isn't a source here (the sources: github.com, gitlab.example.com)" },
+      { type: 'request-failed', id: 6, message: 'There is no agent with id 9.' },
+      { type: 'request-failed', id: 7, message: 'There is no agent with id 1.' },
+      { type: 'request-failed', id: 8, message: expect.stringContaining('at least one source') },
+    ]);
+    expect(agentSourceIds(db, 2)).toBeNull();
+    expect(heard).toHaveLength(4);
+  });
+
   it("answers request-failed with the reason, and changes nothing", async () => {
-    const { handle, posted, heard } = setup();
+    const { db, handle, posted, heard } = setup();
     await handle({ type: 'add-agent', id: 1, name: 'Claude' });
     await handle({ type: 'add-agent', id: 2, name: 'CLAUDE' });
     await handle({ type: 'add-agent', id: 3, name: '  ' });
     await handle({ type: 'regenerate-agent-token', id: 4, agent: 9 });
-    await handle({ type: 'revoke-agent', id: 5, agent: 1 });
+    await handle({ type: 'set-agent-enabled', id: 5, agent: 1, enabled: false });
+    await handle({ type: 'delete-agent', id: 6, agent: 1 });
+    await handle({ type: 'agent-footprint', id: 7, agent: 1 });
+    await handle({ type: 'add-agent', id: 8, name: 'Deleted agent #3' });
+    // The built-in agent has no token to disable, and stays.
+    const builtIn = builtInAgent(db).id;
+    await handle({ type: 'set-agent-enabled', id: 9, agent: builtIn, enabled: false });
+    await handle({ type: 'delete-agent', id: 10, agent: builtIn });
     expect(posted.slice(1)).toEqual([
       { type: 'request-failed', id: 2, message: 'There is already an agent called Claude (id 2); regenerate its token instead' },
       { type: 'request-failed', id: 3, message: 'An agent needs a name' },
       { type: 'request-failed', id: 4, message: 'There is no agent with id 9.' },
       { type: 'request-failed', id: 5, message: 'There is no agent with id 1.' },
+      { type: 'request-failed', id: 6, message: 'There is no agent with id 1.' },
+      { type: 'request-failed', id: 7, message: 'There is no agent with id 1.' },
+      { type: 'request-failed', id: 8, message: 'Names like "Deleted agent #3" are kept for deleted agents; give yours another name' },
+      { type: 'request-failed', id: 9, message: expect.stringContaining('Agent is built in: it has no token') },
+      { type: 'request-failed', id: 10, message: expect.stringContaining("Agent is built in and can't be deleted") },
     ]);
     expect(heard).toEqual([{ type: 'agents' }]);
     // Without a database (a server that can't), it says so.

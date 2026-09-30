@@ -64,6 +64,17 @@ describe('the stream: what a message refetches', () => {
     expect(streamInvalidations({ type: 'show', id: 'x', agent, target: { repo: 'alice/app', pr: 7 }, message: null, at: '' })).toEqual([]);
   });
 
+  it("refetches what names comments' authors too once an agent is deleted: they're by \"Deleted agent #<id>\" now", () => {
+    const qc = new QueryClient();
+    const keys = [qk.threads('alice/app#7'), qk.threadList({ status: 'open' }), qk.activity({ limit: 200 }), qk.pr('alice/app', 7), qk.prs({ state: 'open' }), qk.repos, qk.agents];
+    for (const k of keys) qc.setQueryData(k, {});
+    applyStreamMessage(qc, { type: 'agents' });
+    expect(keys.filter((k) => qc.getQueryState(k)?.isInvalidated)).toEqual([qk.agents]);
+    applyStreamMessage(qc, { type: 'agents', deleted: 4 });
+    expect(keys.filter((k) => qc.getQueryState(k)?.isInvalidated)).toEqual([qk.threads('alice/app#7'), qk.threadList({ status: 'open' }), qk.activity({ limit: 200 }), qk.agents]);
+    expect(parseStreamMessage(JSON.stringify({ type: 'agents', deleted: 4 }))).toEqual({ type: 'agents', deleted: 4 });
+  });
+
   it('marks exactly those queries stale in the cache', () => {
     const qc = new QueryClient();
     const keys = [qk.threads('alice/app#7'), qk.threads('alice/app#8'), qk.threadList({ status: 'open' }), qk.pr('alice/app', 7), qk.pr('alice/app', 8), qk.prs({ state: 'open' }), qk.activity({ limit: 200 }), qk.repos, qk.agents];

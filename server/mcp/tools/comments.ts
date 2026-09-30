@@ -1,6 +1,7 @@
 // add_comment, reply, edit_comment, delete_comment, resolve_thread, reopen_thread: writes through the comment service
-// as the calling agent (its permissions: its own comments only; resolve and reopen any thread). Each is recorded in the
-// comment event log and announced to open windows by the service.
+// as the calling agent (its permissions: its own comments only; resolve and reopen any thread), on what it may reach
+// (reach.ts: out of reach is not found). Each is recorded in the comment event log and announced to open windows by the
+// service.
 
 import { z } from 'zod';
 import type { CommentThread } from '../../../shared/api';
@@ -10,7 +11,7 @@ import { repoKinds } from '../../services/lists';
 import { branchAnchor, commitAnchor, prAnchor } from '../anchor';
 import { bodyArg, branchArg, commitArg, idArg, prArg, repoArg } from '../format';
 import { compactPlacement, type Placement } from '../placement';
-import { requireRepo } from './prs';
+import { requireCommentInReach, requireRepo, requireThreadInReach } from '../reach';
 import { LIST_SNIPPET_CHARS, targetTitle, threadOut } from '../threads';
 import { type ToolContext, writeTool } from '../tool';
 
@@ -50,7 +51,7 @@ export const addComment = writeTool({
     .refine((a) => [a.pr, a.branch, a.commit].filter((x) => x !== undefined).length === 1, 'give exactly one of pr, branch or commit'),
   run: async (args, ctx) => {
     const { deps, principal, signal } = ctx;
-    const ref = requireRepo(deps.db, args.repo);
+    const ref = requireRepo(ctx, args.repo);
     const kind = repoKinds(deps.db)(ref.key);
     const anchored =
       args.pr !== undefined
@@ -77,7 +78,10 @@ export const reply = writeTool({
   title: 'Reply to a thread',
   description: 'Adds your reply to a comment thread; its status stays as it is (resolve_thread can reply and resolve at once).',
   input: z.object({ thread_id: threadId, body: bodyArg }).strict(),
-  run: ({ thread_id, body }, ctx) => written(comments.reply(ctx.deps, ctx.principal, thread_id, body), ctx),
+  run: ({ thread_id, body }, ctx) => {
+    requireThreadInReach(ctx, thread_id);
+    return written(comments.reply(ctx.deps, ctx.principal, thread_id, body), ctx);
+  },
 });
 
 export const editComment = writeTool(
@@ -86,7 +90,10 @@ export const editComment = writeTool(
     title: 'Edit a comment',
     description: "Replaces the text of one of your own comments (not the user's or another agent's).",
     input: z.object({ comment_id: commentId, body: bodyArg }).strict(),
-    run: ({ comment_id, body }, ctx) => written(comments.editComment(ctx.deps, ctx.principal, comment_id, body), ctx),
+    run: ({ comment_id, body }, ctx) => {
+      requireCommentInReach(ctx, comment_id);
+      return written(comments.editComment(ctx.deps, ctx.principal, comment_id, body), ctx);
+    },
   },
   { destructiveHint: true },
 );
@@ -100,6 +107,7 @@ export const deleteComment = writeTool(
       'which you may only do when every comment in it is yours.',
     input: z.object({ comment_id: commentId }).strict(),
     run: ({ comment_id }, ctx) => {
+      requireCommentInReach(ctx, comment_id);
       const { thread } = comments.deleteComment(ctx.deps, ctx.principal, comment_id);
       return thread ? { deleted: 'comment', thread: written(thread, ctx) } : { deleted: 'thread' };
     },
@@ -110,6 +118,7 @@ export const deleteComment = writeTool(
 /** Replies first when there is a comment, then sets the status. */
 function setStatus(status: 'resolved' | 'open') {
   return ({ thread_id, comment }: { thread_id: number; comment?: string }, ctx: ToolContext) => {
+    requireThreadInReach(ctx, thread_id);
     if (comment !== undefined) comments.reply(ctx.deps, ctx.principal, thread_id, comment);
     return written(comments.setThreadStatus(ctx.deps, ctx.principal, thread_id, status), ctx);
   };

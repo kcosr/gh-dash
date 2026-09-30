@@ -6,7 +6,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { QueryClient } from '@tanstack/react-query';
 import type { AccountStatus } from '../../../shared/api';
 import type { CredentialDraft, DesktopBridge, DesktopConfigPatch, DesktopState, DesktopTokenResult, SourceDraft } from '../../../shared/desktop';
-import { invalidateAccountData, qk, refetchAfterSync } from './hooks';
+import { AUTHOR_KEYS, invalidateAccountData, qk, refetchAfterSync } from './hooks';
 
 /** The bridge, only inside the desktop app. */
 export const getBridge = (): DesktopBridge | null => (typeof window === 'undefined' ? null : window.ghDashDesktop ?? null);
@@ -143,8 +143,10 @@ export function useSourceActions() {
 
 /**
  * The desktop app's agent actions (Settings → Agents): adding one or making it a new token answers with the token, to
- * show once; revoking keeps the agent and its comments. Each rejects outside the app. The list is refetched after
- * each (the stream's `agents` message says so too, to every window).
+ * show once; `setEnabled` disables one (its token refused, everything else kept) or enables it; `setSources` limits one
+ * to some sources, or lets it reach every one; `remove` deletes one (its comments stay, as by "Deleted agent #<id>"),
+ * after `footprint` said what it wrote. Each rejects outside the app. The list is refetched after each (the stream's
+ * `agents` message says so too, to every window), and after a delete, what shows its comments' author.
  */
 export function useAgentActions() {
   const bridge = getBridge();
@@ -153,7 +155,7 @@ export function useAgentActions() {
   // MCP turned on restarted the server: everything is asked again, the app's state first.
   const restarted = () => void qc.invalidateQueries();
   const add = useMutation({
-    mutationFn: ({ name, token }: { name: string; token?: string }) => need(bridge).addAgent(name, token),
+    mutationFn: ({ name, token, sources }: { name: string; token?: string; sources?: string[] | null }) => need(bridge).addAgent(name, token, sources ?? null),
     onSuccess: (r) => { if (r.enabledMcp) restarted(); },
     onSettled: changed,
   });
@@ -161,7 +163,26 @@ export function useAgentActions() {
     mutationFn: ({ id, token }: { id: number; token?: string }) => need(bridge).regenerateAgentToken(id, token),
     onSettled: changed,
   });
-  const revoke = useMutation({ mutationFn: (id: number) => need(bridge).revokeAgent(id), onSettled: changed });
+  const setEnabled = useMutation({
+    mutationFn: ({ id, enabled }: { id: number; enabled: boolean }) => need(bridge).setAgentEnabled(id, enabled),
+    onSettled: changed,
+  });
+  /** What an agent wrote, for Delete…'s warning: read when asked, never cached (it changes with every comment). */
+  const footprint = (id: number) => need(bridge).agentFootprint(id);
+  /** The token the app kept for an agent (Show token), or null: asked when shown, never cached. */
+  const keptToken = (id: number) => need(bridge).keptAgentToken(id);
+  const remove = useMutation({
+    mutationFn: (id: number) => need(bridge).deleteAgent(id),
+    onSettled: () => {
+      changed();
+      for (const key of AUTHOR_KEYS) void qc.invalidateQueries({ queryKey: key });
+    },
+  });
+  /** `id`: 'built-in' for the built-in agent (listed or not yet). `sources`: hosts, or null for every source. */
+  const setSources = useMutation({
+    mutationFn: ({ id, sources }: { id: number | 'built-in'; sources: string[] | null }) => need(bridge).setAgentSources(id, sources),
+    onSettled: changed,
+  });
   /** "Turn on MCP": the Local API for agents (its REST API as it was), then everything is asked again. */
   const enableMcp = useMutation({
     mutationFn: () => need(bridge).enableMcp(),
@@ -170,5 +191,5 @@ export function useAgentActions() {
       void qc.invalidateQueries({ predicate: (q) => q.queryKey[0] !== qk.desktop[0] });
     },
   });
-  return { add, regenerate, revoke, enableMcp };
+  return { add, regenerate, setEnabled, footprint, remove, keptToken, setSources, enableMcp };
 }

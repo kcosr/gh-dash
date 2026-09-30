@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { DESKTOP_SECRET_HEADER } from '../../shared/desktop';
+import { deleteAgent, setAgentEnabled } from '../db/agents';
 import { mcpHarness } from '../test/mcp';
 
 const INIT = { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 't', version: '1' } } };
@@ -32,7 +33,31 @@ describe('POST /mcp', () => {
     }
     const bad = await post(PING, { authorization: 'Bearer ghd_revoked' });
     expect(bad.headers.get('www-authenticate')).toBe('Bearer realm="gh-dash", error="invalid_token"');
+    expect(await bad.json()).toMatchObject({ error: { message: expect.stringMatching(/^Unauthorized: unknown agent token; send Authorization: Bearer <agent token>/) } });
     expect((await post(PING, { authorization: `bearer  ${token}` })).status).toBe(200);
+  });
+
+  it("refuses a disabled agent's token, saying so and how to enable it, and takes the same token once enabled", async () => {
+    const { post, call, db, agent, otherToken } = mcpHarness();
+    setAgentEnabled(db, agent.id, false);
+    const res = await post(PING);
+    expect(res.status).toBe(401);
+    expect(res.headers.get('www-authenticate')).toBe('Bearer realm="gh-dash", error="invalid_token"');
+    expect(await res.json()).toMatchObject({
+      error: { message: 'Unauthorized: the agent Claude is disabled in gh-dash; enable it in Settings → Agents, or with `agents enable <id|name>` on a server' },
+    });
+    // The others are as they were.
+    expect((await post(PING, { authorization: `Bearer ${otherToken}` })).status).toBe(200);
+    setAgentEnabled(db, agent.id, true);
+    expect((await call('whoami')).data).toMatchObject({ agent: { name: 'Claude' } });
+  });
+
+  it("refuses a deleted agent's token like one nobody has", async () => {
+    const { post, db, agent } = mcpHarness();
+    deleteAgent(db, agent.id);
+    const res = await post(PING);
+    expect(res.status).toBe(401);
+    expect(await res.json()).toMatchObject({ error: { message: expect.stringMatching(/^Unauthorized: unknown agent token;/) } });
   });
 
   it("refuses a browser page of any other origin, before looking at the token", async () => {

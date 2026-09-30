@@ -833,22 +833,33 @@ export interface Principal {
 /**
  * An agent that writes comments through MCP (GET /agents): a principal of kind 'agent' with a token. The token is shown
  * once, when it is made (desktop: Settings → Agents; headless: the `agents` command), and is stored only as a hash.
- * Revoking it keeps the agent's comments, attributed to it.
+ * There too, and never over HTTP, it gets a new token, is limited to some sources, is disabled (its token refused until
+ * it's enabled again) and is deleted. A deleted agent isn't listed any more; its comments stay, as by "Deleted agent
+ * #<id>" (shared/agents.ts).
  */
 export interface Agent {
   /** The principal's id. */
   id: number;
   name: string;
-  /** The token's first characters, to tell tokens apart; null once revoked. */
+  /** The token's first characters, to tell tokens apart, disabled or not; null for the built-in agent, which has none. */
   tokenPrefix: string | null;
   createdAt: string;
   lastUsedAt: string | null;
-  revokedAt: string | null;
+  /** When it was disabled: its token is refused until it's enabled again. null while enabled. */
+  disabledAt: string | null;
   /**
    * The built-in agent, "Agent": who MCP requests without a token act as while the desktop app doesn't require agent
-   * tokens. It has no token (no prefix, nothing to regenerate or revoke), and is listed once it has done something.
+   * tokens. It has no token (no prefix, nothing to regenerate, disable or delete: the desktop app's "Require agent
+   * tokens" setting says whether it may act), and is listed once it has done something or is limited to some sources.
    */
   builtIn: boolean;
+  /**
+   * The sources it may reach through MCP, by host (github.com first, then as they were added); null for every source,
+   * those added later included. A source deleted since is left out, and never widens it: an agent left with none reaches
+   * nothing. Out of reach, a repository reads to the agent as one gh-dash doesn't track, and a thread as one that doesn't
+   * exist. The REST API is the user's own, and isn't limited.
+   */
+  sources: string[] | null;
 }
 
 /** What happened to a comment or thread (the comment event log, shown in Activity as type 'comment'). */
@@ -1044,7 +1055,8 @@ export interface ShowTarget {
 /**
  * GET /stream (text/event-stream): what the server tells open windows as it happens. `comments`: a thread changed, so
  * lists, counts and the diff's threads are refetched. `show`: an agent asks the window to open something (a chip,
- * unless the window follows agents). `agents`: an agent was added, given a new token or revoked.
+ * unless the window follows agents). `agents`: an agent was added, given a new token, limited to some sources, disabled,
+ * enabled or deleted; `deleted` (its id) says it was deleted, so what it wrote now reads as by "Deleted agent #<id>".
  */
 export type StreamMessage =
   | {
@@ -1060,7 +1072,7 @@ export type StreamMessage =
       by: Principal;
     }
   | { type: 'show'; id: string; agent: Principal; target: ShowTarget; message: string | null; at: string }
-  | { type: 'agents' };
+  | { type: 'agents'; deleted?: number };
 
 /** A thread in GET /threads: the thread, and what it is on. */
 export interface ThreadListItem extends CommentThread {
@@ -1174,8 +1186,8 @@ export interface ThreadListResponse extends ListResponse<ThreadListItem> {
 //          branches and commits: status open by default, newest activity first; format=md groups them per PR, branch
 //          or commit)
 // GET    /api/v1/threads/:id                   -> CommentThread
-// GET    /api/v1/agents                        -> { items: Agent[] }   (made and revoked only by the desktop app or the
-//          headless `agents` command, never over HTTP)
+// GET    /api/v1/agents                        -> { items: Agent[] }   (made, limited to sources, disabled and deleted only
+//          by the desktop app or the headless `agents` command, never over HTTP)
 // GET    /api/v1/stream                        -> text/event-stream of StreamMessage (`data: <json>`; a comment line every
 //          25 s keeps proxies from closing it)
 // POST   /mcp                                  -> MCP over Streamable HTTP (JSON responses), `Authorization: Bearer <agent

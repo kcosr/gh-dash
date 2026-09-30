@@ -451,11 +451,17 @@ const schemas: Record<string, Schema> = {
   Agent: obj({
     id: int("The agent's principal id (comments' author.id)"),
     name: str(),
-    tokenPrefix: nullable(str("The token's first characters, to tell tokens apart (8 of a generated one, at most 4 of one the user chose); null once revoked, and for the built-in agent")),
+    tokenPrefix: nullable(str("The token's first characters, to tell tokens apart (8 of a generated one, at most 4 of one the user chose), disabled or not; null for the built-in agent")),
     createdAt: dateTime,
     lastUsedAt: { ...nullable(dateTime), description: 'Last MCP request with the token (updated at most once a minute)' },
-    revokedAt: nullable(dateTime),
+    disabledAt: { ...nullable(dateTime), description: 'When it was disabled: its token is refused until it is enabled again. null while enabled' },
     builtIn: { ...bool, description: 'The built-in agent "Agent" (desktop app, MCP without tokens): no token of its own' },
+    sources: {
+      ...nullable(arr(str())),
+      description:
+        'The sources it may reach through MCP, by host; null for every source, those added later included. A source deleted since is left out, and ' +
+        "never widens it (none left: it reaches nothing). Out of reach, a repository reads to the agent as untracked and a thread as missing. The REST API isn't limited",
+    },
   }),
 };
 
@@ -839,8 +845,9 @@ export const ENDPOINTS: EndpointDoc[] = [
   {
     method: 'get', path: '/api/v1/agents', tag: 'Comments', summary: 'The agents that may comment through MCP (never their tokens)',
     description:
-      'Oldest first, revoked ones included. Agents are made, given a new token and revoked in the desktop app (Settings → Agents) or with the ' +
-      "headless server's `agents` command: never over HTTP. An agent connects to POST /mcp with `Authorization: Bearer <its token>`.",
+      'Oldest first, disabled ones included. Agents are made, given a new token, limited to some sources, disabled, enabled and deleted in the ' +
+      "desktop app (Settings → Agents) or with the headless server's `agents` command: never over HTTP. A deleted agent isn't listed; its " +
+      'comments stay, their author named "Deleted agent #<id>". An agent connects to POST /mcp with `Authorization: Bearer <its token>`.',
     response: { status: 200, schema: obj({ items: arr(ref('Agent')) }) },
   },
   {
@@ -849,7 +856,8 @@ export const ENDPOINTS: EndpointDoc[] = [
       'text/event-stream: one `data: <json>` event per StreamMessage, nothing replayed. `comments`: a thread changed (repo, kind, number, branch, commitOid, ' +
       'threadId, event, by; views of its branch, and of the PRs from it, list it too); `show`: an agent asks the app to show something (id, agent, target ' +
       '{repo, pr?, branch?, commit?, threadId?, path?}, message, at); `agents`: an agent ' +
-      'was added, given a new token or revoked. A comment line (`: ping`) every 25 s keeps proxies from closing an idle stream; behind nginx, turn ' +
+      'was added, given a new token, limited, disabled, enabled or deleted (`deleted`: its id; what it wrote now reads as by "Deleted agent ' +
+      '#<id>"). A comment line (`: ping`) every 25 s keeps proxies from closing an idle stream; behind nginx, turn ' +
       'proxy_buffering off for it (deploy/nginx.conf.example). At most 32 streams are open at once (503 with Retry-After beyond), and a client ' +
       'that stops reading is disconnected once 256 KB wait for it: reconnect and refetch.',
     response: { status: 200, schema: str(), type: 'text/event-stream' },

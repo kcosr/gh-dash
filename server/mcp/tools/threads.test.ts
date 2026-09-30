@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { deleteAgent } from '../../db/agents';
 import * as comments from '../../services/comments';
 import { selfPrincipal } from '../../services/comments';
 import { addedFile, mcpHarness, serveBranch, servePr, sha } from '../../test/mcp';
@@ -100,6 +101,17 @@ describe('list_threads', () => {
     const full = await h.ok('list_threads', { repo: 'alice/app', pr: 2, include_comments: true, limit: 2 });
     expect(full.items[1].comments.map((c: { by: string; body: string }) => `${c.by}: ${c.body}`)).toEqual(['me: I changed the parser: fine?', 'you: Mostly. See the tests.']);
     expect(full.items[1].lastComment).toBeUndefined();
+  });
+
+  it('names a deleted agent as "Deleted agent #<id>", its threads and comments kept', async () => {
+    const h = setup();
+    comments.reply({ db: h.db, bus: h.bus }, h.other, h.t3.id, 'It is.');
+    deleteAgent(h.db, h.other.id);
+    const gone = `agent:Deleted agent #${h.other.id}`;
+    const all = await h.ok<{ items: Item[] }>('list_threads');
+    expect(all.items.find((t) => t.id === h.t4.id)).toMatchObject({ openedBy: gone, lastComment: { by: gone, excerpt: 'Nice commit' } });
+    expect(all.items.find((t) => t.id === h.t3.id)).toMatchObject({ openedBy: 'me', lastComment: { by: gone, excerpt: 'It is.' } });
+    expect((await h.ok('get_thread', { id: h.t4.id })).comments).toMatchObject([{ by: gone, body: 'Nice commit' }]);
   });
 
   it('cuts long snippets in the list, not in get_thread', async () => {

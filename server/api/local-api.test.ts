@@ -3,9 +3,9 @@
 import { describe, expect, it } from 'vitest';
 import { DESKTOP_SECRET_HEADER } from '../../shared/desktop';
 import { upsertPr } from '../db/write';
-import { BUILT_IN_AGENT, createAgent, listAgents, revokeAgent } from '../db/agents';
+import { BUILT_IN_AGENT, builtInAgent, createAgent, listAgents, setAgentEnabled, setAgentSources } from '../db/agents';
 import { mcpHarness, sha } from '../test/mcp';
-import { actor, prRecord } from '../test/seed';
+import { actor, GITLAB_HOST, prRecord, seedGitLab } from '../test/seed';
 
 const PING = { jsonrpc: '2.0', id: 1, method: 'ping' };
 /** What a REST-off port answers for everything but /api/health and /mcp. */
@@ -87,8 +87,8 @@ describe('MCP without agent tokens', () => {
     expect(who.data).toMatchObject({ agent: { name: BUILT_IN_AGENT } });
     // With its own token, an agent is itself.
     expect((await h.call('whoami')).data).toMatchObject({ agent: { name: 'Claude' } });
-    // A bad, malformed, revoked or blank token is refused, never taken for none.
-    revokeAgent(h.db, h.other.id);
+    // A bad, malformed, disabled or blank token is refused, never taken for none.
+    setAgentEnabled(h.db, h.other.id, false);
     for (const authorization of ['Bearer ghd_nope', `Bearer ${h.otherToken}`, 'Basic abc', 'Bearer', '', '   ', 'Bearer   ']) {
       const res = await h.post(PING, { authorization });
       expect(res.status, authorization).toBe(401);
@@ -112,6 +112,24 @@ describe('MCP without agent tokens', () => {
     const thread = h.db.get<{ name: string }>('SELECT p.name FROM comments c JOIN principals p ON p.id = c.author_id ORDER BY c.id DESC LIMIT 1');
     expect(thread?.name).toBe(BUILT_IN_AGENT);
     expect(() => createAgent(h.db, 'agent')).toThrow(/built-in agent/);
+  });
+
+  it('keeps the built-in agent to the sources it is limited to, from the next request', async () => {
+    const h = withPr();
+    const gitlab = seedGitLab(h.db);
+    const gl = `${GITLAB_HOST}/platform/app`;
+    expect((await h.call('list_repos', {}, none)).data!.total).toBe(6);
+    setAgentSources(h.db, builtInAgent(h.db).id, [GITLAB_HOST]);
+    expect((await h.call('whoami', {}, none)).data).toMatchObject({ agent: { name: BUILT_IN_AGENT, scoped: true }, sources: [{ host: GITLAB_HOST }] });
+    expect((await h.call('list_repos', {}, none)).data).toMatchObject({ repos: [{ key: gl }], total: 1 });
+    expect((await h.call('add_comment', { repo: 'alice/app', pr: 2, body: 'Out of reach' }, none)).error).toBe(
+      "Repository alice/app isn't tracked in gh-dash (list_repos lists the ones that are)",
+    );
+    expect(h.db.get('SELECT count(*) AS n FROM comment_threads')).toEqual({ n: 0 });
+    // Listed now, with its sources; agents with tokens are as they were.
+    expect(listAgents(h.db).map((a) => [a.name, a.sources])).toEqual([['Claude', null], ['Codex', null], [BUILT_IN_AGENT, [GITLAB_HOST]]]);
+    expect((await h.call('list_repos')).data!.total).toBe(6);
+    expect(gitlab.repoId).toBeGreaterThan(0);
   });
 
   it("takes a token the user chose like a generated one", async () => {

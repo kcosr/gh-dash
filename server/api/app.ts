@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { CommentBus } from '../comments/bus';
 import type { Config } from '../config';
-import { builtInAgent, principalForToken } from '../db/agents';
+import { agentForToken, agentSourceIds, builtInAgent } from '../db/agents';
 import type { Db } from '../db/db';
 import type { DiffService } from '../diff/service';
 import { GitHubDiffSources } from '../github/diff-source';
@@ -101,8 +101,9 @@ export function createApp(input: AppDeps): Hono {
   if (tcp && config.mcp) {
     installMcp(app, {
       core: createMcpCore({ ...deps, bus: deps.bus! }),
-      principalFor: (token) => principalForToken(deps.db, token),
+      agentFor: (token) => agentForToken(deps.db, token),
       withoutToken: config.mcpRequireTokens ? undefined : () => builtInAgent(deps.db),
+      sourcesFor: (principal) => agentSourceIds(deps.db, principal.id),
     });
   } else {
     refuseMcp(app, tcp ? 'MCP is off on this port; turn on "MCP for agents" in gh-dash Settings → Instance' : undefined);

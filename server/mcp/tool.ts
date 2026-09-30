@@ -17,9 +17,19 @@ export interface McpDeps {
   bus: CommentBus;
 }
 
-/** One call: who is asking, and a signal that aborts when the request is cancelled or its connection closes. */
+/**
+ * The ids of the sources a principal may reach (db/agents.ts agentSourceIds): null for every source. Tools reach
+ * repositories, threads and comment events only through reach.ts, which keeps them to these.
+ */
+export type SourceIds = readonly number[] | null;
+
+/**
+ * One call: who is asking, the sources they may reach (read once per request, with the principal), and a signal that
+ * aborts when the request is cancelled or its connection closes.
+ */
 export interface CallContext {
   principal: Principal;
+  sources: SourceIds;
   signal: AbortSignal;
 }
 

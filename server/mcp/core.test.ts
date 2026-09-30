@@ -44,7 +44,7 @@ function core(log: string[] = []) {
   return new McpCore({ deps, tools: [echo, wait, boom], instructions: 'Be nice.', log: (l) => log.push(l) });
 }
 
-const ctx = (principal = me, signal = new AbortController().signal) => ({ principal, signal });
+const ctx = (principal = me, signal = new AbortController().signal) => ({ principal, sources: null, signal });
 const req = (id: number | string, method: string, params?: unknown) => ({ jsonrpc: '2.0', id, method, ...(params === undefined ? {} : { params }) });
 
 describe('MCP core', () => {

@@ -1,25 +1,34 @@
 /**
  * Settings → Agents (`/settings#agents`): the coding agents that read and write comments here through MCP, each with a
- * token of its own, and how to connect one. The desktop app adds agents, makes new tokens and revokes them (a token is
- * shown once, with ready-to-paste config); a headless server does that with its `agents` command, and lists them here.
+ * token of its own and the sources it may reach, and how to connect one. The desktop app adds agents, makes new tokens,
+ * chooses their sources, disables and enables them, and deletes them. A token is shown when it's made, with
+ * ready-to-paste config, and the app keeps it (encrypted with the OS keychain, when there is one) to show it again. A
+ * headless server does that with its `agents` command, showing a token once, and lists them here.
  */
-import { useState } from 'react';
+import { Fragment, useState } from 'react';
 import type { FormEvent, KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { Link } from 'react-router';
+import { agentDeletionSentences } from '../../../shared/agents';
 import type { Agent } from '../../../shared/api';
 import { useAgentActions, useDesktop } from '../api/desktop';
-import { useAgents, useInstance, useWorkSources } from '../api/hooks';
+import { useAgents, useInstance, useSources, useWorkSources } from '../api/hooks';
 import { Icon } from '../components/Icon';
 import { useToast } from '../components/Toasts';
 import { useUI } from '../components/ui';
 import { bridgeError } from '../lib/account';
-import { agentConfig, agentNameProblem, agentTokenProblem, generateAgentToken, sortAgents } from '../lib/agents';
+import {
+  type AgentSource, agentConfig, agentNameProblem, agentReach, agentsShown, agentTokenProblem, generateAgentToken, pickedSources, pickOf, type SourcePick,
+  sourceLabel,
+} from '../lib/agents';
 import { hostNames } from '../lib/sources';
 import { fmtDateTime, relLong } from '../lib/time';
 import { copyText, cx, useNow } from '../lib/util';
 
-/** A token just made: shown here once, never again. `enabled`: adding it turned MCP on (what it says then). */
-interface Shown { agent: Agent; token: string; kind: 'added' | 'new'; enabled?: string }
+/**
+ * A token on show: one just made ('added', 'new'), which the app kept to show again or not (`kept`), or one it kept,
+ * shown again ('kept'; null when it has none). `enabled`: adding it turned MCP on (what it says then).
+ */
+interface Shown { agent: Agent; token: string | null; kind: 'added' | 'new' | 'kept'; kept?: boolean; enabled?: string }
 
 function Copy({ text, what, className = 'btn sm' }: { text: string; what: string; className?: string }) {
   const toast = useToast();
@@ -31,45 +40,130 @@ function Copy({ text, what, className = 'btn sm' }: { text: string; what: string
   );
 }
 
-/** One agent: its name, token prefix, when it was added and last used (or revoked); the desktop app's actions. */
-function AgentRow({ a, now, onNewToken, onRevoke }: { a: Agent; now: number; onNewToken?: (a: Agent) => void; onRevoke?: (a: Agent) => void }) {
-  const revoked = !!a.revokedAt;
+/**
+ * What an agent reaches through MCP: after its status, or (the desktop app) as the button that changes it, beside its
+ * other actions.
+ */
+function Reach({ a, known, onSources }: { a: Agent; known: readonly AgentSource[]; onSources?: (a: Agent) => void }) {
+  const text = agentReach(a.sources, known);
+  const title = a.sources === null
+    ? 'It reaches every source through MCP, those added later too'
+    : "Through MCP it reaches these sources only: to it, the others' repositories and threads don't exist";
+  const className = cx('agent-reach', a.sources !== null && 'some');
+  if (!onSources) return <span className={className} title={title}>{text}</span>;
+  return (
+    <button type="button" className={cx('btn sm ghost', className)} onClick={() => onSources(a)} title={`${title}. Choose which…`}
+      aria-label={`Sources of ${a.name}: ${text}. Choose which`}>
+      {text}
+    </button>
+  );
+}
+
+/**
+ * One agent: its name, token prefix, when it was added and last used (or disabled), and the sources it reaches; the
+ * desktop app's actions.
+ */
+function AgentRow({ a, now, known, onSources, onShowToken, onNewToken, onToggle, onDelete }: {
+  a: Agent;
+  now: number;
+  known: readonly AgentSource[];
+  onSources?: (a: Agent) => void;
+  onShowToken?: (a: Agent) => void;
+  onNewToken?: (a: Agent) => void;
+  onToggle?: (a: Agent) => void;
+  onDelete?: (a: Agent) => void;
+}) {
+  const disabled = !!a.disabledAt;
+  // The desktop app's is a button, with the other actions; a server's, text after the status.
+  const reach = <Reach a={a} known={known} onSources={onSources} />;
   if (a.builtIn) {
     return (
-      <li className="trk-row agent-row">
+      <li className={cx('trk-row agent-row', onSources && 'acts')}>
         <span className="trk-name" title={a.name}>{a.name}</span>
         <span className="agent-prefix" title="MCP requests without a token act as it, while agent tokens aren't required">no token</span>
         <span className="trk-st agent-st">Built in: requests without a token</span>
+        {!onSources && reach}
+        <span className="spacer" />
+        {onSources && reach}
       </li>
     );
   }
   return (
-    <li className={cx('trk-row agent-row', revoked && 'revoked')}>
+    <li className={cx('trk-row agent-row', disabled && 'disabled', (onSources || onShowToken || onNewToken || onToggle || onDelete) && 'acts')}>
       <span className="trk-name" title={a.name}>{a.name}</span>
       {a.tokenPrefix && <code className="agent-prefix" title="The token's first characters, to tell tokens apart">{a.tokenPrefix}…</code>}
-      <span className="trk-st agent-st" title={[`Added ${fmtDateTime(a.createdAt)}`, a.lastUsedAt && `last used ${fmtDateTime(a.lastUsedAt)}`, a.revokedAt && `revoked ${fmtDateTime(a.revokedAt)}`].filter(Boolean).join(', ')}>
-        {revoked ? `Revoked ${relLong(a.revokedAt!, now)}` : a.lastUsedAt ? `Used ${relLong(a.lastUsedAt, now)}` : `Added ${relLong(a.createdAt, now)} · not used yet`}
+      <span className="trk-st agent-st" title={[`Added ${fmtDateTime(a.createdAt)}`, a.lastUsedAt && `last used ${fmtDateTime(a.lastUsedAt)}`, a.disabledAt && `disabled ${fmtDateTime(a.disabledAt)}`].filter(Boolean).join(', ')}>
+        {disabled ? `Disabled ${relLong(a.disabledAt!, now)}` : a.lastUsedAt ? `Used ${relLong(a.lastUsedAt, now)}` : `Added ${relLong(a.createdAt, now)} · not used yet`}
       </span>
+      {!onSources && reach}
       <span className="spacer" />
+      {onSources && reach}
+      {onShowToken && (
+        <button type="button" className="btn sm ghost" onClick={() => onShowToken(a)} aria-label={`Show ${a.name}'s token`}
+          title="Its token again, with the lines to set it up">
+          Show token
+        </button>
+      )}
       {onNewToken && (
-        <button type="button" className="btn sm ghost" onClick={() => onNewToken(a)} title={revoked ? 'Give it a token again: it can write here once more' : 'Replace its token'}>
+        <button type="button" className="btn sm ghost" onClick={() => onNewToken(a)}
+          title={disabled ? 'Replace its token, and enable it: it can write here again with the new one' : 'Replace its token'}>
           New token…
         </button>
       )}
-      {!revoked && onRevoke && <button type="button" className="btn sm ghost" onClick={() => onRevoke(a)}>Revoke…</button>}
+      {onToggle && (
+        <button type="button" className="btn sm ghost" onClick={() => onToggle(a)} aria-label={`${disabled ? 'Enable' : 'Disable'} ${a.name}`}
+          title={disabled
+            ? 'Accept its token again. If it may have leaked, give it a new token instead'
+            : 'Refuse its token until you enable it again. Its token, sources and comments stay'}>
+          {disabled ? 'Enable' : 'Disable'}
+        </button>
+      )}
+      {onDelete && (
+        <button type="button" className="btn sm ghost" onClick={() => onDelete(a)} aria-label={`Delete ${a.name}…`}
+          title="Delete it: its token stops working and its name is free again. What it wrote stays">
+          Delete…
+        </button>
+      )}
     </li>
   );
 }
 
-/** The token once, with what to paste into Claude Code or Codex. */
-function TokenPanel({ shown, url, onDone }: { shown: Shown; url: string; onDone: () => void }) {
+/**
+ * The token, with what to paste into Claude Code or Codex: when it's made (once, unless the app kept it), or again (Show
+ * token). A token the app didn't keep can't be shown again: New token… makes one that can.
+ */
+function TokenPanel({ shown, url, keychain, onNewToken, onDone }: { shown: Shown; url: string; keychain: boolean; onNewToken: () => void; onDone: () => void }) {
+  if (shown.token === null) {
+    return (
+      <div className="agent-token" role="region" aria-label={`${shown.agent.name}'s token`}>
+        <p className="agent-token-h">
+          <Icon name="key" />
+          <span>
+            <b>{shown.agent.name}</b>'s token wasn't kept (made before gh-dash kept tokens, or on this device it can't).
+            New token… makes one you can see again.
+          </span>
+        </p>
+        <div className="set-actions">
+          <button type="button" className="btn" onClick={onNewToken}>New token…</button>
+          <button type="button" className="btn" onClick={onDone}>Close</button>
+        </div>
+      </div>
+    );
+  }
   const c = agentConfig(url, shown.token);
+  const what = shown.kind === 'new' ? "'s new token" : "'s token";
+  const told = shown.kind === 'kept'
+    ? ' · kept on this device, encrypted with the OS keychain.'
+    : shown.kept ? ' · kept on this device: Show token shows it again.' : ' · shown only this once: copy it now.';
   return (
     <div className="agent-token" role="region" aria-label={`${shown.agent.name}'s token`}>
       <p className="agent-token-h">
         <Icon name="key" />
-        <span><b>{shown.agent.name}</b>{shown.kind === 'new' ? "'s new token" : "'s token"} · shown only this once: copy it now.{shown.kind === 'new' && ' The old one no longer works.'}</span>
+        <span><b>{shown.agent.name}</b>{what}{told}{shown.kind === 'new' && ' The old one no longer works.'}</span>
       </p>
+      {shown.kind !== 'kept' && !shown.kept && !keychain && (
+        <small className="muted">No OS keychain is available, so gh-dash can't keep it to show again.</small>
+      )}
       {shown.enabled && <p className="agent-enabled" role="status"><Icon name="check" />{shown.enabled}</p>}
       <div className="agent-snip">
         <code className="set-key">{shown.token}</code>
@@ -109,26 +203,72 @@ function TokenField({ id, value, onChange, problem }: { id: string; value: strin
   );
 }
 
-/** Add agent: a name and its token (generated, or the user's own). */
-function AddAgent({ agents, portOff, onAdded, onCancel }: { agents: readonly Agent[]; portOff: boolean; onAdded: (s: Shown) => void; onCancel: () => void }) {
+/**
+ * Which sources an agent may reach: all of them (those added later too), or only those checked. Unchecking a source
+ * while "All" is picked picks the others ("Only"), as unchecking it from all of them would.
+ */
+function SourcesPicker({ id, known, pick, onChange }: { id: string; known: readonly AgentSource[]; pick: SourcePick; onChange: (p: SourcePick) => void }) {
+  const toggle = (host: string, on: boolean) => {
+    const from = pick.all ? known.map((s) => s.host) : pick.hosts;
+    onChange({ all: false, hosts: on ? [...from.filter((h) => h !== host), host] : from.filter((h) => h !== host) });
+  };
+  return (
+    <span className="agent-src-pick" role="group" aria-labelledby={`${id}-l`}>
+      <span className="agent-src-l" id={`${id}-l`}>Sources</span>
+      <span className="src-methods" role="radiogroup" aria-labelledby={`${id}-l`}>
+        <label className="src-method" title="Every source, those added later too">
+          <input type="radio" className="repo-check" name={`${id}-reach`} checked={pick.all} onChange={() => onChange({ ...pick, all: true })} />
+          All
+        </label>
+        <label className="src-method">
+          <input type="radio" className="repo-check" name={`${id}-reach`} checked={!pick.all}
+            onChange={() => onChange({ all: false, hosts: pick.hosts.length ? pick.hosts : known.map((s) => s.host) })} />
+          Only:
+        </label>
+      </span>
+      <span className="src-methods">
+        {known.map((s) => {
+          const { name, host } = sourceLabel(s);
+          return (
+            <label key={s.host} className={cx('src-method', pick.all && 'muted')}>
+              <input type="checkbox" className="repo-check" checked={pick.all || pick.hosts.includes(s.host)} onChange={(e) => toggle(s.host, e.target.checked)} />
+              {name}{host && <small className="muted">{host}</small>}
+            </label>
+          );
+        })}
+      </span>
+    </span>
+  );
+}
+
+/** Add agent: a name, its token (generated, or the user's own) and the sources it may reach. */
+function AddAgent({ agents, known, portOff, onAdded, onCancel }: {
+  agents: readonly Agent[];
+  known: readonly AgentSource[];
+  portOff: boolean;
+  onAdded: (s: Shown) => void;
+  onCancel: () => void;
+}) {
   const { add } = useAgentActions();
   const [name, setName] = useState('');
   const [token, setToken] = useState(generateAgentToken);
+  const [pick, setPick] = useState(() => pickOf(null));
   const [tried, setTried] = useState(false);
   const problem = agentNameProblem(name, agents);
   const tokenProblem = agentTokenProblem(token);
+  const picked = pickedSources(pick, known);
   const submit = (e: FormEvent) => {
     e.preventDefault();
     setTried(true);
-    if (problem || tokenProblem || add.isPending) return;
-    add.mutate({ name: name.trim(), token }, {
+    if (problem || tokenProblem || picked.problem || add.isPending) return;
+    add.mutate({ name: name.trim(), token, sources: picked.sources }, {
       onSuccess: (r) => onAdded({
         ...r, kind: 'added',
         enabled: r.enabledMcp ? (portOff ? 'The Local API is now on, for agents only: MCP on, the REST API off.' : 'MCP is now on, on the Local API.') : undefined,
       }),
     });
   };
-  const err = (tried && (problem ?? (tokenProblem && `Token: ${tokenProblem}`))) || (add.error ? bridgeError(add.error) : null);
+  const err = (tried && (problem ?? (tokenProblem && `Token: ${tokenProblem}`) ?? picked.problem)) || (add.error ? bridgeError(add.error) : null);
   const escape = (e: ReactKeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); onCancel(); } };
   return (
     <form className="agent-add" onSubmit={submit} onKeyDown={escape}>
@@ -136,6 +276,7 @@ function AddAgent({ agents, portOff, onAdded, onCancel }: { agents: readonly Age
       <input id="agent-name" className={cx('input', tried && problem && 'bad')} value={name} placeholder="Name, e.g. Claude" autoFocus autoComplete="off" maxLength={80}
         onChange={(e) => setName(e.target.value)} aria-invalid={tried && problem ? true : undefined} aria-describedby={err ? 'agent-add-err' : undefined} />
       <TokenField id="agent-token" value={token} onChange={setToken} problem={tried ? tokenProblem : null} />
+      <SourcesPicker id="agent-add-src" known={known} pick={pick} onChange={setPick} />
       <button type="submit" className="btn primary" disabled={add.isPending}>{add.isPending ? 'Adding…' : 'Add'}</button>
       <button type="button" className="btn" onClick={onCancel} disabled={add.isPending}>Cancel</button>
       {err && <span id="agent-add-err" className="form-err" role="alert">{err}</span>}
@@ -158,7 +299,7 @@ function NewToken({ agent, onMade, onCancel }: { agent: Agent; onMade: (s: Shown
     <form className="agent-add agent-new" onSubmit={submit} onKeyDown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); onCancel(); } }}
       aria-label={`New token for ${agent.name}`}>
       <p className="agent-new-h">
-        New token for <b>{agent.name}</b>. {agent.revokedAt ? `${agent.name} can write here again with it.` : 'The one it uses now stops working at once.'}
+        New token for <b>{agent.name}</b>. {agent.disabledAt ? `${agent.name} is enabled with it, and can write here again.` : 'The one it uses now stops working at once.'}
       </p>
       <TokenField id="agent-new-token" value={token} onChange={setToken} problem={problem} />
       <button type="submit" className="btn primary" disabled={regenerate.isPending || !!problem}>Make new token</button>
@@ -168,16 +309,44 @@ function NewToken({ agent, onMade, onCancel }: { agent: Agent; onMade: (s: Shown
   );
 }
 
+/** An agent's sources button: which sources it (the built-in one too) may reach, from its next request. */
+function AgentSources({ agent, known, onDone, onCancel }: { agent: Agent; known: readonly AgentSource[]; onDone: (a: Agent) => void; onCancel: () => void }) {
+  const { setSources } = useAgentActions();
+  const [pick, setPick] = useState(() => pickOf(agent.sources));
+  const picked = pickedSources(pick, known);
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    if (picked.problem || setSources.isPending) return;
+    setSources.mutate({ id: agent.builtIn ? 'built-in' : agent.id, sources: picked.sources }, { onSuccess: onDone });
+  };
+  const err = picked.problem ?? (setSources.error ? bridgeError(setSources.error) : null);
+  return (
+    <form className="agent-add agent-new" onSubmit={submit} onKeyDown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); onCancel(); } }}
+      aria-label={`Sources for ${agent.name}`}>
+      <p className="agent-new-h">
+        The sources <b>{agent.name}</b> may reach through MCP{agent.builtIn && ' (requests without a token)'}. To it, the others'
+        repositories and threads don't exist. It applies from its next request.
+      </p>
+      <SourcesPicker id="agent-src" known={known} pick={pick} onChange={setPick} />
+      <button type="submit" className="btn primary" disabled={setSources.isPending || !!picked.problem}>Save</button>
+      <button type="button" className="btn" onClick={onCancel} disabled={setSources.isPending}>Cancel</button>
+      {err && <span className="form-err" role="alert">{err}</span>}
+    </form>
+  );
+}
+
 export function AgentsSection() {
   const agents = useAgents();
   const { bridge, state } = useDesktop();
   const instance = useInstance().data;
-  const { revoke, enableMcp } = useAgentActions();
+  const { setEnabled, footprint, remove, keptToken, enableMcp } = useAgentActions();
   const { openConfirm } = useUI();
   const toast = useToast();
   const now = useNow(60_000);
   const [adding, setAdding] = useState(false);
   const [renewing, setRenewing] = useState<Agent | null>(null);
+  const [scoping, setScoping] = useState<Agent | null>(null);
+  const known: AgentSource[] = useSources().data ?? [];
   const [shown, setShown] = useState<Shown | null>(null);
   const desktop = !!bridge;
   const cfg = state?.config;
@@ -187,24 +356,58 @@ export function AgentsSection() {
   const portOff = !!cfg && !cfg.listen;
   const mcpOff = !!cfg && (!cfg.listen || !cfg.mcp);
   const tokensOptional = !!cfg && cfg.listen && cfg.mcp && !cfg.mcpRequireTokens;
-  const list = sortAgents(agents.data ?? []);
+  // The built-in agent too while requests without a token act as it, so its sources can be chosen before it acts.
+  const list = agentsShown(agents.data ?? [], tokensOptional);
 
   const turnOn = () => enableMcp.mutate(undefined, {
     onSuccess: (st) => toast(st.mcpUrl ? (portOff ? 'Local API on, for agents only' : 'MCP on') : `Couldn't turn it on${st.serverError ? `: ${st.serverError}` : ''}`, { error: !st.mcpUrl }),
     onError: (e) => toast(bridgeError(e), { error: true }),
   });
-  const revokeAgent = (a: Agent) => openConfirm({
-    title: `Revoke ${a.name}?`,
-    body: `Its token stops working at once. What ${a.name} wrote stays, under its name.`,
-    confirmLabel: 'Revoke',
-    danger: true,
-    onConfirm: async () => {
-      await revoke.mutateAsync(a.id).catch((e: unknown) => { throw new Error(bridgeError(e)); });
-      if (shown?.agent.id === a.id) setShown(null);
-      toast(`${a.name} revoked`);
-    },
+  // Disable / Enable: at once, nothing to confirm (it's undone the same way).
+  const toggleAgent = (a: Agent) => setEnabled.mutate({ id: a.id, enabled: !!a.disabledAt }, {
+    onSuccess: (x) => toast(x.disabledAt ? `${x.name} disabled` : `${x.name} enabled`),
+    onError: (e) => toast(bridgeError(e), { error: true }),
   });
-  const show = (s: Shown) => { setAdding(false); setRenewing(null); setShown(s); };
+  // Delete…: what it wrote first (asked now: it changes with every comment), then the confirmation that says so.
+  const deleteAgent = async (a: Agent) => {
+    let f;
+    try {
+      f = await footprint(a.id);
+    } catch (e) {
+      toast(bridgeError(e), { error: true });
+      return;
+    }
+    // The quoted name ("Deleted agent #4") on one line.
+    const sentences = agentDeletionSentences({ id: a.id, disabled: !!a.disabledAt }, f).map((x) => ({ ...x, text: x.text.replace(/“[^”]*”/g, (q) => q.replace(/ /g, '\u00a0')) }));
+    openConfirm({
+      title: `Delete ${a.name}?`,
+      body: sentences.map((x, i) => (
+        <Fragment key={i}>{i > 0 && ' '}{x.stress ? <span className="confirm-stress">{x.text}</span> : x.text}</Fragment>
+      )),
+      confirmLabel: 'Delete',
+      danger: true,
+      onConfirm: async () => {
+        await remove.mutateAsync(a.id).catch((e: unknown) => { throw new Error(bridgeError(e)); });
+        if (shown?.agent.id === a.id) setShown(null);
+        if (renewing?.id === a.id) setRenewing(null);
+        if (scoping?.id === a.id) setScoping(null);
+        toast(`${a.name} deleted`);
+      },
+    });
+  };
+  const show = (s: Shown) => { setAdding(false); setRenewing(null); setScoping(null); setShown(s); };
+  // Show token: the one the app kept, if it still is this agent's.
+  const showToken = async (a: Agent) => {
+    let token: string | null;
+    try {
+      token = await keptToken(a.id);
+    } catch (e) {
+      toast(bridgeError(e), { error: true });
+      return;
+    }
+    show({ agent: a, token, kind: 'kept' });
+  };
+  const scoped = (a: Agent) => { setScoping(null); toast(`${a.name}: ${agentReach(a.sources, known)}`); };
 
   return (
     <section className="card set-sec" id="agents">
@@ -212,6 +415,8 @@ export function AgentsSection() {
       <p>
         Coding agents such as Claude Code or Codex read and write comments here through MCP, each with a token of its own.
         What an agent writes is marked as its own, and stays here: nothing is posted to {hostNames(useWorkSources()).replace(' and ', ' or ') || 'GitHub'}.
+        An agent reaches every source, or only those you choose: to it, the others' repositories and threads don't exist.
+        The REST API isn't limited: it's yours.
       </p>
       {mcpOff && !shown && (
         <div className="set-note agent-off">
@@ -241,26 +446,33 @@ export function AgentsSection() {
           </span>
         </div>
         <div className="set-row top">
-          <span className="set-l">Added agents<small>Revoked ones stay listed: what they wrote is still theirs.</small></span>
+          <span className="set-l">Added agents<small>Disabled ones stay listed. What a deleted one wrote stays, as by “Deleted agent #…”.</small></span>
           <span className="set-c grow stack">
             {agents.isError ? <span className="muted">Couldn't load agents: {(agents.error as Error).message}</span>
               : !agents.data ? <span className="muted">Loading…</span>
                 : list.length ? (
-                  <ul className="trk-list">
+                  <ul className="trk-list agent-list">
                     {list.map((a) => (
-                      <AgentRow key={a.id} a={a} now={now} onNewToken={desktop ? (x) => { setShown(null); setAdding(false); setRenewing(x); } : undefined}
-                        onRevoke={desktop ? revokeAgent : undefined} />
+                      <AgentRow key={a.id} a={a} now={now} known={known}
+                        onSources={desktop ? (x) => { setShown(null); setAdding(false); setRenewing(null); setScoping(x); } : undefined}
+                        onShowToken={desktop ? (x) => void showToken(x) : undefined}
+                        onNewToken={desktop ? (x) => { setShown(null); setAdding(false); setScoping(null); setRenewing(x); } : undefined}
+                        onToggle={desktop ? toggleAgent : undefined} onDelete={desktop ? (x) => void deleteAgent(x) : undefined} />
                     ))}
                   </ul>
                 ) : <span className="muted">None yet.</span>}
           </span>
         </div>
       </div>
-      {shown && url && <TokenPanel shown={shown} url={url} onDone={() => setShown(null)} />}
+      {shown && url && (
+        <TokenPanel shown={shown} url={url} keychain={state?.secureStorage === 'available'} onDone={() => setShown(null)}
+          onNewToken={() => { const a = shown.agent; setShown(null); setRenewing(a); }} />
+      )}
       {desktop ? (
         renewing ? <NewToken key={renewing.id} agent={renewing} onMade={show} onCancel={() => setRenewing(null)} />
+          : scoping ? <AgentSources key={scoping.id} agent={scoping} known={known} onDone={scoped} onCancel={() => setScoping(null)} />
           : !shown && (adding
-            ? <AddAgent agents={list} portOff={portOff} onAdded={show} onCancel={() => setAdding(false)} />
+            ? <AddAgent agents={list} known={known} portOff={portOff} onAdded={show} onCancel={() => setAdding(false)} />
             : (
               <div className="set-actions">
                 <button type="button" className="btn" onClick={() => setAdding(true)}><Icon name="plus" />Add agent</button>
@@ -269,8 +481,11 @@ export function AgentsSection() {
       ) : (
         <p className="set-foot muted">
           Agents are added where the server runs: <code>node dist/server/index.mjs agents add &lt;name&gt;</code> prints the
-          new agent's token once (<code>--token-stdin</code> takes one of yours); <code>agents list</code> shows them,{' '}
-          <code>agents regenerate &lt;name&gt;</code> makes one a new token, and <code>agents revoke &lt;name&gt;</code> stops it.
+          new agent's token once (<code>--token-stdin</code> takes one of yours, <code>--source &lt;host&gt;</code> limits it to
+          that source); <code>agents list</code> shows them, <code>agents regenerate &lt;name&gt;</code> makes one a new
+          token, <code>agents scope &lt;name&gt; --source &lt;host&gt;</code> (or <code>--all</code>) chooses its sources,{' '}
+          <code>agents disable &lt;name&gt;</code> stops it until <code>agents enable &lt;name&gt;</code>, and{' '}
+          <code>agents delete &lt;name&gt;</code> deletes it, keeping what it wrote.
         </p>
       )}
     </section>

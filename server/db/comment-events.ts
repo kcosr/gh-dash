@@ -12,9 +12,10 @@ import { repoKeySql } from './repo-key';
  * Where to look: some threads, or a repo (by id) and optionally one target of it, whose events are those of the threads its
  * view lists (shared/api.ts, "Branch groups"): `prNumber` a PR's own threads and its branch group, `branch` the branch's
  * current group (it needs `repoId`, as a name is the repo's), `commitOid` one commit's own (not a PR's or a branch's made
- * on it).
+ * on it). `sourceIds`: only in repos on these sources (an agent's reach; none: nothing), whatever else it names.
  */
 export interface CommentEventScope {
+  sourceIds?: readonly number[];
   threadIds?: number[];
   repoId?: number;
   prNumber?: number;
@@ -76,9 +77,18 @@ const GROUPED_EVENTS =
       COALESCE(th.created_at, (SELECT f.at FROM comment_events f WHERE f.thread_id = e.thread_id ORDER BY f.id LIMIT 1)) AS created_at
     FROM comment_events e LEFT JOIN comment_threads th ON th.id = e.thread_id)`;
 
-/** The newest event's id (0 when there is none): "from now on" as a cursor. */
-export function lastCommentEventId(db: Db): number {
-  return db.get<{ id: number | null }>('SELECT max(id) AS id FROM comment_events')?.id ?? 0;
+/** The newest event's id (0 when there is none), in repos on `sourceIds` if given (none: 0): "from now on" as a cursor. */
+export function lastCommentEventId(db: Db, sourceIds?: readonly number[]): number {
+  if (!sourceIds) return db.get<{ id: number | null }>('SELECT max(id) AS id FROM comment_events')?.id ?? 0;
+  // An agent's reach: the log's end as far as it can see, so a wait that starts there and times out hands back a cursor
+  // that doesn't move with what happens on other sources. Ids are still one sequence across sources (as thread and
+  // comment ids are): their gaps can say that something happened out of reach, never what (docs/agents.md).
+  return (
+    db.get<{ id: number | null }>(
+      'SELECT max(ce.id) AS id FROM comment_events ce JOIN repos r ON r.id = ce.repo_id WHERE r.source_id IN (SELECT value FROM json_each(?))',
+      [JSON.stringify(sourceIds)],
+    )?.id ?? 0
+  );
 }
 
 /**
@@ -96,6 +106,10 @@ export function commentEventsAfter(
   if (opts.exceptActor !== undefined) {
     where.push('ce.actor_id <> ?');
     params.push(opts.exceptActor);
+  }
+  if (scope.sourceIds) {
+    where.push('r.source_id IN (SELECT value FROM json_each(?))');
+    params.push(JSON.stringify(scope.sourceIds));
   }
   if (scope.threadIds) {
     where.push('ce.thread_id IN (SELECT value FROM json_each(?))');

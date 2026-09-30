@@ -1,7 +1,8 @@
 /**
  * GET /stream: what the server tells open windows as it happens (StreamMessage, as server-sent events). One connection
  * per window, opened by the shell (useStream): `comments` refetches what a change to that target's threads makes stale,
- * as threadActions does after a change made here; `agents` the agents list; `show` goes to the show chip. It reconnects
+ * as threadActions does after a change made here; `agents` the agents list (and, when one was deleted, what names its
+ * comments' authors); `show` goes to the show chip. It reconnects
  * by itself (a server restart, the desktop app's proxy dropping it), and having missed what happened meanwhile, refetches
  * all of that once back. A server without the stream (older, or behind a proxy that won't stream) is left alone,
  * quietly: nothing else waits for it.
@@ -14,7 +15,7 @@ import type { QueryClient, QueryKey } from '@tanstack/react-query';
 import { useEffect } from 'react';
 import type { CommentEventKind, StreamMessage } from '../../../shared/api';
 import { branchDiffId, commitDiffId } from '../lib/urlState';
-import { qk, threadChangeKeys } from './hooks';
+import { AUTHOR_KEYS, qk, threadChangeKeys } from './hooks';
 
 export const STREAM_URL = '/api/v1/stream';
 
@@ -26,7 +27,7 @@ const COMMENTS_CHANGE: readonly CommentEventKind[] = ['thread_opened', 'replied'
  * a branch reaches its branch's view and its PRs'); none for `show`.
  */
 export function streamInvalidations(msg: StreamMessage): QueryKey[] {
-  if (msg.type === 'agents') return [qk.agents];
+  if (msg.type === 'agents') return msg.deleted === undefined ? [qk.agents] : [qk.agents, ...AUTHOR_KEYS];
   if (msg.type !== 'comments') return [];
   const id = msg.kind === 'pr' && msg.number !== null ? `${msg.repo}#${msg.number}`
     : msg.kind === 'branch' && msg.branch ? branchDiffId(msg.repo, msg.branch)

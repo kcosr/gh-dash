@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Agent, StreamMessage } from '../../shared/api';
 import { CommentBus } from '../comments/bus';
 import { type Config, loadConfig } from '../config';
-import { createAgent, revokeAgent } from '../db/agents';
+import { createAgent, deleteAgent, setAgentEnabled } from '../db/agents';
 import { DiffCache } from '../diff/cache';
 import { DiffService } from '../diff/service';
 import { GitHubDiffSources } from '../github/diff-source';
@@ -52,26 +52,48 @@ describe('GET /agents', () => {
     expect(await (await app.request('/api/v1/agents')).json()).toEqual({ items: [] });
     const { agent, token } = createAgent(db, 'Claude', '2026-09-29T10:00:00.000Z');
     createAgent(db, 'Codex', '2026-09-29T11:00:00.000Z');
-    revokeAgent(db, agent.id, '2026-09-29T12:00:00.000Z');
+    setAgentEnabled(db, agent.id, false, '2026-09-29T12:00:00.000Z');
     const res = await app.request('/api/v1/agents');
     const text = await res.text();
     expect(text).not.toContain(token);
     expect(text).not.toContain('hash');
     const { items } = JSON.parse(text) as { items: Agent[] };
-    expect(items.map((a) => [a.name, a.tokenPrefix?.slice(0, 4) ?? null, a.revokedAt])).toEqual([
-      ['Claude', null, '2026-09-29T12:00:00.000Z'],
+    expect(items.map((a) => [a.name, a.tokenPrefix?.slice(0, 4) ?? null, a.disabledAt])).toEqual([
+      ['Claude', 'ghd_', '2026-09-29T12:00:00.000Z'],
       ['Codex', 'ghd_', null],
     ]);
   });
 
-  it('never makes, changes or revokes one over HTTP', async () => {
+  it('leaves deleted agents out', async () => {
     const { app, db } = makeApp();
     const { agent } = createAgent(db, 'Claude');
-    for (const [method, path] of [['POST', '/api/v1/agents'], ['PATCH', `/api/v1/agents/${agent.id}`], ['DELETE', `/api/v1/agents/${agent.id}`], ['POST', `/api/v1/agents/${agent.id}/token`]]) {
-      const res = await app.request(path, { method, headers: { 'content-type': 'application/json' }, body: method === 'DELETE' ? undefined : '{"name":"x"}' });
+    createAgent(db, 'Codex');
+    deleteAgent(db, agent.id);
+    const { items } = (await (await app.request('/api/v1/agents')).json()) as { items: Agent[] };
+    expect(items.map((a) => a.name)).toEqual(['Codex']);
+  });
+
+  it('says which sources each reaches: null for every one', async () => {
+    const { app, db } = makeApp();
+    createAgent(db, 'Claude');
+    createAgent(db, 'Codex', undefined, null, ['github.com']);
+    const { items } = (await (await app.request('/api/v1/agents')).json()) as { items: Agent[] };
+    expect(items.map((a) => [a.name, a.sources])).toEqual([['Claude', null], ['Codex', ['github.com']]]);
+  });
+
+  it('never makes, changes, disables or deletes one over HTTP', async () => {
+    const { app, db } = makeApp();
+    const { agent } = createAgent(db, 'Claude');
+    for (const [method, path] of [
+      ['POST', '/api/v1/agents'], ['PATCH', `/api/v1/agents/${agent.id}`], ['DELETE', `/api/v1/agents/${agent.id}`], ['POST', `/api/v1/agents/${agent.id}/token`],
+      ['PUT', `/api/v1/agents/${agent.id}/sources`], ['PATCH', `/api/v1/agents/${agent.id}/sources`], ['POST', `/api/v1/agents/${agent.id}/disable`],
+      ['POST', `/api/v1/agents/${agent.id}/enable`], ['PUT', `/api/v1/agents/${agent.id}/enabled`], ['GET', `/api/v1/agents/${agent.id}/footprint`],
+      ['GET', `/api/v1/agents/${agent.id}/token`], ['GET', '/api/v1/agents/tokens'],
+    ]) {
+      const res = await app.request(path, { method, headers: { 'content-type': 'application/json' }, body: method === 'DELETE' || method === 'GET' ? undefined : '{"name":"x"}' });
       expect(res.status, `${method} ${path}`).toBe(404);
     }
-    expect(await (await app.request('/api/v1/agents')).json()).toMatchObject({ items: [{ name: 'Claude', revokedAt: null }] });
+    expect(await (await app.request('/api/v1/agents')).json()).toMatchObject({ items: [{ name: 'Claude', disabledAt: null, sources: null }] });
   });
 });
 
@@ -258,7 +280,7 @@ describe('OpenAPI', () => {
     expect(Object.keys(schemas.CommentActivity!.properties!)).toEqual([
       'eventId', 'threadId', 'commentId', 'live', 'by', 'target', 'commitOid', 'path', 'side', 'startLine', 'endLine', 'excerpt', 'view',
     ]);
-    expect(Object.keys(schemas.Agent!.properties!)).toEqual(['id', 'name', 'tokenPrefix', 'createdAt', 'lastUsedAt', 'revokedAt', 'builtIn']);
+    expect(Object.keys(schemas.Agent!.properties!)).toEqual(['id', 'name', 'tokenPrefix', 'createdAt', 'lastUsedAt', 'disabledAt', 'builtIn', 'sources']);
     expect(schemas.CommentThread!.properties).toHaveProperty('resolvedBy');
     const types = doc.paths['/api/v1/activity']!.get!.parameters!.find((p) => p.name === 'types')!;
     expect(types.description).toContain('comment');

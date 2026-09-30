@@ -52,6 +52,24 @@ describe('TokenStores', () => {
     expect(safeStorage.isAsyncEncryptionAvailable).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps each agent's token in its own file, by its id", async () => {
+    const stores = new TokenStores(dir, (l) => logs.push(l));
+    expect(await stores.agent(2).save('ghd_two')).toBe(true);
+    expect(await stores.agent(12).save('my-own-agent-token-0123456789')).toBe(true);
+    const file = join(dir, 'agent-tokens', '2.enc');
+    expect(readFileSync(file, 'utf8')).not.toContain('ghd_two');
+    expect(await stores.agent(2).load()).toBe('ghd_two');
+    expect(await stores.agent(12).load()).toBe('my-own-agent-token-0123456789');
+    if (process.platform !== 'win32') {
+      expect(statSync(file).mode & 0o777).toBe(0o600);
+      expect(statSync(join(dir, 'agent-tokens')).mode & 0o777).toBe(0o700);
+    }
+    stores.agent(2).remove();
+    expect(stores.agent(2).has()).toBe(false);
+    expect(stores.agent(12).has()).toBe(true);
+    for (const bad of [0, -1, 1.5, Number.NaN, 2 ** 53]) expect(() => stores.agent(bad), String(bad)).toThrow('Not an agent id');
+  });
+
   it('refuses anything but a host name as a file name', () => {
     const stores = new TokenStores(dir, () => {});
     for (const bad of ['../github-token', 'a/b', 'gitlab..example.com', '', 'GitLab.example.com', 'x'.repeat(254)]) {
@@ -68,6 +86,8 @@ describe('TokenStores', () => {
       expect(await stores.source('gitlab.example.com').secureStorage()).toBe('unavailable');
       expect(await stores.source('gitlab.example.com').save('glpat-x')).toBe(false);
       expect(await stores.github.save('ghp_x')).toBe(false);
+      expect(await stores.agent(2).save('ghd_x')).toBe(false);
+      expect(existsSync(join(dir, 'agent-tokens'))).toBe(false);
       expect(existsSync(join(dir, 'tokens'))).toBe(false);
       expect(logs).toContain('[keychain] unavailable (backend basic_text)');
     } finally {

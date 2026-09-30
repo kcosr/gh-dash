@@ -275,6 +275,21 @@ table.rtable .pin-mark svg { width: 12px; height: 12px; }
 .mini-pr .mp-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 550; }
 .mini-pr .mp-title .labels { display: inline-flex; gap: 4px; margin-left: 6px; vertical-align: 1px; }
 .mini-pr .mp-who, .mini-pr time { font-size: 12px; color: var(--muted); white-space: nowrap; }
+/* The repo page's branches: like its PRs, a branch's mark, name, PR and head's age. */
+.mini-br { display: grid; grid-template-columns: 16px minmax(0,1fr) auto auto; gap: 10px; align-items: center; padding: 6px 8px; margin: 0 -8px; border-radius: 8px; font-size: 13px; text-align: left; }
+.mini-br:hover { background: var(--surface-2); }
+.mini-br.active { background: var(--accent-weak); }
+.mini-br > svg { width: 14px; height: 14px; margin-left: 1px; color: var(--muted); }
+.mini-br .mb-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 550; }
+.mini-br time { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.br-pr { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
+.br-pr .pr-ic { display: inline-flex; padding-top: 0; }
+.br-pr .pr-ic svg { width: 13px; height: 13px; }
+.br-card .card-h { align-items: center; }
+.br-card .card-h .sub code { font-size: 11.5px; }
+.br-filter { flex: 0 1 180px; min-width: 120px; }
+.br-filter input { height: 26px; font-size: 12.5px; }
+.br-empty { padding: 32px 12px; }
 .rel-list { display: flex; flex-direction: column; }
 .rel-item { border-top: 1px solid var(--border); }
 .rel-item:first-child { border-top: 0; }
@@ -320,6 +335,8 @@ pre.code.muted { color: var(--muted); }
 .input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-weak); }
 .input.bad { border-color: var(--del); }
 .pal-in .spin svg { width: 15px; height: 15px; animation: spin 1s linear infinite; color: var(--muted); }
+/* A step of the palette (reviewing a branch): where it is, before what you type. */
+.pal-step { flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; height: 24px; line-height: 24px; padding: 0 9px; border-radius: 999px; background: var(--surface-2); font-size: 12.5px; font-weight: 550; color: var(--text-2); }
 .pal-item { color: var(--text); }
 .pal-item .pal-l { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pal-item .r { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; flex: none; }

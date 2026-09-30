@@ -156,6 +156,9 @@ export class McpCore {
     if (!tool) throw new RpcError(INVALID_PARAMS, `Unknown tool: ${name}`);
     const raw = params.arguments === undefined ? {} : params.arguments;
     if (!isObject(raw)) throw new RpcError(INVALID_PARAMS, 'Invalid params: arguments must be an object');
+    // An id is the call's handle for notifications/cancelled: a second call under it would take the first one's away.
+    const key = inflightKey(ctx, id);
+    if (this.inflight.has(key)) throw new RpcError(INVALID_REQUEST, `Invalid Request: request id ${JSON.stringify(id)} belongs to a call still in progress`);
     let args: Record<string, unknown>;
     try {
       args = parseWith(tool.input, raw);
@@ -163,7 +166,6 @@ export class McpCore {
       return toolError(`Invalid arguments: ${(err as Error).message}`);
     }
 
-    const key = inflightKey(ctx, id);
     const cancel = new AbortController();
     this.inflight.set(key, cancel);
     const signal = AbortSignal.any([ctx.signal, cancel.signal]);
@@ -176,7 +178,7 @@ export class McpCore {
       this.log(`[mcp] ${name} failed: ${(err as Error).stack ?? err}`);
       return toolError('Internal error (logged by gh-dash)');
     } finally {
-      if (this.inflight.get(key) === cancel) this.inflight.delete(key);
+      this.inflight.delete(key);
     }
   }
 }

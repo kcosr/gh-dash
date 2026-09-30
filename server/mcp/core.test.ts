@@ -163,6 +163,33 @@ describe('MCP core', () => {
     expect(await waiting).toMatchObject({ id: 7, error: { code: REQUEST_CANCELLED } });
   });
 
+  it('refuses a call under the id of one still in progress, which stays cancellable', async () => {
+    const c = core();
+    const waiting = c.handle(req(7, 'tools/call', { name: 'wait', arguments: {} }), ctx());
+    // Even with bad arguments: nothing about the first call changes.
+    for (const args of [{ text: 'hi' }, { text: 1 }]) {
+      expect(await c.handle(req(7, 'tools/call', { name: 'echo', arguments: args }), ctx())).toMatchObject({
+        id: 7,
+        error: { code: INVALID_REQUEST, message: 'Invalid Request: request id 7 belongs to a call still in progress' },
+      });
+    }
+    // Another principal's id 7, or this one's "7", is another call.
+    expect(await c.handle(req(7, 'tools/call', { name: 'echo', arguments: { text: 'hi' } }), ctx(other))).toMatchObject({ result: { structuredContent: { by: 'Codex' } } });
+    expect(await c.handle(req('7', 'tools/call', { name: 'echo', arguments: { text: 'hi' } }), ctx())).toMatchObject({ result: {} });
+    await c.handle({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: 7 } }, ctx());
+    expect(await waiting).toMatchObject({ id: 7, error: { code: REQUEST_CANCELLED } });
+    // Done: the id is free again.
+    expect(await c.handle(req(7, 'tools/call', { name: 'echo', arguments: { text: 'again' } }), ctx())).toMatchObject({ result: { structuredContent: { text: 'again' } } });
+  });
+
+  it('refuses the second of two calls with one id in a batch', async () => {
+    const c = core();
+    const batch = c.handle([req(1, 'tools/call', { name: 'wait', arguments: {} }), req(1, 'tools/call', { name: 'echo', arguments: { text: 'x' } })], ctx());
+    await new Promise((r) => setTimeout(r, 10));
+    await c.handle({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: 1 } }, ctx());
+    expect(await batch).toMatchObject([{ id: 1, error: { code: REQUEST_CANCELLED } }, { id: 1, error: { code: INVALID_REQUEST } }]);
+  });
+
   it('stops a call when its transport aborts; a tool may answer on its way out', async () => {
     const c = core();
     const closed = new AbortController();

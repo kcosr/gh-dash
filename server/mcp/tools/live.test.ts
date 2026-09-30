@@ -107,6 +107,16 @@ describe('wait_for_reply', () => {
     expect(body).toMatchObject({ id: 'w1', result: { structuredContent: { events: [], cursor: h.lastEvent() } } });
   });
 
+  it('stays cancellable when another call reuses its request id', async () => {
+    const h = setup();
+    const res = h.post({ jsonrpc: '2.0', id: 'w1', method: 'tools/call', params: { name: 'wait_for_reply', arguments: { timeout_s: 60 } } });
+    await later(30);
+    const dup = await (await h.post({ jsonrpc: '2.0', id: 'w1', method: 'tools/call', params: { name: 'whoami', arguments: {} } })).json();
+    expect(dup).toMatchObject({ id: 'w1', error: { code: -32600, message: expect.stringContaining('still in progress') } });
+    await h.post({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: 'w1' } });
+    expect(await (await res).json()).toMatchObject({ id: 'w1', result: { structuredContent: { events: [] } } });
+  });
+
   it('stops waiting when the request goes away', async () => {
     const h = setup();
     const gone = new AbortController();

@@ -109,7 +109,8 @@ window.
 | **Insights** | Charts of activity, contributors and trends. |
 
 The switcher at the top left chooses **GitHub**, **GitLab** or **All** when you have both.
-Each one remembers where you were.
+Each one remembers where you were. **Repositories** takes you back to the repository you were
+looking at; clicked again on its page, it goes to the list.
 
 ### Choosing repositories
 

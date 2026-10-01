@@ -63,13 +63,22 @@ const TAB_VIEWS: readonly TabView[] = ['prs', 'comments', 'issues', 'activity', 
 /** The tab a path is (`/prs`, `/prs/`), else undefined: a repo's page (`/repos/<key>`), Settings, and unknown paths. */
 const tabOf = (pathname: string) => TAB_VIEWS.find((t) => pathname.replace(/\/+$/, '').toLowerCase() === `/${t}`);
 
+/** A repo's page (`/repos/<key>`): under the Repositories tab, though no tab of its own. */
+const isRepoPage = (pathname: string) => viewFromPath(pathname) === 'repo';
+
+/**
+ * A context's views' last places. `repo`: the repo's page last visited from the Repositories tab, while it is the tab's
+ * last place (visiting the list forgets it): the tab's link goes back to it, the list keeping its own settings in `repos`.
+ */
+export type ViewPlaces = Partial<Record<TabView, string>> & { repo?: string };
+
 /** localStorage `gh-dash:places`: the last context, each context's last place ("/path?query"), and its views' last. */
 export interface Places {
   v: 1;
   last: Ctx;
   places: Record<Ctx, string>;
   /** Each context's tab views' last places, less the overlay params (added later: a stored value may lack it). */
-  views: Record<Ctx, Partial<Record<TabView, string>>>;
+  views: Record<Ctx, ViewPlaces>;
 }
 
 const EMPTY: Places = { v: 1, last: ALL, places: {}, views: {} };
@@ -94,11 +103,13 @@ function parseViews(raw: unknown): Places['views'] {
   if (!raw || typeof raw !== 'object') return views;
   for (const [ctx, byView] of Object.entries(raw)) {
     if (!byView || typeof byView !== 'object') continue;
-    const mine: Partial<Record<TabView, string>> = {};
+    const mine: ViewPlaces = {};
     for (const t of TAB_VIEWS) {
       const place: unknown = (byView as Record<string, unknown>)[t];
       if (typeof place === 'string' && (place === `/${t}` || place.startsWith(`/${t}?`))) mine[t] = place;
     }
+    const repo: unknown = (byView as Record<string, unknown>).repo;
+    if (typeof repo === 'string' && isRepoPage(repo.replace(/\?.*$/, ''))) mine.repo = repo;
     if (Object.keys(mine).length) views[ctx] = mine;
   }
   return views;
@@ -109,7 +120,8 @@ function parseViews(raw: unknown): Places['views'] {
  * Settings is context-free and never recorded. Nor is `/`: it only redirects to the last place, and a render can still
  * be at `/` for a moment while that navigation is pending; recorded, switching to its context would land on `/` and be
  * sent to another context (or back to `/`). A tab's list view is also that context's last place of the view, without
- * the drawer and diff; a repo's page is not (it's no tab). `keep`: the contexts to keep (the sources present, and All);
+ * the drawer and diff. A repo's page is no tab, but it becomes the Repositories tab's last place (`repo`, likewise
+ * without overlays) until the list is visited again. `keep`: the contexts to keep (the sources present, and All);
  * others are dropped, so a removed source doesn't linger.
  */
 export function recordPlace(p: Places, pathname: string, search: string, keep?: readonly Ctx[]): Places {
@@ -117,12 +129,21 @@ export function recordPlace(p: Places, pathname: string, search: string, keep?: 
   const ctx = ctxOf(search);
   const place = pathname + search;
   const tab = tabOf(pathname);
-  const seen = tab && `/${tab}${orderedSearch(paramsExcept(search, OVERLAY_KEYS))}`;
+  const settings = orderedSearch(paramsExcept(search, OVERLAY_KEYS));
+  const seen = tab && `/${tab}${settings}`;
+  const repo = isRepoPage(pathname) ? pathname + settings : undefined;
+  const mine = p.views[ctx];
+  // Visiting the list makes it the tab's last place again: the repo's page is forgotten.
+  const unchanged = tab ? mine?.[tab] === seen && (tab !== 'repos' || mine?.repo === undefined) : !repo || mine?.repo === repo;
   const stale = keep ? [...new Set([...Object.keys(p.places), ...Object.keys(p.views)])].filter((k) => k !== ALL && k !== ctx && !keep.includes(k)) : [];
-  if (p.last === ctx && p.places[ctx] === place && (!tab || p.views[ctx]?.[tab] === seen) && !stale.length) return p;
+  if (p.last === ctx && p.places[ctx] === place && unchanged && !stale.length) return p;
   const places: Record<Ctx, string> = { ...p.places, [ctx]: place };
   const views: Places['views'] = { ...p.views };
-  if (tab && seen) views[ctx] = { ...views[ctx], [tab]: seen };
+  if (tab && seen) {
+    const { repo: _forgotten, ...rest } = views[ctx] ?? {};
+    views[ctx] = tab === 'repos' ? { ...rest, repos: seen } : { ...views[ctx], [tab]: seen };
+  }
+  if (repo) views[ctx] = { ...views[ctx], repo };
   for (const k of stale) { delete places[k]; delete views[k]; }
   return { v: 1, last: ctx, places, views };
 }
@@ -145,15 +166,19 @@ export function placeFor(p: Places, ctx: Ctx, pathname: string): string {
  * page's scope wins, so a param dropped here stays dropped. Settings has no scope: the remembered place goes as stored.
  * With nothing remembered (or no tab, like Settings) the view with the scope alone: the page's, or from Settings the
  * context's. `ctx`: the page's context, or on Settings the last one.
+ *
+ * Repositories goes back to the repo's page it was left on, if it was; from a repo's page it goes to the list, so the
+ * tab (clicked again) is the way back to every repo.
  */
 export function viewHref(p: Places, ctx: Ctx, path: string, pathname: string, search: string): string {
   const tab = tabOf(path);
   const fromSettings = viewFromPath(pathname) === 'settings';
-  const remembered = tab && p.views[ctx]?.[tab];
+  const repoPage = tab === 'repos' && !isRepoPage(pathname) ? p.views[ctx]?.repo : undefined;
+  const remembered = repoPage ?? (tab && p.views[ctx]?.[tab]);
   if (tab && remembered) {
     const own = paramsExcept(remembered.replace(/^[^?]*/, ''), fromSettings ? OVERLAY_KEYS : [...OVERLAY_KEYS, ...SCOPE_KEYS]);
     const scope = fromSettings ? [] : [...new URLSearchParams(carrySearch(search))];
-    return `/${tab}${orderedSearch([...scope, ...own])}`;
+    return `${remembered.replace(/\?.*$/, '')}${orderedSearch([...scope, ...own])}`;
   }
   if (tab && fromSettings) return path + (ctx === ALL ? '' : `?source=${encodeURIComponent(ctx)}`);
   return path + carrySearch(search);

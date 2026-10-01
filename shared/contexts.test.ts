@@ -222,16 +222,32 @@ describe('places', () => {
       expect(recordPlace(p, '/activity', '?source=github.com&types=push&density=full&range=7d&x=1').views).toEqual(p.views);
     });
 
-    it('cover the top-level lists, and not Settings, the root or a repository\'s page', () => {
+    it('cover the top-level lists and a repository\'s page, and not Settings or the root', () => {
       const p = at(empty, ['/prs', ''], ['/issues', ''], ['/activity', ''], ['/repos', '?sort=stars'], ['/insights', '?range=ytd']);
       expect(Object.keys(p.views.all!)).toEqual(['prs', 'issues', 'activity', 'repos', 'insights']);
       const q = at(p, ['/settings', '?source=github.com'], ['/', ''], ['/', `?source=${GL}`], ['/repos/alice/app', `?source=${GL}&repos=alice/app`], [`/repos/${GL}/team/svc`, '']);
-      expect(q.views).toEqual(p.views);
+      // A repo's page is where its context's Repositories tab was left; the list keeps its own settings beside it.
+      expect(q.views).toEqual({ ...p.views, all: { ...p.views.all, repo: `/repos/${GL}/team/svc` }, [GL]: { repo: `/repos/alice/app?source=${GL}&repos=alice/app` } });
+      expect(q.views.all!.repos).toBe('/repos?sort=stars');
       // A repo's page is still a place of its context, as before; the others are not places at all.
       expect(q.places[GL]).toBe(`/repos/alice/app?source=${GL}&repos=alice/app`);
       expect(q.places['github.com']).toBeUndefined();
-      // The list keeps its own memory across a visit to a repo's page.
-      expect(q.views.all!.repos).toBe('/repos?sort=stars');
+    });
+
+    it("keep a repository's page as the Repositories tab's last place until the list is visited again", () => {
+      const p = at(empty, ['/repos', '?sort=stars'], ['/repos/kcosr/keel', '?range=7d&diff=kcosr/keel~fix/a&file=x.ts&thread=3']);
+      // Without the diff, as any view.
+      expect(p.views.all).toEqual({ repos: '/repos?sort=stars', repo: '/repos/kcosr/keel?range=7d' });
+      // Other tabs leave it; another repo's page takes its place.
+      const q = at(p, ['/prs', '?state=open'], ['/issues', '']);
+      expect(q.views.all!.repo).toBe('/repos/kcosr/keel?range=7d');
+      expect(at(q, ['/repos/kcosr/sedes', '']).views.all!.repo).toBe('/repos/kcosr/sedes');
+      // The list again: it is the tab's last place, with its settings as now.
+      expect(at(q, ['/repos', '?sort=name']).views.all).toEqual({ repos: '/repos?sort=name', prs: '/prs?state=open', issues: '/issues' });
+      // The same page again changes nothing (the same object); its diff opened changes the place, not the view.
+      const same = recordPlace(p, '/repos/kcosr/keel', '?range=7d');
+      expect(recordPlace(same, '/repos/kcosr/keel', '?range=7d')).toBe(same);
+      expect(recordPlace(same, '/repos/kcosr/keel', '?range=7d&diff=kcosr/keel~fix/a').views).toEqual(same.views);
     });
 
     it('take a path however it is written, and nothing that is not a tab', () => {
@@ -268,9 +284,11 @@ describe('places', () => {
         expect(parse(views), JSON.stringify(views)).toEqual({ v: 1, last: ALL, places: { all: '/prs' }, views: {} });
       }
       expect(parse(good).views).toEqual(good);
-      // Entries are judged one by one, and must be the view's own place.
+      // Entries are judged one by one, and must be the view's own place: a repo's page only as `repo`.
       const mixed = { all: { prs: '/prs?state=open', issues: '/prs', activity: 'https://x.test/activity', repos: '/repos/a/b', insights: '/insightsx', settings: '/settings', prs2: '/prs' }, [GL]: 'nope' };
       expect(parse(mixed).views).toEqual(good);
+      for (const repo of ['/repos', '/repos?sort=name', '/prs', 'repos/a/b', 7]) expect(parse({ all: { repo } }).views, String(repo)).toEqual({});
+      expect(parse({ all: { repo: '/repos/a/b?range=7d' } }).views).toEqual({ all: { repo: '/repos/a/b?range=7d' } });
     });
   });
 
@@ -333,6 +351,25 @@ describe('places', () => {
     it('is the link of a repository\'s page like any other page, with its own scope', () => {
       expect(viewHref(remembered, ALL, '/repos', '/repos/a/b', '?range=90d')).toBe('/repos?range=90d&sort=stars&layout=list');
       expect(viewHref(remembered, ALL, '/prs', '/repos/a/b', '?repos=a/b')).toBe('/prs?repos=a/b&state=open&group=repo&density=full');
+    });
+
+    it("goes back to the repository's page Repositories was left on, and from a repository's page to the list", () => {
+      const left = at(['/repos', '?sort=stars&layout=list'], ['/repos/kcosr/keel', '?range=7d&diff=kcosr/keel~fix/a'], ['/prs', '?state=open']);
+      // Under the scope of the page, as any view; its own settings come along, its diff doesn't.
+      expect(viewHref(left, ALL, '/repos', '/prs', '?range=30d&state=open')).toBe('/repos/kcosr/keel?range=30d');
+      expect(viewHref(left, ALL, '/repos', '/issues', '')).toBe('/repos/kcosr/keel');
+      // From Settings as stored.
+      expect(viewHref(left, ALL, '/repos', '/settings', '')).toBe('/repos/kcosr/keel?range=7d');
+      // On a repo's page (that one or another), the tab is the way back to the list, with the list's own settings.
+      expect(viewHref(left, ALL, '/repos', '/repos/kcosr/keel', '?range=7d')).toBe('/repos?range=7d&sort=stars&layout=list');
+      expect(viewHref(left, ALL, '/repos', '/repos/kcosr/sedes', '')).toBe('/repos?sort=stars&layout=list');
+      // Another context has its own memory: none here, so today's link.
+      expect(viewHref(left, GL, '/repos', '/prs', `?source=${GL}`)).toBe(`/repos?source=${GL}`);
+      // Once the list is visited again, the tab goes to the list.
+      const back = recordPlace(left, '/repos', '?sort=stars&layout=list');
+      expect(viewHref(back, ALL, '/repos', '/prs', '')).toBe('/repos?sort=stars&layout=list');
+      // Other tabs are not affected.
+      expect(viewHref(left, ALL, '/prs', '/repos/kcosr/keel', '')).toBe('/prs?state=open');
     });
 
     it('stays today\'s link for what is not a tab, Settings included', () => {

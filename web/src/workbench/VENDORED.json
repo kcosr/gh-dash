@@ -1,6 +1,7 @@
 {
-  "commit": "39896843370f19dda71407a544e52955c2d9d956",
+  "commit": "abe007b599468ae75e44248c3cc4a973514da214",
   "files": {
+    ".gitattributes": "b204f987d9c4231fe20681f6c0c36db0f558a3ff0b4e9a1072881864c43ade29",
     "components/AppShell.tsx": "fa472ef91174b7f72b2025370de28578f75daf659b7d386548ac42cf5920800b",
     "components/Button.tsx": "1b9a6cd8637393d472ccd2f3289158bab0e9eb70b7a45e7a70df21ce4604f2b2",
     "components/Chips.tsx": "7818a5932d7c5708a8a97166b1cb3b0b22e9403949ca168307f990e68cafff54",

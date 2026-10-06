@@ -261,7 +261,9 @@ function PaletteSurface({
       const loading = Boolean(
         s.loading || (searchActive && (!result || result.loading)),
       );
-      const error = s.error || (searchActive ? result?.error : undefined);
+      const remoteError = searchActive ? result?.error : undefined;
+      const error =
+        [s.error, remoteError].filter(Boolean).join(" ") || undefined;
       const showAll =
         expanded.query === q &&
         expanded.scope === scope &&
@@ -288,14 +290,19 @@ function PaletteSurface({
             })),
         });
       }
-      if (error && !loading && (s.onRetry || s.search)) {
+      if (!loading && ((s.error && s.onRetry) || remoteError)) {
         visible.push({
           id: `palette-retry-${s.id}`,
           label: `Retry ${s.title}`,
           icon: "refresh",
           keepOpen: true,
           control: "retry",
-          onSelect: s.onRetry ?? (() => retrySources.current.get(s.id)?.()),
+          onSelect: () => {
+            // An external query and remote search can fail independently.
+            // Retry only the failed operations, including both when needed.
+            if (remoteError) retrySources.current.get(s.id)?.();
+            if (s.error) s.onRetry?.();
+          },
         });
       }
       if (visible.length || loading || error)

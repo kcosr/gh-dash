@@ -443,6 +443,7 @@ export function AppShell({
             className={cx("wb-app-drawer", drawerResizable && "is-resizable")}
             ref={drawerSlot}
             id={drawerId}
+            data-wb-drawer-slot=""
           >
             {drawer}
             {drawerResizable ? drawerResize.separator : null}

@@ -1,4 +1,6 @@
 import { test, expect } from './fixtures';
+import type { Source } from '../../shared/api';
+import type { DesktopState } from '../../shared/desktop';
 
 test('shared menus keep keyboard selection and restore trigger focus', async ({ page }) => {
   await page.goto('/prs?source=github.com&state=open');
@@ -56,8 +58,10 @@ test('name prompt preserves async pending, failure recovery, and success toast',
   await expect(prompt.getByLabel('Name')).toBeFocused();
   await prompt.getByLabel('Name').fill('My review');
   const submit = prompt.getByRole('button', { name: 'Create set' });
-  await submit.click();
+  await prompt.getByLabel('Name').press('Enter');
   await expect(submit).toHaveAttribute('aria-busy', 'true');
+  await expect(prompt.getByLabel('Name')).toBeFocused();
+  await expect(prompt.getByLabel('Name')).toHaveAttribute('readonly', '');
   await page.keyboard.press('Escape');
   await expect(prompt).toBeVisible();
   await expect(prompt.getByRole('button', { name: 'Cancel' })).toBeDisabled();
@@ -65,7 +69,9 @@ test('name prompt preserves async pending, failure recovery, and success toast',
   finish!();
   await expect(prompt.getByRole('alert')).toHaveText('That set name already exists');
   await expect(prompt.getByLabel('Name')).toHaveValue('My review');
-  await submit.click();
+  await expect(prompt.getByLabel('Name')).toBeFocused();
+  await expect(prompt.getByLabel('Name')).toBeEditable();
+  await prompt.getByLabel('Name').press('Enter');
   await expect(prompt).toHaveCount(0);
   await expect(page.getByRole('status').filter({ hasText: 'Set “My review” created' })).toBeVisible();
   await expect(trigger).toBeFocused();
@@ -128,4 +134,44 @@ test('author filter communicates its active state with the shared button variant
   await menu.getByRole('menuitemradio', { name: 'Anyone', exact: true }).click();
   await expect(page).not.toHaveURL(/author=self/);
   await expect.poll(() => trigger.evaluate((el) => getComputedStyle(el).backgroundColor)).toBe(inactiveBackground);
+});
+
+
+test('source sign-out focuses Cancel so Enter does not forget a remembered token', async ({ page }) => {
+  const host = 'gitlab.example.com';
+  const at = '2026-10-05T10:00:00Z';
+  const source: Source = {
+    host, kind: 'gitlab', name: 'GitLab', url: `https://${host}`, configured: true, removable: false,
+    viewer: { login: 'owner', name: 'Test Owner', avatarUrl: null },
+    account: {
+      source: 'app', choice: 'app', locked: false, env: null, login: 'owner', name: 'Test Owner', avatarUrl: null,
+      dbLogin: 'owner', mismatch: false, kind: 'classic', expiresAt: null, scopes: ['read_api'], canWrite: false,
+      repos: { total: 1, private: null }, cli: null, tokenFile: null, instance: null, error: null, checkedAt: at,
+    },
+    sync: { source: host, running: false, progress: null, lastSyncAt: at, lastResult: { newItems: 0, errors: [] }, rateLimit: null, tokenSource: 'app', viewer: 'owner', problem: null },
+    repos: { owned: 1, added: 0, hidden: 0 },
+  };
+  const desktop: DesktopState = {
+    version: 'browser-fixture', platform: 'linux', configPath: 'synthetic-config', secureStorage: 'available',
+    tokenRemembered: false, apiUrl: null, mcpUrl: null, serverError: null, glab: { path: null, chosen: false }, gitlabEnv: 'unset',
+    sources: [{ host, url: source.url, tokenRemembered: true }],
+    config: { dataDir: 'synthetic-data', listen: false, restApi: true, mcp: true, mcpRequireTokens: true, network: false, port: 4187, allowedHosts: [], apiKeySet: false, passwordSet: false },
+  };
+  await page.addInitScript((state) => {
+    // Only a synthetic bridge; cancellation must never invoke its sign-out operation.
+    Object.defineProperty(window, 'ghDashDesktop', { value: {
+      getState: async () => state,
+      signOutSource: async () => { throw new Error('Sign-out must not be called when Cancel is focused'); },
+    } });
+  }, desktop);
+  await page.route('**/api/v1/sources', (route) => route.fulfill({ json: { items: [source] } }));
+  await page.goto('/settings?source=gitlab.example.com');
+  const trigger = page.locator('[id="source-gitlab.example.com"]').getByRole('button', { name: 'Sign out', exact: true });
+  await trigger.click();
+  const dialog = page.getByRole('alertdialog', { name: `Sign out of ${host}?` });
+  await expect(dialog).toContainText('removes it from the OS keychain');
+  await expect(dialog.getByRole('button', { name: 'Cancel', exact: true })).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(dialog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
 });

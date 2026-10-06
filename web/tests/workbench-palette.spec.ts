@@ -117,3 +117,62 @@ test('repository labels keep owner styling and highlights across the owner/name 
   await expect(repo.locator('.pal-o')).toHaveText('owner/');
   await expect.poll(async () => (await repo.locator('mark').allTextContents()).join('')).toBe('owner/al');
 });
+
+for (const lookup of ['pull requests', 'branches'] as const) {
+  test(`cached ${lookup} keep results and refetch feedback in one palette section`, async ({ page }) => {
+    await page.clock.install();
+    let failRefetch = false;
+    let release!: () => void;
+    const responseReady = new Promise<void>((resolve) => { release = resolve; });
+    const branchLookup = lookup === 'branches';
+    await page.route(branchLookup ? '**/api/v1/branches/owner%2Falpha*' : '**/api/v1/prs?*', async (route) => {
+      const isPaletteLookup = branchLookup || new URL(route.request().url()).searchParams.get('limit') === '5';
+      if (!isPaletteLookup || !failRefetch) { await route.fallback(); return; }
+      await responseReady;
+      // 400 avoids automatic branch retries; this test exercises the explicit
+      // palette retry while a successful earlier response remains cached.
+      await route.fulfill({ status: 400, json: { error: 'Synthetic refetch failure' } });
+    });
+    await page.goto('/prs?source=github.com&repos=owner%2Falpha');
+    // Seed the same context-specific query that reopening will refetch. Before
+    // repository metadata loads, the palette briefly uses the unscoped query.
+    await expect(page.getByRole('group', { name: 'Source', exact: true })
+      .getByRole('button', { name: 'GitHub', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    const enter = async () => {
+      const palette = await openPalette(page);
+      if (branchLookup) {
+        await expect(palette.getByRole('option', { name: 'alpha', exact: true })).toBeVisible();
+        await palette.getByRole('combobox').fill('Review a branch');
+        await palette.getByRole('combobox').press('Enter');
+      }
+      return palette;
+    };
+    const heading = branchLookup ? 'Branches of alpha' : 'Recent pull requests';
+    const resultName = branchLookup ? /^feature\/a/ : /^Improve cache refresh/;
+    let palette = await enter();
+    await expect(palette.getByRole('option', { name: resultName })).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(palette).toHaveCount(0);
+    await page.clock.fastForward(61_000);
+    failRefetch = true;
+    palette = await enter();
+    const section = palette.getByRole('group', { name: heading, exact: true });
+    try {
+      await expect(section).toHaveCount(1);
+      await expect(section.getByRole('option', { name: resultName })).toBeVisible();
+      await expect(section.getByText(`Loading ${heading}…`, { exact: true })).toBeVisible();
+    } finally {
+      release();
+    }
+    const retry = section.getByRole('option', { name: `Retry ${heading}`, exact: true });
+    await expect(retry).toBeVisible();
+    await expect(section).toHaveCount(1);
+    await expect(section.getByRole('option', { name: resultName })).toBeVisible();
+    await expect(section.locator('.wb-palette-status-error')).toContainText(branchLookup ? 'Synthetic refetch failure' : 'Could not load pull requests');
+    failRefetch = false;
+    await retry.click();
+    await expect(retry).toHaveCount(0);
+    await expect(section).toHaveCount(1);
+    await expect(section.getByRole('option', { name: resultName })).toBeVisible();
+  });
+}

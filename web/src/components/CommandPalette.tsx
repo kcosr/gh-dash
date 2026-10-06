@@ -29,7 +29,7 @@ import { useUI } from './ui';
  * item leads to another step of the palette, which stays open.
  */
 interface Item { key: string; icon: ReactElement; label: string; labelParts?: [string, string]; right?: ReactNode; run: () => void; step?: boolean }
-interface Section { title: string; items: Item[] }
+interface Section { id: string; title: string; items: Item[] }
 
 /**
  * Reviewing a branch takes steps: a repository (skipped when one is in view), then its branches. `back`: where
@@ -119,7 +119,7 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggle
     const branchSection = (repo: string, title: string): Section => {
       const p = providerOf(repo);
       return {
-        title,
+        id: 'branches', title,
         items: branches.items.slice(0, BRANCHES_SHOWN).map((b) => ({
           key: `branch:${b.name}`,
           icon: ic('branch'),
@@ -139,7 +139,7 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggle
           || (b.r.lastActivityAt ?? '').localeCompare(a.r.lastActivityAt ?? ''))
         .slice(0, 8);
       return found.length ? [{
-        title: 'Review a branch of',
+        id: 'repositories', title: 'Review a branch of',
         items: found.map(({ r, label }) => {
           const { owner, name } = repoParts(r.key, repoMap);
           return {
@@ -165,7 +165,7 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggle
       .slice(0, ql ? 6 : 4);
     if (rs.length) {
       out.push({
-        title: 'Repositories',
+        id: 'repositories', title: 'Repositories',
         items: rs.flatMap(({ r, label, parts }) => [
           {
             key: `repo:${r.key}`,
@@ -191,7 +191,7 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggle
       run: () => go(inView ? { kind: 'branch', repo: inView, back: null } : { kind: 'repo' }),
     };
     const branchItems = [...(ql && has(review.label) ? [review] : []), ...(branchRepo && ql ? branchSection(branchRepo, '').items : [])];
-    if (branchItems.length) out.push({ title: 'Branches', items: branchItems });
+    if (branchItems.length) out.push({ id: 'branches', title: 'Branches', items: branchItems });
 
     const prs = prSearch.data?.items ?? [];
     const prItems: Item[] = [];
@@ -214,19 +214,19 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggle
         run: () => openPr(p),
       });
     }
-    if (prItems.length) out.push({ title: ql ? capitalize(w.many) : `Recent ${w.many}`, items: prItems });
+    if (prItems.length) out.push({ id: 'prs', title: ql ? capitalize(w.many) : `Recent ${w.many}`, items: prItems });
 
-    if (ql && !refMatch) out.push({ title: 'Issues', items: [{
+    if (ql && !refMatch) out.push({ id: 'issues', title: 'Issues', items: [{
       key: 'search-issues', icon: ic('issue'), label: `Search issues for “${q.trim()}”`,
       run: () => navigate({ pathname: '/issues', search: patchSearch(carrySearch(location.search), 'issues', { q: q.trim(), state: 'all' }) }),
     }] });
 
     const vs = (views.data ?? []).filter((v) => has(v.name));
-    if (vs.length) out.push({ title: 'Saved views', items: vs.map((v) => ({ key: `view:${v.id}`, icon: ic('bookmark'), label: v.name, run: () => navigate(`${v.path}${v.query ? `?${v.query}` : ''}`) })) });
+    if (vs.length) out.push({ id: 'views', title: 'Saved views', items: vs.map((v) => ({ key: `view:${v.id}`, icon: ic('bookmark'), label: v.name, run: () => navigate(`${v.path}${v.query ? `?${v.query}` : ''}`) })) });
 
     const nav: [string, string, IconName][] = [[w.nav, '/prs', 'merge'], ['Issues', '/issues', 'issue'], ['Comments', '/comments', 'comment'], ['Repositories', '/repos', 'book'], ['Activity', '/activity', 'pulse'], ['Insights', '/insights', 'chart'], ['Settings', '/settings', 'sliders']];
     const navItems = nav.filter(([l]) => has(l)).map(([l, p, i]) => ({ key: `go:${p}`, icon: ic(i), label: l, run: () => goTo(p) }));
-    if (navItems.length) out.push({ title: 'Go to', items: navItems });
+    if (navItems.length) out.push({ id: 'navigation', title: 'Go to', items: navItems });
 
     const t = exportTarget(view, s, repoParam);
     // Switching context: each option but the current one (no new shortcut; the top bar has the control).
@@ -253,20 +253,20 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggle
         ? { key: 'do:docs', icon: ic('doc'), label: 'Open API docs', run: () => { window.open(apiLink(apiBase, '/api/docs')!, '_blank', 'noopener'); } }
         : { key: 'do:docs', icon: ic('doc'), label: 'Open API docs', right: <span>Local API is off</span>, run: () => toast(API_OFF_HINT) },
     ].filter((a) => has(a.label));
-    if (acts.length) out.push({ title: 'Actions', items: acts });
+    if (acts.length) out.push({ id: 'actions', title: 'Actions', items: acts });
     return out;
   }, [q, repos.data, repoMap, repoLabel, providerOf, w, views.data, prSearch.data, view, s, location.search, location.pathname, repoParam, onToggleSidebar, sidebarHidden, apiBase, openAddRepo, sources, multi, ctx, byHost, switchTo, hrefTo, step, inView, branchRepo, branches.items]);
 
   const stepRepo = step?.kind === 'branch' ? step.repo : null;
-  const trouble = stepRepo && branches.all.isError && !branches.all.data ? branchListTrouble(branches.all.error, providerOf(stepRepo)).text : undefined;
+  const trouble = stepRepo && branches.all.isError ? branchListTrouble(branches.all.error, providerOf(stepRepo)).text : undefined;
   const none = !stepRepo ? 'No results'
     : q.trim() ? `No branches matching “${q.trim()}”` : 'No branches besides the default one';
 
   // Product hooks own provider-aware lookup and ordering. The shared palette owns
   // navigation, overlays, highlighting and step focus; avoid filtering these
   // curated results again (a direct PR reference need not match the PR title).
-  const paletteSources: PaletteSource[] = sections.map((section, index) => ({
-    id: `gh-section-${index}`,
+  const paletteSources: PaletteSource[] = sections.map((section) => ({
+    id: section.id,
     title: section.title,
     limit: section.items.length,
     items: () => section.items.map((item) => ({
@@ -282,23 +282,29 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggle
       },
     })),
   }));
-  // Loading/errors remain visible even when a lookup has no result section yet.
+  // Keep feedback beside its cached results, with one stable source identity
+  // throughout loading/error/retry. Empty lookups still need a status source.
+  const addStatus = (status: PaletteSource) => {
+    const results = paletteSources.find((source) => source.id === status.id);
+    if (results) Object.assign(results, status, { title: results.title });
+    else paletteSources.push(status);
+  };
   if (stepRepo) {
-    paletteSources.push({
-      id: 'gh-branch-status', title: `Branches of ${repoLabel(stepRepo)}`,
+    addStatus({
+      id: 'branches', title: `Branches of ${repoLabel(stepRepo)}`,
       loading: branches.all.isFetching || branches.searching,
       error: trouble,
       onRetry: () => { void branches.all.refetch(); },
     });
   } else if (step?.kind === 'repo') {
-    paletteSources.push({
-      id: 'gh-repo-status', title: 'Repositories', loading: repos.isFetching,
+    addStatus({
+      id: 'repositories', title: 'Review a branch of', loading: repos.isFetching,
       error: repos.isError ? 'Could not load repositories' : undefined,
       onRetry: () => { void repos.refetch(); },
     });
   } else {
-    paletteSources.push({
-      id: 'gh-pr-status', title: capitalize(w.many), loading: prSearch.isFetching,
+    addStatus({
+      id: 'prs', title: q.trim() ? capitalize(w.many) : `Recent ${w.many}`, loading: prSearch.isFetching,
       error: prSearch.isError ? `Could not load ${w.many}` : undefined,
       onRetry: () => { void prSearch.refetch(); },
     });

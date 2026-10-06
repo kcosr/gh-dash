@@ -341,6 +341,7 @@ function GitLabSource({ s, app, desk, desktopServer, from }: {
     title: `Sign out of ${s.host}?`,
     body: `gh-dash forgets the pasted token${inApp?.tokenRemembered ? ' and removes it from the OS keychain' : ''}. The source and its data stay; sign in again to sync it.`,
     confirmLabel: 'Sign out',
+    danger: true,
     onConfirm: async () => {
       try { await signOut.mutateAsync(s.host); } catch (e) { throw new Error(bridgeError(e)); }
       toast(`Signed out of ${s.host}`);

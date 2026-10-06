@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Copied with the kit so consumers can check their snapshot without a kit checkout.
 import { createHash } from "node:crypto";
-import { lstatSync, readFileSync, readdirSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const sha256 = (bytes) =>
@@ -93,7 +93,7 @@ export function verifyCopy(root) {
 
 if (
   process.argv[1] &&
-  resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+  realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))
 ) {
   try {
     if (process.argv.length !== 2)

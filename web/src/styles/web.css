@@ -413,7 +413,7 @@ a.sync:hover .sync-text { color: var(--wb-fg); text-decoration: underline; text-
 /* Repository controls occupy the full screen on phones instead of squeezing the list. */
 .filter-controls { display: contents; }
 .filter-toggle { display: none; }
-.mobile-sidebar { position: fixed; inset: 0; z-index: var(--wb-z-overlay); display: flex; flex-direction: column; height: 100dvh; background: var(--wb-page); }
+.mobile-sidebar { position: fixed; inset: 0; z-index: calc(var(--wb-z-overlay) - 10); display: flex; flex-direction: column; height: 100dvh; background: var(--wb-page); }
 .mobile-sidebar-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: max(12px, env(safe-area-inset-top)) 16px 12px; border-bottom: 1px solid var(--wb-border); }
 .mobile-sidebar-head h2 { margin: 0; font-size: 17px; }
 .mobile-sidebar-head .wb-btn { min-height: 44px; }
@@ -701,8 +701,9 @@ a.sync:hover .sync-text { color: var(--wb-fg); text-decoration: underline; text-
 /* Agents (MCP): the mark after an agent's name, and what agents ask the window to show. */
 .agent-mark { flex: none; display: inline-block; padding: 0 5px; border: 1px solid var(--wb-border-strong); border-radius: 999px; font-size: 10.5px; font-weight: 500; line-height: 15px; color: var(--wb-muted); vertical-align: 1px; white-space: nowrap; }
 .show-t .agent-mark { margin-left: 4px; }
-.show-host { position: fixed; right: 16px; bottom: 16px; z-index: 55; display: flex; flex-direction: column; gap: 8px; width: min(360px, calc(100vw - 32px)); }
-.show-chip { padding: 10px 12px 8px; border: 1px solid var(--wb-border-strong); border-radius: 10px; background: var(--wb-surface); box-shadow: var(--wb-shadow-pop); font-size: 12.5px; color: var(--wb-fg-2); animation: gd-toast .18s ease-out; }
+/* Agent offers stay above repository navigation and below shared modal overlays. */
+.show-host { position: fixed; right: 16px; bottom: 16px; z-index: calc(var(--wb-z-overlay) - 5); display: flex; flex-direction: column; gap: 8px; width: min(360px, calc(100vw - 32px)); }
+.show-chip { padding: 10px 12px 8px; border: 1px solid var(--wb-border-strong); border-radius: 10px; background: var(--wb-surface); box-shadow: var(--wb-shadow-pop); font-size: 12.5px; color: var(--wb-fg-2); animation: wb-toast var(--wb-dur-base) var(--wb-ease); }
 .show-l { display: flex; align-items: flex-start; gap: 8px; }
 .show-l .avatar { margin-top: 1px; }
 .show-t { margin: 0; min-width: 0; line-height: 1.45; overflow-wrap: anywhere; }

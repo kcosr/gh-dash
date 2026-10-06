@@ -31,7 +31,7 @@ export function NamePrompt({ req, onClose }: { req: PromptRequest; onClose: () =
       </>}>
       <label className="prompt-l">
         <span>{req.label ?? 'Name'}</span>
-        <Input autoFocus value={value} placeholder={req.placeholder} onChange={(e) => setValue(e.target.value)} maxLength={120} disabled={busy} />
+        <Input autoFocus value={value} placeholder={req.placeholder} onChange={(e) => setValue(e.target.value)} maxLength={120} readOnly={busy} />
       </label>
       {req.hint && <div className="prompt-hint">{req.hint}</div>}
       {err && <div className="wb-form-error" role="alert">{err}</div>}

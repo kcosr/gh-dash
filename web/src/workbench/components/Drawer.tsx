@@ -94,10 +94,25 @@ export function Drawer({
   }, [resetKey]);
 
   useLayoutEffect(() => {
+    // Capture the slot while mounted: its React ref may already be detached
+    // when our cleanup runs, while its focused separator still exists.
+    const slot = ref.current?.closest<HTMLElement>("[data-wb-drawer-slot]");
     return () => {
-      // Non-modal: leave focus alone if the user already moved it elsewhere.
+      // The shell's resize separator is a sibling of the drawer surface but
+      // belongs to this pane for focus return. Other outside focus stays put.
       const active = document.activeElement;
-      if (active && active !== document.body && !owner.contains(active)) return;
+      const onSeparator =
+        slot &&
+        active?.parentElement === slot &&
+        active.getAttribute("role") === "separator" &&
+        active.getAttribute("aria-controls") === slot.id;
+      if (
+        active &&
+        active !== document.body &&
+        !owner.contains(active) &&
+        !onSeparator
+      )
+        return;
       requestAnimationFrame(() => {
         if (document.activeElement && document.activeElement !== document.body)
           return;

@@ -23,7 +23,7 @@ export function registerThemes() {
         ...base.colors,
         'gitDecoration.addedResourceForeground': 'var(--add)',
         'gitDecoration.deletedResourceForeground': 'var(--del)',
-        'gitDecoration.modifiedResourceForeground': 'var(--accent)',
+        'gitDecoration.modifiedResourceForeground': 'var(--wb-accent)',
       },
     };
     registerCustomTheme(THEMES[type], () => Promise.resolve(theme));

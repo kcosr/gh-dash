@@ -79,7 +79,7 @@ const verticalStep: StepFn = (key, i, n) => {
 };
 
 export function HBars({
-  rows: input, unit, ariaLabel, color = 'var(--s1)', maxRows = 8, formatValue = fmtNum,
+  rows: input, unit, ariaLabel, color = 'var(--wb-s1)', maxRows = 8, formatValue = fmtNum,
   emptyText = 'No activity in this range', otherLabel = 'Other',
 }: HBarsProps) {
   const [ref, width] = useElementWidth<HTMLDivElement>();
@@ -90,7 +90,7 @@ export function HBars({
     () => (width > 0 && n > 0 ? layout(rows, width, formatValue) : null),
     [rows, width, formatValue, fontsV], // fontsV: re-measure once web fonts load
   );
-  const barColor = (r: Row) => (r.other ? 'var(--deemph)' : color);
+  const barColor = (r: Row) => (r.other ? 'var(--wb-deemph)' : color);
 
   const tip = (i: number): TipData => {
     const r = rows[i];

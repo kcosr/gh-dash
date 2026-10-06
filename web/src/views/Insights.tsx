@@ -2,11 +2,11 @@ import { useCallback, useMemo } from 'react';
 import { defaultScope, useRepoMap, useRepos, useSettings, useStats, useSyncStatus } from '../api/hooks';
 import { CalendarHeatmap, ChartCard, HBars, LineChart, StackedColumns, StatTile } from '../charts';
 import { DateRangeButton } from '../components/DateRange';
-import { ErrorNote, ProgressBar } from '../components/EmptyState';
+import { ErrorState, ProgressBar, Seg } from '../workbench';
 import { FilterToolbar } from '../components/FilterToolbar';
 import { Icon } from '../components/Icon';
 import { useWords } from '../components/repoMapContext';
-import { Seg, WHO_OPTIONS } from '../components/Seg';
+import { WHO_OPTIONS } from '../lib/filterOptions';
 import { useUI } from '../components/ui';
 import { statsParams } from '../lib/apiQuery';
 import {
@@ -72,16 +72,16 @@ export function InsightsView() {
       <FilterToolbar summary={[range.text, s.who === 'me' ? 'By you' : s.who === 'others' ? 'By others' : 'Everyone'].join(' · ')}>
         <div className="row">
           <DateRangeButton />
-          <Seg value={s.who} onChange={(who) => set({ who })} options={WHO_OPTIONS} ariaLabel="Author" />
+          <Seg value={s.who} onChange={(who) => set({ who })} options={WHO_OPTIONS} label="Author" />
           <span className="summary">{nRepos} {nRepos === 1 ? 'repo' : 'repos'} · {range.text}</span>
           <span className="spacer" />
-          <button type="button" className="btn" onClick={() => openExport('api')}><Icon name="braces" />API</button>
+          <button type="button" className="wb-btn" onClick={() => openExport('api')}><Icon name="braces" />API</button>
         </div>
       </FilterToolbar>
       <div className="scroll" id="scroll">
         <ProgressBar active={stats.isFetching && !!st} />
         {stats.isError && !st ? (
-          <ErrorNote error={stats.error} onRetry={() => stats.refetch()} />
+          <ErrorState error={stats.error} onRetry={() => stats.refetch()} />
         ) : !st || !tiles || !activity || !merged || !stars || !calTable || !byRepo || !ttm || !people ? (
           <InsightsSkeleton />
         ) : (
@@ -131,11 +131,11 @@ export function InsightsView() {
 export function InsightsSkeleton() {
   return (
     <div aria-busy="true" aria-label="Loading">
-      <div className="kpis">{Array.from({ length: 4 }, (_, i) => <div key={i} className="tile skel-tile" />)}</div>
+      <div className="kpis">{Array.from({ length: 4 }, (_, i) => <div key={i} className="tile wb-skel skel-tile" />)}</div>
       <div className="charts">
-        <div className="card skel-chart wide" />
-        <div className="card skel-chart" />
-        <div className="card skel-chart" />
+        <div className="card wb-skel skel-chart wide" />
+        <div className="card wb-skel skel-chart" />
+        <div className="card wb-skel skel-chart" />
       </div>
     </div>
   );

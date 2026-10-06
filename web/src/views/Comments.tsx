@@ -3,6 +3,7 @@
  * (or repo, or not at all). A row opens the diff at its thread; it also opens in place to read the conversation and
  * resolve it. Replying stays in the diff.
  */
+import { Button, ChipToggle, hasBlockingLayer, isTypingTarget, EmptyState, ErrorState, ProgressBar, Menu, Seg, useToast } from '../workbench';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
@@ -11,7 +12,6 @@ import { branchRef } from '../../../shared/comment-markdown';
 import { PROVIDERS, capitalize, refText } from '../../../shared/provider';
 import { patchThreadLists, threadActions, threadListQuery, useAgents, useMe, useThreadList } from '../api/hooks';
 import { threadListParams } from '../lib/apiQuery';
-import { hasBlockingLayer, isTypingTarget } from '../lib/layers';
 import { sortAgents } from '../lib/agents';
 import { plainPreview } from '../lib/markdown';
 import { fmtDateTime, plural, rel } from '../lib/time';
@@ -22,17 +22,13 @@ import type { ThreadAuthor, ThreadGroup, ThreadOrder } from '../lib/urlState';
 import { cx } from '../lib/util';
 import { Avatar } from '../components/Avatar';
 import { AgentMark, Ctl, MOD_K, prIconName } from '../components/bits';
-import { EmptyState, ErrorNote, ProgressBar } from '../components/EmptyState';
 import { FilterInput } from '../components/FilterInput';
 import { FilterToolbar } from '../components/FilterToolbar';
 import { Icon } from '../components/Icon';
 import { Markdown } from '../components/Markdown';
-import { MenuButton } from '../components/Menu';
 import { RepoChip } from '../components/RepoChip';
 import { useProviderOf, useRepoLabel, useWords } from '../components/repoMapContext';
-import { Seg } from '../components/Seg';
 import { ThreadRow, threadPlace } from '../components/ThreadRow';
-import { useToast } from '../components/Toasts';
 import { useUI } from '../components/ui';
 import { ListSkeleton, NoReposSelected } from './PullRequests';
 
@@ -156,7 +152,7 @@ export function CommentsView() {
       patchThreadLists(qc, next);
       toast(status === 'resolved' ? 'Resolved' : 'Reopened');
     } catch (e) {
-      toast(`Couldn't update: ${(e as Error).message}`, { error: true });
+      toast(`Couldn't update: ${(e as Error).message}`, { tone: 'error' });
     }
   }, [qc, filterKey, othersQuery, s.status, toast]);
 
@@ -249,43 +245,43 @@ export function CommentsView() {
           <Seg<ThreadStatusFilter>
             value={s.status}
             onChange={(status) => set({ status })}
-            ariaLabel="Status"
+            label="Status"
             options={[
               { value: 'open', label: <><Icon name="comment" />Unresolved{n(counts?.open)}</> },
               { value: 'resolved', label: <><Icon name="check" />Resolved{n(counts?.resolved)}</> },
               { value: 'all', label: <>All{n(counts && counts.open + counts.resolved)}</> },
             ]}
           />
-          <Seg<ThreadKindFilter> value={s.kind} onChange={(kind) => set({ kind })} ariaLabel="Threads on" options={[
+          <Seg<ThreadKindFilter> value={s.kind} onChange={(kind) => set({ kind })} label="Threads on" options={[
             { value: 'all', label: 'All' }, { value: 'pr', label: w.shortMany }, { value: 'branch', label: 'Branches' }, { value: 'commit', label: 'Commits' },
           ]} />
           {showAuthor && <AuthorMenu value={s.author} agents={agents} onChange={(author) => set({ author })} />}
           <span className="summary grow" title={data ? `${total.toLocaleString()} ${summary}` : undefined}>
             {data ? <><b>{total.toLocaleString()}</b> {summary}</> : list.isError ? null : <span className="muted">Loading…</span>}
           </span>
-          <span className="btn-group">
-            <button type="button" className="btn" onClick={() => openExport('md')}><Icon name="md" />Markdown</button>
-            <button type="button" className="btn" onClick={() => openExport('api')}><Icon name="braces" />API</button>
+          <span className="wb-btn-group">
+            <button type="button" className="wb-btn" onClick={() => openExport('md')}><Icon name="md" />Markdown</button>
+            <button type="button" className="wb-btn" onClick={() => openExport('api')}><Icon name="braces" />API</button>
           </span>
         </div>
         <div className="row">
           <FilterInput value={s.q} onChange={(q) => set({ q }, { replace: true })} placeholder="Filter by comment or file path…" />
           {showWaiting && (
-            <button type="button" className={cx('chip-toggle', s.waiting && 'on')} style={{ marginLeft: 4 }} aria-pressed={s.waiting}
+            <ChipToggle type="button" style={{ marginLeft: 4 }} pressed={s.waiting}
               disabled={s.status === 'resolved' && !s.waiting}
               title={s.status === 'resolved' && !s.waiting ? 'Resolved threads wait on no one' : "Unresolved threads whose last comment isn't yours"}
-              onClick={() => set({ waiting: !s.waiting })}>
+              onPressedChange={() => set({ waiting: !s.waiting })}>
               <Icon name="enter" />Waiting on you
-            </button>
+            </ChipToggle>
           )}
           <span className="spacer" />
           <Ctl label="Group">
-            <Seg<ThreadGroup> className="sm" value={s.threadGroup} onChange={(threadGroup) => set({ threadGroup })} ariaLabel="Group by" options={[
+            <Seg<ThreadGroup> size="sm" value={s.threadGroup} onChange={(threadGroup) => set({ threadGroup })} label="Group by" options={[
               { value: 'target', label: `${changeWord}, branch or commit` }, { value: 'repo', label: 'Repo' }, { value: 'none', label: 'None' },
             ]} />
           </Ctl>
           <Ctl label="Sort">
-            <Seg<ThreadOrder> className="sm" value={s.threadSort} onChange={(threadSort) => set({ threadSort })} ariaLabel="Sort" options={[
+            <Seg<ThreadOrder> size="sm" value={s.threadSort} onChange={(threadSort) => set({ threadSort })} label="Sort" options={[
               { value: 'recent', label: 'Recent', title: 'Latest activity first' },
               { value: 'oldest', label: 'Oldest', title: 'Earliest activity first' },
               { value: 'file', label: 'File order', title: `Each ${changeWord}, branch or commit read top to bottom: general comments, then by file and line` },
@@ -298,30 +294,30 @@ export function CommentsView() {
         <ProgressBar active={fetching} />
         <div className={cx('list cv-list', s.threadGroup === 'none' && 'flat', fetching && 'stale')}>
           {list.isError && !data ? (
-            <ErrorNote error={list.error} onRetry={() => list.refetch()} />
+            <ErrorState error={list.error} onRetry={() => list.refetch()} />
           ) : !data ? (
             <ListSkeleton density="titles" />
           ) : s.repos?.length === 0 ? (
             <NoReposSelected onSelectAll={() => set({ repos: null })} />
           ) : !rows.length && counts && counts.open + counts.resolved === 0 && !s.q && s.kind === 'all' && s.author === null && !s.waiting ? (
-            <EmptyState icon="comment" title={s.repos === null && s.vis === 'all' && s.own === 'all' ? 'No comments yet' : 'No comments in these repositories'}>
+            <EmptyState icon="inbox" title={s.repos === null && s.vis === 'all' && s.own === 'all' ? 'No comments yet' : 'No comments in these repositories'}>
               Comments you add in a diff show up here. Open the changes of a {changeWord}, a branch or a commit, and use the +
               beside a line, or the comments column for one on the whole of it.
             </EmptyState>
           ) : !rows.length ? (
             <EmptyState
-              icon="comment"
+              icon="inbox"
               title={s.waiting && !s.q && s.kind === 'all' && s.author === null ? 'Nothing is waiting on you'
                 : `No ${[!s.waiting && stWord, 'comments', byWord(s.author, agents), kindWord, s.waiting && 'waiting on you'].filter(Boolean).join(' ')}${s.q ? ` matching “${s.q}”` : ''}`}
-              action={
-                <div className="empty-actions">
+              actions={
+                <div className="wb-empty-actions">
                   {!s.waiting && s.status !== 'all' && counts && (s.status === 'open' ? counts.resolved : counts.open) > 0 && (
-                    <button type="button" className="btn" onClick={() => set({ status: 'all' })}>Show all comments</button>
+                    <button type="button" className="wb-btn" onClick={() => set({ status: 'all' })}>Show all comments</button>
                   )}
-                  {s.waiting && <button type="button" className="btn" onClick={() => set({ waiting: false })}>Show all unresolved</button>}
-                  {s.author !== null && <button type="button" className="btn" onClick={() => set({ author: null })}>Show anyone's</button>}
-                  {s.kind !== 'all' && <button type="button" className="btn" onClick={() => set({ kind: 'all' })}>Show {w.shortMany}, branches and commits</button>}
-                  {s.q && <button type="button" className="btn" onClick={() => set({ q: '' })}>Clear filter</button>}
+                  {s.waiting && <button type="button" className="wb-btn" onClick={() => set({ waiting: false })}>Show all unresolved</button>}
+                  {s.author !== null && <button type="button" className="wb-btn" onClick={() => set({ author: null })}>Show anyone's</button>}
+                  {s.kind !== 'all' && <button type="button" className="wb-btn" onClick={() => set({ kind: 'all' })}>Show {w.shortMany}, branches and commits</button>}
+                  {s.q && <button type="button" className="wb-btn" onClick={() => set({ q: '' })}>Clear filter</button>}
                 </div>
               }
             >
@@ -371,31 +367,18 @@ export function CommentsView() {
 function AuthorMenu({ value, agents, onChange }: { value: ThreadAuthor | null; agents: readonly Agent[]; onChange: (a: ThreadAuthor | null) => void }) {
   const name = authorName(value, agents);
   const named = agents.length > 1 || typeof value === 'number';
-  const opt = (v: ThreadAuthor | null, label: string, hint: string | null, close: () => void) => (
-    <button key={String(v)} type="button" role="menuitemradio" aria-checked={v === value} className={cx('opt', v === value && 'on')}
-      onClick={() => { close(); onChange(v); }}>
-      <span className="ck">{v === value && <Icon name="check" />}</span>
-      {label}
-      <span className="spacer" />
-      {hint && <span className="hint">{hint}</span>}
-    </button>
-  );
+  const option = (v: ThreadAuthor | null, label: string, hint?: string) => ({
+    id: String(v), label, hint, checked: v === value, onSelect: () => onChange(v),
+  });
   return (
-    <MenuButton className={cx('btn', value !== null && 'on-accent')} label={`Opened by: ${name}`} title="Who opened the thread" menuLabel="Opened by" align="start" width={200}
-      button={<>{value === null ? 'Anyone' : `By ${value === 'self' || value === 'agents' ? name.toLowerCase() : name}`}<Icon name="chevron" /></>}>
-      {(close) => (
-        <>
-          {opt(null, 'Anyone', null, close)}
-          {opt('self', 'You', null, close)}
-          {opt('agents', 'Agents', null, close)}
-          {named && (
-            <div className="pop-foot" role="presentation">
-              {sortAgents(agents).map((a) => opt(a.id, a.name, a.disabledAt ? 'disabled' : null, close))}
-            </div>
-          )}
-        </>
-      )}
-    </MenuButton>
+    <Menu label="Opened by" placement="bottom-start" className="thread-author-menu" trigger={(props) => (
+      <Button {...props} variant={value !== null ? 'primary' : 'default'} aria-label={`Opened by: ${name}`} title="Who opened the thread">
+        {value === null ? 'Anyone' : `By ${value === 'self' || value === 'agents' ? name.toLowerCase() : name}`}<Icon name="chevron" />
+      </Button>
+    )} items={[
+      option(null, 'Anyone'), option('self', 'You'), option('agents', 'Agents'),
+      ...(named ? [{ type: 'separator' as const }, ...sortAgents(agents).map((a) => option(a.id, a.name, a.disabledAt ? 'disabled' : undefined))] : []),
+    ]} />
   );
 }
 
@@ -548,11 +531,11 @@ function Conversation({ id, t, me, onOpen, onStatus }: { id: string; t: ThreadLi
         </p>
       )}
       <div className="cv-foot">
-        <button type="button" className="btn sm" disabled={busy} title={`${resolved ? 'Reopen' : 'Resolve'} (e)`}
+        <button type="button" className="wb-btn wb-btn--sm" disabled={busy} title={`${resolved ? 'Reopen' : 'Resolve'} (e)`}
           onClick={() => { setBusy(true); void onStatus(t).finally(() => setBusy(false)); }}>
           <Icon name={resolved ? 'comment' : 'check'} />{resolved ? 'Reopen' : 'Resolve'}
         </button>
-        <button type="button" className="btn sm" data-diff={threadView(t)} onClick={() => onOpen(t)} title="Open the diff at this thread, to reply (Enter)">
+        <button type="button" className="wb-btn wb-btn--sm" data-diff={threadView(t)} onClick={() => onOpen(t)} title="Open the diff at this thread, to reply (Enter)">
           <Icon name="diff" />Open in diff
         </button>
       </div>

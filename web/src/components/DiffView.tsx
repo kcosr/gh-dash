@@ -10,7 +10,7 @@ import type { ReactNode } from 'react';
 import { Link } from 'react-router';
 import { isUnreachable, rateLimitResetAt } from '../api/client';
 import { findCachedCommit, findCachedPr, useBranch, useDiff, useLoadFile, useMe, usePrDetail, useRefreshDiff, useRepoMap, useThreadActions, useThreads } from '../api/hooks';
-import { LayerParent, useLayerHandle } from '../lib/layers';
+import { OverlayScope, useLayerHandle, useOverlayOwner, EmptyState, ErrorState, ProgressBar, useToast } from '../workbench';
 import { fmtDateTime, fmtTime, plural, rel, relFuture, relLong } from '../lib/time';
 import { commitDiffId, parseDiffId, useUrlState } from '../lib/urlState';
 import type { DiffTarget, FileFilter } from '../lib/urlState';
@@ -18,7 +18,6 @@ import type { DiffRequest } from '../diff/DiffViewer';
 import { useDiffNudge } from '../lib/show';
 import { isChunkLoadError } from '../lib/util';
 import { Diffstat, prIconClass, prIconName } from './bits';
-import { EmptyState, ErrorNote, ProgressBar } from './EmptyState';
 import { Icon } from './Icon';
 import { RepoChip } from './RepoChip';
 import type { BranchSummary } from '../../../shared/api';
@@ -27,7 +26,6 @@ import { capitalize, refText, repoProvider } from '../../../shared/provider';
 import type { Provider } from '../../../shared/provider';
 import { repoLabel } from '../../../shared/repos';
 import { useRepoLabel } from './repoMapContext';
-import { useToast } from './Toasts';
 import { useSyncNow } from './TopBar';
 
 const loadViewer = () => import('../diff/DiffViewer');
@@ -76,8 +74,9 @@ export function DiffView({ id, compact }: { id: string; compact: boolean }) {
   const me = useMe();
 
   const close = () => set({ diff: null });
-  // Layers opened inside the diff (its composers, its overlays) are kept above it (LayerParent below).
-  const layer = useLayerHandle(true, close);
+  // Layers opened inside the diff (its composers, its overlays) are kept above it (OverlayScope below).
+  const layer = useLayerHandle(true, close, true, panel);
+  const owner = useOverlayOwner(panel);
   const isActive = layer.isTop;
 
   // Fetch the renderer's chunk alongside the diff instead of after it.
@@ -175,27 +174,27 @@ export function DiffView({ id, compact }: { id: string; compact: boolean }) {
 
   const doRefresh = () => refresh.mutate(undefined, {
     onSuccess: (next) => toast(d && next.headOid === d.headOid ? 'Already up to date' : 'Diff updated'),
-    onError: (e) => toast(`Couldn't refresh: ${(e as Error).message}`, { error: true }),
+    onError: (e) => toast(`Couldn't refresh: ${(e as Error).message}`, { tone: 'error' }),
   });
 
   return (
-    <LayerParent.Provider value={layer.scope}>
+    <OverlayScope layers={layer.scope} owner={owner}>
       <section ref={panel} className="diff-view" aria-label={`Changes in ${ref}`}>
         <header className="dv-head">
           <RepoChip repo={t.repo} />
           {t.kind === 'branch' ? <span className="num dv-br" title="Branch"><Icon name="branch" /></span> : <span className="num">{label}</span>}
-          <h2 className="dv-title" title={title}>{title ?? (diff.isError ? null : <span className="skel" style={{ width: 220 }} />)}</h2>
+          <h2 className="dv-title" title={title}>{title ?? (diff.isError ? null : <span className="wb-skel" style={{ width: 220 }} />)}</h2>
           {baseRef && <span className="dv-base" title={`Compared with ${baseRef} from where they diverge, as a ${p.pr.one} would be`}>compared with <code>{baseRef}</code></span>}
           {t.kind === 'branch' && branch?.pr && <BranchPr pr={branch.pr} p={p} onOpen={openPr} />}
           {add !== undefined && del !== undefined && <Diffstat add={add} del={del} />}
           {files !== undefined && <span className="dv-files">{files.toLocaleString()} {plural(files, 'file')}</span>}
           <span className="dv-actions">
-            {ghUrl && <a className="btn" href={ghUrl} target="_blank" rel="noopener noreferrer" title={`Open on ${p.name}`}><Icon name="ext" /><span className="dv-lbl">Open on {p.name}</span></a>}
-            <button type="button" className="btn icon ghost" onClick={doRefresh} disabled={refresh.isPending || diff.isLoading}
+            {ghUrl && <a className="wb-btn" href={ghUrl} target="_blank" rel="noopener noreferrer" title={`Open on ${p.name}`}><Icon name="ext" /><span className="dv-lbl">Open on {p.name}</span></a>}
+            <button type="button" className="wb-btn wb-btn--icon wb-btn--ghost" onClick={doRefresh} disabled={refresh.isPending || diff.isLoading}
               title={d ? `Check ${p.name} for changes (fetched ${rel(d.fetchedAt)})` : `Check ${p.name} for changes`} aria-label="Refresh diff">
               <Icon name="sync" />
             </button>
-            <button type="button" className="btn icon ghost" onClick={close} title="Close (Esc)" aria-label="Close diff"><Icon name="x" /></button>
+            <button type="button" className="wb-btn wb-btn--icon wb-btn--ghost" onClick={close} title="Close (Esc)" aria-label="Close diff"><Icon name="x" /></button>
           </span>
         </header>
         {d?.stale && (
@@ -230,7 +229,7 @@ export function DiffView({ id, compact }: { id: string; compact: boolean }) {
           ) : <DiffSkeleton />}
         </div>
       </section>
-    </LayerParent.Provider>
+    </OverlayScope>
   );
 }
 
@@ -250,7 +249,7 @@ function BranchPr({ pr, p, onOpen }: { pr: NonNullable<BranchSummary['pr']>; p: 
 
 function DiffSkeleton() {
   return (
-    <div className="skel-block dv-skel" aria-busy="true" aria-label="Loading diff">
+    <div className="wb-skel-block dv-skel" aria-busy="true" aria-label="Loading diff">
       {[34, 0, 72, 64, 81, 58, 0, 41, 0, 77, 69, 86].map((w, i) => (w ? <i key={i} style={{ width: `${w}%` }} /> : <span key={i} />))}
     </div>
   );
@@ -259,12 +258,12 @@ function DiffSkeleton() {
 function DiffError({ error, t, p, ghUrl, onRetry }: { error: unknown; t: DiffTarget; p: Provider; ghUrl: string | undefined; onRetry: () => void }) {
   const status = (error as { status?: number }).status;
   const repoText = useRepoLabel()(t.repo);
-  const retry = <button type="button" className="btn" onClick={onRetry}><Icon name="sync" />Try again</button>;
-  const gh = ghUrl && <a className="btn" href={ghUrl} target="_blank" rel="noopener noreferrer"><Icon name="ext" />Open on {p.name}</a>;
-  if (isUnreachable(error)) return <ErrorNote error={error} onRetry={onRetry} />;
+  const retry = <button type="button" className="wb-btn" onClick={onRetry}><Icon name="sync" />Try again</button>;
+  const gh = ghUrl && <a className="wb-btn" href={ghUrl} target="_blank" rel="noopener noreferrer"><Icon name="ext" />Open on {p.name}</a>;
+  if (isUnreachable(error)) return <ErrorState error={error} onRetry={onRetry} />;
   if (status === 404) {
     return (
-      <EmptyState icon="alert" title={t.kind === 'pr' ? `${capitalize(p.pr.one)} not found` : t.kind === 'branch' ? 'Branch not found' : 'Commit not found'} action={t.kind === 'branch' ? null : gh}>
+      <EmptyState icon="alert" title={t.kind === 'pr' ? `${capitalize(p.pr.one)} not found` : t.kind === 'branch' ? 'Branch not found' : 'Commit not found'} actions={t.kind === 'branch' ? null : gh}>
         {t.kind === 'pr' ? `${refText(p.kind, repoText, t.number, 'pr')} isn't in the local database or on ${p.name}.`
           : t.kind === 'branch' ? `${p.name} has no branch ${t.branch} in ${repoText}: it may have been deleted, or not pushed yet.`
             : `${p.name} has no commit ${t.oid.slice(0, 7)} in ${repoText}.`}
@@ -278,14 +277,14 @@ function DiffError({ error, t, p, ghUrl, onRetry }: { error: unknown; t: DiffTar
   // The repo's default branch isn't known yet (never synced): what a branch is compared with.
   if (status === 409 && t.kind === 'branch') {
     return (
-      <EmptyState icon="alert" title="The default branch isn't known yet" action={<div className="empty-actions"><SyncRepoButton repo={t.repo} />{retry}</div>}>
+      <EmptyState icon="alert" title="The default branch isn't known yet" actions={<div className="wb-empty-actions"><SyncRepoButton repo={t.repo} />{retry}</div>}>
         A branch is compared with {repoText}'s default branch, which its next sync reads.
       </EmptyState>
     );
   }
   if (status === 503) {
     return (
-      <EmptyState icon="key" title={`A ${p.name} token is needed to view diffs`} action={<div className="empty-actions"><Link className="btn" to="/settings">Settings</Link>{retry}</div>}>
+      <EmptyState icon="key" title={`A ${p.name} token is needed to view diffs`} actions={<div className="wb-empty-actions"><Link className="wb-btn" to="/settings">Settings</Link>{retry}</div>}>
         No {p.name} token. Connect an account in Settings, then try again.
       </EmptyState>
     );
@@ -293,7 +292,7 @@ function DiffError({ error, t, p, ghUrl, onRetry }: { error: unknown; t: DiffTar
   if (status === 429) {
     const at = rateLimitResetAt(error);
     return (
-      <EmptyState icon="alert" title={`${p.name}'s rate limit is used up`} action={<div className="empty-actions">{retry}{gh}</div>}>
+      <EmptyState icon="alert" title={`${p.name}'s rate limit is used up`} actions={<div className="wb-empty-actions">{retry}{gh}</div>}>
         {at ? <>It resets at {fmtTime(at)} ({relFuture(at)}). </> : 'Try again in a while. '}
         Diffs already in the cache still open; this one has to come from {p.name}.
       </EmptyState>
@@ -301,18 +300,18 @@ function DiffError({ error, t, p, ghUrl, onRetry }: { error: unknown; t: DiffTar
   }
   if (status === 502) {
     return (
-      <EmptyState icon="alert" title={`${p.name} didn't return this diff`} action={<div className="empty-actions">{retry}{gh}</div>}>
+      <EmptyState icon="alert" title={`${p.name} didn't return this diff`} actions={<div className="wb-empty-actions">{retry}{gh}</div>}>
         {(error as Error).message}
       </EmptyState>
     );
   }
-  return <ErrorNote error={error} onRetry={onRetry} />;
+  return <ErrorState error={error} onRetry={onRetry} />;
 }
 
 /** Sync one repo (its default branch comes with it), then try again. */
 function SyncRepoButton({ repo }: { repo: string }) {
   const sync = useSyncNow();
-  return <button type="button" className="btn" onClick={() => sync.run({ repo })} disabled={sync.pending}><Icon name="sync" />Sync now</button>;
+  return <button type="button" className="wb-btn" onClick={() => sync.run({ repo })} disabled={sync.pending}><Icon name="sync" />Sync now</button>;
 }
 
 /** The viewer failing to load (e.g. after a redeploy) or to render a diff leaves the rest of the app alone. */
@@ -327,10 +326,10 @@ class ViewerBoundary extends Component<{ ghUrl: string; host: string; children: 
       <EmptyState
         icon="alert"
         title={chunk ? 'The diff viewer could not be loaded' : "Couldn't show this diff"}
-        action={
-          <div className="empty-actions">
-            {chunk && <button type="button" className="btn" onClick={() => window.location.reload()}><Icon name="sync" />Reload</button>}
-            <a className="btn" href={this.props.ghUrl} target="_blank" rel="noopener noreferrer"><Icon name="ext" />Open on {this.props.host}</a>
+        actions={
+          <div className="wb-empty-actions">
+            {chunk && <button type="button" className="wb-btn" onClick={() => window.location.reload()}><Icon name="sync" />Reload</button>}
+            <a className="wb-btn" href={this.props.ghUrl} target="_blank" rel="noopener noreferrer"><Icon name="ext" />Open on {this.props.host}</a>
           </div>
         }
       >

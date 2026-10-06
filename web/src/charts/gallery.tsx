@@ -2,9 +2,7 @@
  * Dev-only chart gallery (web/gallery.html): every component with realistic sample data, the
  * degenerate cases, in a light and a dark section. Not part of the app bundle.
  */
-import '@fontsource-variable/inter';
-import '@fontsource/jetbrains-mono/400.css';
-import '@fontsource/jetbrains-mono/500.css';
+import '../workbench/styles/index.css';
 import '../styles/app.css';
 import { StrictMode, useState } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -92,9 +90,9 @@ const repoRows: HBarRow[] = repoNames
       label: name,
       value: commits + prsMerged + issues,
       breakdown: [
-        { label: 'commits', value: commits, color: 'var(--s1)' },
-        { label: 'PRs merged', value: prsMerged, color: 'var(--s2)' },
-        { label: 'issues', value: issues, color: 'var(--s3)' },
+        { label: 'commits', value: commits, color: 'var(--wb-s1)' },
+        { label: 'PRs merged', value: prsMerged, color: 'var(--wb-s2)' },
+        { label: 'issues', value: issues, color: 'var(--wb-s3)' },
       ],
       onClick: () => console.log('open repo', name),
     };

@@ -1,17 +1,14 @@
 import { useQuery } from '@tanstack/react-query';
-import { useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
+import { useState } from 'react';
 import { Link } from 'react-router';
 import { api } from '../api/client';
 import { useApiBase } from '../api/hooks';
 import { API_OFF_HINT, apiLink } from '../lib/account';
 import { exportTarget, exportUrl } from '../lib/apiQuery';
-import { useFocusTrap, useLayer } from '../lib/layers';
+import { Modal, Seg, useToast } from '../workbench';
 import { repoFromPath, useUrlState } from '../lib/urlState';
 import { copyText } from '../lib/util';
 import { Icon } from './Icon';
-import { Seg } from './Seg';
-import { useToast } from './Toasts';
 import type { ExportTab } from './ui';
 
 /** Shorten a JSON sample: first 2 items of arrays, long strings clipped. */
@@ -39,9 +36,6 @@ export function ExportModal({ initialTab, onClose }: { initialTab: ExportTab; on
   // Where other clients reach this API; null in the desktop app with the Local API off.
   const base = useApiBase();
   const docsUrl = apiLink(base, '/api/docs');
-  const box = useRef<HTMLDivElement>(null);
-  useLayer(true, onClose);
-  useFocusTrap(box);
 
   const md = useQuery({ queryKey: ['export-md', mdUrl], queryFn: () => api.text(mdUrl), enabled: tab === 'md' && target.md, staleTime: 30_000 });
   const sample = useQuery({ queryKey: ['export-sample', sampleUrl], queryFn: () => api.json(sampleUrl), enabled: tab === 'api', staleTime: 30_000 });
@@ -53,28 +47,34 @@ export function ExportModal({ initialTab, onClose }: { initialTab: ExportTab; on
     toast((await copyText(text)) ? (tab === 'md' ? 'Markdown copied' : 'API URL copied') : 'Copy failed');
   };
 
-  return createPortal(
-    <>
-      <div className="scrim" onClick={onClose} />
-      <div className="modal" role="dialog" aria-modal="true" aria-label="Export this view" ref={box}>
-        <div className="modal-h">
-          <h3>Export this view</h3>
+  return (
+    <Modal open onClose={onClose} title="Export this view" headerExtra={<>
           {target.md && (
             <Seg
-              className="sm"
+              size="sm"
               value={tab}
               onChange={setTab}
-              ariaLabel="Export format"
+              label="Export format"
               options={[
                 { value: 'md', label: <><Icon name="md" />Markdown</> },
                 { value: 'api', label: <><Icon name="braces" />API</> },
               ]}
             />
           )}
+    </>} footer={<>
+
+          <span className="muted">
+            {tab === 'md'
+              ? <>Same output as <code>?format=md</code> on the API. Paste into notes or a status update.</>
+              : <>Every filter in the UI maps to a query parameter. Formats: JSON{target.md && <>, <code>md</code>{target.csv !== false && <>, <code>csv</code></>}</>}.{docsUrl && <> <a href={docsUrl} target="_blank" rel="noopener noreferrer">API docs</a></>}</>}
+          </span>
           <span className="spacer" />
-          <button type="button" className="btn icon ghost" onClick={onClose} aria-label="Close" title="Close (Esc)"><Icon name="x" /></button>
-        </div>
-        <div className="modal-b">
+          <button type="button" className="wb-btn wb-btn--primary" onClick={copy} disabled={tab === 'md' ? md.data === undefined : !base}
+            title={tab === 'api' && !base ? API_OFF_HINT : undefined}>
+            <Icon name="copy" />Copy
+          </button>
+            </>}>
+
           {tab === 'md' ? (
             md.isError ? <pre className="code err">{(md.error as Error).message}</pre>
               : md.data !== undefined ? <pre className="code">{md.data || '(empty)'}</pre>
@@ -93,21 +93,6 @@ export function ExportModal({ initialTab, onClose }: { initialTab: ExportTab; on
               </pre>
             </>
           )}
-        </div>
-        <div className="modal-f">
-          <span className="muted">
-            {tab === 'md'
-              ? <>Same output as <code>?format=md</code> on the API. Paste into notes or a status update.</>
-              : <>Every filter in the UI maps to a query parameter. Formats: JSON{target.md && <>, <code>md</code>{target.csv !== false && <>, <code>csv</code></>}</>}.{docsUrl && <> <a href={docsUrl} target="_blank" rel="noopener noreferrer">API docs</a></>}</>}
-          </span>
-          <span className="spacer" />
-          <button type="button" className="btn primary" onClick={copy} disabled={tab === 'md' ? md.data === undefined : !base}
-            title={tab === 'api' && !base ? API_OFF_HINT : undefined}>
-            <Icon name="copy" />Copy
-          </button>
-        </div>
-      </div>
-    </>,
-    document.body,
+            </Modal>
   );
 }

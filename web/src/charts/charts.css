@@ -4,31 +4,31 @@
 .gd-chart { position: relative; width: 100%; min-width: 0; }
 .gd-chart > svg { display: block; overflow: visible; -webkit-tap-highlight-color: transparent; }
 .gd-chart > svg:focus { outline: none; }
-.gd-chart > svg:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 6px; }
+.gd-chart > svg:focus-visible { outline: 2px solid var(--wb-accent); outline-offset: 3px; border-radius: 6px; }
 .gd-chart.clickable > svg { cursor: pointer; }
 
 .gd-sr { position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 
 /* Empty / all-zero note, centered over the plot */
 .gd-empty { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; }
-.gd-empty span { font-size: 12.5px; color: var(--muted); background: var(--surface); padding: 2px 10px; border-radius: 6px; }
+.gd-empty span { font-size: 12.5px; color: var(--wb-muted); background: var(--wb-surface); padding: 2px 10px; border-radius: 6px; }
 .gd-empty.gd-empty-flow { position: static; min-height: 96px; }
 
 /* Hover / selection */
-.chart .gd-wash { fill: var(--text); opacity: .05; }
+.chart .gd-wash { fill: var(--wb-fg); opacity: .05; }
 .chart .gd-wash.sel { opacity: .07; }
 .chart .gd-dim { opacity: .42; }
 .chart .gd-lift { filter: brightness(1.12); }
 .chart .gd-lift.muted { filter: brightness(.9); }
 [data-theme="dark"] .chart .gd-lift.muted { filter: brightness(1.3); }
-.chart .xl.strong { fill: var(--text); font-weight: 600; }
-.chart .gd-cell-ring { fill: none; stroke: var(--text); stroke-width: 1.5; pointer-events: none; }
-.chart .gd-row-ring { fill: none; stroke: var(--accent); stroke-width: 1.5; }
-.chart .gd-hover-dot { stroke: var(--surface); stroke-width: 2; }
-.chart .gd-end-noun { fill: var(--muted); font-size: 11px; }
-.chart .row-label.other { fill: var(--muted); }
-.chart .row-label-o { fill: var(--muted); }
-.chart .gd-stub { fill: var(--grid); }
+.chart .xl.strong { fill: var(--wb-fg); font-weight: 600; }
+.chart .gd-cell-ring { fill: none; stroke: var(--wb-fg); stroke-width: 1.5; pointer-events: none; }
+.chart .gd-row-ring { fill: none; stroke: var(--wb-accent); stroke-width: 1.5; }
+.chart .gd-hover-dot { stroke: var(--wb-surface); stroke-width: 2; }
+.chart .gd-end-noun { fill: var(--wb-muted); font-size: 11px; }
+.chart .row-label.other { fill: var(--wb-muted); }
+.chart .row-label-o { fill: var(--wb-muted); }
+.chart .gd-stub { fill: var(--wb-grid); }
 
 /* Tooltip (portal): value column right-aligned, labels follow */
 .tip.gd-tip { display: block; max-width: 320px; }
@@ -39,7 +39,7 @@
 .gd-tip .tr { display: contents; }
 .gd-tip .tr b { text-align: right; font-variant-numeric: tabular-nums; line-height: 1.6; }
 .gd-tip .tr span { line-height: 1.6; overflow-wrap: anywhere; }
-.gd-tip .gd-tip-total > * { border-top: 1px solid var(--border); margin-top: 3px; padding-top: 3px; }
+.gd-tip .gd-tip-total > * { border-top: 1px solid var(--wb-border); margin-top: 3px; padding-top: 3px; }
 .gd-tip .gd-tip-total b { font-weight: 650; }
 
 /* Chart card */
@@ -52,16 +52,16 @@
 .gd-card .legend { flex-wrap: wrap; row-gap: 4px; }
 .gd-card .legend span { display: inline-flex; align-items: center; white-space: nowrap; }
 .gd-card .legend i.line { width: 14px; height: 2px; border-radius: 1px; vertical-align: 3px; }
-.gd-card .tbl-btn:hover { background: var(--surface-2); color: var(--text); }
-.gd-card .tbl-btn.on:hover { background: var(--accent-weak); color: var(--accent-text); }
-.gd-card .tbl-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.gd-card .tbl-btn:hover { background: var(--wb-surface-2); color: var(--wb-fg); }
+.gd-card .tbl-btn.on:hover { background: var(--wb-accent-weak); color: var(--wb-accent-text); }
+.gd-card .tbl-btn:focus-visible { outline: 2px solid var(--wb-accent); outline-offset: 2px; }
 .gd-card-body { transition: opacity .15s ease; min-width: 0; }
 .gd-card.gd-loading .gd-card-body { opacity: .5; }
 .gd-card .dtable-wrap { max-height: var(--gd-table-h, 220px); }
-.gd-card .dtable thead th { position: sticky; top: 0; background: var(--surface); z-index: 1; }
-.gd-card .dtable tbody th { text-align: left; font-weight: 450; color: var(--text); padding: 5px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; max-width: 280px; overflow: hidden; text-overflow: ellipsis; }
-.gd-card .dtable td.gd-norows { text-align: left; color: var(--muted); }
-.gd-card .dtable-wrap:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+.gd-card .dtable thead th { position: sticky; top: 0; background: var(--wb-surface); z-index: 1; }
+.gd-card .dtable tbody th { text-align: left; font-weight: 450; color: var(--wb-fg); padding: 5px 8px; border-bottom: 1px solid var(--wb-border); white-space: nowrap; max-width: 280px; overflow: hidden; text-overflow: ellipsis; }
+.gd-card .dtable td.gd-norows { text-align: left; color: var(--wb-muted); }
+.gd-card .dtable-wrap:focus-visible { outline: 2px solid var(--wb-accent); outline-offset: 2px; border-radius: 4px; }
 
 /* Stat tile: value + delta on the left at their natural width, sparkline box on the right taking
    what is left (44-110 px; the chart is drawn at the measured width). In narrow tiles (e.g. four
@@ -84,17 +84,17 @@
 .gd-spark { position: relative; display: inline-block; flex: none; line-height: 0; vertical-align: bottom; }
 .gd-spark > svg { display: block; overflow: visible; }
 .gd-spark > svg:focus { outline: none; }
-.gd-spark > svg:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+.gd-spark > svg:focus-visible { outline: 2px solid var(--wb-accent); outline-offset: 2px; border-radius: 4px; }
 
 /* Calendar heatmap */
 .gd-heat { display: flex; align-items: flex-start; gap: 24px; }
 .gd-heat .gd-chart { width: auto; flex: none; }
 .gd-heat-sum { display: flex; flex-direction: column; gap: 10px; padding-top: 18px; min-width: 0; }
 .gd-heat-sum div { display: flex; flex-direction: column; min-width: 0; }
-.gd-heat-sum .k { font-size: 11.5px; color: var(--muted); }
-.gd-heat-sum .v { font-size: 13px; color: var(--text); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.gd-heat-sum .v small { font-size: 12px; font-weight: 450; color: var(--text-2); margin-left: 3px; }
-.gd-heat-sum .n { font-size: 12px; color: var(--text-2); }
+.gd-heat-sum .k { font-size: 11.5px; color: var(--wb-muted); }
+.gd-heat-sum .v { font-size: 13px; color: var(--wb-fg); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gd-heat-sum .v small { font-size: 12px; font-weight: 450; color: var(--wb-fg-2); margin-left: 3px; }
+.gd-heat-sum .n { font-size: 12px; color: var(--wb-fg-2); }
 
 
 

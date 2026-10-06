@@ -227,7 +227,31 @@ npm run typecheck
 npm test
 npm run build      # web app, plus the bundled server and desktop main process in dist/
 npm run desktop    # build, then run the desktop app
+npx playwright install chromium
+npm run test:browser # production web build with synthetic API fixtures
 ```
+
+The browser suite checks desktop and mobile layouts, both themes, pane resizing,
+keyboard/focus behavior, repository navigation and the command palette. Its API
+responses are fixtures: it does not connect to GitHub/GitLab or validate provider
+credentials. The Node tests cover the server, shared logic and desktop modules.
+
+### Shared Workbench UI
+
+Common controls, theme tokens, overlays and pane resizing come from
+[workbench-ui](https://github.com/kcosr/workbench-ui). The committed copy is
+`web/src/workbench/`; its exact source revision is recorded in `VENDORED.md`.
+No sibling checkout is needed to build or run gh-dash. Repository workflows,
+provider-specific search, diff review and mobile page composition stay in gh-dash.
+
+`npm run check:workbench` verifies the copied files against their recorded SHA-256
+checksums. Both `typecheck` and `build` run it. Change reusable UI in the kit first,
+then copy a committed revision using its `scripts/vendor.mjs` command. The updater
+checks the existing copy against its pinned Git tree and refuses to overwrite
+modified, missing or added files. It also supports a read-only `--check` against
+that Git history. Commit the resulting source, provenance and checksum files
+together, then run the application tests and browser suite before accepting an
+update. Do not edit files inside `web/src/workbench/` directly.
 
 ## License
 

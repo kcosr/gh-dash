@@ -8,17 +8,14 @@ import { repoListParams } from '../lib/apiQuery';
 import { usePatchRepo, useRepos, useSets, useSettings } from '../api/hooks';
 import { Sparkline } from '../charts';
 import { Ctl } from '../components/bits';
-import { EmptyState, ErrorNote, ProgressBar } from '../components/EmptyState';
+import { EmptyState, ErrorState, ProgressBar, Menu, Seg, useToast } from '../workbench';
 import { FilterInput } from '../components/FilterInput';
 import { FilterToolbar } from '../components/FilterToolbar';
 import { Icon } from '../components/Icon';
-import { MenuButton } from '../components/Menu';
 import { UnavailableNote, useConfirmRemoveRepo } from '../components/RepoTracking';
 import { RepoName } from '../components/RepoName';
 import { useRepoLabel, useSourceCtx, useWords } from '../components/repoMapContext';
 import { SourceBadge } from '../components/SourceBadge';
-import { Seg } from '../components/Seg';
-import { useToast } from '../components/Toasts';
 import { useSyncNow } from '../components/TopBar';
 import { useUI } from '../components/ui';
 import { addDays, fmtDate, rel, startOfWeek } from '../lib/time';
@@ -54,15 +51,15 @@ export function RepositoriesView() {
         <div className="row">
           <FilterInput value={s.q} onChange={(v) => set({ q: v }, { replace: true })} placeholder="Search repositories" />
           <Ctl label="Sort">
-            <Seg<RepoSort> className="sm" value={s.sort} onChange={(sort) => set({ sort })} ariaLabel="Sort" options={[
+            <Seg<RepoSort> size="sm" value={s.sort} onChange={(sort) => set({ sort })} label="Sort" options={[
               { value: 'activity', label: 'Recent activity' }, { value: 'stars', label: 'Stars' }, { value: 'open', label: `Open ${w.shortMany}` }, { value: 'name', label: 'Name' },
             ]} />
           </Ctl>
           <span className="summary">{list.length} {list.length === 1 ? 'repository' : 'repositories'} · {nPinned} pinned</span>
           <span className="spacer" />
-          <button type="button" className="btn" onClick={openAddRepo}><Icon name="plus" />Add repository</button>
-          <button type="button" className="btn" onClick={() => openExport('api')}><Icon name="braces" />API</button>
-          <Seg<RepoLayout> className="sm" value={s.layout} onChange={(layout) => set({ layout })} ariaLabel="Layout" options={[
+          <button type="button" className="wb-btn" onClick={openAddRepo}><Icon name="plus" />Add repository</button>
+          <button type="button" className="wb-btn" onClick={() => openExport('api')}><Icon name="braces" />API</button>
+          <Seg<RepoLayout> size="sm" value={s.layout} onChange={(layout) => set({ layout })} label="Layout" options={[
             { value: 'grid', label: <Icon name="grid" title="Cards" /> }, { value: 'list', label: <Icon name="list" title="Table" /> },
           ]} />
         </div>
@@ -70,20 +67,20 @@ export function RepositoriesView() {
       <div className="scroll" id="scroll">
         <ProgressBar active={repos.isFetching && !!repos.data} />
         {repos.isError && !repos.data ? (
-          <ErrorNote error={repos.error} onRetry={() => repos.refetch()} />
+          <ErrorState error={repos.error} onRetry={() => repos.refetch()} />
         ) : settings.isError && !settings.data ? (
-          <ErrorNote error={settings.error} onRetry={() => settings.refetch()} />
+          <ErrorState error={settings.error} onRetry={() => settings.refetch()} />
         ) : !repos.data || !settings.data ? (
-          <div className="repo-grid">{Array.from({ length: 8 }, (_, i) => <div key={i} className="rcard skel-card" />)}</div>
+          <div className="repo-grid">{Array.from({ length: 8 }, (_, i) => <div key={i} className="rcard wb-skel skel-card" />)}</div>
         ) : list.length === 0 && s.own === 'others' && !repos.data.some((r) => r.trackedBy !== 'owned' && inContext(r, s.source)) ? (
-          <EmptyState icon="book" title="No repositories from other owners" action={
-            <button type="button" className="btn" onClick={openAddRepo}><Icon name="plus" />Add repository</button>
+          <EmptyState icon="book" title="No repositories from other owners" actions={
+            <button type="button" className="wb-btn" onClick={openAddRepo}><Icon name="plus" />Add repository</button>
           }>Repositories you own are tracked automatically. Add others, such as an organization's or a project you contribute to.</EmptyState>
         ) : list.length === 0 ? (
-          <EmptyState icon="book" title={s.repos?.length === 0 ? 'No repositories selected' : 'No repositories match'} action={
-            <div className="empty-actions">
-              {s.q && <button type="button" className="btn" onClick={() => set({ q: '' })}>Clear search</button>}
-              {s.repos !== null && <button type="button" className="btn" onClick={() => set({ repos: null })}>Select default repositories</button>}
+          <EmptyState icon="book" title={s.repos?.length === 0 ? 'No repositories selected' : 'No repositories match'} actions={
+            <div className="wb-empty-actions">
+              {s.q && <button type="button" className="wb-btn" onClick={() => set({ q: '' })}>Clear search</button>}
+              {s.repos !== null && <button type="button" className="wb-btn" onClick={() => set({ repos: null })}>Select default repositories</button>}
             </div>
           }>Choose repositories in the sidebar, or change the ownership or visibility filter.</EmptyState>
         ) : s.layout === 'grid' ? (
@@ -126,43 +123,23 @@ function RepoMenu({ repo }: { repo: Repo }) {
     // Hiding a card in the default selection unmounts this component before the mutation completes.
     void patch.mutateAsync({ key: repo.key, patch: { hidden: !repo.hidden } }).then(() => {
       toast(repo.hidden ? `${label} is back in the default selection`
-        : `${label} hidden. To unhide, find it with the sidebar search, select it, then open its menu.`, { ms: 6000 });
-    }).catch((error: Error) => toast(`Couldn't update ${label}: ${error.message}`, { error: true }));
+        : `${label} hidden. To unhide, find it with the sidebar search, select it, then open its menu.`, { duration: 6000 });
+    }).catch((error: Error) => toast(`Couldn't update ${label}: ${error.message}`, { tone: 'error' }));
   };
   return (
-    <MenuButton className="pin-btn" label={`More actions for ${label}`} title="More" button={<Icon name="dots" />} menuLabel={`Actions for ${label}`}>
-      {(close) => {
-        const act = (fn: () => void) => () => { close(); fn(); };
-        return (
-          <>
-            <button type="button" role="menuitem" className="opt" onClick={act(() => patch.mutate({ key: repo.key, patch: { pinned: !repo.pinned } }))}>
-              <span className="ck"><Icon name="pin" /></span>{repo.pinned ? 'Unpin' : 'Pin'}
-            </button>
-            <button type="button" role="menuitem" className="opt" onClick={act(toggleHidden)}>
-              <span className="ck"><Icon name={repo.hidden ? 'eye' : 'eyeOff'} /></span>{repo.hidden ? 'Unhide' : 'Hide from default selection'}
-            </button>
-            {/* For a repo added by hand this also checks again whether the token can read it. */}
-            <button type="button" role="menuitem" className="opt" onClick={act(() => sync.run({ repo: repo.key }))}>
-              <span className="ck"><Icon name="sync" /></span>Sync now
-            </button>
-            <Link role="menuitem" className="opt" to={`/activity?${repoLinkSearch(repo.key, current?.host ?? null)}`} onClick={close}>
-              <span className="ck"><Icon name="pulse" /></span>Activity in this repo
-            </Link>
-            <a role="menuitem" className="opt" href={repo.url} target="_blank" rel="noopener noreferrer" onClick={close}>
-              <span className="ck"><Icon name="ext" /></span>Open on {repoProvider(repo).name}
-            </a>
-            {repo.trackedBy === 'manual' && (
-              <>
-                <div className="menu-sep" role="separator" />
-                <button type="button" role="menuitem" className="opt" onClick={act(() => confirmRemove(repo))}>
-                  <span className="ck"><Icon name="trash" /></span>Remove…
-                </button>
-              </>
-            )}
-          </>
-        );
-      }}
-    </MenuButton>
+    <Menu label={`Actions for ${label}`} trigger={(props) => (
+      <button {...props} type="button" className="pin-btn" aria-label={`More actions for ${label}`} title="More"><Icon name="dots" /></button>
+    )} items={[
+      { id: 'pin', icon: 'pin', label: repo.pinned ? 'Unpin' : 'Pin', onSelect: () => patch.mutate({ key: repo.key, patch: { pinned: !repo.pinned } }) },
+      { id: 'hide', icon: repo.hidden ? 'eye' : 'eye-off', label: repo.hidden ? 'Unhide' : 'Hide from default selection', onSelect: toggleHidden },
+      { id: 'sync', icon: 'refresh', label: 'Sync now', onSelect: () => sync.run({ repo: repo.key }) },
+      { id: 'activity', icon: 'activity', label: 'Activity in this repo', href: `/activity?${repoLinkSearch(repo.key, current?.host ?? null)}` },
+      { id: 'external', icon: 'external', label: `Open on ${repoProvider(repo).name}`, href: repo.url, external: true },
+      ...(repo.trackedBy === 'manual' ? [
+        { type: 'separator' as const },
+        { id: 'remove', icon: 'trash' as const, label: 'Remove…', danger: true, onSelect: () => confirmRemove(repo) },
+      ] : []),
+    ]} />
   );
 }
 
@@ -195,7 +172,7 @@ function RepoCard({ repo: r, sets, titles, search }: { repo: Repo; sets: RepoSet
       </div>
       {r.unavailable ? <UnavailableNote repo={r} compact /> : <p className="rc-desc">{r.description ?? <span className="muted">No description</span>}</p>}
       <div className="rc-stats">
-        {r.language && <span><i className="lang" style={{ '--lc': r.language.color ?? 'var(--muted)' } as CSSProperties} />{r.language.name}</span>}
+        {r.language && <span><i className="lang" style={{ '--lc': r.language.color ?? 'var(--wb-muted)' } as CSSProperties} />{r.language.name}</span>}
         {r.visibility === 'public' && (
           <span title="Stars (new in the last 30 days)"><Icon name="star" />{r.stars.toLocaleString()}{st.newStars30d > 0 && r.trackedBy === 'owned' && <em>+{st.newStars30d}</em>}</span>
         )}
@@ -233,7 +210,7 @@ function RepoTable({ list, titles, search }: { list: Repo[]; titles: string[]; s
             <tr key={r.key} className={cx((r.isArchived || r.hidden) && 'dim')}>
               <td>{badges && <SourceBadge host={r.source} />}<Link to={`${repoPath(r.key)}${search}`} title={label(r.key)}><RepoName repo={r.key} /></Link>{r.pinned && <span className="pin-mark" title="Pinned"><Icon name="pin" /></span>}</td>
               <td title={r.unavailable?.reason}>{r.visibility === 'private' ? 'Private' : r.visibility === 'internal' ? 'Internal' : 'Public'}{r.unavailable ? ' · unavailable' : r.syncedAt === null ? ' · syncing…' : ''}{r.isArchived ? ' · archived' : ''}{r.isFork ? ' · fork' : ''}{r.hidden ? ' · hidden' : ''}</td>
-              <td>{r.language ? <><i className="lang" style={{ '--lc': r.language.color ?? 'var(--muted)' } as CSSProperties} /> {r.language.name}</> : '—'}</td>
+              <td>{r.language ? <><i className="lang" style={{ '--lc': r.language.color ?? 'var(--wb-muted)' } as CSSProperties} /> {r.language.name}</> : '—'}</td>
               <td className="r">{r.visibility === 'public' ? <>{r.stars.toLocaleString()}{r.stats.newStars30d > 0 && r.trackedBy === 'owned' && <em className="plus"> +{r.stats.newStars30d}</em>}</> : '—'}</td>
               <td className="r">{r.stats.openPrs}</td>
               <td className="r">{r.stats.mergedPrs30d}</td>

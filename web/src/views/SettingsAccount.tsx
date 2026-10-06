@@ -9,7 +9,7 @@ import { useAccount, useCheckAccount, useInstance } from '../api/hooks';
 import { CreateTokenNote, GhCliChoice, TokenForm, TokenOrder } from '../components/Account';
 import { Avatar } from '../components/Avatar';
 import { Icon } from '../components/Icon';
-import { useToast } from '../components/Toasts';
+import { useToast } from '../workbench';
 import { bridgeError, tokenAccess, tokenExpiry, tokenKindLabel, tokenSourceLabel } from '../lib/account';
 import { fmtNum, fmtTime, relLong } from '../lib/time';
 import { cx, useNow } from '../lib/util';
@@ -65,8 +65,8 @@ export function GitHubAccount({ rateLimit }: { rateLimit: SyncStatus['rateLimit'
   const desktop = !!bridge;
 
   const retry = () => check.mutate(undefined, {
-    onSuccess: (x) => toast(x.error ?? (x.login ? `Token checked · ${x.login}` : 'Token checked'), { error: !!x.error }),
-    onError: (e) => toast(`Couldn't check: ${(e as Error).message}`, { error: true }),
+    onSuccess: (x) => toast(x.error ?? (x.login ? `Token checked · ${x.login}` : 'Token checked'), { tone: x.error ? 'error' : 'default' }),
+    onError: (e) => toast(`Couldn't check: ${(e as Error).message}`, { tone: 'error' }),
   });
   const doSignOut = () => {
     if (!a) return;
@@ -76,7 +76,7 @@ export function GitHubAccount({ rateLimit }: { rateLimit: SyncStatus['rateLimit'
     if (!window.confirm(what)) return;
     signOut.mutate(undefined, {
       onSuccess: () => toast('Signed out'),
-      onError: (e) => toast(`Couldn't sign out: ${bridgeError(e)}`, { error: true }),
+      onError: (e) => toast(`Couldn't sign out: ${bridgeError(e)}`, { tone: 'error' }),
     });
   };
 
@@ -87,7 +87,7 @@ export function GitHubAccount({ rateLimit }: { rateLimit: SyncStatus['rateLimit'
       ) : (
         <>
           {a.mismatch && <MismatchNote a={a} desktop={desktop} />}
-          <dl className="kv">
+          <dl className="wb-kv">
             {a.login && (
               <>
                 <dt>Account</dt>
@@ -114,11 +114,11 @@ export function GitHubAccount({ rateLimit }: { rateLimit: SyncStatus['rateLimit'
             {a.error && <><dt>Problem</dt><dd className="acct-err">{a.error}</dd></>}
           </dl>
           <div className="set-actions">
-            <button type="button" className="btn" onClick={retry} disabled={check.isPending} title="Read the token again and check it with GitHub">
+            <button type="button" className="wb-btn" onClick={retry} disabled={check.isPending} title="Read the token again and check it with GitHub">
               <Icon name="sync" />{check.isPending ? 'Checking…' : 'Check again'}
             </button>
             {desktop && !a.locked && (a.choice !== null || a.source !== 'none') && (
-              <button type="button" className="btn" onClick={doSignOut} disabled={signOut.isPending}>Sign out</button>
+              <button type="button" className="wb-btn" onClick={doSignOut} disabled={signOut.isPending}>Sign out</button>
             )}
             {a.checkedAt && <span className="set-when">Checked {relLong(a.checkedAt, now)}</span>}
           </div>

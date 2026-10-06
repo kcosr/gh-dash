@@ -6,7 +6,7 @@ import { hostNames, kindOfHost, sourceStatuses } from '../lib/sources';
 import { CreateTokenNote, GhCliChoice, TokenForm, TokenOrder } from './Account';
 import { Icon } from './Icon';
 import { useRepoLabel } from './repoMapContext';
-import { useToast } from './Toasts';
+import { useToast } from '../workbench';
 
 /**
  * The second, smaller way in (design §7.9): GitLab instead of GitHub. The desktop app connects it in Settings →
@@ -40,7 +40,7 @@ export function NoTokenCard() {
   const toast = useToast();
   const retry = () => check.mutate(undefined, {
     onSuccess: (a) => { if (a.source !== 'none' && !a.error) toast(a.login ? `Connected as ${a.login}` : 'Token found'); },
-    onError: (e) => toast(`Couldn't check: ${(e as Error).message}`, { error: true }),
+    onError: (e) => toast(`Couldn't check: ${(e as Error).message}`, { tone: 'error' }),
   });
   const lastError = account?.error ? <p className="muted small">Last check: {account.error}</p> : null;
 
@@ -91,7 +91,7 @@ export function NoTokenCard() {
         <pre className="code">GITHUB_TOKEN_FILE=~/.config/gh-dash/token npm start</pre>
         {lastError}
         <div className="setup-actions">
-          <button type="button" className="btn" onClick={retry} disabled={check.isPending}><Icon name="sync" />{check.isPending ? 'Checking…' : 'Check again'}</button>
+          <button type="button" className="wb-btn" onClick={retry} disabled={check.isPending}><Icon name="sync" />{check.isPending ? 'Checking…' : 'Check again'}</button>
           <span className="muted small">This page moves on by itself once a token is found.</span>
         </div>
         <ConnectGitLab desktop={false} />
@@ -135,7 +135,7 @@ export function FirstSyncCard({ status, onSync }: { status: SyncStatus | undefin
             {status?.lastResult?.errors.length ? (
               <pre className="code err">{status.lastResult.errors.slice(0, 5).join('\n')}</pre>
             ) : null}
-            <button type="button" className="btn primary" onClick={onSync}><Icon name="sync" />Sync now</button>
+            <button type="button" className="wb-btn wb-btn--primary" onClick={onSync}><Icon name="sync" />Sync now</button>
           </>
         )}
       </div>

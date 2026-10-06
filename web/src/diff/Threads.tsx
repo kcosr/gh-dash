@@ -13,8 +13,7 @@ import { Avatar } from '../components/Avatar';
 import { AgentMark } from '../components/bits';
 import { Icon } from '../components/Icon';
 import { Markdown } from '../components/Markdown';
-import { useToast } from '../components/Toasts';
-import { useLayer } from '../lib/layers';
+import { useToast, useLayer } from '../workbench';
 import { plainPreview } from '../lib/markdown';
 import { fmtDateTime, plural, rel } from '../lib/time';
 import { copyText, cx } from '../lib/util';
@@ -176,7 +175,7 @@ export function Composer({
       if (store.load() === sent) store.save('');
       if (mounted.current) (onSent ?? onClose)();
     } catch (e) {
-      toast(`Couldn't save: ${(e as Error).message}`, { error: true });
+      toast(`Couldn't save: ${(e as Error).message}`, { tone: 'error' });
       if (mounted.current) setSubmitting(false);
     } finally {
       if (sendKey !== null) setSendingDraft(sendKey, false);
@@ -221,7 +220,7 @@ function CommentRow({ thread, c, first }: { thread: CommentThread; c: ThreadComm
     try {
       await actions.deleteComment(thread.id, c.id);
     } catch (e) {
-      toast(`Couldn't delete: ${(e as Error).message}`, { error: true });
+      toast(`Couldn't delete: ${(e as Error).message}`, { tone: 'error' });
     }
   };
   return (
@@ -278,7 +277,7 @@ export function ThreadCard({ thread, snippet = false, note }: { thread: CommentT
       await s.actions.setStatus(thread.id, status);
       if (status === 'resolved') s.setExpanded(thread.id, false);
     } catch (e) {
-      toast(`Couldn't update: ${(e as Error).message}`, { error: true });
+      toast(`Couldn't update: ${(e as Error).message}`, { tone: 'error' });
     }
   };
   if (!open) {

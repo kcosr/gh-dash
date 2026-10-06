@@ -1,22 +1,21 @@
+import { ChipToggle, EmptyState, ErrorState, ProgressBar, Seg, hasBlockingLayer, isTypingTarget } from '../workbench';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { Branch, PullRequest } from '../../../shared/api';
 import type { PrWords } from '../../../shared/provider';
 import { useBranchList, usePrList, useReleases, useRepoMap } from '../api/hooks';
 import { Ctl, MOD_K } from '../components/bits';
 import { DateRangeButton } from '../components/DateRange';
-import { EmptyState, ErrorNote, ProgressBar } from '../components/EmptyState';
 import { FilterInput } from '../components/FilterInput';
 import { FilterToolbar } from '../components/FilterToolbar';
 import { Icon } from '../components/Icon';
 import { BranchRow, PrRow, ReleaseRow } from '../components/PrRow';
 import { RepoChip } from '../components/RepoChip';
 import { useWords } from '../components/repoMapContext';
-import { Seg, WHO_OPTIONS } from '../components/Seg';
+import { WHO_OPTIONS } from '../lib/filterOptions';
 import { useUI } from '../components/ui';
 import { branchListParams, prFetchParams, releaseListParams } from '../lib/apiQuery';
 import { branchItem, groupListItems } from '../lib/grouping';
 import type { ListItem } from '../lib/grouping';
-import { hasBlockingLayer, isTypingTarget } from '../lib/layers';
 import { plural } from '../lib/time';
 import { useUrlState } from '../lib/urlState';
 import type { Density } from '../lib/urlState';
@@ -127,7 +126,7 @@ export function PullRequestsView() {
             value={s.state}
             // The drawer holds a PR's details: no row of the branch list is one.
             onChange={(state) => set(state === 'nopr' ? { state, pr: null } : { state })}
-            ariaLabel={`${w.short} state`}
+            label={`${w.short} state`}
             options={[
               { value: 'open', label: <><Icon name="prOpen" className="st-open" />Open</> },
               { value: 'merged', label: <><Icon name="merge" className="st-merged" />Merged</> },
@@ -136,7 +135,7 @@ export function PullRequestsView() {
               { value: 'nopr', label: <><Icon name="branch" />No {w.short} yet</>, title: `Pushed branches with no ${w.short} yet, or with commits since their last one` },
             ]}
           />
-          <Seg value={s.who} onChange={(who) => set({ who })} options={WHO_OPTIONS} ariaLabel="Author" />
+          <Seg value={s.who} onChange={(who) => set({ who })} options={WHO_OPTIONS} label="Author" />
           <DateRangeButton />
           {/* Two parts in a one-line wrapping box: when space is short the date part wraps onto the
               clipped second line (drops first), then the rest ellipsizes. Full text in the title. */}
@@ -148,44 +147,42 @@ export function PullRequestsView() {
               </>
             ) : prs.isError ? null : <span className="sum-main muted">Loading…</span>}
           </span>
-          <span className="btn-group">
+          <span className="wb-btn-group">
             {/* Branches are JSON only: the API tab says so. */}
-            {!noPr && <button type="button" className="btn" onClick={() => openExport('md')}><Icon name="md" />Markdown</button>}
-            <button type="button" className="btn" onClick={() => openExport('api')}><Icon name="braces" />API</button>
+            {!noPr && <button type="button" className="wb-btn" onClick={() => openExport('md')}><Icon name="md" />Markdown</button>}
+            <button type="button" className="wb-btn" onClick={() => openExport('api')}><Icon name="braces" />API</button>
           </span>
         </div>
         <div className="row">
           <FilterInput value={s.q} onChange={(q) => set({ q }, { replace: true })} placeholder={noPr ? 'Filter by branch name…' : 'Filter by title, description, label…'} />
-          <button
+          <ChipToggle
             type="button"
-            className={`chip-toggle${s.rel ? ' on' : ''}`}
             style={{ marginLeft: 4 }}
-            aria-pressed={s.rel}
+            pressed={s.rel}
             disabled={s.state === 'open' || s.state === 'closed' || noPr}
             title={s.state === 'open' || s.state === 'closed' || noPr ? 'Releases show with Merged or All' : 'Interleave releases'}
-            onClick={() => set({ rel: !s.rel })}
+            onPressedChange={() => set({ rel: !s.rel })}
           >
             <Icon name="tag" />Releases
-          </button>
+          </ChipToggle>
           {/* Local review comments, one chip stepping through: all PRs → with comments → with unresolved ones. */}
-          <button
+          <ChipToggle
             type="button"
-            className={`chip-toggle${s.comments ? ' on' : ''}`}
-            aria-pressed={!!s.comments}
+            pressed={!!s.comments}
             disabled={noPr}
             title={noPr ? `Comment filters are for ${w.shortMany}` : s.comments === 'any' ? 'PRs with your comments · click for unresolved only' : s.comments === 'unresolved' ? 'PRs with unresolved comments · click for all PRs' : 'Only PRs with your comments'}
-            onClick={() => set({ comments: s.comments === null ? 'any' : s.comments === 'any' ? 'unresolved' : null })}
+            onPressedChange={() => set({ comments: s.comments === null ? 'any' : s.comments === 'any' ? 'unresolved' : null })}
           >
             <Icon name="comment" />{s.comments === 'any' ? 'Commented' : s.comments === 'unresolved' ? 'Unresolved' : 'Comments'}
-          </button>
+          </ChipToggle>
           <span className="spacer" />
           <Ctl label="Group">
-            <Seg className="sm" value={s.group} onChange={(group) => set({ group })} ariaLabel="Group by" options={[
+            <Seg size="sm" value={s.group} onChange={(group) => set({ group })} label="Group by" options={[
               { value: 'day', label: 'Day' }, { value: 'week', label: 'Week' }, { value: 'month', label: 'Month' }, { value: 'repo', label: 'Repo' },
             ]} />
           </Ctl>
           <Ctl label="Show">
-            <Seg<Density> className="sm" value={s.density} onChange={(density) => set({ density })} ariaLabel="Density" options={[
+            <Seg<Density> size="sm" value={s.density} onChange={(density) => set({ density })} label="Density" options={[
               { value: 'titles', label: 'Titles' }, { value: 'summary', label: 'Summary' }, { value: 'full', label: 'Full' },
             ]} />
           </Ctl>
@@ -196,20 +193,20 @@ export function PullRequestsView() {
         <ProgressBar active={fetching} />
         <div className={`list${fetching ? ' stale' : ''}`}>
           {list.isError && !data ? (
-            <ErrorNote error={list.error} onRetry={() => list.refetch()} />
+            <ErrorState error={list.error} onRetry={() => list.refetch()} />
           ) : !data ? (
             <ListSkeleton density={s.density} />
           ) : s.repos?.length === 0 ? (
             <NoReposSelected onSelectAll={() => set({ repos: null })} />
           ) : groups.length === 0 ? (
             <EmptyState
-              icon={noPr ? 'branch' : 'merge'}
+              icon={noPr ? 'fork' : 'merge'}
               title={`No ${noPr ? `branches without ${aShort(w)}` : [stWord, w.shortMany].filter(Boolean).join(' ')}${whoWord ? ` ${whoWord}` : ''} in ${range.phrase}${s.q ? ` matching “${s.q}”` : ''}`}
-              action={
-                <div className="empty-actions">
-                  {s.range !== '90d' && s.range !== 'ytd' && <button type="button" className="btn" onClick={() => set({ range: '90d' })}>Show last 90 days</button>}
-                  {s.who !== 'everyone' && <button type="button" className="btn" onClick={() => set({ who: 'everyone' })}>Show everyone's</button>}
-                  {s.q && <button type="button" className="btn" onClick={() => set({ q: '' })}>Clear filter</button>}
+              actions={
+                <div className="wb-empty-actions">
+                  {s.range !== '90d' && s.range !== 'ytd' && <button type="button" className="wb-btn" onClick={() => set({ range: '90d' })}>Show last 90 days</button>}
+                  {s.who !== 'everyone' && <button type="button" className="wb-btn" onClick={() => set({ who: 'everyone' })}>Show everyone's</button>}
+                  {s.q && <button type="button" className="wb-btn" onClick={() => set({ q: '' })}>Clear filter</button>}
                 </div>
               }
             >
@@ -277,7 +274,7 @@ export function PullRequestsView() {
 
 export function NoReposSelected({ onSelectAll }: { onSelectAll: () => void }) {
   return (
-    <EmptyState icon="book" title="No repositories selected" action={<button type="button" className="btn" onClick={onSelectAll}>Select all</button>}>
+    <EmptyState icon="book" title="No repositories selected" actions={<button type="button" className="wb-btn" onClick={onSelectAll}>Select all</button>}>
       Pick repositories in the sidebar, or choose a set.
     </EmptyState>
   );
@@ -286,14 +283,14 @@ export function NoReposSelected({ onSelectAll }: { onSelectAll: () => void }) {
 export function ListSkeleton({ density, rows = 6 }: { density: Density; rows?: number }) {
   return (
     <div className="skel-list" aria-busy="true" aria-label="Loading">
-      <div className="group-h"><span className="skel" style={{ width: 120 }} /><span className="rule" /></div>
+      <div className="group-h"><span className="wb-skel" style={{ width: 120 }} /><span className="rule" /></div>
       {Array.from({ length: rows }, (_, i) => (
         <div key={i} className={`skel-row${density === 'titles' ? ' t' : ''}`}>
-          <i className="skel" style={{ width: 16, height: 16 }} />
+          <i className="wb-skel" style={{ width: 16, height: 16 }} />
           <div>
-            <i className="skel" style={{ width: `${55 - (i % 3) * 8}%`, height: 14 }} />
-            {density !== 'titles' && <i className="skel" style={{ width: '32%' }} />}
-            {density !== 'titles' && <i className="skel" style={{ width: '85%' }} />}
+            <i className="wb-skel" style={{ width: `${55 - (i % 3) * 8}%`, height: 14 }} />
+            {density !== 'titles' && <i className="wb-skel" style={{ width: '32%' }} />}
+            {density !== 'titles' && <i className="wb-skel" style={{ width: '85%' }} />}
           </div>
         </div>
       ))}

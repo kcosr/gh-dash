@@ -1,24 +1,24 @@
 import { QueryClient, QueryClientProvider, useIsFetching, useQueryClient } from '@tanstack/react-query';
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
-import { Navigate, Outlet, RouterProvider, createBrowserRouter, useLocation, useRouteError } from 'react-router';
+import { Link, Navigate, Outlet, RouterProvider, createBrowserRouter, useLocation, useRouteError } from 'react-router';
 import { qk, refetchAfterSync, usePresentSources, useRepos, useSyncStatus } from './api/hooks';
 import { useStream } from './api/stream';
 import { CommandPalette } from './components/CommandPalette';
 import { DiffView } from './components/DiffView';
 import { PrDrawer } from './components/Drawer';
 import { ExportModal } from './components/ExportModal';
-import { PromptDialog } from './components/PromptDialog';
+import { NamePrompt } from './components/NamePrompt';
 import { AddRepoDialog } from './components/AddRepoDialog';
-import { ConfirmDialog } from './components/ConfirmDialog';
+import { Button, EmptyState, ConfirmDialog, LinkProvider, ToastProvider, useToast } from './workbench';
+import type { LinkProps } from './workbench';
 import { FirstSyncCard, NoTokenCard } from './components/Setup';
 import { Sidebar } from './components/Sidebar';
 import { usePanes } from './components/PaneResize';
 import { MobileSidebar, useCompactSidebar } from './components/MobileSidebar';
 import { ShowChips, useShowHandler } from './components/ShowChips';
-import { ToastProvider, useToast } from './components/Toasts';
 import { TopBar, useContextSync, useSyncNow, useTheme } from './components/TopBar';
 import { UIProvider, useUI } from './components/ui';
-import { hasBlockingLayer, isTypingTarget, topLayer } from './lib/layers';
+import { hasBlockingLayer, isTypingTarget, topLayer } from './workbench';
 import { useCanonicalRepoUrl } from './lib/canonicalUrl';
 import { homePlace, readPlaces, useContextMemory } from './lib/contexts';
 import { sourceStatuses } from './lib/sources';
@@ -111,7 +111,7 @@ function useSyncWatcher() {
       qc.invalidateQueries({ predicate: refetchAfterSync });
       const n = st.lastResult?.newItems ?? 0;
       const errs = st.lastResult?.errors.length ?? 0;
-      toast(`Synced · ${n.toLocaleString()} new ${plural(n, 'item')}${errs ? ` · ${errs} ${plural(errs, 'error')}` : ''}`, { error: errs > 0 });
+      toast(`Synced · ${n.toLocaleString()} new ${plural(n, 'item')}${errs ? ` · ${errs} ${plural(errs, 'error')}` : ''}`, { tone: errs > 0 ? 'error' : 'default' });
     }
     // During the very first sync, refresh lists as repos land (throttled).
     if (st.running && !st.lastSyncAt && st.progress && st.progress.done !== lastDone.current.done && Date.now() - lastDone.current.at > 5000) {
@@ -130,11 +130,13 @@ function useGlobalKeys(openSidebarSearch?: () => void, toggleSidebar?: () => voi
         ui.togglePalette();
         return;
       }
+      // The shared overlay registry owns Escape; do not close a second layer here.
+      if (e.defaultPrevented || e.isComposing) return;
       if (e.key === 'Escape') {
-        const top = topLayer();
-        if (top) { e.preventDefault(); top.close(); return; }
-        const el = document.activeElement as HTMLElement | null;
-        if (el && el !== document.body) el.blur();
+        if (!topLayer()) {
+          const el = document.activeElement as HTMLElement | null;
+          if (el && el !== document.body) el.blur();
+        }
         return;
       }
       if (isTypingTarget(document.activeElement) || e.metaKey || e.ctrlKey || e.altKey) return;
@@ -262,21 +264,25 @@ function Shell() {
       {ui.paletteOpen && <CommandPalette onClose={ui.closePalette} onRun={() => setSidebarOpen(false)} onSync={contextSync.run} onToggleTheme={toggleTheme}
         onToggleSidebar={canHideSide ? toggleSide : undefined} sidebarHidden={sideHidden} />}
       {ui.exportTab && <ExportModal initialTab={ui.exportTab} onClose={ui.closeExport} />}
-      {ui.prompt && <PromptDialog req={ui.prompt} onClose={ui.closePrompt} />}
+      {ui.prompt && <NamePrompt req={ui.prompt} onClose={ui.closePrompt} />}
       {ui.addRepo && <AddRepoDialog onClose={ui.closeAddRepo} />}
-      {ui.confirm && <ConfirmDialog req={ui.confirm} onClose={ui.closeConfirm} />}
+      {ui.confirm && <ConfirmDialog open title={ui.confirm.title} children={ui.confirm.body} confirmLabel={ui.confirm.confirmLabel} tone={ui.confirm.danger ? 'danger' : 'primary'} onConfirm={ui.confirm.onConfirm} onClose={ui.closeConfirm} />}
       <ShowChips />
     </>
   );
 }
 
+const RouterLink = ({ href, ...props }: LinkProps) => <Link to={href} {...props} />;
+
 function AppShell() {
   return (
-    <UIProvider>
-      <RepoMapProvider>
-        <Shell />
-      </RepoMapProvider>
-    </UIProvider>
+    <LinkProvider component={RouterLink}>
+      <UIProvider>
+        <RepoMapProvider>
+          <Shell />
+        </RepoMapProvider>
+      </UIProvider>
+    </LinkProvider>
   );
 }
 
@@ -287,12 +293,10 @@ function ViewError() {
   return (
     <main className="main">
       <div className="scroll">
-        <div className="empty">
-          <span className="ic err"><Icon name="alert" /></span>
-          <h3>{chunk ? 'This page could not be loaded' : 'Something went wrong in this view'}</h3>
-          <p>{chunk ? 'The app may have been updated, or the server is unreachable.' : error instanceof Error ? error.message : String(error)}</p>
-          <button type="button" className="btn" onClick={() => window.location.reload()}><Icon name="sync" />Reload</button>
-        </div>
+        <EmptyState icon="alert" tone="danger" title={chunk ? 'This page could not be loaded' : 'Something went wrong in this view'}
+          actions={<Button icon="refresh" onClick={() => window.location.reload()}>Reload</Button>}>
+          {chunk ? 'The app may have been updated, or the server is unreachable.' : error instanceof Error ? error.message : String(error)}
+        </EmptyState>
       </div>
     </main>
   );
@@ -307,7 +311,7 @@ function AppError() {
         <span className="ic"><Icon name="alert" /></span>
         <h2>gh-dash hit an error</h2>
         <p>{error instanceof Error ? error.message : String(error)}</p>
-        <button type="button" className="btn primary" onClick={() => window.location.reload()}><Icon name="sync" />Reload</button>
+        <button type="button" className="wb-btn wb-btn--primary" onClick={() => window.location.reload()}><Icon name="sync" />Reload</button>
       </div>
     </div>
   );

@@ -99,7 +99,7 @@ function layout(
 }
 
 export function LineChart({
-  points, valueLabel, height = 220, ariaLabel, zeroBased = false, color = 'var(--s1)', area = true,
+  points, valueLabel, height = 220, ariaLabel, zeroBased = false, color = 'var(--wb-s1)', area = true,
   formatValue = fmtNum, emptyText = 'No data in this range',
 }: LineChartProps) {
   const [ref, width] = useElementWidth<HTMLDivElement>();

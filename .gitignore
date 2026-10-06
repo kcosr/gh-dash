@@ -19,3 +19,7 @@ shots/
 coverage/
 .DS_Store
 release/
+
+# Browser verification artifacts
+test-results/
+playwright-report/

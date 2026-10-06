@@ -10,7 +10,7 @@ import { threadsMarkdown } from '../../../shared/comment-markdown';
 import type { ThreadPlacement } from '../../../shared/comment-placement';
 import type { Provider } from '../../../shared/provider';
 import { Icon } from '../components/Icon';
-import { useToast } from '../components/Toasts';
+import { useToast } from '../workbench';
 import { plainPreview } from '../lib/markdown';
 import { plural } from '../lib/time';
 import { copyText, cx } from '../lib/util';
@@ -99,7 +99,7 @@ export const CommentsColumn = memo(function CommentsColumn({
         <b>Comments</b>
         <span className="dcc-count">{threads.length ? `${open} open · ${threads.length - open} resolved` : 'None yet'}</span>
         <span className="spacer" />
-        <button type="button" className="btn icon ghost" onClick={onClose} title="Close comments (c)" aria-label="Close comments"><Icon name="x" /></button>
+        <button type="button" className="wb-btn wb-btn--icon wb-btn--ghost" onClick={onClose} title="Close comments (c)" aria-label="Close comments"><Icon name="x" /></button>
       </div>
       <div className="dcc-body">
         {error && (

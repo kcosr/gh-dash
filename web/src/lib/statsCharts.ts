@@ -95,8 +95,8 @@ export function activityColumns(st: StatsResponse, w: PrWords): { data: ColumnDa
 
 export function mergedColumns(st: StatsResponse, who: Who) {
   const single: SeriesDef = who === 'me'
-    ? { key: 'mine', label: 'You', color: 'var(--s1)' }
-    : { key: 'others', label: 'Others', color: 'var(--s1)' };
+    ? { key: 'mine', label: 'You', color: 'var(--wb-s1)' }
+    : { key: 'others', label: 'Others', color: 'var(--wb-s1)' };
   const series = who === 'everyone' ? YOU_VS_OTHERS : [single];
   const data = st.series.map((b) => {
     const mine = who === 'others' ? 0 : who === 'me' ? b.prsMerged : b.prsMergedMine;

@@ -9,7 +9,7 @@ import type { SecureStorage } from '../../../shared/desktop';
 import { useDesktopActions } from '../api/desktop';
 import { bridgeError, ghUnavailable } from '../lib/account';
 import { Icon } from './Icon';
-import { useToast } from './Toasts';
+import { useToast } from '../workbench';
 
 const connected = (a: AccountStatus) => (a.login ? `Connected as ${a.login}` : 'Connected');
 
@@ -41,7 +41,7 @@ export function GhCliChoice({ account, idPrefix = 'gh-cli' }: { account: Account
   const shownError = inUse ? null : error;
   return (
     <span className="acct-choice">
-      <button type="button" className="btn" onClick={run} disabled={!!reason || inUse || ghCli.isPending}
+      <button type="button" className="wb-btn" onClick={run} disabled={!!reason || inUse || ghCli.isPending}
         aria-describedby={shownError ? `${idPrefix}-note ${idPrefix}-err` : `${idPrefix}-note`}>
         <Icon name={inUse ? 'check' : 'key'} />{inUse ? 'Using GitHub CLI' : ghCli.isPending ? 'Connecting…' : 'Use GitHub CLI'}
       </button>
@@ -55,7 +55,7 @@ export function GhCliChoice({ account, idPrefix = 'gh-cli' }: { account: Account
             : account.gh.login ? <>Signed in as <b>{account.gh.login}</b></>
               : <>Run <code>gh auth login</code> first.</>}
       </small>
-      {shownError && <span id={`${idPrefix}-err`} className="form-err" role="alert">{shownError}</span>}
+      {shownError && <span id={`${idPrefix}-err`} className="wb-form-error" role="alert">{shownError}</span>}
     </span>
   );
 }
@@ -86,7 +86,7 @@ export function TokenForm({ secureStorage, idPrefix = 'tok' }: { secureStorage: 
       <span className="acct-token-row">
         <input
           id={`${idPrefix}-input`}
-          className="input"
+          className="wb-input"
           type="password"
           value={token}
           onChange={(e) => { setValue(e.target.value); setError(null); }}
@@ -97,7 +97,7 @@ export function TokenForm({ secureStorage, idPrefix = 'tok' }: { secureStorage: 
           aria-invalid={error ? true : undefined}
           aria-describedby={error ? `${idPrefix}-err` : undefined}
         />
-        <button type="submit" className="btn" disabled={!token.trim() || setToken.isPending}>{setToken.isPending ? 'Checking…' : 'Use token'}</button>
+        <button type="submit" className="wb-btn" disabled={!token.trim() || setToken.isPending}>{setToken.isPending ? 'Checking…' : 'Use token'}</button>
       </span>
       <label className="acct-check">
         <input type="checkbox" className="repo-check" checked={canRemember && remember} disabled={!canRemember} onChange={(e) => setRemember(e.target.checked)} />
@@ -106,7 +106,7 @@ export function TokenForm({ secureStorage, idPrefix = 'tok' }: { secureStorage: 
       {!canRemember && secureStorage && (
         <small className="muted">No OS keychain is available, so the token is kept only until gh-dash quits.</small>
       )}
-      {error && <div id={`${idPrefix}-err`} className="form-err" role="alert">{error}</div>}
+      {error && <div id={`${idPrefix}-err`} className="wb-form-error" role="alert">{error}</div>}
     </form>
   );
 }

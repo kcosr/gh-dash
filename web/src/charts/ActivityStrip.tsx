@@ -42,8 +42,8 @@ function layout(days: ActivityStripProps['days'], width: number, height: number,
 }
 
 /**
- * Compact per-day histogram above the activity feed. No selection: every day in --s1. With a
- * selected day: emphasis form (selected --s1, the rest --deemph) and its date label is pinned.
+ * Compact per-day histogram above the activity feed. No selection: every day in --wb-s1. With a
+ * selected day: emphasis form (selected --wb-s1, the rest --wb-deemph) and its date label is pinned.
  */
 export function ActivityStrip({
   days, ariaLabel, selected = null, onSelect, height = 56, unit = 'events', emptyText = 'No activity in this range',
@@ -64,7 +64,7 @@ export function ActivityStrip({
     indexAt: (px) => (geo ? clamp(Math.floor(px / geo.band), 0, n - 1) : null),
     tip: (i) => ({
       title: days[i].title ?? formatLongDate(days[i].date, geo?.withYear),
-      rows: [{ color: sel == null || i === sel ? 'var(--s1)' : 'var(--deemph)', value: fmtNum(days[i].count), label: unit }],
+      rows: [{ color: sel == null || i === sel ? 'var(--wb-s1)' : 'var(--wb-deemph)', value: fmtNum(days[i].count), label: unit }],
     }),
     anchor: (i) => (geo ? { x: geo.band * (i + 0.5), y: geo.cols[i].top } : { x: 0, y: 0 }),
     onActivate: onSelect ? (i) => onSelect(days[i].date) : null,
@@ -72,7 +72,7 @@ export function ActivityStrip({
   });
 
   const fill = (i: number, zero: boolean) =>
-    zero ? 'var(--grid)' : sel == null || i === sel ? 'var(--s1)' : 'var(--deemph)';
+    zero ? 'var(--wb-grid)' : sel == null || i === sel ? 'var(--wb-s1)' : 'var(--wb-deemph)';
 
   const columns = useMemo(
     () =>

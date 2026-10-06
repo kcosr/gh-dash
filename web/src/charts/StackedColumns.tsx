@@ -142,7 +142,7 @@ export function StackedColumns({
   );
 
   const a = ia.active;
-  const muted = (color: string) => color.includes('--deemph');
+  const muted = (color: string) => color.includes('--wb-deemph');
   return (
     <div ref={ref} className={'gd-chart' + (onColumnClick ? ' clickable' : '')} style={{ height }}>
       {geo && (

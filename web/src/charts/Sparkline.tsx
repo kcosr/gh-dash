@@ -36,7 +36,7 @@ export function Sparkline({
     indexAt: (px) => (geo ? Math.max(0, Math.min(n - 1, Math.floor(px / geo.slot))) : null),
     tip: (i) => ({
       title: titles?.[i],
-      rows: [{ color: i === n - 1 ? 'var(--accent)' : 'var(--deemph)', value: formatValue(values[i]), label: unit }],
+      rows: [{ color: i === n - 1 ? 'var(--wb-accent)' : 'var(--wb-deemph)', value: formatValue(values[i]), label: unit }],
     }),
     anchor: (i) => (geo ? { x: geo.slot * (i + 0.5), y: geo.cols[i].top } : { x: 0, y: 0 }),
     initial: () => n - 1,
@@ -45,7 +45,7 @@ export function Sparkline({
   const a = ia.active;
   const label = ariaLabel ?? `${unit} trend${n ? `, latest ${formatValue(values[n - 1])}` : ''}`;
   const fill = (i: number) =>
-    geo!.cols[i].zero ? 'var(--grid)' : i === n - 1 ? 'var(--accent)' : a === i ? 'var(--muted)' : 'var(--deemph)';
+    geo!.cols[i].zero ? 'var(--wb-grid)' : i === n - 1 ? 'var(--wb-accent)' : a === i ? 'var(--wb-muted)' : 'var(--wb-deemph)';
   return (
     <span className="gd-spark" style={{ width, height }}>
       <svg

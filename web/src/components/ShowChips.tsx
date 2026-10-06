@@ -4,12 +4,12 @@
  * focus (it is announced), hides after half a minute unless the pointer or focus is on it, and a few stack. Following
  * agents, the window opens what they show at once, unless you're typing or in a dialog; its chip only says so.
  */
+import { Switch, isTypingTarget } from '../workbench';
 import { useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import type { ShowTarget } from '../../../shared/api';
 import { qk, useThreads } from '../api/hooks';
-import { isTypingTarget } from '../lib/layers';
 import {
   dismissChip, getFollowAgents, noteShow, nudgeDiff, openShown, pushChip, reofferChip, showDiffId, showPhrase, showWhat, useFollowAgents, useShowChips,
 } from '../lib/show';
@@ -141,12 +141,12 @@ function Chip({ chip, last, onSay }: { chip: ShowChip; last: boolean; onSay: (te
       </div>
       {chip.message && <p className="show-msg">{chip.message}</p>}
       <div className="show-acts">
-        {!chip.opened && <button type="button" className="btn sm" onClick={onOpen}><Icon name="diff" />Open</button>}
-        <button type="button" className="btn sm ghost" onClick={dismiss}>Dismiss</button>
+        {!chip.opened && <button type="button" className="wb-btn wb-btn--sm" onClick={onOpen}><Icon name="diff" />Open</button>}
+        <button type="button" className="wb-btn wb-btn--sm wb-btn--ghost" onClick={dismiss}>Dismiss</button>
         <span className="spacer" />
         {last && (
           <label className="show-follow" title="Open what agents show at once, in this browser">
-            <input type="checkbox" className="switch sm" checked={follow} onChange={(e) => setFollow(e.target.checked)} />
+            <Switch checked={follow} onChange={(e) => setFollow(e.target.checked)} />
             Follow agents
           </label>
         )}

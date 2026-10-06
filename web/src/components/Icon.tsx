@@ -68,7 +68,7 @@ export function Icon({ name, className, title }: { name: IconName; className?: s
       strokeLinejoin="round"
       aria-hidden={title ? undefined : true}
       role={title ? 'img' : undefined}
-      className={className}
+      className={className ? `wb-icon ${className}` : 'wb-icon'}
     >
       {title && <title>{title}</title>}
       {PATHS[name]}
@@ -94,7 +94,7 @@ const BRANDS: Record<ProviderKind, { viewBox: string; d: string }> = {
 export function ProviderIcon({ kind, className }: { kind: ProviderKind; className?: string }) {
   const b = BRANDS[kind];
   return (
-    <svg viewBox={b.viewBox} width="16" height="16" fill="currentColor" aria-hidden="true" className={className ? `pv ${className}` : 'pv'}>
+    <svg viewBox={b.viewBox} width="16" height="16" fill="currentColor" aria-hidden="true" className={className ? `wb-icon pv ${className}` : 'wb-icon pv'}>
       <path d={b.d} />
     </svg>
   );

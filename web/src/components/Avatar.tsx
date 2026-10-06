@@ -12,7 +12,7 @@ const avColor = (s: string) => AV_COLORS[[...s].reduce((a, c) => (a * 31 + c.cha
 export function Avatar({ actor, size = 16 }: { actor: Actor | null | undefined; size?: number }) {
   const name = actorName(actor);
   const style = {
-    '--av': actor?.isMe ? 'var(--accent)' : avColor(name),
+    '--av': actor?.isMe ? 'var(--wb-accent)' : avColor(name),
     width: size,
     height: size,
     fontSize: Math.round(size * 0.52),

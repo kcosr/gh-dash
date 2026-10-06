@@ -13,7 +13,7 @@ import type { Agent } from '../../../shared/api';
 import { useAgentActions, useDesktop } from '../api/desktop';
 import { useAgents, useInstance, useSources, useWorkSources } from '../api/hooks';
 import { Icon } from '../components/Icon';
-import { useToast } from '../components/Toasts';
+import { useToast } from '../workbench';
 import { useUI } from '../components/ui';
 import { bridgeError } from '../lib/account';
 import {
@@ -30,7 +30,7 @@ import { copyText, cx, useNow } from '../lib/util';
  */
 interface Shown { agent: Agent; token: string | null; kind: 'added' | 'new' | 'kept'; kept?: boolean; enabled?: string }
 
-function Copy({ text, what, className = 'btn sm' }: { text: string; what: string; className?: string }) {
+function Copy({ text, what, className = 'wb-btn wb-btn--sm' }: { text: string; what: string; className?: string }) {
   const toast = useToast();
   return (
     <button type="button" className={className} onClick={async () => toast((await copyText(text)) ? `${what} copied` : 'Copy failed')} title={`Copy ${what.toLowerCase()}`}
@@ -52,7 +52,7 @@ function Reach({ a, known, onSources }: { a: Agent; known: readonly AgentSource[
   const className = cx('agent-reach', a.sources !== null && 'some');
   if (!onSources) return <span className={className} title={title}>{text}</span>;
   return (
-    <button type="button" className={cx('btn sm ghost', className)} onClick={() => onSources(a)} title={`${title}. Choose which…`}
+    <button type="button" className={cx('wb-btn wb-btn--sm wb-btn--ghost', className)} onClick={() => onSources(a)} title={`${title}. Choose which…`}
       aria-label={`Sources of ${a.name}: ${text}. Choose which`}>
       {text}
     </button>
@@ -99,19 +99,19 @@ function AgentRow({ a, now, known, onSources, onShowToken, onNewToken, onToggle,
       <span className="spacer" />
       {onSources && reach}
       {onShowToken && (
-        <button type="button" className="btn sm ghost" onClick={() => onShowToken(a)} aria-label={`Show ${a.name}'s token`}
+        <button type="button" className="wb-btn wb-btn--sm wb-btn--ghost" onClick={() => onShowToken(a)} aria-label={`Show ${a.name}'s token`}
           title="Its token again, with the lines to set it up">
           Show token
         </button>
       )}
       {onNewToken && (
-        <button type="button" className="btn sm ghost" onClick={() => onNewToken(a)}
+        <button type="button" className="wb-btn wb-btn--sm wb-btn--ghost" onClick={() => onNewToken(a)}
           title={disabled ? 'Replace its token, and enable it: it can write here again with the new one' : 'Replace its token'}>
           New token…
         </button>
       )}
       {onToggle && (
-        <button type="button" className="btn sm ghost" onClick={() => onToggle(a)} aria-label={`${disabled ? 'Enable' : 'Disable'} ${a.name}`}
+        <button type="button" className="wb-btn wb-btn--sm wb-btn--ghost" onClick={() => onToggle(a)} aria-label={`${disabled ? 'Enable' : 'Disable'} ${a.name}`}
           title={disabled
             ? 'Accept its token again. If it may have leaked, give it a new token instead'
             : 'Refuse its token until you enable it again. Its token, sources and comments stay'}>
@@ -119,7 +119,7 @@ function AgentRow({ a, now, known, onSources, onShowToken, onNewToken, onToggle,
         </button>
       )}
       {onDelete && (
-        <button type="button" className="btn sm ghost" onClick={() => onDelete(a)} aria-label={`Delete ${a.name}…`}
+        <button type="button" className="wb-btn wb-btn--sm wb-btn--ghost" onClick={() => onDelete(a)} aria-label={`Delete ${a.name}…`}
           title="Delete it: its token stops working and its name is free again. What it wrote stays">
           Delete…
         </button>
@@ -144,8 +144,8 @@ function TokenPanel({ shown, url, keychain, onNewToken, onDone }: { shown: Shown
           </span>
         </p>
         <div className="set-actions">
-          <button type="button" className="btn" onClick={onNewToken}>New token…</button>
-          <button type="button" className="btn" onClick={onDone}>Close</button>
+          <button type="button" className="wb-btn" onClick={onNewToken}>New token…</button>
+          <button type="button" className="wb-btn" onClick={onDone}>Close</button>
         </div>
       </div>
     );
@@ -185,7 +185,7 @@ function TokenPanel({ shown, url, keychain, onNewToken, onDone }: { shown: Shown
         <Copy text={c.codexEnv} what="Line" />
       </div>
       <div className="set-actions">
-        <button type="button" className="btn" onClick={onDone}>Done</button>
+        <button type="button" className="wb-btn" onClick={onDone}>Done</button>
       </div>
     </div>
   );
@@ -196,9 +196,9 @@ function TokenField({ id, value, onChange, problem }: { id: string; value: strin
   return (
     <span className="agent-token-field">
       <label className="sr-only" htmlFor={id}>Token</label>
-      <input id={id} className={cx('input agent-token-in', problem && 'bad')} value={value} onChange={(e) => onChange(e.target.value)} spellCheck={false}
+      <input id={id} className="wb-input agent-token-in" value={value} onChange={(e) => onChange(e.target.value)} spellCheck={false}
         autoComplete="off" aria-invalid={problem ? true : undefined} title="Generated here; or paste your own (24–256 printable characters, no spaces)" />
-      <button type="button" className="btn" onClick={() => onChange(generateAgentToken())} title="A new random token"><Icon name="sync" />Generate</button>
+      <button type="button" className="wb-btn" onClick={() => onChange(generateAgentToken())} title="A new random token"><Icon name="sync" />Generate</button>
     </span>
   );
 }
@@ -273,13 +273,13 @@ function AddAgent({ agents, known, portOff, onAdded, onCancel }: {
   return (
     <form className="agent-add" onSubmit={submit} onKeyDown={escape}>
       <label className="sr-only" htmlFor="agent-name">Agent name</label>
-      <input id="agent-name" className={cx('input', tried && problem && 'bad')} value={name} placeholder="Name, e.g. Claude" autoFocus autoComplete="off" maxLength={80}
+      <input id="agent-name" className="wb-input" value={name} placeholder="Name, e.g. Claude" autoFocus autoComplete="off" maxLength={80}
         onChange={(e) => setName(e.target.value)} aria-invalid={tried && problem ? true : undefined} aria-describedby={err ? 'agent-add-err' : undefined} />
       <TokenField id="agent-token" value={token} onChange={setToken} problem={tried ? tokenProblem : null} />
       <SourcesPicker id="agent-add-src" known={known} pick={pick} onChange={setPick} />
-      <button type="submit" className="btn primary" disabled={add.isPending}>{add.isPending ? 'Adding…' : 'Add'}</button>
-      <button type="button" className="btn" onClick={onCancel} disabled={add.isPending}>Cancel</button>
-      {err && <span id="agent-add-err" className="form-err" role="alert">{err}</span>}
+      <button type="submit" className="wb-btn wb-btn--primary" disabled={add.isPending}>{add.isPending ? 'Adding…' : 'Add'}</button>
+      <button type="button" className="wb-btn" onClick={onCancel} disabled={add.isPending}>Cancel</button>
+      {err && <span id="agent-add-err" className="wb-form-error" role="alert">{err}</span>}
     </form>
   );
 }
@@ -302,9 +302,9 @@ function NewToken({ agent, onMade, onCancel }: { agent: Agent; onMade: (s: Shown
         New token for <b>{agent.name}</b>. {agent.disabledAt ? `${agent.name} is enabled with it, and can write here again.` : 'The one it uses now stops working at once.'}
       </p>
       <TokenField id="agent-new-token" value={token} onChange={setToken} problem={problem} />
-      <button type="submit" className="btn primary" disabled={regenerate.isPending || !!problem}>Make new token</button>
-      <button type="button" className="btn" onClick={onCancel} disabled={regenerate.isPending}>Cancel</button>
-      {err && <span className="form-err" role="alert">{err}</span>}
+      <button type="submit" className="wb-btn wb-btn--primary" disabled={regenerate.isPending || !!problem}>Make new token</button>
+      <button type="button" className="wb-btn" onClick={onCancel} disabled={regenerate.isPending}>Cancel</button>
+      {err && <span className="wb-form-error" role="alert">{err}</span>}
     </form>
   );
 }
@@ -328,9 +328,9 @@ function AgentSources({ agent, known, onDone, onCancel }: { agent: Agent; known:
         repositories and threads don't exist. It applies from its next request.
       </p>
       <SourcesPicker id="agent-src" known={known} pick={pick} onChange={setPick} />
-      <button type="submit" className="btn primary" disabled={setSources.isPending || !!picked.problem}>Save</button>
-      <button type="button" className="btn" onClick={onCancel} disabled={setSources.isPending}>Cancel</button>
-      {err && <span className="form-err" role="alert">{err}</span>}
+      <button type="submit" className="wb-btn wb-btn--primary" disabled={setSources.isPending || !!picked.problem}>Save</button>
+      <button type="button" className="wb-btn" onClick={onCancel} disabled={setSources.isPending}>Cancel</button>
+      {err && <span className="wb-form-error" role="alert">{err}</span>}
     </form>
   );
 }
@@ -360,13 +360,13 @@ export function AgentsSection() {
   const list = agentsShown(agents.data ?? [], tokensOptional);
 
   const turnOn = () => enableMcp.mutate(undefined, {
-    onSuccess: (st) => toast(st.mcpUrl ? (portOff ? 'Local API on, for agents only' : 'MCP on') : `Couldn't turn it on${st.serverError ? `: ${st.serverError}` : ''}`, { error: !st.mcpUrl }),
-    onError: (e) => toast(bridgeError(e), { error: true }),
+    onSuccess: (st) => toast(st.mcpUrl ? (portOff ? 'Local API on, for agents only' : 'MCP on') : `Couldn't turn it on${st.serverError ? `: ${st.serverError}` : ''}`, { tone: st.mcpUrl ? 'default' : 'error' }),
+    onError: (e) => toast(bridgeError(e), { tone: 'error' }),
   });
   // Disable / Enable: at once, nothing to confirm (it's undone the same way).
   const toggleAgent = (a: Agent) => setEnabled.mutate({ id: a.id, enabled: !!a.disabledAt }, {
     onSuccess: (x) => toast(x.disabledAt ? `${x.name} disabled` : `${x.name} enabled`),
-    onError: (e) => toast(bridgeError(e), { error: true }),
+    onError: (e) => toast(bridgeError(e), { tone: 'error' }),
   });
   // Delete…: what it wrote first (asked now: it changes with every comment), then the confirmation that says so.
   const deleteAgent = async (a: Agent) => {
@@ -374,7 +374,7 @@ export function AgentsSection() {
     try {
       f = await footprint(a.id);
     } catch (e) {
-      toast(bridgeError(e), { error: true });
+      toast(bridgeError(e), { tone: 'error' });
       return;
     }
     // The quoted name ("Deleted agent #4") on one line.
@@ -402,7 +402,7 @@ export function AgentsSection() {
     try {
       token = await keptToken(a.id);
     } catch (e) {
-      toast(bridgeError(e), { error: true });
+      toast(bridgeError(e), { tone: 'error' });
       return;
     }
     show({ agent: a, token, kind: 'kept' });
@@ -424,7 +424,7 @@ export function AgentsSection() {
             {portOff ? "The Local API is off, so agents can't reach gh-dash." : "MCP is off on the Local API, so agents can't reach gh-dash."}
             {' '}Adding an agent turns it on too.
           </span>
-          <button type="button" className="btn sm" onClick={turnOn} disabled={enableMcp.isPending}>
+          <button type="button" className="wb-btn wb-btn--sm" onClick={turnOn} disabled={enableMcp.isPending}>
             {enableMcp.isPending ? 'Turning on…' : 'Turn on MCP'}
           </button>
         </div>
@@ -475,7 +475,7 @@ export function AgentsSection() {
             ? <AddAgent agents={list} known={known} portOff={portOff} onAdded={show} onCancel={() => setAdding(false)} />
             : (
               <div className="set-actions">
-                <button type="button" className="btn" onClick={() => setAdding(true)}><Icon name="plus" />Add agent</button>
+                <button type="button" className="wb-btn" onClick={() => setAdding(true)}><Icon name="plus" />Add agent</button>
               </div>
             ))
       ) : (

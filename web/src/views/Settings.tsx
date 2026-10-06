@@ -1,19 +1,17 @@
+import { Switch, Chip, ErrorState, useToast } from '../workbench';
 import { useEffect, useState } from 'react';
 import { Link, useLocation } from 'react-router';
 import type { Settings } from '../../../shared/api';
 import { useApiBase, useClearDiffCache, useDiffCacheStats, usePatchSettings, useSettings, useSyncStatus, useWorkSources } from '../api/hooks';
 import { useDesktop } from '../api/desktop';
 import { useSyncNow } from '../components/TopBar';
-import { ChipsInput } from '../components/ChipsInput';
+import { TokenListInput } from '../components/TokenListInput';
 import { Icon } from '../components/Icon';
 import type { IconName } from '../components/Icon';
-import { ErrorNote } from '../components/EmptyState';
 import { useRepoLabel } from '../components/repoMapContext';
-import { useToast } from '../components/Toasts';
 import { apiLink } from '../lib/account';
 import { hostNames } from '../lib/sources';
 import { dur, fmtBytes, fmtDateTime, fmtNum, fmtTime, plural, relFuture, relLong } from '../lib/time';
-import { cx } from '../lib/util';
 import { AgentsSection } from './SettingsAgents';
 import { InstanceSection } from './SettingsInstance';
 import { SourcesSection } from './SettingsSources';
@@ -21,8 +19,8 @@ import { TrackedSection } from './SettingsTracked';
 
 /** A link to this API from outside the app; disabled with a hint while the Local API is off. */
 function ApiButton({ href, icon, children }: { href: string | null; icon: IconName; children: string }) {
-  if (href) return <a className="btn" href={href} target="_blank" rel="noopener noreferrer"><Icon name={icon} />{children}</a>;
-  return <button type="button" className="btn" disabled title="Turn on the Local API's REST API below (Instance)"><Icon name={icon} />{children}</button>;
+  if (href) return <a className="wb-btn" href={href} target="_blank" rel="noopener noreferrer"><Icon name={icon} />{children}</a>;
+  return <button type="button" className="wb-btn" disabled title="Turn on the Local API's REST API below (Instance)"><Icon name={icon} />{children}</button>;
 }
 
 /** The editable part of Settings: what the form holds and what PATCH sends (never myEmailsFromEnv). */
@@ -39,9 +37,9 @@ function EnvEmails({ emails }: { emails: string[] }) {
   return (
     <div className="env-emails">
       {emails.map((em) => (
-        <span key={em} className="chip ro" title="Set by the server's GH_DASH_MY_EMAILS environment variable; change it there">
-          <Icon name="lock" />{em}
-        </span>
+        <Chip key={em} readOnly icon="lock" title="Set by the server's GH_DASH_MY_EMAILS environment variable; change it there">
+          {em}
+        </Chip>
       ))}
       <small>from <code>GH_DASH_MY_EMAILS</code></small>
     </div>
@@ -69,12 +67,12 @@ function DiffCacheSection() {
     if (!capOk || !dirty) return;
     save.mutate({ diffCacheMb: cap }, {
       onSuccess: (s) => { setCap(s.diffCacheMb); toast('Diff cache size saved'); },
-      onError: (e) => toast(`Couldn't save: ${(e as Error).message}`, { error: true }),
+      onError: (e) => toast(`Couldn't save: ${(e as Error).message}`, { tone: 'error' }),
     });
   };
   const onClear = () => clear.mutate(undefined, {
     onSuccess: () => toast(st?.bytes ? `Diff cache cleared · ${fmtBytes(st.bytes)} freed` : 'Diff cache cleared'),
-    onError: (e) => toast(`Couldn't clear: ${(e as Error).message}`, { error: true }),
+    onError: (e) => toast(`Couldn't clear: ${(e as Error).message}`, { tone: 'error' }),
   });
 
   return (
@@ -93,14 +91,14 @@ function DiffCacheSection() {
           <label className="set-row">
             <span className="set-l">Size limit<small>10–10000 MB. When the cache is full, the least recently viewed go first.</small></span>
             <span className="set-c">
-              <input className={cx('input num-in', !capOk && 'bad')} type="number" min={10} max={10000} step={1} value={cap}
+              <input className="wb-input num-in" aria-invalid={!capOk || undefined} type="number" min={10} max={10000} step={1} value={cap}
                 onChange={(e) => setCap(Math.round(Number(e.target.value)))} /> MB
             </span>
           </label>
         )}
         <div className="set-actions">
-          {cap !== null && <button type="submit" className="btn primary" disabled={!dirty || !capOk || save.isPending}>Save limit</button>}
-          <button type="button" className="btn" disabled={!st?.entries || clear.isPending} onClick={onClear}><Icon name="trash" />Clear cache</button>
+          {cap !== null && <button type="submit" className="wb-btn wb-btn--primary" disabled={!dirty || !capOk || save.isPending}>Save limit</button>}
+          <button type="button" className="wb-btn" disabled={!st?.entries || clear.isPending} onClick={onClear}><Icon name="trash" />Clear cache</button>
         </div>
       </form>
     </section>
@@ -156,7 +154,7 @@ export function SettingsView() {
     if (!form || !intervalOk || !backfillOk) return;
     save.mutate(form, {
       onSuccess: (s) => { setForm(editable(s)); toast('Settings saved'); },
-      onError: (e) => toast(`Couldn't save: ${(e as Error).message}`, { error: true }),
+      onError: (e) => toast(`Couldn't save: ${(e as Error).message}`, { tone: 'error' }),
     });
   };
 
@@ -174,7 +172,7 @@ export function SettingsView() {
         <div className="settings">
           {unreachable && (
             <section className="card set-sec">
-              <ErrorNote error={status.error} onRetry={() => { void status.refetch(); void settings.refetch(); }} />
+              <ErrorState error={status.error} onRetry={() => { void status.refetch(); void settings.refetch(); }} />
             </section>
           )}
           <SourcesSection rateLimit={st?.rateLimit} />
@@ -183,7 +181,7 @@ export function SettingsView() {
 
           <section className="card set-sec">
             <h2>Sync</h2>
-            <dl className="kv">
+            <dl className="wb-kv">
               <dt>Status</dt>
               <dd>
                 {!st ? <span className="muted">unknown</span> : st.running
@@ -200,10 +198,10 @@ export function SettingsView() {
             </dl>
             {!!st?.lastResult?.errors.length && <pre className="code err">{st.lastResult.errors.slice(0, 10).join('\n')}</pre>}
             <div className="set-actions">
-              <button type="button" className="btn" disabled={!st || st.running} onClick={() => sync.run()}><Icon name="sync" />Sync now</button>
+              <button type="button" className="wb-btn" disabled={!st || st.running} onClick={() => sync.run()}><Icon name="sync" />Sync now</button>
               <button
                 type="button"
-                className="btn"
+                className="wb-btn"
                 disabled={!st || st.running}
                 onClick={() => { if (window.confirm('Re-fetch everything in the backfill window and re-check stars? This uses more API quota.')) sync.run({ full: true }); }}
               >
@@ -219,32 +217,32 @@ export function SettingsView() {
                 <label className="set-row">
                   <span className="set-l">Sync interval<small>Minutes between background syncs (5–1440).</small></span>
                   <span className="set-c">
-                    <input className={cx('input num-in', !intervalOk && 'bad')} type="number" min={5} max={1440} step={1} value={form.syncIntervalMinutes}
+                    <input className="wb-input num-in" aria-invalid={!intervalOk || undefined} type="number" min={5} max={1440} step={1} value={form.syncIntervalMinutes}
                       onChange={(e) => setForm({ ...form, syncIntervalMinutes: Math.round(Number(e.target.value)) })} /> min
                   </span>
                 </label>
                 <label className="set-row">
                   <span className="set-l">Backfill<small>How far back the first sync of a repo reaches.</small></span>
                   <span className="set-c">
-                    <input className={cx('input num-in', !backfillOk && 'bad')} type="number" min={1} step={1} value={form.backfillDays}
+                    <input className="wb-input num-in" aria-invalid={!backfillOk || undefined} type="number" min={1} step={1} value={form.backfillDays}
                       onChange={(e) => setForm({ ...form, backfillDays: Math.round(Number(e.target.value)) })} /> days
                   </span>
                 </label>
                 <div className="set-row">
                   <span className="set-l">My commit emails<small>Commits with these author emails count as “me”, even without a linked GitHub account.</small></span>
                   <span className="set-c grow stack">
-                    <ChipsInput value={form.myEmails} onChange={(myEmails) => setForm({ ...form, myEmails })} parse={splitEmails}
+                    <TokenListInput value={form.myEmails} onChange={(myEmails) => setForm({ ...form, myEmails })} parse={splitEmails}
                       placeholder="you@example.com" label="Add commit email" type="email" />
                     {envEmails.length > 0 && <EnvEmails emails={envEmails} />}
                   </span>
                 </div>
                 <label className="set-row">
                   <span className="set-l">Include forks<small>Forks are always synced; this adds them to the default selection.</small></span>
-                  <span className="set-c"><input type="checkbox" className="switch" checked={form.includeForks} onChange={(e) => setForm({ ...form, includeForks: e.target.checked })} /></span>
+                  <span className="set-c"><Switch checked={form.includeForks} onChange={(e) => setForm({ ...form, includeForks: e.target.checked })} /></span>
                 </label>
                 <div className="set-actions">
-                  <button type="submit" className="btn primary" disabled={!dirty || !intervalOk || !backfillOk || save.isPending}>Save changes</button>
-                  <button type="button" className="btn" disabled={!dirty} onClick={() => setForm(settings.data ? editable(settings.data) : null)}>Reset</button>
+                  <button type="submit" className="wb-btn wb-btn--primary" disabled={!dirty || !intervalOk || !backfillOk || save.isPending}>Save changes</button>
+                  <button type="button" className="wb-btn" disabled={!dirty} onClick={() => setForm(settings.data ? editable(settings.data) : null)}>Reset</button>
                 </div>
               </form>
             )}

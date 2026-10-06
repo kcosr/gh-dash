@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigationType } from 'react-router';
 import { Icon } from './Icon';
+import { Input, Kbd } from '../workbench';
 
 /**
  * Text filter bound to a URL param. Local state keeps typing snappy; the URL is
@@ -40,9 +41,11 @@ export function FilterInput({ id = 'q', value, onChange, placeholder, kbd = '/',
   };
 
   return (
-    <label className="field">
+    <label className="wb-filter">
       <Icon name="search" />
-      <input
+      <Input
+        className="wb-filter-input"
+        type="search"
         id={id}
         value={v}
         placeholder={placeholder}
@@ -56,8 +59,8 @@ export function FilterInput({ id = 'q', value, onChange, placeholder, kbd = '/',
         }}
       />
       {v ? (
-        <button type="button" className="field-clear" aria-label="Clear filter" onClick={() => { setV(''); push('', true); }}><Icon name="x" /></button>
-      ) : kbd ? <kbd>{kbd}</kbd> : null}
+        <button type="button" className="wb-filter-clear" aria-label="Clear filter" onClick={() => { setV(''); push('', true); }}><Icon name="x" /></button>
+      ) : kbd ? <Kbd>{kbd}</Kbd> : null}
     </label>
   );
 }

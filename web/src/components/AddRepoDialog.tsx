@@ -1,7 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ChangeEvent, KeyboardEvent, ReactNode } from 'react';
-import { createPortal } from 'react-dom';
 import { Link, useNavigate } from 'react-router';
 import { GITHUB_HOST } from '../../../shared/api';
 import type { ProviderKind, RepoCandidate, RepoPreview, Visibility } from '../../../shared/api';
@@ -10,7 +9,7 @@ import type { Provider } from '../../../shared/provider';
 import { inputHost, repoLabel as labelOf, repoPath, resolveRepoKey, sourceForInput } from '../../../shared/repos';
 import { ApiError } from '../api/client';
 import { qk, useAccount, useAddRepo, usePatchRepo, useRepoCandidates, useRepoLookup, useWorkSources } from '../api/hooks';
-import { useFocusTrap, useLayer } from '../lib/layers';
+import { Modal, Seg, useToast } from '../workbench';
 import { addDefault, sourceSettingsLink } from '../lib/sources';
 import type { WorkSource } from '../lib/sources';
 import { getAddSource, setAddSource } from '../lib/storage';
@@ -21,9 +20,7 @@ import { cx, useDebounced } from '../lib/util';
 import { Icon, ProviderIcon } from './Icon';
 import { RepoName } from './RepoName';
 import { useRepoLabel, useRepoMapCtx, useSourceCtx } from './repoMapContext';
-import { Seg } from './Seg';
 import { sourceTitle } from './SourceBadge';
-import { useToast } from './Toasts';
 
 const SUGGESTED = 8;
 
@@ -95,17 +92,11 @@ export function AddRepoDialog({ onClose }: { onClose: () => void }) {
   const [active, setActive] = useState(0);
   const [include, setInclude] = useState(true);
   const [err, setErr] = useState<string | null>(null);
-  const box = useRef<HTMLDivElement>(null);
   const list = useRef<HTMLDivElement>(null);
-  useLayer(true, onClose);
-  useFocusTrap(box);
+  const cancel = useRef<HTMLButtonElement>(null);
+  useEffect(() => { if (blocked) cancel.current?.focus(); }, [blocked]);
   const qc = useQueryClient();
   useEffect(() => { if (refused) void qc.invalidateQueries({ queryKey: github ? qk.account : qk.sync }); }, [refused, github, qc]);
-  // Blocked after it opened: the input it focused is disabled now, so keep focus inside (on Close).
-  useEffect(() => {
-    if (blocked && !box.current?.contains(document.activeElement)) box.current?.querySelector<HTMLElement>('.modal-h button')?.focus();
-  }, [blocked]);
-
   const items = useMemo(() => candidates.data?.items ?? [], [candidates.data]);
   const typed = inputKeyOn(source, text);
   const matches = useMemo(() => matchCandidates(items, text, 20, github ? undefined : source.host), [items, text, github, source.host]);
@@ -171,7 +162,7 @@ export function AddRepoDialog({ onClose }: { onClose: () => void }) {
     add.mutate({ repo: preview.key, source: github ? undefined : source.host, includeInDefault: include }, {
       onSuccess: (r) => {
         setAddSource(source.host);
-        toast(`Added ${labelOf(r.repo.key, [r.repo])} · ${r.sync === 'started' ? 'syncing its history' : 'it syncs after the current sync'}`, { ms: 5000 });
+        toast(`Added ${labelOf(r.repo.key, [r.repo])} · ${r.sync === 'started' ? 'syncing its history' : 'it syncs after the current sync'}`, { duration: 5000 });
         onClose();
       },
       onError: (e) => {
@@ -273,7 +264,7 @@ export function AddRepoDialog({ onClose }: { onClose: () => void }) {
       </>
     );
   } else if (candidates.isPending) {
-    out = <div className="skel-block ar-skel" aria-label={`Loading your ${words.many}`}>{Array.from({ length: 4 }, (_, i) => <i key={i} />)}</div>;
+    out = <div className="wb-skel-block ar-skel" aria-label={`Loading your ${words.many}`}>{Array.from({ length: 4 }, (_, i) => <i key={i} />)}</div>;
   } else if (candidates.isError) {
     out = <p className="ar-muted">Couldn't load your {words.many}: {(candidates.error as Error).message}</p>;
   } else if (text.trim()) {
@@ -282,28 +273,45 @@ export function AddRepoDialog({ onClose }: { onClose: () => void }) {
     out = <p className="ar-muted">{words.paste} to add any {words.one} the token can read.</p>;
   }
 
-  return createPortal(
-    <>
-      <div className="scrim" onClick={onClose} />
-      <div ref={box} className="modal add-repo" role="dialog" aria-modal="true" aria-labelledby="add-repo-title">
-        <div className="modal-h">
-          <h3 id="add-repo-title">Add repository</h3>
+  return (
+    <Modal open onClose={onClose} title="Add repository" className="add-repo" dismissible={!add.isPending} footer={<>
+
+          {addable && (
+            <label className="ar-inc" title="Unchecked: it's tracked but left out of the default selection, like a hidden repository">
+              <input type="checkbox" checked={include} onChange={(e) => setInclude(e.target.checked)} disabled={add.isPending} />
+              Include in default selection
+            </label>
+          )}
           <span className="spacer" />
-          <button type="button" className="btn icon ghost" onClick={onClose} aria-label="Close"><Icon name="x" /></button>
-        </div>
-        <div className="modal-b ar-b">
+          <button type="button" className="wb-btn" ref={cancel} disabled={add.isPending} onClick={onClose}>Cancel</button>
+          {known ? (
+            <>
+              {known.hidden && <button type="button" className="wb-btn" disabled={patch.isPending} onClick={() => show(known.key)}>Show in default selection</button>}
+              {known.open && <button type="button" className="wb-btn wb-btn--primary" onClick={() => open(known.key)}>Open</button>}
+            </>
+          ) : pending && !stray && !checking && (failure || lookup.isError) ? (
+            <button type="button" className="wb-btn" onClick={() => { setErr(null); void lookup.refetch(); }}><Icon name="sync" />Try again</button>
+          ) : (
+            <button type="button" className="wb-btn wb-btn--primary" disabled={!addable || !!blocked || add.isPending} title={blockedWhy ?? (addable ? undefined : `Choose a ${words.one} first`)} onClick={doAdd}>
+              {add.isPending ? <><span className="spin"><Icon name="sync" /></span>Adding…</> : 'Add repository'}
+            </button>
+          )}
+
+    </>}>
+      <div className="ar-b">
           {sources.length > 1 && (
             <Seg
-              className="sm ar-src"
-              ariaLabel="Source"
+              size="sm" className="ar-src"
+              label="Source"
               value={source.host}
               onChange={switchTo}
               options={sources.map((s) => ({ value: s.host, title: sourceTitle(s), label: <><ProviderIcon kind={s.kind} />{s.name}</> }))}
             />
           )}
-          <label className="field ar-field">
+          <label className="wb-filter ar-field">
             <Icon name="search" />
             <input
+              className="wb-filter-input"
               autoFocus
               value={text}
               onChange={onChange}
@@ -322,33 +330,9 @@ export function AddRepoDialog({ onClose }: { onClose: () => void }) {
             />
           </label>
           <div className="ar-out">{out}</div>
-          {err && <div className="form-err" role="alert">{err}</div>}
-        </div>
-        <div className="modal-f">
-          {addable && (
-            <label className="ar-inc" title="Unchecked: it's tracked but left out of the default selection, like a hidden repository">
-              <input type="checkbox" checked={include} onChange={(e) => setInclude(e.target.checked)} disabled={add.isPending} />
-              Include in default selection
-            </label>
-          )}
-          <span className="spacer" />
-          <button type="button" className="btn" onClick={onClose}>Cancel</button>
-          {known ? (
-            <>
-              {known.hidden && <button type="button" className="btn" disabled={patch.isPending} onClick={() => show(known.key)}>Show in default selection</button>}
-              {known.open && <button type="button" className="btn primary" onClick={() => open(known.key)}>Open</button>}
-            </>
-          ) : pending && !stray && !checking && (failure || lookup.isError) ? (
-            <button type="button" className="btn" onClick={() => { setErr(null); void lookup.refetch(); }}><Icon name="sync" />Try again</button>
-          ) : (
-            <button type="button" className="btn primary" disabled={!addable || !!blocked || add.isPending} title={blockedWhy ?? (addable ? undefined : `Choose a ${words.one} first`)} onClick={doAdd}>
-              {add.isPending ? <><span className="spin"><Icon name="sync" /></span>Adding…</> : 'Add repository'}
-            </button>
-          )}
-        </div>
-      </div>
-    </>,
-    document.body,
+          {err && <div className="wb-form-error" role="alert">{err}</div>}
+              </div>
+    </Modal>
   );
 }
 

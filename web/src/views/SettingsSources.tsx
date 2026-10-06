@@ -14,7 +14,7 @@ import { useDesktop, useSourceActions } from '../api/desktop';
 import { useCheckSource, useDeleteSource, useInstance, useSources, useStartSync } from '../api/hooks';
 import { Avatar } from '../components/Avatar';
 import { Icon, ProviderIcon } from '../components/Icon';
-import { useToast } from '../components/Toasts';
+import { useToast } from '../workbench';
 import { useUI } from '../components/ui';
 import { bridgeError, tokenExpiry, tokenKindLabel } from '../lib/account';
 import {
@@ -70,7 +70,7 @@ function CheckResult({ check, now }: { check: SourceCheck; now: number }) {
   const exp = tokenExpiry(a.expiresAt, a.kind, now);
   const problem = check.conflict ?? a.error ?? (check.ok ? null : 'GitLab did not accept this token.');
   // No account at all (no token, rejected, unreachable): just why.
-  if (!a.login) return <div className="form-err" role="alert">{problem}</div>;
+  if (!a.login) return <div className="wb-form-error" role="alert">{problem}</div>;
   return (
     <div className={cx('src-check', !check.ok && 'bad')} role="status">
       <div className="src-check-who">
@@ -83,7 +83,7 @@ function CheckResult({ check, now }: { check: SourceCheck; now: number }) {
       </div>
       <ExpiryWarning a={a} baseUrl={check.url} now={now} />
       <WriteWarning scopes={a.scopes} baseUrl={check.url} />
-      {problem && <div className="form-err" role="alert">{problem}</div>}
+      {problem && <div className="wb-form-error" role="alert">{problem}</div>}
     </div>
   );
 }
@@ -105,11 +105,11 @@ function MethodPicker({ form, onChange, methods, target, desk, idPrefix }: {
   const canRemember = desk.secureStorage === 'available';
   const pickFile = () => target && chooseTokenFile.mutate(target.baseUrl, {
     onSuccess: (file) => file && onChange({ ...form, method: 'file', file, fileHost: target?.host ?? null }),
-    onError: (e) => toast(bridgeError(e), { error: true }),
+    onError: (e) => toast(bridgeError(e), { tone: 'error' }),
   });
   const locate = () => locateGlab.mutate(undefined, {
     onSuccess: (state) => state && toast('Found the GitLab CLI'),
-    onError: (e) => toast(bridgeError(e), { error: true }),
+    onError: (e) => toast(bridgeError(e), { tone: 'error' }),
   });
   return (
     <>
@@ -125,7 +125,7 @@ function MethodPicker({ form, onChange, methods, target, desk, idPrefix }: {
       )}
       {form.method === 'app' && (
         <span className="acct-token">
-          <input className="input" type="password" value={form.token} onChange={(e) => onChange({ ...form, token: e.target.value })}
+          <input className="wb-input" type="password" value={form.token} onChange={(e) => onChange({ ...form, token: e.target.value })}
             placeholder="glpat-…" aria-label="GitLab token" autoComplete="off" spellCheck={false} id={`${idPrefix}-token`} />
           <label className="acct-check">
             <input type="checkbox" className="repo-check" checked={canRemember && form.remember} disabled={!canRemember} onChange={(e) => onChange({ ...form, remember: e.target.checked })} />
@@ -146,7 +146,7 @@ function MethodPicker({ form, onChange, methods, target, desk, idPrefix }: {
       )}
       {form.method === 'file' && (
         <span className="src-file">
-          <button type="button" className="btn" onClick={pickFile} disabled={!target || chooseTokenFile.isPending} title={target ? undefined : 'Enter the address first'}>Choose file…</button>
+          <button type="button" className="wb-btn" onClick={pickFile} disabled={!target || chooseTokenFile.isPending} title={target ? undefined : 'Enter the address first'}>Choose file…</button>
           {target && fileFor(form, target.host) ? <code className="path">{form.file}</code> : <span className="muted">{target ? 'No file chosen' : 'Enter the address first'}</span>}
           <small className="muted">A file holding just the token, read again on every use. Only you should be able to read it.</small>
         </span>
@@ -216,7 +216,7 @@ function AddGitLab({ desk, open, onOpen, onClose }: { desk: DesktopState; open: 
   if (!open) {
     return (
       <div className="src-add-btn">
-        <button type="button" className="btn" onClick={onOpen}><Icon name="plus" />Add GitLab</button>
+        <button type="button" className="wb-btn" onClick={onOpen}><Icon name="plus" />Add GitLab</button>
       </div>
     );
   }
@@ -227,7 +227,7 @@ function AddGitLab({ desk, open, onOpen, onClose }: { desk: DesktopState; open: 
         <label className="set-row">
           <span className="set-l">Address<small>With its path if GitLab is served under one, like https://example.com/gitlab.</small></span>
           <span className="set-c grow">
-            <input className={cx('input src-url', input && 'error' in input && 'bad')} value={url} onChange={(e) => { setUrl(e.target.value); setError(null); }}
+            <input className="wb-input src-url" aria-invalid={!!input && 'error' in input || undefined} value={url} onChange={(e) => { setUrl(e.target.value); setError(null); }}
               placeholder="https://gitlab.example.com" aria-label="GitLab address" autoComplete="off" spellCheck={false} inputMode="url" />
           </span>
         </label>
@@ -236,18 +236,18 @@ function AddGitLab({ desk, open, onOpen, onClose }: { desk: DesktopState; open: 
           <span className="set-c grow stack">
             <MethodPicker form={form} onChange={change} methods={methods} target={target} desk={desk} idPrefix="add-gl" />
             {current && <CheckResult check={current} now={now} />}
-            {error && <div className="form-err" role="alert">{error}</div>}
+            {error && <div className="wb-form-error" role="alert">{error}</div>}
           </span>
         </div>
       </form>
       <div className="set-actions">
-        <button type="button" className="btn" onClick={test} disabled={busy}>
+        <button type="button" className="wb-btn" onClick={test} disabled={busy}>
           {testSource.isPending ? <><span className="spin"><Icon name="sync" /></span>Testing…</> : 'Test connection'}
         </button>
-        <button type="button" className="btn primary" onClick={add} disabled={!current?.ok || busy} title={current?.ok ? undefined : 'Test the connection first'}>
+        <button type="button" className="wb-btn wb-btn--primary" onClick={add} disabled={!current?.ok || busy} title={current?.ok ? undefined : 'Test the connection first'}>
           {addSource.isPending ? 'Adding…' : 'Add GitLab'}
         </button>
-        <button type="button" className="btn ghost" onClick={() => { reset(); onClose(); }} disabled={addSource.isPending}>Cancel</button>
+        <button type="button" className="wb-btn wb-btn--ghost" onClick={() => { reset(); onClose(); }} disabled={addSource.isPending}>Cancel</button>
       </div>
     </div>
   );
@@ -283,10 +283,10 @@ function ChangeToken({ s, desk, onDone }: { s: Source; desk: DesktopState; onDon
         <span className="set-c grow stack">
           <MethodPicker form={form} onChange={change} methods={methods} target={{ baseUrl: s.url, host: s.host }} desk={desk} idPrefix={`chg-${s.host}`} />
           {failed && <CheckResult check={failed} now={now} />}
-          {error && <div className="form-err" role="alert">{error}</div>}
+          {error && <div className="wb-form-error" role="alert">{error}</div>}
           <span className="src-row-actions">
-            <button type="submit" className="btn primary" disabled={setCredential.isPending}>{setCredential.isPending ? 'Checking…' : 'Use this'}</button>
-            <button type="button" className="btn ghost" onClick={onDone} disabled={setCredential.isPending}>Cancel</button>
+            <button type="submit" className="wb-btn wb-btn--primary" disabled={setCredential.isPending}>{setCredential.isPending ? 'Checking…' : 'Use this'}</button>
+            <button type="button" className="wb-btn wb-btn--ghost" onClick={onDone} disabled={setCredential.isPending}>Cancel</button>
           </span>
         </span>
       </div>
@@ -330,12 +330,12 @@ function GitLabSource({ s, app, desk, desktopServer, from }: {
   const projects = s.repos.owned + s.repos.added;
 
   const recheck = () => check.mutate(s.host, {
-    onSuccess: (x) => toast(x.account?.error ?? (x.account?.login ? `Token checked · ${x.account.login}` : 'Token checked'), { error: !!x.account?.error }),
-    onError: (e) => toast(e instanceof ApiError && e.status === 503 && !isUnreachable(e) ? e.message : `Couldn't check: ${(e as Error).message}`, { error: true, ms: 6000 }),
+    onSuccess: (x) => toast(x.account?.error ?? (x.account?.login ? `Token checked · ${x.account.login}` : 'Token checked'), { tone: x.account?.error ? 'error' : 'default' }),
+    onError: (e) => toast(e instanceof ApiError && e.status === 503 && !isUnreachable(e) ? e.message : `Couldn't check: ${(e as Error).message}`, { tone: 'error', duration: 6000 }),
   });
   const syncNow = () => start.mutate({ source: s.host }, {
     onSuccess: () => toast(`Syncing ${s.host}`),
-    onError: (e) => toast((e as { status?: number }).status === 409 ? 'A sync is already running' : `Sync failed: ${(e as Error).message}`, { error: true }),
+    onError: (e) => toast((e as { status?: number }).status === 409 ? 'A sync is already running' : `Sync failed: ${(e as Error).message}`, { tone: 'error' }),
   });
   const confirmSignOut = () => openConfirm({
     title: `Sign out of ${s.host}?`,
@@ -377,7 +377,7 @@ function GitLabSource({ s, app, desk, desktopServer, from }: {
           <span>This dashboard’s data from {s.host} belongs to <b>{a.dbLogin ?? 'another account'}</b>, but the token is for <b>{a.login ?? 'another account'}</b>. Syncing it is paused: sign in as {a.dbLogin ? <b>{a.dbLogin}</b> : 'that account'} again.</span>
         </p>
       )}
-      <dl className="kv">
+      <dl className="wb-kv">
         {who && (
           <>
             <dt>Account</dt>
@@ -420,16 +420,16 @@ function GitLabSource({ s, app, desk, desktopServer, from }: {
       </dl>
       <div className="set-actions">
         {s.configured && (
-          <button type="button" className="btn" onClick={recheck} disabled={check.isPending} title="Read the token again and check it with GitLab">
+          <button type="button" className="wb-btn" onClick={recheck} disabled={check.isPending} title="Read the token again and check it with GitLab">
             <Icon name="sync" />{check.isPending ? 'Checking…' : 'Check again'}
           </button>
         )}
         {s.configured && a?.source !== 'none' && (
-          <button type="button" className="btn" onClick={syncNow} disabled={start.isPending || s.sync.running} title={`Fetch what changed on ${s.host}`}>Sync now</button>
+          <button type="button" className="wb-btn" onClick={syncNow} disabled={start.isPending || s.sync.running} title={`Fetch what changed on ${s.host}`}>Sync now</button>
         )}
-        {canChange && !changing && <button type="button" className="btn" onClick={() => setChanging(true)}><Icon name="key" />Change token…</button>}
-        {canChange && a?.source === 'app' && <button type="button" className="btn" onClick={confirmSignOut}>Sign out</button>}
-        {(mode === 'app' || mode === 'delete') && <button type="button" className="btn" onClick={confirmRemove}><Icon name="trash" />Remove…</button>}
+        {canChange && !changing && <button type="button" className="wb-btn" onClick={() => setChanging(true)}><Icon name="key" />Change token…</button>}
+        {canChange && a?.source === 'app' && <button type="button" className="wb-btn" onClick={confirmSignOut}>Sign out</button>}
+        {(mode === 'app' || mode === 'delete') && <button type="button" className="wb-btn" onClick={confirmRemove}><Icon name="trash" />Remove…</button>}
         {a?.checkedAt && <span className="set-when">Checked {relLong(a.checkedAt, now)}</span>}
       </div>
       {changing && desk && <ChangeToken s={s} desk={desk} onDone={() => setChanging(false)} />}

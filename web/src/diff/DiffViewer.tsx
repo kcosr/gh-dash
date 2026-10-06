@@ -15,9 +15,7 @@ import { createPlacer, patchLines, placeThreads, type SideLines } from '../../..
 import { PROVIDERS, type Provider } from '../../../shared/provider';
 import type { useThreadActions } from '../api/hooks';
 import { Icon } from '../components/Icon';
-import { Seg } from '../components/Seg';
-import { useToast } from '../components/Toasts';
-import { isTypingTarget, LayerParent, useLayer, useLayerHandle } from '../lib/layers';
+import { Seg, useToast, isTypingTarget, OverlayScope, useLayerHandle, useOverlayOwner, useFocusTrap } from '../workbench';
 import { getDiffPrefs, setDiffPrefs, type DiffPrefs } from '../lib/storage';
 import type { FileFilter } from '../lib/urlState';
 import { cx } from '../lib/util';
@@ -316,14 +314,20 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
   const [listOpen, setListOpen] = useState(false);
   const showList = compact ? listOpen : prefs.files;
   // Esc closes the overlay before the diff view.
-  useLayer(compact && listOpen, () => setListOpen(false));
+  const fileSurface = useRef<HTMLDivElement>(null);
+  const fileOwner = useOverlayOwner(fileSurface);
+  const fileLayer = useLayerHandle(compact && listOpen, () => setListOpen(false), true, fileSurface);
+  useFocusTrap(fileSurface, compact && listOpen, { owner: fileOwner, layers: fileLayer.scope });
   const toggleList = () => (compact ? setListOpen((o) => !o) : updatePrefs({ files: !prefs.files }));
   // The comments column likewise: a saved preference beside the diff, an overlay per visit on compact.
   const [columnOpen, setColumnOpen] = useState(false);
   const showColumn = compact ? columnOpen : prefs.comments;
   // The compact column is a layer of its own (Esc closes it first); the comment keys still work while it's on top.
-  // Composers inside it are layers above it (LayerParent below).
-  const columnLayer = useLayerHandle(compact && columnOpen, () => setColumnOpen(false));
+  // Composers inside it are layers above it (OverlayScope below).
+  const columnSurface = useRef<HTMLDivElement>(null);
+  const columnOwner = useOverlayOwner(columnSurface);
+  const columnLayer = useLayerHandle(compact && columnOpen, () => setColumnOpen(false), true, columnSurface);
+  useFocusTrap(columnSurface, compact && columnOpen, { owner: columnOwner, layers: columnLayer.scope });
   const columnIsTop = columnLayer.isTop;
   const setColumn = useCallback((open: boolean) => (compact ? setColumnOpen(open) : updatePrefs({ comments: open })), [compact, updatePrefs]);
 
@@ -390,7 +394,7 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
     const lines = selectionAnchor(id, vf.file.patch, range);
     const snippet = draftSnippet(vf.file.patch, contents.get(id), lines);
     if (snippet === null) {
-      toast("Couldn't read these lines: expand the context around them and select them again", { error: true });
+      toast("Couldn't read these lines: expand the context around them and select them again", { tone: 'error' });
       return;
     }
     // The draft for these lines at this revision: the one set aside earlier, or a new one.
@@ -765,7 +769,7 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
     setReplyRequest(id);
   }, [jumpToThread, columnIsTop]);
   const toggleResolved = useCallback((t: CommentThread) => {
-    actions.setStatus(t.id, t.status === 'open' ? 'resolved' : 'open').catch((e: unknown) => toast(`Couldn't update: ${(e as Error).message}`, { error: true }));
+    actions.setStatus(t.id, t.status === 'open' ? 'resolved' : 'open').catch((e: unknown) => toast(`Couldn't update: ${(e as Error).message}`, { tone: 'error' }));
   }, [actions, toast]);
 
   const threadsState = useMemo((): ThreadsState => ({
@@ -913,7 +917,7 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
   return (
     <div className={cx('diff-viewer', compact && 'compact')} ref={root} onKeyDown={expandControls.onKeyDown}>
       <div className="dvr-bar">
-        <button type="button" className={cx('btn icon ghost dvr-list-btn', showList && 'on')} onClick={toggleList} aria-pressed={showList} title={showList ? 'Hide file list' : 'Show file list'} aria-label="File list">
+        <button type="button" className={cx('wb-btn wb-btn--icon wb-btn--ghost dvr-list-btn', showList && 'on')} onClick={toggleList} aria-pressed={showList} title={showList ? 'Hide file list' : 'Show file list'} aria-label="File list">
           <Icon name="list" />
         </button>
         <Position current={current} indexOf={indexOf} total={files.length} />
@@ -921,8 +925,8 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
         {!compact && (
           <>
             <Seg
-              className="sm"
-              ariaLabel="Layout"
+              size="sm"
+              label="Layout"
               value={split ? 'split' : 'unified'}
               onChange={(v) => updatePrefs({ split: v === 'split' })}
               options={[{ value: 'unified', label: 'Unified', title: 'Unified (s)' }, { value: 'split', label: 'Split', title: 'Split (s)' }]}
@@ -930,7 +934,7 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
             <button type="button" className={cx('tbl-btn', prefs.wrap && 'on')} aria-pressed={prefs.wrap} onClick={() => updatePrefs({ wrap: !prefs.wrap })} title="Wrap long lines (w)">Wrap</button>
           </>
         )}
-        <button type="button" className={cx('btn ghost dvr-cm-btn', showColumn && 'on')} onClick={() => setColumn(!showColumn)} aria-pressed={showColumn}
+        <button type="button" className={cx('wb-btn wb-btn--ghost dvr-cm-btn', showColumn && 'on')} onClick={() => setColumn(!showColumn)} aria-pressed={showColumn}
           title={`${showColumn ? 'Hide' : 'Show'} comments (c)${comments.error ? " · couldn't load them" : ''}`} aria-label="Comments">
           <Icon name="comment" />
           {threads.length > 0 && <span className={cx('n', openCount > 0 && 'open')}>{openCount || threads.length}</span>}
@@ -939,8 +943,14 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
       </div>
       <ThreadsCtx.Provider value={threadsState}>
         <div className="dvr-main">
-          {showList && <FileList files={navFiles} current={current} onPick={goTo} footer={hints} comments={counts} only={only} onOnly={onOnly} />}
-          {compact && listOpen && <div className="dvr-scrim" onClick={() => setListOpen(false)} />}
+          {showList && (
+            <OverlayScope layers={fileLayer.scope} owner={fileOwner}>
+              <div ref={fileSurface} className="dvr-overlay" tabIndex={compact ? -1 : undefined}>
+                <FileList files={navFiles} current={current} onPick={goTo} footer={hints} comments={counts} only={only} onOnly={onOnly} />
+                {compact && listOpen && <div className="dvr-scrim" onClick={() => setListOpen(false)} />}
+              </div>
+            </OverlayScope>
+          )}
           {files.length ? (
             <WorkerPoolContextProvider {...POOL}>
               <CodeView
@@ -958,13 +968,15 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
             <div className="dvr-scroll dvr-empty">No changed files.</div>
           )}
           {showColumn && (
-            <LayerParent.Provider value={columnLayer.scope}>
-              <CommentsColumn threads={ordered} order={indexOf} title={title} kind={diff.kind} number={diff.number} provider={provider} error={comments.error} onRetry={comments.retry}
-                onJump={(id) => focusThread(id, { scroll: true })} onClose={() => setColumn(false)} onCreateGeneral={createGeneral}
-                unsent={unsent} sending={sending} headOid={diff.headOid} onResume={resumeDraft} onDiscardDraft={removeNewDraft} />
-            </LayerParent.Provider>
+            <OverlayScope layers={columnLayer.scope} owner={columnOwner}>
+              <div ref={columnSurface} className="dvr-overlay" tabIndex={compact ? -1 : undefined}>
+                <CommentsColumn threads={ordered} order={indexOf} title={title} kind={diff.kind} number={diff.number} provider={provider} error={comments.error} onRetry={comments.retry}
+                  onJump={(id) => focusThread(id, { scroll: true })} onClose={() => setColumn(false)} onCreateGeneral={createGeneral}
+                  unsent={unsent} sending={sending} headOid={diff.headOid} onResume={resumeDraft} onDiscardDraft={removeNewDraft} />
+                {compact && columnOpen && <div className="dvr-scrim" onClick={() => setColumnOpen(false)} />}
+              </div>
+            </OverlayScope>
           )}
-          {compact && columnOpen && <div className="dvr-scrim" onClick={() => setColumnOpen(false)} />}
         </div>
       </ThreadsCtx.Provider>
     </div>

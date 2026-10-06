@@ -1,12 +1,13 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import type { ReactNode } from 'react';
 import { Link, useLocation } from 'react-router';
 import { isUnreachable } from '../api/client';
 import { useAccount, useStartSync, useSyncStatus, useUnresolvedCount, useWorkSources } from '../api/hooks';
 import { PROVIDERS } from '../../../shared/provider';
 import type { PrWords } from '../../../shared/provider';
-import { getTheme, setTheme } from '../lib/storage';
-import type { Theme } from '../lib/storage';
+import { THEME_KEY } from '../lib/storage';
+import { Brand, TopBar as WorkbenchTopBar, TopSearch, useTheme as useWorkbenchTheme } from '../workbench';
+import type { Theme } from '../workbench';
 import { fmtNum, fmtTime, relFuture, relLong } from '../lib/time';
 import { ALL, ctxOf, usePlaces, useSwitchContext, viewHref } from '../lib/contexts';
 import { GITHUB_HOST } from '../../../shared/api';
@@ -19,7 +20,7 @@ import { Icon, ProviderIcon } from './Icon';
 import type { IconName } from './Icon';
 import { useRepoLabel, useSourceCtx, useWords } from './repoMapContext';
 import { sourceTitle } from './SourceBadge';
-import { useToast } from './Toasts';
+import { useToast } from '../workbench';
 import { useUI } from './ui';
 
 const NAV: { path: string; label: (w: PrWords) => string; icon: IconName; views: string[] }[] = [
@@ -32,13 +33,8 @@ const NAV: { path: string; label: (w: PrWords) => string; icon: IconName; views:
 ];
 
 export function useTheme(): [Theme, () => void] {
-  const [theme, set] = useState<Theme>(getTheme);
-  const toggle = () => {
-    const next: Theme = getTheme() === 'dark' ? 'light' : 'dark';
-    setTheme(next);
-    set(next);
-  };
-  return [theme, toggle];
+  const { theme, setMode } = useWorkbenchTheme(THEME_KEY);
+  return [theme, () => setMode(theme === 'dark' ? 'light' : 'dark')];
 }
 
 /** Trigger a manual sync with toasts for the edge cases. */
@@ -59,8 +55,8 @@ export function useSyncNow() {
           const status = (e as { status?: number }).status;
           if (status === 409) toast('A sync is already running');
           // No token (or the account doesn't match): the server's message says what to do.
-          else if (status === 503 && !isUnreachable(e)) toast((e as Error).message, { error: true, ms: 6000 });
-          else toast(`Sync failed: ${(e as Error).message}`, { error: true });
+          else if (status === 503 && !isUnreachable(e)) toast((e as Error).message, { tone: 'error', duration: 6000 });
+          else toast(`Sync failed: ${(e as Error).message}`, { tone: 'error' });
         },
       }),
   };
@@ -105,25 +101,23 @@ export function TopBar({ theme, onToggleTheme, onOpenSidebar, sidebarOpen = fals
   }, [view]);
 
   return (
-    <header className={multi ? 'topbar has-ctx' : 'topbar'}>
-      {onOpenSidebar && <button type="button" className="btn icon" onClick={onOpenSidebar}
+    <WorkbenchTopBar className={multi ? 'topbar has-ctx' : 'topbar'}>
+      {onOpenSidebar && <button type="button" className="wb-btn wb-btn--icon" onClick={onOpenSidebar}
         aria-label="Open sidebar" aria-haspopup="dialog" aria-controls="mobile-sidebar" aria-expanded={sidebarOpen}>
         <Icon name="list" />
       </button>}
-      {onToggleSidebar && <button id="sidebar-toggle" type="button" className="btn icon ghost" onClick={onToggleSidebar}
+      {onToggleSidebar && <button id="sidebar-toggle" type="button" className="wb-btn wb-btn--icon wb-btn--ghost" onClick={onToggleSidebar}
         title={`${sidebarHidden ? 'Show' : 'Hide'} sidebar ([)`} aria-label={sidebarHidden ? 'Show sidebar' : 'Hide sidebar'}
         aria-controls={sidebarHidden ? undefined : 'sidebar'} aria-expanded={!sidebarHidden}>
         <Icon name="list" />
       </button>}
-      <Link to={hrefTo('/prs')} className="brand" aria-label="gh-dash home">
-        <span className="mark"><Icon name="pulse" /></span><span className="brand-name">gh-dash</span>
-      </Link>
+      <Brand name="gh-dash" icon="pulse" href={hrefTo('/prs')} />
       <ContextSwitcher />
-      <nav ref={navRef} className="nav" aria-label="Main">
+      <nav ref={navRef} className="wb-nav nav" aria-label="Main">
         {NAV.map((n) => {
           const on = n.views.includes(view);
           return (
-            <Link key={n.path} to={hrefTo(n.path)} className={on ? 'on' : undefined} aria-current={on ? 'page' : undefined}>
+            <Link key={n.path} to={hrefTo(n.path)} className="wb-nav-tab" aria-current={on ? 'page' : undefined}>
               <Icon name={n.icon} />
               {n.label(w)}
               {n.path === '/comments' && <UnresolvedCount href={hrefTo(n.path)} />}
@@ -132,20 +126,16 @@ export function TopBar({ theme, onToggleTheme, onOpenSidebar, sidebarOpen = fals
         })}
       </nav>
       <span className="spacer" />
-      <button type="button" className="top-search" onClick={openPalette} aria-label={`Search repos, ${w.shortMany}, views`}>
-        <Icon name="search" />
-        <span>Search repos, {w.shortMany}, views…</span>
-        <kbd>{MOD_K}</kbd>
-      </button>
+      <TopSearch onClick={openPalette} placeholder={`Search repos, ${w.shortMany}, views…`} shortcut={MOD_K} />
       <SyncIndicator />
       <SyncButton />
-      <button type="button" className="btn icon ghost" onClick={onToggleTheme} title={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'} aria-label="Toggle theme">
+      <button type="button" className="wb-btn wb-btn--icon wb-btn--ghost" onClick={onToggleTheme} title={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'} aria-label="Toggle theme">
         <Icon name={theme === 'dark' ? 'sun' : 'moon'} />
       </button>
-      <Link to="/settings" className={`btn icon ghost${view === 'settings' ? ' on' : ''}`} title="Settings: token, sync interval, your commit emails" aria-label="Settings">
+      <Link to="/settings" className="wb-btn wb-btn--icon wb-btn--ghost" aria-current={view === 'settings' ? 'page' : undefined} title="Settings: token, sync interval, your commit emails" aria-label="Settings">
         <Icon name="sliders" />
       </Link>
-    </header>
+    </WorkbenchTopBar>
   );
 }
 
@@ -175,9 +165,9 @@ function ContextSwitcher() {
     { value: ALL, kind: null, name: 'All', title: 'All sources' },
   ];
   return (
-    <div className="seg ctx-switch" role="group" aria-label="Source">
+    <div className="wb-seg ctx-switch" role="group" aria-label="Source">
       {options.map((o) => (
-        <button key={o.value} type="button" className={o.value === on ? 'on' : undefined} aria-pressed={o.value === on}
+        <button key={o.value} type="button" className="wb-seg-btn" aria-pressed={o.value === on}
           title={o.title} aria-label={o.name}
           // On Settings (context-free) the current one also leads back to its place.
           onClick={() => { if (o.value !== on || view === 'settings') switchTo(o.value); }}>
@@ -282,7 +272,7 @@ export function useContextSync() {
 function SyncButton() {
   const sync = useContextSync();
   return (
-    <button type="button" className="btn sync-trigger" aria-label="Sync now" disabled={sync.disabled} onClick={sync.run} title={sync.tip}>
+    <button type="button" className="wb-btn sync-trigger" aria-label="Sync now" disabled={sync.disabled} onClick={sync.run} title={sync.tip}>
       <Icon name="sync" />
       <span className="sync-label">Sync now</span>
     </button>

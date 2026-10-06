@@ -6,9 +6,9 @@
  * files and are re-exported at the bottom. Hand-rolled SVG, no chart library.
  *
  * Color conventions:
- *  - Activity series are fixed by entity, never by rank: commits = --s1, PRs merged = --s2, issues = --s3.
- *  - "You vs others" uses the emphasis form: you = --s1, others = --deemph.
- *  - Single-series charts use --s1. Magnitude (heatmap) uses the --seq-0..5 ramp.
+ *  - Activity series are fixed by entity, never by rank: commits = --wb-s1, PRs merged = --wb-s2, issues = --wb-s3.
+ *  - "You vs others" uses the emphasis form: you = --wb-s1, others = --wb-deemph.
+ *  - Single-series charts use --wb-s1. Magnitude (heatmap) uses the --wb-seq-0..5 ramp.
  *  - Text never wears series color.
  */
 import type { ReactNode } from 'react';
@@ -17,19 +17,19 @@ import './charts.css';
 export interface SeriesDef {
   key: string;
   label: string;
-  /** Any CSS color; normally a token such as 'var(--s1)'. */
+  /** Any CSS color; normally a token such as 'var(--wb-s1)'. */
   color: string;
 }
 
 export const ACTIVITY_SERIES = {
-  commits: { key: 'commits', label: 'Commits', color: 'var(--s1)' },
-  prsMerged: { key: 'prsMerged', label: 'PRs merged', color: 'var(--s2)' },
-  issues: { key: 'issues', label: 'Issues', color: 'var(--s3)' },
+  commits: { key: 'commits', label: 'Commits', color: 'var(--wb-s1)' },
+  prsMerged: { key: 'prsMerged', label: 'PRs merged', color: 'var(--wb-s2)' },
+  issues: { key: 'issues', label: 'Issues', color: 'var(--wb-s3)' },
 } satisfies Record<string, SeriesDef>;
 
 export const YOU_VS_OTHERS: SeriesDef[] = [
-  { key: 'mine', label: 'You', color: 'var(--s1)' },
-  { key: 'others', label: 'Others', color: 'var(--deemph)' },
+  { key: 'mine', label: 'You', color: 'var(--wb-s1)' },
+  { key: 'others', label: 'Others', color: 'var(--wb-deemph)' },
 ];
 
 export interface ColumnDatum {
@@ -99,7 +99,7 @@ export interface HBarRow {
   /** Muted text drawn before the label, e.g. a repo's "owner/". Measured and truncated together with the label (the owner gives way first); the tooltip title is prefix + label. */
   labelPrefix?: string;
   value: number;
-  /** Extra tooltip rows (optional `color` draws a line key, e.g. 'var(--s2)'). */
+  /** Extra tooltip rows (optional `color` draws a line key, e.g. 'var(--wb-s2)'). */
   breakdown?: { label: string; value: number; color?: string }[];
   onClick?: () => void;
 }

@@ -1,7 +1,6 @@
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
-import { useEffect, useMemo, useRef, useState } from 'react';
-import type { KeyboardEvent, ReactNode } from 'react';
-import { createPortal } from 'react-dom';
+import { useMemo, useState } from 'react';
+import type { ReactElement, ReactNode } from 'react';
 import type { PullRequest } from '../../../shared/api';
 import { capitalize, refText } from '../../../shared/provider';
 import { highlightParts } from '../../../shared/repo-display';
@@ -10,7 +9,8 @@ import { api } from '../api/client';
 import { useApiBase, useRepos, useViews } from '../api/hooks';
 import { API_OFF_HINT, apiLink } from '../lib/account';
 import { ALL_TIME_FROM, exportTarget, exportUrl } from '../lib/apiQuery';
-import { useFocusTrap, useLayer } from '../lib/layers';
+import { CommandPalette as WorkbenchPalette, useToast } from '../workbench';
+import type { PaletteSource } from '../workbench';
 import { browserTz, fmtDate } from '../lib/time';
 import { ALL, useSwitchContext } from '../lib/contexts';
 import { branchDiffId, carrySearch, keepRepoInScope, parseDiffId, patchSearch, repoFromPath, repoLinkSearch, useUrlState } from '../lib/urlState';
@@ -21,7 +21,6 @@ import { Icon, ProviderIcon } from './Icon';
 import type { IconName } from './Icon';
 import { useProviderOf, useRepoLabel, useRepoMapCtx, useSourceCtx, useWords } from './repoMapContext';
 import { sourceTitle } from './SourceBadge';
-import { useToast } from './Toasts';
 import { useViewHref } from './TopBar';
 import { useUI } from './ui';
 
@@ -29,7 +28,7 @@ import { useUI } from './ui';
  * `labelParts` draws a repo name: a muted owner, then the name (`label` is the same text, for matching). `step`: the
  * item leads to another step of the palette, which stays open.
  */
-interface Item { key: string; icon: ReactNode; label: string; labelParts?: [string, string]; right?: ReactNode; run: () => void; step?: boolean }
+interface Item { key: string; icon: ReactElement; label: string; labelParts?: [string, string]; right?: ReactNode; run: () => void; step?: boolean }
 interface Section { title: string; items: Item[] }
 
 /**
@@ -40,13 +39,6 @@ type Step = { kind: 'repo' } | { kind: 'branch'; repo: string; back: Step | null
 
 /** Branches a step lists at most (newest first; typing narrows them). */
 const BRANCHES_SHOWN = 12;
-
-function Highlight({ text, q }: { text: string; q: string }) {
-  if (!q) return <>{text}</>;
-  const i = text.toLowerCase().indexOf(q.toLowerCase());
-  if (i < 0) return <>{text}</>;
-  return <>{text.slice(0, i)}<mark>{text.slice(i, i + q.length)}</mark>{text.slice(i + q.length)}</>;
-}
 
 /** A repo name with the owner muted; a search match is marked in either part, or across the slash. */
 function RepoHighlight({ parts, q }: { parts: [string, string]; q: string }) {
@@ -80,22 +72,14 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggle
   const views = useViews();
   const apiBase = useApiBase();
   const [q, setQ] = useState('');
-  const [idx, setIdx] = useState(0);
   const [step, setStep] = useState<Step | null>(null);
   const dq = useDebounced(q.trim(), 160);
-  const go = (next: Step | null) => { setStep(next); setQ(''); input.current?.focus(); };
+  const go = (next: Step | null) => { setStep(next); setQ(''); };
   // The repo in view, if any: its page, the list narrowed to it, or its diff.
   const inView = [repoParam, s.repos?.length === 1 ? s.repos[0] : undefined, parseDiffId(s.diff)?.repo].find((k) => k && repoMap.has(k)) ?? null;
   // Branches to list: the step's repo's; on a repo's page, its own as you type.
   const branchRepo = step?.kind === 'branch' ? step.repo : !step && view === 'repo' && repoParam && repoMap.has(repoParam) ? repoParam : null;
   const branches = useBranchSearch(branchRepo, q);
-  const box = useRef<HTMLDivElement>(null);
-  const input = useRef<HTMLInputElement>(null);
-  const results = useRef<HTMLDivElement>(null);
-  useLayer(true, onClose);
-  useFocusTrap(box);
-  useEffect(() => { input.current?.focus(); }, []);
-
   // "<repo>#<n>" (a PR) or "<repo>!<n>" (an MR): the repo part is a key, an alias, or (failing both) a short name shared
   // by tracked repos of that kind, the context's first (paletteRefKeys). A `!` naming no GitLab repo is text.
   const refKeys = useMemo(() => {
@@ -273,99 +257,68 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggle
     return out;
   }, [q, repos.data, repoMap, repoLabel, providerOf, w, views.data, prSearch.data, view, s, location.search, location.pathname, repoParam, onToggleSidebar, sidebarHidden, apiBase, openAddRepo, sources, multi, ctx, byHost, switchTo, hrefTo, step, inView, branchRepo, branches.items]);
 
-  const flat = sections.flatMap((sec) => sec.items);
-  const cur = Math.min(idx, Math.max(0, flat.length - 1));
-
-  useEffect(() => { setIdx(0); }, [q, step]);
-  useEffect(() => {
-    results.current?.querySelector<HTMLElement>('.pal-item.on')?.scrollIntoView({ block: 'nearest' });
-  }, [cur]);
-
-  const run = (it: Item | undefined) => {
-    if (!it) return;
-    if (!it.step) {
-      onRun();
-      onClose();
-    }
-    it.run();
-  };
-
-  const onKeyDown = (e: KeyboardEvent) => {
-    if (e.key === 'ArrowDown') { e.preventDefault(); setIdx((cur + 1) % Math.max(1, flat.length)); }
-    else if (e.key === 'ArrowUp') { e.preventDefault(); setIdx((cur - 1 + flat.length) % Math.max(1, flat.length)); }
-    else if (e.key === 'Enter') { e.preventDefault(); run(flat[cur]); }
-    // Out of a step, one at a time.
-    else if (e.key === 'Backspace' && step && !q) { e.preventDefault(); go(step.kind === 'branch' ? step.back : null); }
-  };
-  // What a step says in the input, and why it lists nothing.
   const stepRepo = step?.kind === 'branch' ? step.repo : null;
-  const trouble = stepRepo && branches.all.isError && !branches.all.data ? branchListTrouble(branches.all.error, providerOf(stepRepo)).text : null;
+  const trouble = stepRepo && branches.all.isError && !branches.all.data ? branchListTrouble(branches.all.error, providerOf(stepRepo)).text : undefined;
   const none = !stepRepo ? 'No results'
-    : trouble ?? (!branches.all.data ? 'Loading branches…' : q.trim() ? `No branches matching “${q.trim()}”` : 'No branches besides the default one');
+    : q.trim() ? `No branches matching “${q.trim()}”` : 'No branches besides the default one';
 
-  let k = 0;
-  return createPortal(
-    <>
-      <div className="scrim" onClick={onClose} />
-      <div className="palette" role="dialog" aria-modal="true" aria-label="Command palette" ref={box} onKeyDown={onKeyDown}>
-        <div className="pal-in">
-          <Icon name={step ? 'branch' : 'search'} />
-          {step && (
-            <span className="pal-step" title="Backspace to go back">
-              {stepRepo ? repoLabel(stepRepo) : 'Review a branch'}
-            </span>
-          )}
-          <input
-            ref={input}
-            placeholder={step?.kind === 'repo' ? 'Pick a repository…' : step ? 'Filter branches…' : `Search repos, ${w.many}, views, actions…`}
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            autoComplete="off"
-            spellCheck={false}
-            role="combobox"
-            aria-expanded="true"
-            aria-controls="pal-res"
-            aria-activedescendant={flat[cur] ? `pal-${cur}` : undefined}
-          />
-          {(step ? branches.all.isFetching || branches.searching : prSearch.isFetching) && <span className="spin"><Icon name="sync" /></span>}
-          <kbd>esc</kbd>
-        </div>
-        <div className="pal-res" id="pal-res" role="listbox" ref={results}>
-          {sections.map((sec) => (
-            <div key={sec.title} role="group" aria-label={sec.title}>
-              <div className="pal-sec">{sec.title}</div>
-              {sec.items.map((it) => {
-                const i = k++;
-                return (
-                  <button
-                    key={it.key}
-                    id={`pal-${i}`}
-                    type="button"
-                    role="option"
-                    aria-selected={i === cur}
-                    tabIndex={-1}
-                    className={`pal-item${i === cur ? ' on' : ''}`}
-                    onMouseMove={() => { if (i !== cur) setIdx(i); }}
-                    onClick={() => run(it)}
-                  >
-                    {it.icon}
-                    <span className="pal-l">{it.labelParts ? <RepoHighlight parts={it.labelParts} q={q.trim()} /> : <Highlight text={it.label} q={q.trim()} />}</span>
-                    {it.right && <span className="r">{it.right}</span>}
-                  </button>
-                );
-              })}
-            </div>
-          ))}
-          {!flat.length && <div className="pal-none">{none}</div>}
-        </div>
-        <div className="pal-foot">
-          <span><kbd>↑</kbd> <kbd>↓</kbd> navigate</span>
-          <span><kbd>↵</kbd> open</span>
-          {step && <span><kbd>⌫</kbd> back</span>}
-          <span><kbd>esc</kbd> close</span>
-        </div>
-      </div>
-    </>,
-    document.body,
+  // Product hooks own provider-aware lookup and ordering. The shared palette owns
+  // navigation, overlays, highlighting and step focus; avoid filtering these
+  // curated results again (a direct PR reference need not match the PR title).
+  const paletteSources: PaletteSource[] = sections.map((section, index) => ({
+    id: `gh-section-${index}`,
+    title: section.title,
+    limit: section.items.length,
+    items: () => section.items.map((item) => ({
+      id: item.key,
+      label: item.label,
+      icon: item.icon,
+      hint: item.right,
+      renderLabel: item.labelParts ? (query) => <RepoHighlight parts={item.labelParts!} q={query} /> : undefined,
+      keepOpen: item.step,
+      onSelect: () => {
+        if (!item.step) onRun();
+        item.run();
+      },
+    })),
+  }));
+  // Loading/errors remain visible even when a lookup has no result section yet.
+  if (stepRepo) {
+    paletteSources.push({
+      id: 'gh-branch-status', title: `Branches of ${repoLabel(stepRepo)}`,
+      loading: branches.all.isFetching || branches.searching,
+      error: trouble,
+      onRetry: () => { void branches.all.refetch(); },
+    });
+  } else if (step?.kind === 'repo') {
+    paletteSources.push({
+      id: 'gh-repo-status', title: 'Repositories', loading: repos.isFetching,
+      error: repos.isError ? 'Could not load repositories' : undefined,
+      onRetry: () => { void repos.refetch(); },
+    });
+  } else {
+    paletteSources.push({
+      id: 'gh-pr-status', title: capitalize(w.many), loading: prSearch.isFetching,
+      error: prSearch.isError ? `Could not load ${w.many}` : undefined,
+      onRetry: () => { void prSearch.refetch(); },
+    });
+  }
+
+  return (
+    <WorkbenchPalette
+      open
+      onClose={onClose}
+      sources={paletteSources}
+      query={q}
+      onQueryChange={setQ}
+      placeholder={step?.kind === 'repo' ? 'Pick a repository…' : step ? 'Filter branches…' : `Search repos, ${w.many}, views, actions…`}
+      emptyText={none}
+      step={step ? {
+        id: stepRepo ? `branch:${stepRepo}` : 'repo',
+        title: stepRepo ? repoLabel(stepRepo) : 'Review a branch',
+        onBack: () => go(step.kind === 'branch' ? step.back : null),
+        backLabel: 'Back',
+      } : undefined}
+    />
   );
 }

@@ -8,7 +8,7 @@ import { ChartCard, HBars, StackedColumns, StatTile } from '../charts';
 import { prIconClass, prIconName } from '../components/bits';
 import { BranchesCard } from '../components/Branches';
 import { DateRangeButton } from '../components/DateRange';
-import { EmptyState, ErrorNote, ProgressBar } from '../components/EmptyState';
+import { Button, EmptyState, ErrorState, ProgressBar, Seg } from '../workbench';
 import { Icon, ProviderIcon } from '../components/Icon';
 import { Labels } from '../components/Label';
 import { Markdown } from '../components/Markdown';
@@ -16,7 +16,7 @@ import { RepoName } from '../components/RepoName';
 import { UnavailableNote } from '../components/RepoTracking';
 import { useProviderOf, useRepoLabel, useSourceCtx } from '../components/repoMapContext';
 import { sourceTitle } from '../components/SourceBadge';
-import { Seg, WHO_OPTIONS } from '../components/Seg';
+import { WHO_OPTIONS } from '../lib/filterOptions';
 import { useUI } from '../components/ui';
 import { ALL_TIME_FROM, repoPageScope, scopeParams, statsParams } from '../lib/apiQuery';
 import { activityColumns, contributorBars, mergedLabel, tileProps } from '../lib/statsCharts';
@@ -74,7 +74,7 @@ export function RepoDetailView() {
     return (
       <main className="main tint">
         <div className="scroll">
-          <EmptyState icon="book" title={`No repository named “${label}”`} action={<Link className="btn" to={`/repos${carrySearch(location.search)}`}>All repositories</Link>}>
+          <EmptyState icon="book" title={`No repository named “${label}”`} actions={<Link className="wb-btn" to={`/repos${carrySearch(location.search)}`}>All repositories</Link>}>
             It may have been renamed, deleted, or not synced yet.
           </EmptyState>
         </div>
@@ -96,13 +96,13 @@ export function RepoDetailView() {
     <main className="main tint">
       <div className="toolbar">
         <div className="row">
-          <Link to={`/repos${carrySearch(location.search)}`} className="btn ghost crumb"><Icon name="chevronLeft" />Repositories</Link>
+          <Link to={`/repos${carrySearch(location.search)}`} className="wb-btn wb-btn--ghost crumb"><Icon name="chevronLeft" />Repositories</Link>
           <DateRangeButton />
-          <Seg value={s.who} onChange={(who) => set({ who })} options={WHO_OPTIONS} ariaLabel="Author" />
+          <Seg value={s.who} onChange={(who) => set({ who })} options={WHO_OPTIONS} label="Author" />
           <span className="summary">{range.text}</span>
           <span className="spacer" />
-          <Link className="btn" to={`/activity?${repoLinkSearch(key, s.source)}`}><Icon name="pulse" />Activity</Link>
-          <button type="button" className="btn" onClick={() => openExport('api')}><Icon name="braces" />API</button>
+          <Link className="wb-btn" to={`/activity?${repoLinkSearch(key, s.source)}`}><Icon name="pulse" />Activity</Link>
+          <button type="button" className="wb-btn" onClick={() => openExport('api')}><Icon name="braces" />API</button>
         </div>
       </div>
       <div className="scroll" id="scroll">
@@ -119,20 +119,20 @@ export function RepoDetailView() {
               {repo.isFork && <span className="vis-badge"><Icon name="fork" />Fork</span>}
               {repo.hidden && <span className="vis-badge">Hidden</span>}
               <span className="spacer" />
-              <button
+              <Button
                 type="button"
-                className={cx('btn', repo.pinned && 'on-accent')}
+                variant={repo.pinned ? 'primary' : 'default'}
                 onClick={() => patch.mutate({ key: repo.key, patch: { pinned: !repo.pinned } })}
                 aria-pressed={repo.pinned}
               >
                 <Icon name="pin" />{repo.pinned ? 'Pinned' : 'Pin'}
-              </button>
-              <a className="btn primary" href={repo.url} target="_blank" rel="noopener noreferrer"><Icon name="ext" />Open on {p.name}</a>
+              </Button>
+              <a className="wb-btn wb-btn--primary" href={repo.url} target="_blank" rel="noopener noreferrer"><Icon name="ext" />Open on {p.name}</a>
             </div>
             {repo.unavailable && <UnavailableNote repo={repo} />}
             {repo.description && <p className="rh-desc">{repo.description}</p>}
             <div className="rc-stats rh-stats">
-              {repo.language && <span><i className="lang" style={{ '--lc': repo.language.color ?? 'var(--muted)' } as CSSProperties} />{repo.language.name}</span>}
+              {repo.language && <span><i className="lang" style={{ '--lc': repo.language.color ?? 'var(--wb-muted)' } as CSSProperties} />{repo.language.name}</span>}
               {repo.visibility === 'public' && <span><Icon name="star" />{repo.stars.toLocaleString()} stars{repo.stats.newStars30d > 0 && repo.trackedBy === 'owned' && <em>+{repo.stats.newStars30d}</em>}</span>}
               <span><Icon name="fork" />{repo.forks.toLocaleString()} forks</span>
               <span><Icon name="prOpen" />{repo.stats.openPrs} open {w.shortMany}</span>
@@ -148,7 +148,7 @@ export function RepoDetailView() {
         )}
 
         {(repos.isError && !repos.data) || (stats.isError && !st) ? (
-          <ErrorNote error={repos.error ?? stats.error} onRetry={() => { void repos.refetch(); void stats.refetch(); }} />
+          <ErrorState error={repos.error ?? stats.error} onRetry={() => { void repos.refetch(); void stats.refetch(); }} />
         ) : !st || !tiles || !activity || !people ? <InsightsSkeleton /> : (
           <>
             <div className="kpis">

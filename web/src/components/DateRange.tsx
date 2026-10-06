@@ -1,7 +1,6 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import type { KeyboardEvent } from 'react';
-import { createPortal } from 'react-dom';
-import { useLayer } from '../lib/layers';
+import { useEffect, useRef, useState } from 'react';
+import type { KeyboardEvent, RefObject } from 'react';
+import { Popover, Input } from '../workbench';
 import { RANGES, rangeHint } from '../lib/range';
 import type { RangeId } from '../lib/range';
 import { isValidDateOnly } from '../lib/time';
@@ -21,7 +20,7 @@ export function DateRangeButton() {
       <button
         ref={btn}
         type="button"
-        className="btn"
+        className="wb-btn"
         aria-haspopup="dialog"
         aria-expanded={open}
         onClick={() => setOpen((o) => !o)}
@@ -33,7 +32,7 @@ export function DateRangeButton() {
       </button>
       {open && (
         <DateRangePopover
-          anchor={btn.current}
+          anchor={btn}
           current={s.range}
           from={range.from}
           to={range.to}
@@ -47,7 +46,7 @@ export function DateRangeButton() {
 }
 
 function DateRangePopover({ anchor, current, from, to, onClose, onPick, onCustom }: {
-  anchor: HTMLElement | null;
+  anchor: RefObject<HTMLButtonElement | null>;
   current: RangeId;
   from: string;
   to: string;
@@ -55,34 +54,19 @@ function DateRangePopover({ anchor, current, from, to, onClose, onPick, onCustom
   onPick: (id: RangeId) => void;
   onCustom: (from: string, to: string) => void;
 }) {
-  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
   const [custom, setCustom] = useState(current === 'custom');
   const [a, setA] = useState(from);
   const [b, setB] = useState(to);
   const pop = useRef<HTMLDivElement>(null);
-  useLayer(true, onClose);
-
-  useLayoutEffect(() => {
-    const place = () => {
-      if (!anchor) return;
-      const r = anchor.getBoundingClientRect();
-      const w = pop.current?.offsetWidth ?? 280;
-      setPos({ top: r.bottom + 6, left: Math.max(8, Math.min(r.left, window.innerWidth - w - 8)) });
-    };
-    place();
-    window.addEventListener('resize', place);
-    return () => window.removeEventListener('resize', place);
-  }, [anchor, custom]);
-
   useEffect(() => {
     // The current preset (not simply the first option in the list).
-    const el = custom ? pop.current?.querySelector<HTMLElement>('input') : pop.current?.querySelector<HTMLElement>('.opt.on') ?? pop.current?.querySelector<HTMLElement>('.opt');
+    const el = custom ? pop.current?.querySelector<HTMLElement>('input') : pop.current?.querySelector<HTMLElement>('[aria-pressed="true"]') ?? pop.current?.querySelector<HTMLElement>('.wb-menu-item');
     el?.focus();
   }, [custom]);
 
   const onKeyDown = (e: KeyboardEvent) => {
-    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
-    const opts = [...(pop.current?.querySelectorAll<HTMLElement>('.opt') ?? [])];
+    if ((e.target as HTMLElement).tagName === 'INPUT' || (e.key !== 'ArrowDown' && e.key !== 'ArrowUp')) return;
+    const opts = [...(pop.current?.querySelectorAll<HTMLElement>('.wb-menu-item') ?? [])];
     const i = opts.indexOf(document.activeElement as HTMLElement);
     const next = opts[(i + (e.key === 'ArrowDown' ? 1 : -1) + opts.length) % opts.length];
     next?.focus();
@@ -91,28 +75,22 @@ function DateRangePopover({ anchor, current, from, to, onClose, onPick, onCustom
 
   const valid = isValidDateOnly(a) && isValidDateOnly(b);
 
-  return createPortal(
-    <>
-      <div className="pop-scrim" onClick={onClose} />
-      <div
-        ref={pop}
-        className="pop"
-        role="dialog"
-        aria-label="Date range"
-        style={{ top: pos?.top ?? -9999, left: pos?.left ?? -9999 }}
-        onKeyDown={onKeyDown}
-      >
+  return (
+    <Popover open onClose={onClose} anchorRef={anchor} label="Date range" className="date-range-popover"
+      initialFocus={(root) => custom ? root.querySelector<HTMLElement>('input') : root.querySelector<HTMLElement>('[aria-pressed="true"]') ?? root.querySelector<HTMLElement>('.wb-menu-item')}
+      onKeyDown={onKeyDown}>
+      <div ref={pop}>
         {RANGES.map((x) => (
-          <button key={x.id} type="button" className={`opt${x.id === current ? ' on' : ''}`} onClick={() => onPick(x.id)}>
-            <span className="ck">{x.id === current && <Icon name="check" />}</span>
+          <button key={x.id} type="button" className="wb-menu-item" aria-pressed={x.id === current} onClick={() => onPick(x.id)}>
+            <span className="wb-menu-check">{x.id === current && <Icon name="check" />}</span>
             {x.label}
             <span className="spacer" />
-            <span className="hint">{rangeHint(x.id)}</span>
+            <span className="wb-menu-hint">{rangeHint(x.id)}</span>
           </button>
         ))}
-        <div className="pop-foot">
-          <button type="button" className={`opt${current === 'custom' ? ' on' : ''}`} onClick={() => setCustom((c) => !c)} aria-expanded={custom}>
-            <span className="ck">{current === 'custom' ? <Icon name="check" /> : <Icon name="cal" />}</span>
+        <div className="date-range-custom">
+          <button type="button" className="wb-menu-item" aria-pressed={current === 'custom'} onClick={() => setCustom((c) => !c)} aria-expanded={custom}>
+            <span className="wb-menu-check">{current === 'custom' ? <Icon name="check" /> : <Icon name="cal" />}</span>
             Custom range…
           </button>
           {custom && (
@@ -120,14 +98,13 @@ function DateRangePopover({ anchor, current, from, to, onClose, onPick, onCustom
               className="custom-range"
               onSubmit={(e) => { e.preventDefault(); if (valid) onCustom(a <= b ? a : b, a <= b ? b : a); }}
             >
-              <label>From<input type="date" value={a} max={b || undefined} onChange={(e) => setA(e.target.value)} required /></label>
-              <label>To<input type="date" value={b} min={a || undefined} onChange={(e) => setB(e.target.value)} required /></label>
-              <button type="submit" className="btn primary" disabled={!valid}>Apply</button>
+              <label>From<Input type="date" value={a} max={b || undefined} onChange={(e) => setA(e.target.value)} required /></label>
+              <label>To<Input type="date" value={b} min={a || undefined} onChange={(e) => setB(e.target.value)} required /></label>
+              <button type="submit" className="wb-btn wb-btn--primary" disabled={!valid}>Apply</button>
             </form>
           )}
         </div>
       </div>
-    </>,
-    document.body,
+    </Popover>
   );
 }

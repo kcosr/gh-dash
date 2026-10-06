@@ -135,7 +135,7 @@ export function CalendarHeatmap({
       const lvl = geo?.levels[i] ?? 0;
       return {
         title: formatLongDate(days[i].date, geo?.withYear),
-        rows: [{ color: `var(--seq-${Math.max(1, lvl)})`, value: fmtNum(days[i].count), label: unit }],
+        rows: [{ color: `var(--wb-seq-${Math.max(1, lvl)})`, value: fmtNum(days[i].count), label: unit }],
       };
     },
     anchor: (i) => {
@@ -168,7 +168,7 @@ export function CalendarHeatmap({
               width={geo.cell}
               height={geo.cell}
               rx={rx}
-              style={{ fill: `var(--seq-${geo.levels[i]})` }}
+              style={{ fill: `var(--wb-seq-${geo.levels[i]})` }}
             />
           );
         })}
@@ -252,7 +252,7 @@ export function CalendarHeatmap({
             <div className="heat-legend" style={{ width: Math.max(svgW, 170) }}>
               Less
               {[0, 1, 2, 3, 4, 5].map((l) => (
-                <i key={l} style={{ background: `var(--seq-${l})` }} title={legendTitle(l)} />
+                <i key={l} style={{ background: `var(--wb-seq-${l})` }} title={legendTitle(l)} />
               ))}
               More
             </div>

@@ -4,7 +4,7 @@ import { refText } from '../../../shared/provider';
 import { useIssueList } from '../api/hooks';
 import { Avatar } from '../components/Avatar';
 import { DateRangeButton } from '../components/DateRange';
-import { EmptyState, ErrorNote, ProgressBar } from '../components/EmptyState';
+import { EmptyState, ErrorState, ProgressBar, Seg } from '../workbench';
 import { FilterInput } from '../components/FilterInput';
 import { FilterToolbar } from '../components/FilterToolbar';
 import { Icon } from '../components/Icon';
@@ -12,7 +12,7 @@ import { Labels } from '../components/Label';
 import { Markdown } from '../components/Markdown';
 import { RepoChip } from '../components/RepoChip';
 import { useProviderOf, useRepoLabel } from '../components/repoMapContext';
-import { Seg, WHO_OPTIONS } from '../components/Seg';
+import { WHO_OPTIONS } from '../lib/filterOptions';
 import { useUI } from '../components/ui';
 import { issueListParams } from '../lib/apiQuery';
 import { plainPreview } from '../lib/markdown';
@@ -47,18 +47,18 @@ export function IssuesView() {
     <main className="main">
       <FilterToolbar summary={[stateLabel, authorLabel, range.text, s.q && `“${s.q}”`].filter(Boolean).join(' · ')}>
         <div className="row">
-          <Seg<IssueState | 'all'> value={state} onChange={(state) => set({ state })} ariaLabel="Issue state" options={[
+          <Seg<IssueState | 'all'> value={state} onChange={(state) => set({ state })} label="Issue state" options={[
             { value: 'open', label: <><Icon name="issue" />Open</> },
             { value: 'closed', label: <><Icon name="issueClosed" />Closed</> },
             { value: 'all', label: 'All' },
           ]} />
-          <Seg value={s.who} onChange={(who) => set({ who })} options={WHO_OPTIONS} ariaLabel="Author" />
+          <Seg value={s.who} onChange={(who) => set({ who })} options={WHO_OPTIONS} label="Author" />
           <DateRangeButton />
           <span className="summary">{data ? `${total.toLocaleString()} ${state === 'all' ? '' : `${state} `}${plural(total, 'issue')}` : issues.isError ? '' : 'Loading…'}</span>
           <span className="spacer" />
-          <span className="btn-group">
-            <button type="button" className="btn" onClick={() => openExport('md')}><Icon name="md" />Markdown</button>
-            <button type="button" className="btn" onClick={() => openExport('api')}><Icon name="braces" />API</button>
+          <span className="wb-btn-group">
+            <button type="button" className="wb-btn" onClick={() => openExport('md')}><Icon name="md" />Markdown</button>
+            <button type="button" className="wb-btn" onClick={() => openExport('api')}><Icon name="braces" />API</button>
           </span>
         </div>
         <div className="row">
@@ -69,17 +69,17 @@ export function IssuesView() {
       <div className="scroll" id="scroll" ref={scroller}>
         <ProgressBar active={issues.isFetching && !issues.isFetchingNextPage && !!data} />
         <div className={`list issue-list${issues.isPlaceholderData ? ' stale' : ''}`} aria-busy={issues.isFetching}>
-          {issues.isError && !data ? <ErrorNote error={issues.error} onRetry={() => issues.refetch()} />
-            : !data ? <div className="empty" role="status">Loading issues…</div>
+          {issues.isError && !data ? <ErrorState error={issues.error} onRetry={() => issues.refetch()} />
+            : !data ? <div className="wb-empty" role="status">Loading issues…</div>
             : !issues.isPlaceholderData && s.repos?.length === 0 ? (
-              <EmptyState icon="book" title="No repositories selected" action={<button type="button" className="btn" onClick={() => set({ repos: null })}>Select default repositories</button>} />
-            ) : !items.length && issues.isPlaceholderData ? <div className="empty" role="status">Updating issues…</div>
+              <EmptyState icon="book" title="No repositories selected" actions={<button type="button" className="wb-btn" onClick={() => set({ repos: null })}>Select default repositories</button>} />
+            ) : !items.length && issues.isPlaceholderData ? <div className="wb-empty" role="status">Updating issues…</div>
             : !items.length ? (
-              <EmptyState icon="issue" title="No issues match these filters" action={
-                <div className="empty-actions">
-                  {s.q && <button type="button" className="btn" onClick={() => set({ q: '' })}>Clear search</button>}
-                  {s.range !== 'ytd' && s.range !== '90d' && <button type="button" className="btn" onClick={() => set({ range: '90d' })}>Show last 90 days</button>}
-                  {s.who !== 'everyone' && <button type="button" className="btn" onClick={() => set({ who: 'everyone' })}>Show everyone's</button>}
+              <EmptyState icon="issue" title="No issues match these filters" actions={
+                <div className="wb-empty-actions">
+                  {s.q && <button type="button" className="wb-btn" onClick={() => set({ q: '' })}>Clear search</button>}
+                  {s.range !== 'ytd' && s.range !== '90d' && <button type="button" className="wb-btn" onClick={() => set({ range: '90d' })}>Show last 90 days</button>}
+                  {s.who !== 'everyone' && <button type="button" className="wb-btn" onClick={() => set({ who: 'everyone' })}>Show everyone's</button>}
                 </div>
               }>Try another state, repository, author, or date range.</EmptyState>
             ) : <>
@@ -87,12 +87,12 @@ export function IssuesView() {
               {issues.isError && (
                 <div className="issue-page-error" role="alert">
                   <p>Couldn't {issues.isFetchNextPageError ? 'load more' : 'refresh'} issues. The loaded issues are still shown.</p>
-                  <button type="button" className="btn" disabled={issues.isFetching} onClick={() => issues.isFetchNextPageError ? issues.fetchNextPage() : issues.refetch()}>Retry</button>
+                  <button type="button" className="wb-btn" disabled={issues.isFetching} onClick={() => issues.isFetchNextPageError ? issues.fetchNextPage() : issues.refetch()}>Retry</button>
                 </div>
               )}
               <div className="issue-list-footer">
                 <span>{items.length.toLocaleString()} of {total.toLocaleString()} {plural(total, 'issue')}</span>
-                {issues.hasNextPage && !issues.isFetchNextPageError && <button type="button" className="btn" disabled={issues.isFetching || issues.isPlaceholderData} onClick={() => issues.fetchNextPage()}>
+                {issues.hasNextPage && !issues.isFetchNextPageError && <button type="button" className="wb-btn" disabled={issues.isFetching || issues.isPlaceholderData} onClick={() => issues.fetchNextPage()}>
                   {issues.isFetchingNextPage ? 'Loading…' : 'Load more issues'}
                 </button>}
               </div>

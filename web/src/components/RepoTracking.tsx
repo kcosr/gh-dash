@@ -10,7 +10,7 @@ import { carrySearch, parseUrlState, patchSearch, viewFromPath } from '../lib/ur
 import { cx } from '../lib/util';
 import { Icon } from './Icon';
 import { useRepoLabel } from './repoMapContext';
-import { useToast } from './Toasts';
+import { useToast } from '../workbench';
 import { useSyncNow } from './TopBar';
 import { useUI } from './ui';
 

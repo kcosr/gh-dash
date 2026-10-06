@@ -2,15 +2,15 @@
  * Settings → Instance: how this server runs. Read-only on a headless server (config.json or the environment
  * set it); in the desktop app, the data folder and the Local API are edited here and saved to config.json.
  */
+import { Switch, useToast } from '../workbench';
 import { useState } from 'react';
 import type { ReactNode } from 'react';
 import type { ConfigSource, InstanceInfo } from '../../../shared/api';
 import type { DesktopState } from '../../../shared/desktop';
 import { useDesktop, useDesktopActions } from '../api/desktop';
 import { useInstance } from '../api/hooks';
-import { ChipsInput } from '../components/ChipsInput';
+import { TokenListInput } from '../components/TokenListInput';
 import { Icon } from '../components/Icon';
-import { useToast } from '../components/Toasts';
 import {
   SETTING_ENV, authLabel, bridgeError, instanceForm, instancePatch, instanceProblems, parseHosts, settingSource, tokensOptionalProblem, willHavePassword,
 } from '../lib/account';
@@ -33,7 +33,7 @@ function InstanceInfoList({ i }: { i: InstanceInfo }) {
   const s = i.settings;
   return (
     <>
-      <dl className="kv">
+      <dl className="wb-kv">
         <dt>Version</dt><dd>{i.version}{i.desktop && <span className="muted"> · desktop app</span>}</dd>
         <dt>API URL</dt><dd>{i.apiUrl ? <a href={i.apiUrl} target="_blank" rel="noopener noreferrer">{i.apiUrl}</a> : <span className="muted">none</span>}</dd>
         <dt>MCP URL</dt><dd>{i.mcpUrl ? <code className="path">{i.mcpUrl}</code> : <span className="muted">none</span>}</dd>
@@ -61,7 +61,7 @@ function InstanceInfoList({ i }: { i: InstanceInfo }) {
 
 /** The API key: set or not, or removed when the form is saved. */
 function KeyState({ set, pending, onUndo }: { set: boolean; pending: string | null | undefined; onUndo: () => void }) {
-  if (pending === null) return <><span className="muted">Removed when you save</span><button type="button" className="btn" onClick={onUndo}>Undo</button></>;
+  if (pending === null) return <><span className="muted">Removed when you save</span><button type="button" className="wb-btn" onClick={onUndo}>Undo</button></>;
   return <span className="muted">{set ? 'A key is set' : 'No key'}</span>;
 }
 
@@ -90,20 +90,20 @@ function DesktopInstance({ state, apiUrl, mcpUrl }: { state: DesktopState; apiUr
       onSuccess: (st) => {
         setForm(instanceForm(st.config));
         setNewKey(null);
-        if (st.serverError) toast(`Saved, but the server didn't start: ${st.serverError}`, { error: true, ms: 6000 });
+        if (st.serverError) toast(`Saved, but the server didn't start: ${st.serverError}`, { tone: 'error', duration: 6000 });
         else toast('Saved · background server restarted');
       },
-      onError: (e) => toast(`Couldn't save: ${bridgeError(e)}`, { error: true }),
+      onError: (e) => toast(`Couldn't save: ${bridgeError(e)}`, { tone: 'error' }),
     });
   };
   const reset = () => { setForm(instanceForm(cfg)); setNewKey(null); };
   const choose = () => chooseDataDir.mutate(undefined, {
     onSuccess: (dir) => { if (dir) set({ dataDir: dir }); },
-    onError: (e) => toast(bridgeError(e), { error: true }),
+    onError: (e) => toast(bridgeError(e), { tone: 'error' }),
   });
   const generate = () => generateApiKey.mutate(undefined, {
     onSuccess: (key) => { setNewKey(key); set({ apiKey: key }); },
-    onError: (e) => toast(bridgeError(e), { error: true }),
+    onError: (e) => toast(bridgeError(e), { tone: 'error' }),
   });
   const copyKey = async () => { if (newKey) toast((await copyText(newKey)) ? 'API key copied' : 'Copy failed'); };
   const showHosts = form.network || form.allowedHosts.length > 0;
@@ -121,13 +121,13 @@ function DesktopInstance({ state, apiUrl, mcpUrl }: { state: DesktopState; apiUr
           <span className="set-l">Data folder<small>Where the database and the diff cache are kept.</small></span>
           <span className="set-c grow">
             <code className="path set-path" title={form.dataDir}>{form.dataDir || '—'}</code>
-            <button type="button" className="btn" onClick={choose} disabled={chooseDataDir.isPending}>Change…</button>
+            <button type="button" className="wb-btn" onClick={choose} disabled={chooseDataDir.isPending}>Change…</button>
           </span>
         </div>
         <div className="set-row">
           <label className="set-l" htmlFor="local-api">Local API<small>A port on this computer for browsers, scripts and agents: the REST API and MCP below. Off: nothing listens.</small></label>
           <span className="set-c wrap">
-            <input id="local-api" type="checkbox" className="switch" checked={form.listen} onChange={(e) => set({ listen: e.target.checked })} />
+            <Switch id="local-api" checked={form.listen} onChange={(e) => set({ listen: e.target.checked })} />
             {running && <small className="muted">Listening on {apiUrl ? <a href={apiUrl} target="_blank" rel="noopener noreferrer">{running}</a> : running}</small>}
           </span>
         </div>
@@ -136,15 +136,15 @@ function DesktopInstance({ state, apiUrl, mcpUrl }: { state: DesktopState; apiUr
             <label className="set-row">
               <span className="set-l">Port<small>1–65535.</small></span>
               <span className="set-c stack">
-                <input className={cx('input num-in', problems.port && 'bad')} type="number" min={1} max={65535} step={1} value={Number.isFinite(form.port) ? form.port : ''}
+                <input className="wb-input num-in" type="number" min={1} max={65535} step={1} value={Number.isFinite(form.port) ? form.port : ''}
                   onChange={(e) => set({ port: Math.round(Number(e.target.value)) })} aria-invalid={problems.port ? true : undefined} />
-                {problems.port && <span className="form-err">{problems.port}</span>}
+                {problems.port && <span className="wb-form-error">{problems.port}</span>}
               </span>
             </label>
             <div className="set-row">
               <label className="set-l" htmlFor="local-rest">REST API<small>The dashboard in a browser and its JSON API, for curl and scripts.</small></label>
               <span className="set-c stack">
-                <input id="local-rest" type="checkbox" className="switch" checked={form.restApi} onChange={(e) => set({ restApi: e.target.checked })}
+                <Switch id="local-rest" checked={form.restApi} onChange={(e) => set({ restApi: e.target.checked })}
                   aria-describedby={form.restApi && !willHavePassword(cfg, form) ? 'rest-warn' : undefined} />
                 {form.restApi && !willHavePassword(cfg, form) && (
                   <small id="rest-warn" className="set-warn">Any program on this computer can use the API. Set a password to require a sign-in.</small>
@@ -157,30 +157,30 @@ function DesktopInstance({ state, apiUrl, mcpUrl }: { state: DesktopState; apiUr
                 <label className="set-row sub">
                   <span className="set-l">Allow other devices<small>Listen on all network interfaces. Needs a password.</small></span>
                   <span className="set-c stack">
-                    <input type="checkbox" className="switch" checked={form.network} onChange={(e) => set({ network: e.target.checked, ...(e.target.checked ? { mcpRequireTokens: true } : {}) })}
+                    <Switch checked={form.network} onChange={(e) => set({ network: e.target.checked, ...(e.target.checked ? { mcpRequireTokens: true } : {}) })}
                       aria-invalid={problems.network ? true : undefined} aria-describedby={problems.network ? 'net-err' : undefined} />
-                    {problems.network && <span id="net-err" className="form-err">{problems.network}</span>}
+                    {problems.network && <span id="net-err" className="wb-form-error">{problems.network}</span>}
                   </span>
                 </label>
                 {showHosts && (
                   <div className="set-row sub">
                     <span className="set-l">Host names<small>Names other devices use for this computer, e.g. <code>mybox.local</code>. localhost and IP addresses always work.</small></span>
                     <span className="set-c grow">
-                      <ChipsInput value={form.allowedHosts} onChange={(allowedHosts) => set({ allowedHosts })} parse={parseHosts} placeholder="mybox.local" label="Add host name" />
+                      <TokenListInput value={form.allowedHosts} onChange={(allowedHosts) => set({ allowedHosts })} parse={parseHosts} placeholder="mybox.local" label="Add host name" />
                     </span>
                   </div>
                 )}
                 <div className="set-row sub">
                   <span className="set-l">Password<small>Browsers ask for it before showing the dashboard.</small></span>
                   <span className="set-c grow wrap">
-                    <input className={cx('input set-secret', problems.password && 'bad')} type="password" autoComplete="new-password" aria-label={cfg.passwordSet ? 'New password' : 'Password'}
+                    <input className="wb-input set-secret" type="password" autoComplete="new-password" aria-label={cfg.passwordSet ? 'New password' : 'Password'}
                       placeholder={form.password === null ? 'Removed when you save' : cfg.passwordSet ? 'Set · type to replace' : 'Not set'} value={form.password ?? ''}
                       onChange={(e) => set({ password: e.target.value || undefined })} disabled={form.password === null}
                       aria-invalid={problems.password ? true : undefined} aria-describedby={problems.password ? 'pw-err' : undefined} />
-                    {problems.password && <span id="pw-err" className="form-err">{problems.password}</span>}
-                    {form.password === null && <button type="button" className="btn" onClick={() => set({ password: undefined })}>Undo</button>}
+                    {problems.password && <span id="pw-err" className="wb-form-error">{problems.password}</span>}
+                    {form.password === null && <button type="button" className="wb-btn" onClick={() => set({ password: undefined })}>Undo</button>}
                     {cfg.passwordSet && form.password === undefined && (
-                      <button type="button" className="btn" onClick={() => set({ password: null })}>Remove</button>
+                      <button type="button" className="wb-btn" onClick={() => set({ password: null })}>Remove</button>
                     )}
                   </span>
                 </div>
@@ -191,7 +191,7 @@ function DesktopInstance({ state, apiUrl, mcpUrl }: { state: DesktopState; apiUr
                       <>
                         <span className="set-c">
                           <code className="set-key">{newKey}</code>
-                          <button type="button" className="btn" onClick={copyKey}><Icon name="copy" />Copy</button>
+                          <button type="button" className="wb-btn" onClick={copyKey}><Icon name="copy" />Copy</button>
                         </span>
                         <small className="muted">Shown only once: copy it now. Click Save to keep it.</small>
                       </>
@@ -199,9 +199,9 @@ function DesktopInstance({ state, apiUrl, mcpUrl }: { state: DesktopState; apiUr
                       <span className="set-c wrap">
                         <KeyState set={cfg.apiKeySet} pending={form.apiKey} onUndo={() => set({ apiKey: undefined })} />
                         {form.apiKey !== null && (
-                          <button type="button" className="btn" onClick={generate} disabled={generateApiKey.isPending}><Icon name="key" />{cfg.apiKeySet ? 'Generate new' : 'Generate'}</button>
+                          <button type="button" className="wb-btn" onClick={generate} disabled={generateApiKey.isPending}><Icon name="key" />{cfg.apiKeySet ? 'Generate new' : 'Generate'}</button>
                         )}
-                        {cfg.apiKeySet && form.apiKey === undefined && <button type="button" className="btn" onClick={() => set({ apiKey: null })}>Remove</button>}
+                        {cfg.apiKeySet && form.apiKey === undefined && <button type="button" className="wb-btn" onClick={() => set({ apiKey: null })}>Remove</button>}
                       </span>
                     )}
                   </span>
@@ -210,13 +210,13 @@ function DesktopInstance({ state, apiUrl, mcpUrl }: { state: DesktopState; apiUr
             )}
             <div className="set-row">
               <label className="set-l" htmlFor="local-mcp">MCP for agents<small><code>/mcp</code> for coding agents (see Agents below).</small></label>
-              <span className="set-c"><input id="local-mcp" type="checkbox" className="switch" checked={form.mcp} onChange={(e) => set({ mcp: e.target.checked })} /></span>
+              <span className="set-c"><Switch id="local-mcp" checked={form.mcp} onChange={(e) => set({ mcp: e.target.checked })} /></span>
             </div>
             {form.mcp && (
               <div className="set-row sub">
                 <label className="set-l" htmlFor="local-mcp-tokens">Require agent tokens<small>Each agent sends its own. Off: a request without one writes as “Agent”.</small></label>
                 <span className="set-c stack">
-                  <input id="local-mcp-tokens" type="checkbox" className="switch" checked={form.mcpRequireTokens || !!tokensLocked} disabled={!!tokensLocked}
+                  <Switch id="local-mcp-tokens" checked={form.mcpRequireTokens || !!tokensLocked} disabled={!!tokensLocked}
                     onChange={(e) => set({ mcpRequireTokens: e.target.checked })} aria-describedby={tokensLocked || !form.mcpRequireTokens ? 'tokens-note' : undefined} />
                   {tokensLocked
                     ? <small id="tokens-note" className="muted">{tokensLocked}</small>
@@ -231,8 +231,8 @@ function DesktopInstance({ state, apiUrl, mcpUrl }: { state: DesktopState; apiUr
         )}
       </fieldset>
       <div className="set-actions">
-        <button type="submit" className="btn primary" disabled={!dirty || !ok || busy}>{busy ? 'Restarting…' : 'Save'}</button>
-        <button type="button" className="btn" disabled={!dirty || busy} onClick={reset}>Reset</button>
+        <button type="submit" className="wb-btn wb-btn--primary" disabled={!dirty || !ok || busy}>{busy ? 'Restarting…' : 'Save'}</button>
+        <button type="button" className="wb-btn" disabled={!dirty || busy} onClick={reset}>Reset</button>
         <span className="set-when">{busy ? 'Restarting the background server…' : 'Saving restarts the background server.'}</span>
       </div>
       <p className="set-foot muted">

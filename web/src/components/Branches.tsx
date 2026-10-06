@@ -1,3 +1,4 @@
+import { FilterInput } from '../workbench';
 /**
  * Pushed branches to review (their diff against the default branch, with or without a PR): the repo page's Branches
  * card, and what the palette's branch list shares with it. The list is the code host's, asked for on demand (useBranches).
@@ -82,11 +83,7 @@ export function BranchesCard({ repo }: { repo: Repo }) {
         </div>
         <span className="spacer" />
         {(listed > SHOWN || filter) && (
-          <label className="field br-filter">
-            <Icon name="search" />
-            <input value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Filter branches" aria-label="Filter branches" autoComplete="off" spellCheck={false}
-              onKeyDown={(e) => { if (e.key === 'Escape' && filter) { e.stopPropagation(); e.nativeEvent.stopImmediatePropagation(); setFilter(''); } }} />
-          </label>
+          <FilterInput className="br-filter" value={filter} onChange={setFilter} placeholder="Filter branches" hotkey={null} />
         )}
       </div>
       {trouble ? (

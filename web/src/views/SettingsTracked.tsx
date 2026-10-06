@@ -1,4 +1,5 @@
 /** Settings → Tracked repositories (`/settings#tracked`): your own (automatic) and the ones you added by hand. */
+import { Switch, useToast } from '../workbench';
 import { Link } from 'react-router';
 import type { Repo } from '../../../shared/api';
 import { usePatchRepo, useRepos } from '../api/hooks';
@@ -6,7 +7,6 @@ import { Icon } from '../components/Icon';
 import { RepoName } from '../components/RepoName';
 import { useConfirmRemoveRepo } from '../components/RepoTracking';
 import { useRepoLabel } from '../components/repoMapContext';
-import { useToast } from '../components/Toasts';
 import { useUI } from '../components/ui';
 import { fmtDateSmart, fmtNum, relLong } from '../lib/time';
 import { useNow } from '../lib/util';
@@ -32,7 +32,7 @@ export function TrackedSection() {
   const added = all.filter((r) => r.trackedBy === 'manual').sort((a, b) => a.key.localeCompare(b.key));
 
   const setDefault = (r: Repo, on: boolean) => patch.mutate({ key: r.key, patch: { hidden: !on } }, {
-    onError: (e) => toast(`Couldn't update ${label(r.key)}: ${e.message}`, { error: true }),
+    onError: (e) => toast(`Couldn't update ${label(r.key)}: ${e.message}`, { tone: 'error' }),
   });
 
   return (
@@ -62,7 +62,7 @@ export function TrackedSection() {
                       </span>
                       <Status repo={r} now={now} />
                       <span className="spacer" />
-                      <input type="checkbox" className="switch" checked={!r.hidden} onChange={(e) => setDefault(r, e.target.checked)}
+                      <Switch checked={!r.hidden} onChange={(e) => setDefault(r, e.target.checked)}
                         title="Default selection" aria-label={`Include ${label(r.key)} in the default selection`} />
                       <button type="button" className="pin-btn" title="Remove…" aria-label={`Remove ${label(r.key)}`} onClick={() => confirmRemove(r)}>
                         <Icon name="trash" />
@@ -76,7 +76,7 @@ export function TrackedSection() {
         </div>
       )}
       <div className="set-actions">
-        <button type="button" className="btn" onClick={openAddRepo}><Icon name="plus" />Add repository</button>
+        <button type="button" className="wb-btn" onClick={openAddRepo}><Icon name="plus" />Add repository</button>
       </div>
     </section>
   );

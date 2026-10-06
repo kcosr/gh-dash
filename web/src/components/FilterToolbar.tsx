@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import { hasBlockingLayer, isTypingTarget } from '../lib/layers';
+import { hasBlockingLayer, isTypingTarget } from '../workbench';
 import { Icon } from './Icon';
 import { SourceNotice } from './SourceNotice';
 

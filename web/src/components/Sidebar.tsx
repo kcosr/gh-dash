@@ -17,12 +17,10 @@ import { DAY } from '../lib/time';
 import { OVERLAY_KEYS, canonicalQuery, encodeParams, passesRepoFilters, useUrlState } from '../lib/urlState';
 import { cx } from '../lib/util';
 import { Icon } from './Icon';
-import { MenuButton } from './Menu';
+import { Menu, FilterInput, Seg, useToast } from '../workbench';
 import { RepoName } from './RepoName';
 import { useRepoLabel, useSourceCtx, useWords } from './repoMapContext';
-import { Seg } from './Seg';
 import { SourceBadge, sourceTitle } from './SourceBadge';
-import { useToast } from './Toasts';
 import { useUI } from './ui';
 
 const ACTIVE_DAYS = 180;
@@ -45,18 +43,11 @@ function VisibilityMenu({ value, onChange, counts }: {
   const opts: VisibilityFilter[] = ['all', 'public', 'private', ...(counts.internal || value === 'internal' ? ['internal' as const] : [])];
   const what = `Visibility: ${VIS_LABEL[value]}`;
   return (
-    <MenuButton className={cx('side-vis', value !== 'all' && 'on')} label={what} title={what} menuLabel="Visibility" menuClass="vis-menu" width={180}
-      button={<><Icon name="filter" />{value !== 'all' && <i className="dot" aria-hidden="true" />}</>}>
-      {(close) => opts.map((v) => (
-        <button key={v} type="button" role="menuitemradio" aria-checked={v === value} className={cx('opt', v === value && 'on')}
-          onClick={() => { close(); onChange(v); }}>
-          <span className="ck">{v === value && <Icon name="check" />}</span>
-          {VIS_LABEL[v]}
-          <span className="spacer" />
-          <span className="hint">{counts[v].toLocaleString()}</span>
-        </button>
-      ))}
-    </MenuButton>
+    <Menu label="Visibility" className="vis-menu" trigger={(props) => (
+      <button {...props} type="button" className={cx('side-vis', value !== 'all' && 'on')} aria-label={what} title={what}>
+        <Icon name="filter" />{value !== 'all' && <i className="dot" aria-hidden="true" />}
+      </button>
+    )} items={opts.map((v) => ({ id: v, label: VIS_LABEL[v], checked: v === value, hint: counts[v].toLocaleString(), onSelect: () => onChange(v) }))} />
   );
 }
 
@@ -226,13 +217,10 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
     <aside className="sidebar" id="repository-sidebar" aria-label="Repository scope">
       <div className="side-top">
         <div className="side-search">
-          <label className="field">
-            <Icon name="search" />
-            <input id="repoQ" placeholder="Filter repositories" value={filter} autoComplete="off" onChange={(e) => setFilter(e.target.value)} aria-label="Filter repositories" />
-          </label>
+          <FilterInput id="repoQ" placeholder="Filter repositories" value={filter} onChange={setFilter} hotkey={null} />
           <VisibilityMenu value={s.vis} onChange={(vis) => set({ vis })} counts={visCounts} />
         </div>
-        <Seg className="full" value={s.own} onChange={(own) => set({ own })} ariaLabel="Ownership" options={OWN_OPTIONS} />
+        <Seg full value={s.own} onChange={(own) => set({ own })} label="Ownership" options={OWN_OPTIONS} />
         <div className="side-quick">
           <button type="button" onClick={() => set({ repos: null })} title="Default selection: everything except archived, hidden and forks">All</button>
           <button type="button" onClick={() => set({ repos: [] })}>None</button>
@@ -242,7 +230,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
         </div>
       </div>
 
-      {repos.isPending && <div className="side-skel">{Array.from({ length: 8 }, (_, i) => <i key={i} />)}</div>}
+      {repos.isPending && <div className="wb-skel-side">{Array.from({ length: 8 }, (_, i) => <i key={i} />)}</div>}
 
       {pinned.length > 0 && (
         <>

@@ -1,3 +1,4 @@
+import { ChipToggle, EmptyState, ErrorState, ProgressBar, Seg } from '../workbench';
 import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { EVENT_TYPES } from '../../../shared/api';
@@ -8,14 +9,13 @@ import { ActivityStrip } from '../charts';
 import { Avatar, AvatarStack } from '../components/Avatar';
 import { AgentMark, prIconName } from '../components/bits';
 import { DateRangeButton } from '../components/DateRange';
-import { EmptyState, ErrorNote, ProgressBar } from '../components/EmptyState';
 import { CommentBadge } from '../components/PrRow';
 import { FilterToolbar } from '../components/FilterToolbar';
 import { Icon } from '../components/Icon';
 import type { IconName } from '../components/Icon';
 import { RepoChip } from '../components/RepoChip';
 import { useProviderOf, useWords } from '../components/repoMapContext';
-import { Seg, WHO_OPTIONS } from '../components/Seg';
+import { WHO_OPTIONS } from '../lib/filterOptions';
 import { useUI } from '../components/ui';
 import { NoReposSelected } from './PullRequests';
 import { activityParams, statsParams } from '../lib/apiQuery';
@@ -30,12 +30,12 @@ import { branchDiffId, commitDiffId, useUrlState } from '../lib/urlState';
 import { actorName, actorSubject, isPlainClick } from '../lib/util';
 
 const TYPES: { type: EventType; label: string; icon: IconName; color: string }[] = [
-  { type: 'commit', label: 'Commits', icon: 'commit', color: 'var(--text-2)' },
+  { type: 'commit', label: 'Commits', icon: 'commit', color: 'var(--wb-fg-2)' },
   { type: 'pr', label: 'Pull requests', icon: 'merge', color: 'var(--merged)' },
   { type: 'issue', label: 'Issues', icon: 'issue', color: 'var(--open)' },
   { type: 'release', label: 'Releases', icon: 'tag', color: 'var(--release)' },
   { type: 'star', label: 'Stars', icon: 'starFill', color: 'var(--star)' },
-  { type: 'comment', label: 'Comments', icon: 'comment', color: 'var(--accent-text)' },
+  { type: 'comment', label: 'Comments', icon: 'comment', color: 'var(--wb-accent-text)' },
 ];
 
 const COMMITS_SHOWN = 3;
@@ -172,20 +172,20 @@ export function ActivityView() {
       <FilterToolbar summary={[range.text, s.who === 'me' ? 'By you' : s.who === 'others' ? 'By others' : 'Everyone', s.types.length === TYPES.length ? 'All events' : `${s.types.length} event types`].join(' · ')}>
         <div className="row">
           <DateRangeButton />
-          <Seg value={s.who} onChange={(who) => set({ who })} options={WHO_OPTIONS} ariaLabel="Author" />
+          <Seg value={s.who} onChange={(who) => set({ who })} options={WHO_OPTIONS} label="Author" />
           <span style={{ width: 6 }} />
           {TYPES.map((t) => {
             const on = s.types.includes(t.type);
             return (
-              <button key={t.type} type="button" className={`chip-toggle${on ? ' on' : ''}`} aria-pressed={on} onClick={() => toggleType(t.type)}>
+              <ChipToggle key={t.type} type="button" pressed={on} onPressedChange={() => toggleType(t.type)}>
                 <span style={{ color: t.color }}><Icon name={t.icon} /></span>
                 {t.type === 'pr' ? w.nav : t.label}
                 <span className="n">{facets ? (facets.byType?.[t.type] ?? 0).toLocaleString() : '–'}</span>
-              </button>
+              </ChipToggle>
             );
           })}
           <span className="spacer" />
-          <button type="button" className="btn" onClick={() => openExport('api')} title="Export as Markdown or get the API URL"><Icon name="braces" />API</button>
+          <button type="button" className="wb-btn" onClick={() => openExport('api')} title="Export as Markdown or get the API URL"><Icon name="braces" />API</button>
         </div>
       </FilterToolbar>
 
@@ -202,7 +202,7 @@ export function ActivityView() {
                 unit="events"
                 height={56}
               />
-            ) : <div className="strip-skel" />}
+            ) : <div className="wb-skel strip-skel" />}
             <div className="strip-cap">
               <span>{range.text}</span>
               <span className="spacer" />
@@ -211,7 +211,7 @@ export function ActivityView() {
           </div>
 
           {feed.isError && !pages ? (
-            <ErrorNote error={feed.error} onRetry={() => feed.refetch()} />
+            <ErrorState error={feed.error} onRetry={() => feed.refetch()} />
           ) : !pages ? (
             <FeedSkeleton />
           ) : s.repos?.length === 0 ? (
@@ -222,7 +222,7 @@ export function ActivityView() {
             <EmptyState
               icon="pulse"
               title="Nothing here for these filters"
-              action={s.range !== '90d' ? <button type="button" className="btn" onClick={() => set({ range: '90d' })}>Show last 90 days</button> : undefined}
+              actions={s.range !== '90d' ? <button type="button" className="wb-btn" onClick={() => set({ range: '90d' })}>Show last 90 days</button> : undefined}
             >
               Try a longer range or turn on more event types.
             </EmptyState>
@@ -245,7 +245,7 @@ export function ActivityView() {
               ))}
               <div ref={sentinel} className="feed-end">
                 {feed.hasNextPage
-                  ? feed.isFetchingNextPage ? 'Loading more…' : <button type="button" className="btn ghost" onClick={() => feed.fetchNextPage()}>Load more</button>
+                  ? feed.isFetchingNextPage ? 'Loading more…' : <button type="button" className="wb-btn wb-btn--ghost" onClick={() => feed.fetchNextPage()}>Load more</button>
                   : `That's everything from ${range.text}.`}
               </div>
             </>
@@ -473,11 +473,11 @@ function CommentLine({ e, diff, onOpen, quote = false, verb = false }: { e: Comm
 function FeedSkeleton() {
   return (
     <div className="skel-list" aria-busy="true" aria-label="Loading">
-      <div className="group-h"><span className="skel" style={{ width: 160 }} /><span className="rule" /></div>
+      <div className="group-h"><span className="wb-skel" style={{ width: 160 }} /><span className="rule" /></div>
       {Array.from({ length: 7 }, (_, i) => (
         <div key={i} className="skel-row ev-skel">
-          <i className="skel" style={{ width: 28, height: 28, borderRadius: 14 }} />
-          <div><i className="skel" style={{ width: `${62 - (i % 3) * 12}%`, height: 14 }} /></div>
+          <i className="wb-skel" style={{ width: 28, height: 28, borderRadius: 14 }} />
+          <div><i className="wb-skel" style={{ width: `${62 - (i % 3) * 12}%`, height: 14 }} /></div>
         </div>
       ))}
     </div>

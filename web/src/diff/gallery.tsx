@@ -4,9 +4,7 @@
  * bundle. State lives in the query string so screenshots can link straight to a case:
  * ?f=<fixture>&theme=dark&compact=1&file=<path>&load=none
  */
-import '@fontsource-variable/inter';
-import '@fontsource/jetbrains-mono/400.css';
-import '@fontsource/jetbrains-mono/500.css';
+import '../workbench/styles/index.css';
 import '../styles/app.css';
 import { StrictMode, useCallback, useEffect, useLayoutEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -102,9 +100,9 @@ function Gallery() {
             <Diffstat add={diff.additions} del={diff.deletions} />
             <span className="dv-files">{diff.totalFiles.toLocaleString()} {plural(diff.totalFiles, 'file')}</span>
             <span className="dv-actions">
-              <a className="btn" href={diff.url} target="_blank" rel="noreferrer"><Icon name="ext" /><span className="dv-lbl">Open on GitHub</span></a>
-              <button type="button" className="btn icon ghost" aria-label="Refresh diff"><Icon name="sync" /></button>
-              <button type="button" className="btn icon ghost" aria-label="Close diff"><Icon name="x" /></button>
+              <a className="wb-btn" href={diff.url} target="_blank" rel="noreferrer"><Icon name="ext" /><span className="dv-lbl">Open on GitHub</span></a>
+              <button type="button" className="wb-btn wb-btn--icon wb-btn--ghost" aria-label="Refresh diff"><Icon name="sync" /></button>
+              <button type="button" className="wb-btn wb-btn--icon wb-btn--ghost" aria-label="Close diff"><Icon name="x" /></button>
             </span>
           </header>
           <div className="dv-body" tabIndex={-1} ref={focusBody}>

@@ -1,6 +1,6 @@
 /** Browser-local preferences and "last visit". */
 
-const THEME_KEY = 'gh-dash:theme';
+export const THEME_KEY = 'gh-dash:theme';
 const VISIT_KEY = 'gh-dash:lastVisit';
 const SIDEBAR_KEY = 'gh-dash:sidebarWidth';
 const SIDEBAR_HIDDEN_KEY = 'gh-dash:sidebarHidden';
@@ -15,7 +15,6 @@ export const DRAWER_MAX = 900;
 /** The wide-window width; the stylesheet narrows it on smaller windows. */
 export const DRAWER_DEFAULT = 540;
 
-export type Theme = 'light' | 'dark';
 
 function read(key: string): string | null {
   try { return localStorage.getItem(key); } catch { return null; }
@@ -56,16 +55,6 @@ export function getSidebarHidden(): boolean {
 
 export function setSidebarHidden(hidden: boolean) {
   write(SIDEBAR_HIDDEN_KEY, hidden ? '1' : '0');
-}
-
-export function getTheme(): Theme {
-  const t = read(THEME_KEY) ?? document.documentElement.dataset.theme;
-  return t === 'dark' ? 'dark' : 'light';
-}
-
-export function setTheme(t: Theme) {
-  document.documentElement.dataset.theme = t;
-  write(THEME_KEY, t);
 }
 
 /** The source (host) the Add dialog last added to or was set to, offered again where no context decides (All). */

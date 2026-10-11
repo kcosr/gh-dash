@@ -292,20 +292,23 @@ export function parseGitLabInput(text: string, source: InputSource): { path: str
 // The repository list
 // ---------------------------------------------------------------------------
 
-/** Keys of the repos in the default selection: not archived, not hidden, not a fork (unless `includeForks`). */
-export function defaultRepoScope(repos: Repo[], includeForks = false): string[] {
-  return repos.filter((r) => !r.isArchived && !r.hidden && (!r.isFork || includeForks)).map((r) => r.key);
+/** Activity within this many days makes a repository active (RepoActiveReason 'recent'). */
+export const ACTIVE_DAYS = 180;
+
+/** Keys of the repos in the default selection: the active ones (the server decides Repo.active). */
+export function defaultRepoScope(repos: Repo[]): string[] {
+  return repos.filter((r) => r.active).map((r) => r.key);
 }
 
 /** Shared by the repository tab and its API export so scope, search and ordering agree. */
-export function selectRepos(repos: Repo[], query: RepoQuery, includeForks = false): Repo[] {
+export function selectRepos(repos: Repo[], query: RepoQuery): Repo[] {
   let selected: Set<string> | null;
   if (query.repos !== undefined) {
     // Entries are keys or aliases (a bare name of an owned repo); ones that name no repo select nothing.
     const resolve = repoResolver(repos);
     selected = new Set(query.repos.split(',').map((e) => e.trim()).filter(Boolean).map(resolve).filter((k): k is string => k !== null));
   } else {
-    selected = query.scope === 'default' ? new Set(defaultRepoScope(repos, includeForks)) : null;
+    selected = query.scope === 'default' ? new Set(defaultRepoScope(repos)) : null;
   }
   const text = query.q?.trim().toLowerCase() ?? '';
   const sources = query.source?.split(',').map((h) => h.trim().toLowerCase()).filter(Boolean) ?? [];
@@ -323,5 +326,5 @@ export function selectRepos(repos: Repo[], query: RepoQuery, includeForks = fals
     && (!query.visibility || query.visibility === 'all' || r.visibility === query.visibility)
     && (!query.ownership || query.ownership === 'all' || (query.ownership === 'mine') === (r.trackedBy === 'owned'))
     && (!text || `${r.key} ${r.description ?? ''} ${r.topics.join(' ')} ${r.language?.name ?? ''}`.toLowerCase().includes(text)))
-    .sort((a, b) => Number(b.pinned) - Number(a.pinned) || Number(a.hidden) - Number(b.hidden) || compare(a, b) || a.name.localeCompare(b.name) || a.key.localeCompare(b.key));
+    .sort((a, b) => Number(b.pinned) - Number(a.pinned) || Number(b.active) - Number(a.active) || compare(a, b) || a.name.localeCompare(b.name) || a.key.localeCompare(b.key));
 }

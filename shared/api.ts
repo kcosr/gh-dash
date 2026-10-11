@@ -74,6 +74,20 @@ export interface RepoStats {
   weeklyCommits: number[];
 }
 
+/**
+ * A repository's status, the user's choice (stored locally, never on the code host): 'auto' follows the activity rule
+ * (Repo.active); 'active' and 'inactive' override it.
+ */
+export type RepoStatus = 'auto' | 'active' | 'inactive';
+
+/**
+ * Why a repository is active or not. 'set': the user chose it (status 'active' or 'inactive'). Otherwise the deciding
+ * fact of the activity rule, checked in this order: 'archived' and 'fork' (a fork while settings.includeForks is off)
+ * make it inactive; 'pinned', 'open' (open pull requests, issues or unresolved gh-dash comment threads) and 'recent'
+ * (activity within ACTIVE_DAYS) make it active; 'quiet' (none of these) leaves it inactive.
+ */
+export type RepoActiveReason = 'set' | 'archived' | 'fork' | 'pinned' | 'open' | 'recent' | 'quiet';
+
 export interface Repo {
   /**
    * Identity everywhere in the API and in URLs (`repos=` lists, path params, every `repo` field): "owner/name" on
@@ -100,13 +114,19 @@ export interface Repo {
   createdAt: string;
   pushedAt: string | null;
   /**
-   * Latest of pushedAt and any PR / issue / release activity we have stored. Stars are deliberately
-   * excluded: someone starring an old repo is not "activity" in it (drives sidebar ordering).
+   * Latest of pushedAt and any PR / issue / release / gh-dash comment activity we have stored. Stars are deliberately
+   * excluded: someone starring an old repo is not "activity" in it (drives sidebar ordering and Repo.active).
    */
   lastActivityAt: string | null;
   /** User preferences (stored locally, not on GitHub). */
   pinned: boolean;
-  hidden: boolean;
+  status: RepoStatus;
+  /**
+   * Whether it is active, as of the read: in the default selection and the sidebar's main list. The server decides
+   * (status, then the activity rule; see RepoActiveReason); clients never recompute it.
+   */
+  active: boolean;
+  activeReason: RepoActiveReason;
   setIds: number[];
   stats: RepoStats;
   syncedAt: string | null;
@@ -398,8 +418,8 @@ export interface Source {
   /** Its credential as this server holds it; null when the source isn't configured here. */
   account: SourceAccount | null;
   sync: SourceSyncStatus;
-  /** Live repositories on it: tracked automatically, added by hand, and (of both) hidden from the default selection. */
-  repos: { owned: number; added: number; hidden: number };
+  /** Live repositories on it: tracked automatically, and added by hand. */
+  repos: { owned: number; added: number };
 }
 
 /**
@@ -548,8 +568,8 @@ export interface RepoPreview extends RepoCandidate {
   openIssues: number;
   /** The viewer owns it: tracked automatically, so Add is refused. */
   owned: boolean;
-  /** When tracked: whether it is left out of the default selection. */
-  hidden: boolean | null;
+  /** When tracked: its status; null when it isn't tracked. */
+  status: RepoStatus | null;
   /**
    * What the first sync would fetch: items since `since` (null: unknown; GitLab doesn't count commits), and about how
    * many requests to the code host (null: unknown).
@@ -581,8 +601,8 @@ export interface AddRepoResponse {
 /**
  * Scope shared by every list/stats endpoint.
  *  - repos: comma-separated repo keys ("owner/name" on github.com, "<host>/<path>" elsewhere; a github.com repo you own
- *    also works by its short name). Omitted => the default selection: all repos that are not archived, not hidden, and
- *    (unless settings.includeForks) not forks. An explicitly empty value (`repos=`) means "no repos" and returns nothing.
+ *    also works by its short name). Omitted => the default selection: the active repos (Repo.active). An explicitly empty
+ *    value (`repos=`) means "no repos" and returns nothing.
  *  - source: comma-separated source hosts ("github.com", "gitlab.example.com"): only repos on those sources. Omitted
  *    (or empty) => every source. It narrows `repos` and the default selection alike. A host that isn't a source is a
  *    400.
@@ -1156,15 +1176,15 @@ export interface ThreadListResponse extends ListResponse<ThreadListItem> {
 // DELETE /api/v1/sources/:source               -> 204       (removes the source and all its data, and its cached diffs. 404 unknown source;
 //          409 for github.com, and while this server still has the source configured: remove it in Settings (desktop app) or from
 //          config.json / GH_DASH_GITLAB_URL first. Nothing adds a source or writes a credential over HTTP.)
-// GET    /api/v1/repos          RepoQuery      -> { items: Repo[] }          (unfiltered: all repos incl. archived/hidden/forks)
+// GET    /api/v1/repos          RepoQuery      -> { items: Repo[] }          (unfiltered: all repos incl. inactive ones)
 // GET    /api/v1/repos/:repo                   -> Repo      (:repo = key, URL-encoded: kcosr%2Fgh-dash, gitlab.example.com%2Fgroup%2Fproject;
 //          or a github.com repo you own by its short name)
-// PATCH  /api/v1/repos/:repo   {pinned?, hidden?} -> Repo
+// PATCH  /api/v1/repos/:repo   {pinned?, status?} -> Repo
 // GET    /api/v1/repo-candidates {refresh?: '1', source?} -> RepoCandidatesResponse   (cached 5 min per source and token)
 // GET    /api/v1/repo-lookup   {repo, source?} -> RepoLookup   (400 when `repo` names no repository on the source)
-// POST   /api/v1/repos         {repo, source?, includeInDefault?} -> 201 AddRepoResponse
+// POST   /api/v1/repos         {repo, source?, status?} -> 201 AddRepoResponse   (status: RepoStatus, default 'auto')
 //          400 bad input, or a host that isn't a source here (or isn't configured on this server); 404/403 { details:
-//          { problem, hint } }; 409 { details: { key, trackedBy, hidden } } (you own it, or it's tracked already) or a
+//          { problem, hint } }; 409 { details: { key, trackedBy, status } } (you own it, or it's tracked already) or a
 //          token for another account; 429 rate limited; 503 no token.
 //          `source` is a host (default github.com); an address or key on another source's host in `repo` wins.
 // DELETE /api/v1/repos/:repo   {source?}      -> 204   (409 for a repo you own; deletes its data from this dashboard;

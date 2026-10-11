@@ -149,7 +149,7 @@ test('source sign-out focuses Cancel so Enter does not forget a remembered token
       repos: { total: 1, private: null }, cli: null, tokenFile: null, instance: null, error: null, checkedAt: at,
     },
     sync: { source: host, running: false, progress: null, lastSyncAt: at, lastResult: { newItems: 0, errors: [] }, rateLimit: null, tokenSource: 'app', viewer: 'owner', problem: null },
-    repos: { owned: 1, added: 0, hidden: 0 },
+    repos: { owned: 1, added: 0 },
   };
   const desktop: DesktopState = {
     version: 'browser-fixture', platform: 'linux', configPath: 'synthetic-config', secureStorage: 'available',

@@ -5,19 +5,21 @@ import type { Repo, RepoSet } from '../../../shared/api';
 import { repoProvider } from '../../../shared/provider';
 import { repoPath, selectRepos } from '../../../shared/repos';
 import { repoListParams } from '../lib/apiQuery';
-import { usePatchRepo, useRepos, useSets, useSettings } from '../api/hooks';
+import { usePatchRepo, useRepos, useSets } from '../api/hooks';
 import { Sparkline } from '../charts';
 import { Ctl, RelTime } from '../components/bits';
-import { EmptyState, ErrorState, ProgressBar, Menu, Seg, useToast } from '../workbench';
+import { EmptyState, ErrorState, ProgressBar, Menu, Seg } from '../workbench';
 import { FilterInput } from '../components/FilterInput';
 import { FilterToolbar } from '../components/FilterToolbar';
 import { Icon } from '../components/Icon';
 import { UnavailableNote, useConfirmRemoveRepo } from '../components/RepoTracking';
 import { RepoName } from '../components/RepoName';
+import { statusItems, useSetRepoStatus } from '../components/RepoStatusMenu';
 import { useRepoLabel, useSourceCtx, useWords } from '../components/repoMapContext';
 import { SourceBadge } from '../components/SourceBadge';
 import { useSyncNow } from '../components/TopBar';
 import { useUI } from '../components/ui';
+import { activeReasonText, inactiveBadge } from '../lib/repoStatus';
 import { addDays, fmtDate, startOfWeek } from '../lib/time';
 import { carrySearch, inContext, repoLinkSearch, useUrlState } from '../lib/urlState';
 import type { RepoLayout, RepoSort } from '../lib/urlState';
@@ -35,14 +37,14 @@ export function RepositoriesView() {
   const { s, set, location } = useUrlState();
   const search = carrySearch(location.search);
   const repos = useRepos();
-  const settings = useSettings();
   const sets = useSets();
   const { openExport, openAddRepo } = useUI();
   const titles = useMemo(weekTitles, []);
   const w = useWords().pr;
   const setById = useMemo(() => new Map((sets.data ?? []).map((x) => [x.id, x])), [sets.data]);
 
-  const list = selectRepos(repos.data ?? [], repoListParams(s), settings.data?.includeForks);
+  // With the default selection: every repo (see repoListParams), the inactive ones dimmed after the active ones.
+  const list = selectRepos(repos.data ?? [], repoListParams(s));
   const nPinned = list.filter((r) => r.pinned).length;
 
   return (
@@ -68,9 +70,7 @@ export function RepositoriesView() {
         <ProgressBar active={repos.isFetching && !!repos.data} />
         {repos.isError && !repos.data ? (
           <ErrorState error={repos.error} onRetry={() => repos.refetch()} />
-        ) : settings.isError && !settings.data ? (
-          <ErrorState error={settings.error} onRetry={() => settings.refetch()} />
-        ) : !repos.data || !settings.data ? (
+        ) : !repos.data ? (
           <div className="repo-grid">{Array.from({ length: 8 }, (_, i) => <div key={i} className="rcard wb-skel skel-card" />)}</div>
         ) : list.length === 0 && s.own === 'others' && !repos.data.some((r) => r.trackedBy !== 'owned' && inContext(r, s.source)) ? (
           <EmptyState icon="book" title="No repositories from other owners" actions={
@@ -80,7 +80,7 @@ export function RepositoriesView() {
           <EmptyState icon="book" title={s.repos?.length === 0 ? 'No repositories selected' : 'No repositories match'} actions={
             <div className="wb-empty-actions">
               {s.q && <button type="button" className="wb-btn" onClick={() => set({ q: '' })}>Clear search</button>}
-              {s.repos !== null && <button type="button" className="wb-btn" onClick={() => set({ repos: null })}>Select default repositories</button>}
+              {s.repos !== null && <button type="button" className="wb-btn" onClick={() => set({ repos: null })}>Select active repositories</button>}
             </div>
           }>Choose repositories in the sidebar, or change the ownership or visibility filter.</EmptyState>
         ) : s.layout === 'grid' ? (
@@ -114,27 +114,21 @@ function PinButton({ repo }: { repo: Repo }) {
 
 function RepoMenu({ repo }: { repo: Repo }) {
   const patch = usePatchRepo();
-  const toast = useToast();
+  const setStatus = useSetRepoStatus();
   const sync = useSyncNow();
   const confirmRemove = useConfirmRemoveRepo();
   const label = useRepoLabel()(repo.key);
   const { current } = useSourceCtx();
-  const toggleHidden = () => {
-    // Hiding a card in the default selection unmounts this component before the mutation completes.
-    void patch.mutateAsync({ key: repo.key, patch: { hidden: !repo.hidden } }).then(() => {
-      toast(repo.hidden ? `${label} is back in the default selection`
-        : `${label} hidden. To unhide, find it with the sidebar search, select it, then open its menu.`, { duration: 6000 });
-    }).catch((error: Error) => toast(`Couldn't update ${label}: ${error.message}`, { tone: 'error' }));
-  };
   return (
     <Menu label={`Actions for ${label}`} trigger={(props) => (
       <button {...props} type="button" className="pin-btn" aria-label={`More actions for ${label}`} title="More"><Icon name="dots" /></button>
     )} items={[
       { id: 'pin', icon: 'pin', label: repo.pinned ? 'Unpin' : 'Pin', onSelect: () => patch.mutate({ key: repo.key, patch: { pinned: !repo.pinned } }) },
-      { id: 'hide', icon: repo.hidden ? 'eye' : 'eye-off', label: repo.hidden ? 'Unhide' : 'Hide from default selection', onSelect: toggleHidden },
       { id: 'sync', icon: 'refresh', label: 'Sync now', onSelect: () => sync.run({ repo: repo.key }) },
       { id: 'activity', icon: 'activity', label: 'Activity in this repo', href: `/activity?${repoLinkSearch(repo.key, current?.host ?? null)}` },
       { id: 'external', icon: 'external', label: `Open on ${repoProvider(repo).name}`, href: repo.url, external: true },
+      { type: 'separator' as const },
+      ...statusItems(repo, setStatus),
       ...(repo.trackedBy === 'manual' ? [
         { type: 'separator' as const },
         { id: 'remove', icon: 'trash' as const, label: 'Remove…', danger: true, onSelect: () => confirmRemove(repo) },
@@ -151,7 +145,7 @@ function VisBadge({ repo }: { repo: Repo }) {
       {!repo.unavailable && repo.syncedAt === null && <span className="vis-badge">Syncing…</span>}
       {repo.isArchived && <span className="vis-badge">Archived</span>}
       {repo.isFork && <span className="vis-badge"><Icon name="fork" />Fork</span>}
-      {repo.hidden && <span className="vis-badge">Hidden</span>}
+      {inactiveBadge(repo) && <span className="vis-badge" title={activeReasonText(repo)}>Inactive</span>}
     </>
   );
 }
@@ -161,7 +155,7 @@ function RepoCard({ repo: r, sets, titles, search }: { repo: Repo; sets: RepoSet
   const label = useRepoLabel()(r.key);
   const { badges } = useSourceCtx();
   return (
-    <div className={cx('rcard', (r.isArchived || r.hidden) && 'archived')}>
+    <div className={cx('rcard', !r.active && 'archived')}>
       <div className="rc-h">
         {badges && <SourceBadge host={r.source} />}
         <Link className="rc-name" to={`${repoPath(r.key)}${search}`} title={label}><RepoName repo={r.key} /></Link>
@@ -207,9 +201,9 @@ function RepoTable({ list, titles, search }: { list: Repo[]; titles: string[]; s
         </thead>
         <tbody>
           {list.map((r) => (
-            <tr key={r.key} className={cx((r.isArchived || r.hidden) && 'dim')}>
+            <tr key={r.key} className={cx(!r.active && 'dim')}>
               <td>{badges && <SourceBadge host={r.source} />}<Link to={`${repoPath(r.key)}${search}`} title={label(r.key)}><RepoName repo={r.key} /></Link>{r.pinned && <span className="pin-mark" title="Pinned"><Icon name="pin" /></span>}</td>
-              <td title={r.unavailable?.reason}>{r.visibility === 'private' ? 'Private' : r.visibility === 'internal' ? 'Internal' : 'Public'}{r.unavailable ? ' · unavailable' : r.syncedAt === null ? ' · syncing…' : ''}{r.isArchived ? ' · archived' : ''}{r.isFork ? ' · fork' : ''}{r.hidden ? ' · hidden' : ''}</td>
+              <td title={r.unavailable?.reason ?? (r.active ? undefined : activeReasonText(r))}>{r.visibility === 'private' ? 'Private' : r.visibility === 'internal' ? 'Internal' : 'Public'}{r.unavailable ? ' · unavailable' : r.syncedAt === null ? ' · syncing…' : ''}{r.isArchived ? ' · archived' : ''}{r.isFork ? ' · fork' : ''}{inactiveBadge(r) ? ' · inactive' : ''}</td>
               <td>{r.language ? <><i className="lang" style={{ '--lc': r.language.color ?? 'var(--wb-muted)' } as CSSProperties} /> {r.language.name}</> : '—'}</td>
               <td className="r">{r.visibility === 'public' ? <>{r.stars.toLocaleString()}{r.stats.newStars30d > 0 && r.trackedBy === 'owned' && <em className="plus"> +{r.stats.newStars30d}</em>}</> : '—'}</td>
               <td className="r">{r.stats.openPrs}</td>

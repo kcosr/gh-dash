@@ -70,8 +70,8 @@ describe('a GitLab source, in words', () => {
   });
 
   it('counts its projects and says how its sync went', () => {
-    expect(projectsLine({ repos: { owned: 2, added: 3, hidden: 1 }, account: { repos: { total: 56, private: null } } })).toBe('56 personal · 3 added · 1 hidden');
-    expect(projectsLine({ repos: { owned: 2, added: 0, hidden: 0 }, account: null })).toBe('2 personal');
+    expect(projectsLine({ repos: { owned: 2, added: 3 }, account: { repos: { total: 56, private: null } } })).toBe('56 personal · 3 added');
+    expect(projectsLine({ repos: { owned: 2, added: 0 }, account: null })).toBe('2 personal');
     const base = { running: false, progress: null, lastSyncAt: null, lastResult: null };
     expect(syncLine(base, now)).toBe('Never synced');
     expect(syncLine({ ...base, running: true, progress: { done: 3, total: 10, current: null } }, now)).toBe('Syncing 3/10');

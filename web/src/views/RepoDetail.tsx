@@ -13,12 +13,14 @@ import { Icon, ProviderIcon } from '../components/Icon';
 import { Labels } from '../components/Label';
 import { Markdown } from '../components/Markdown';
 import { RepoName } from '../components/RepoName';
+import { RepoStatusMenu } from '../components/RepoStatusMenu';
 import { UnavailableNote } from '../components/RepoTracking';
 import { useProviderOf, useRepoLabel, useSourceCtx } from '../components/repoMapContext';
 import { sourceTitle } from '../components/SourceBadge';
 import { WHO_OPTIONS } from '../lib/filterOptions';
 import { useUI } from '../components/ui';
 import { ALL_TIME_FROM, repoPageScope, scopeParams, statsParams } from '../lib/apiQuery';
+import { activeReasonText, inactiveBadge } from '../lib/repoStatus';
 import { activityColumns, contributorBars, mergedLabel, tileProps } from '../lib/statsCharts';
 import { fmtDate, fmtDateTime, isoDate } from '../lib/time';
 import { carrySearch, encodeParams, repoFromPath, repoLinkSearch, useUrlState } from '../lib/urlState';
@@ -117,7 +119,7 @@ export function RepoDetailView() {
               {!repo.unavailable && repo.syncedAt === null && <span className="vis-badge">Syncing…</span>}
               {repo.isArchived && <span className="vis-badge">Archived</span>}
               {repo.isFork && <span className="vis-badge"><Icon name="fork" />Fork</span>}
-              {repo.hidden && <span className="vis-badge">Hidden</span>}
+              {inactiveBadge(repo) && <span className="vis-badge" title={activeReasonText(repo)}>Inactive</span>}
               <span className="spacer" />
               <Button
                 type="button"
@@ -127,6 +129,7 @@ export function RepoDetailView() {
               >
                 <Icon name="pin" />{repo.pinned ? 'Pinned' : 'Pin'}
               </Button>
+              <RepoStatusMenu repo={repo} />
               <a className="wb-btn wb-btn--primary" href={repo.url} target="_blank" rel="noopener noreferrer"><Icon name="ext" />Open on {p.name}</a>
             </div>
             {repo.unavailable && <UnavailableNote repo={repo} />}

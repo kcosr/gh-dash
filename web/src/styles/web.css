@@ -584,7 +584,7 @@ a.sync:hover .sync-text { color: var(--wb-fg); text-decoration: underline; text-
 .trk-st { display: inline-flex; align-items: center; gap: 4px; flex: none; font-size: 12px; color: var(--wb-muted); white-space: nowrap; }
 .trk-st svg { width: 12px; height: 12px; }
 .trk-st.warn svg { color: var(--star); }
-.trk-row .wb-switch, .trk-row .pin-btn { flex: none; }
+.trk-row .wb-btn, .trk-row .pin-btn { flex: none; }
 
 /* Sources: the context switcher (top bar) and the small marks that say which source a repo is on (All only). */
 .ctx-switch { flex: none; }

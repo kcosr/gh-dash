@@ -279,7 +279,7 @@ export interface Settings {
    * Ignored in PATCH.
    */
   myEmailsFromEnv?: string[];
-  includeForks: boolean; // default false: forks are synced but excluded from the default selection
+  includeForks: boolean; // default false: forks are synced (not their commits or branches) but inactive unless marked active
   /** Size cap for the on-disk diff cache in MB (default 200; allowed 10..10000). Least recently viewed entries go first. */
   diffCacheMb: number;
 }

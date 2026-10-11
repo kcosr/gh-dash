@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { DAY_MS, ymdToDayNum, zonedMidnight } from '../lib/time';
-import { addManualRepo, GITHUB, seedDb } from '../test/seed';
+import { addManualRepo, GITHUB, SEED_NOW, seedDb } from '../test/seed';
 import type { Db } from './db';
 import { loadQueryCtx, type QueryCtx, type Scope } from './filters';
 import { listActivity, listStars } from './lists';
@@ -11,7 +11,7 @@ let db: Db;
 let ctx: QueryCtx;
 beforeAll(() => {
   db = seedDb();
-  ctx = loadQueryCtx(db);
+  ctx = loadQueryCtx(db, [], SEED_NOW);
 });
 
 /** Local days `from`..`to` inclusive in `tz`. */
@@ -101,10 +101,10 @@ describe('computeStats', () => {
       stars: 7, forks: 0, createdAt: '2025-01-01T00:00:00Z', pushedAt: '2026-09-25T00:00:00Z',
     }, '2026-09-27T00:00:00Z');
     upsertStar(d, corp, { login: 'zoe', name: null, avatarUrl: null, starredAt: '2026-09-22T00:00:00Z' });
-    const s = computeStats(d, loadQueryCtx(d), scope('2026-09-20', '2026-09-26'));
+    const s = computeStats(d, loadQueryCtx(d, [], SEED_NOW), scope('2026-09-20', '2026-09-26'));
     expect(s.stars.map((b) => b.total)).toEqual([3, 3, 3, 3, 3, 4, 4]);
     expect(s.tiles.newStars.value).toBe(3);
-    const internal = computeStats(d, loadQueryCtx(d), scope('2026-09-20', '2026-09-26', { visibility: 'internal' }));
+    const internal = computeStats(d, loadQueryCtx(d, [], SEED_NOW), scope('2026-09-20', '2026-09-26', { visibility: 'internal' }));
     expect(internal.byRepo.map((r) => [r.repo, r.stars])).toEqual([['alice/corp', 1]]);
     expect(internal.stars.every((b) => b.total === 0)).toBe(true);
   });
@@ -117,7 +117,7 @@ describe('computeStats', () => {
       upsertStar(d, theirs, { login, name: null, avatarUrl: null, starredAt: at });
     }
     upsertCommit(d, theirs, { oid: 'b'.repeat(40), headline: 'x', body: '', author: { login: 'bob', name: null, email: null, avatarUrl: null }, committedAt: '2026-09-22T00:00:00Z', url: 'u', additions: 1, deletions: 0, prNumber: null });
-    const c = loadQueryCtx(d);
+    const c = loadQueryCtx(d, [], SEED_NOW);
     const base = computeStats(db, ctx, scope('2026-09-20', '2026-09-26'));
     const s = computeStats(d, c, scope('2026-09-20', '2026-09-26'));
     expect(s.tiles.newStars).toEqual(base.tiles.newStars);
@@ -178,7 +178,7 @@ describe('contributors', () => {
 
   it('merges every "me" identity into one viewer row; others by login, else by email, showing their latest name', () => {
     const d = db2();
-    const s = computeStats(d, loadQueryCtx(d, ['alice@env.example']), scope('2026-09-20', '2026-09-26'));
+    const s = computeStats(d, loadQueryCtx(d, ['alice@env.example'], SEED_NOW), scope('2026-09-20', '2026-09-26'));
     expect(rows(s)).toEqual([
       // c1, c2 (settings email), c4, x1 (login in other case), x2 (GH_DASH_MY_EMAILS) + merges app#1, secret#1
       ['Alice', 'Alice A', true, 5, 2, 7],
@@ -189,14 +189,14 @@ describe('contributors', () => {
     ]);
     expect(s.contributors[0]!.actor.avatarUrl).toBe('https://avatars.example/alice');
     // who=me: exactly one row; who=others: no "me" identity at all.
-    expect(rows(computeStats(d, loadQueryCtx(d, ['alice@env.example']), scope('2026-09-20', '2026-09-26', { who: 'me' })))).toEqual([['Alice', 'Alice A', true, 5, 2, 7]]);
-    const others = computeStats(d, loadQueryCtx(d, ['alice@env.example']), scope('2026-09-20', '2026-09-26', { who: 'others' }));
+    expect(rows(computeStats(d, loadQueryCtx(d, ['alice@env.example'], SEED_NOW), scope('2026-09-20', '2026-09-26', { who: 'me' })))).toEqual([['Alice', 'Alice A', true, 5, 2, 7]]);
+    const others = computeStats(d, loadQueryCtx(d, ['alice@env.example'], SEED_NOW), scope('2026-09-20', '2026-09-26', { who: 'others' }));
     expect(others.contributors.some((c) => c.actor.isMe || c.actor.login?.toLowerCase() === 'alice')).toBe(false);
   });
 
   it('without the env email that address is just another person', () => {
     const d = db2();
-    const s = computeStats(d, loadQueryCtx(d), scope('2026-09-20', '2026-09-26'));
+    const s = computeStats(d, loadQueryCtx(d, [], SEED_NOW), scope('2026-09-20', '2026-09-26'));
     expect(rows(s)).toContainEqual(['Alice', 'Alice A', true, 4, 2, 6]);
     expect(rows(s)).toContainEqual([null, 'Alice (laptop)', false, 1, 0, 1]);
   });

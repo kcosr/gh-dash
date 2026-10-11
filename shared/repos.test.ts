@@ -26,7 +26,7 @@ function repo(key: string, over: Partial<Repo> = {}, trackedBy: TrackedBy = 'own
     key, source: 'github.com', provider: 'github', name, nameWithOwner: i < 0 ? `alice/${key}` : key, owner: i < 0 ? 'alice' : key.slice(0, i), description: null,
     url: `https://github.com/${key}`, visibility: 'public', isArchived: false, isFork: false, language: null, topics: [],
     defaultBranch: 'main', stars: 0, forks: 0, createdAt: '2026-01-01T00:00:00Z', pushedAt: null, lastActivityAt: null,
-    pinned: false, hidden: false, setIds: [], syncedAt: null, trackedBy, addedAt: null, unavailable: null, commentCount: 0,
+    pinned: false, status: 'auto', active: true, activeReason: 'recent', setIds: [], syncedAt: null, trackedBy, addedAt: null, unavailable: null, commentCount: 0,
     stats: { openPrs: 0, openIssues: 0, mergedPrs30d: 0, commits30d: 0, newStars30d: 0, weeklyCommits: [] },
     ...over,
   };
@@ -409,9 +409,9 @@ describe('selectRepos with keys', () => {
     repo('kcosr/gh-dash', { lastActivityAt: '2026-03-01T00:00:00Z', stars: 5 }),
     repo('dlvhdr/gh-dash', { lastActivityAt: '2026-04-01T00:00:00Z', stars: 9, visibility: 'private' }, 'manual'),
     repo('kcosr/sedes', { lastActivityAt: '2026-02-01T00:00:00Z' }),
-    repo('kcosr/old', { isArchived: true }),
-    repo('kcosr/hid', { hidden: true }),
-    repo('kcosr/frk', { isFork: true }),
+    repo('kcosr/old', { isArchived: true, active: false, activeReason: 'archived' }),
+    repo('kcosr/hid', { status: 'inactive', active: false, activeReason: 'set' }),
+    repo('kcosr/frk', { isFork: true, active: false, activeReason: 'fork' }),
   ];
 
   it('selects by key or owned alias, case-insensitively, and ignores entries naming nothing', () => {
@@ -422,11 +422,12 @@ describe('selectRepos with keys', () => {
     expect(selectRepos(all, { repos: 'dlvhdr' })).toEqual([]);
   });
 
-  it('defaults to keys of repos that are not archived, hidden or forks', () => {
+  it('defaults to the keys of the active repos, as the server decided them', () => {
     expect(defaultRepoScope(all)).toEqual(['kcosr/gh-dash', 'dlvhdr/gh-dash', 'kcosr/sedes']);
-    expect(defaultRepoScope(all, true)).toEqual(['kcosr/gh-dash', 'dlvhdr/gh-dash', 'kcosr/sedes', 'kcosr/frk']);
     expect(keys(selectRepos(all, { scope: 'default' }))).toEqual(['dlvhdr/gh-dash', 'kcosr/gh-dash', 'kcosr/sedes']);
-    expect(keys(selectRepos(all, { scope: 'default' }, true))).toEqual(['dlvhdr/gh-dash', 'kcosr/gh-dash', 'kcosr/sedes', 'kcosr/frk']);
+    // Only `active` counts: a fork (forks on) or an archived repo marked active is selected when the server says so.
+    const said = all.map((r) => (r.isFork || r.isArchived ? { ...r, active: true } : r));
+    expect(defaultRepoScope(said)).toEqual(['kcosr/gh-dash', 'dlvhdr/gh-dash', 'kcosr/sedes', 'kcosr/old', 'kcosr/frk']);
     expect(keys(selectRepos(all, {}))).toHaveLength(6);
     // explicit repos= wins over the default selection
     expect(keys(selectRepos(all, { scope: 'default', repos: 'kcosr/old' }))).toEqual(['kcosr/old']);
@@ -446,9 +447,9 @@ describe('selectRepos with keys', () => {
     expect(keys(selectRepos(all, { q: 'GH-DASH', sort: 'name' }))).toEqual(['dlvhdr/gh-dash', 'kcosr/gh-dash']);
   });
 
-  it('orders pinned, then visible first, then by the sort, breaking ties on the key', () => {
-    // by short name, so the two gh-dash repos are adjacent and ordered by key; the hidden one goes last
-    expect(keys(selectRepos(all, { sort: 'name' }))).toEqual(['kcosr/frk', 'dlvhdr/gh-dash', 'kcosr/gh-dash', 'kcosr/old', 'kcosr/sedes', 'kcosr/hid']);
+  it('orders pinned, then active first, then by the sort, breaking ties on the key', () => {
+    // by short name, so the two gh-dash repos are adjacent and ordered by key; the inactive ones go last
+    expect(keys(selectRepos(all, { sort: 'name' }))).toEqual(['dlvhdr/gh-dash', 'kcosr/gh-dash', 'kcosr/sedes', 'kcosr/frk', 'kcosr/hid', 'kcosr/old']);
     expect(keys(selectRepos(all, { sort: 'stars', scope: 'default' }))).toEqual(['dlvhdr/gh-dash', 'kcosr/gh-dash', 'kcosr/sedes']);
     expect(keys(selectRepos(all, { scope: 'default' }))).toEqual(['dlvhdr/gh-dash', 'kcosr/gh-dash', 'kcosr/sedes']); // most recent activity first
     const pinned = all.map((r) => (r.key === 'kcosr/sedes' ? { ...r, pinned: true } : r));
@@ -460,7 +461,12 @@ describe('selectRepos by source', () => {
   const keys = (list: Repo[]) => list.map((r) => r.key).sort();
   const gl = (key: string, over: Partial<Repo> = {}) =>
     repo(`gitlab.example.com/${key}`, { source: 'gitlab.example.com', provider: 'gitlab', nameWithOwner: key, ...over });
-  const all = [repo('kcosr/gh-dash'), repo('kcosr/old', { isArchived: true }), gl('alice/gh-dash'), gl('platform/team/svc', { hidden: true })];
+  const all = [
+    repo('kcosr/gh-dash'),
+    repo('kcosr/old', { isArchived: true, active: false, activeReason: 'archived' }),
+    gl('alice/gh-dash'),
+    gl('platform/team/svc', { status: 'inactive', active: false, activeReason: 'set' }),
+  ];
 
   it('keeps the repos of the sources named, case-insensitively; none named is every source', () => {
     expect(keys(selectRepos(all, { source: 'gitlab.example.com' }))).toEqual(['gitlab.example.com/alice/gh-dash', 'gitlab.example.com/platform/team/svc']);

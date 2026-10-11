@@ -118,32 +118,32 @@ describe('GET /sources', () => {
       viewer: { login: 'Alice', name: 'Alice A', avatarUrl: 'https://avatars.example/alice' },
       account: { source: 'none', choice: null, login: null, dbLogin: 'Alice', mismatch: false },
       sync: { source: 'github.com', running: false, tokenSource: 'none', viewer: 'Alice', problem: expect.stringMatching(/^No GitHub token/) },
-      // seedDb: five repos of the viewer's, one hidden.
-      repos: { owned: 5, added: 0, hidden: 1 },
+      // seedDb: five repos of the viewer's.
+      repos: { owned: 5, added: 0 },
     });
     expect(gitlab).toMatchObject({
       host: GITLAB_HOST, kind: 'gitlab', name: 'GitLab', url: GITLAB_BASE, configured: true, removable: false,
       viewer: { login: 'bob', name: 'Bob B', avatarUrl: 'https://avatars.example/bob-gl' },
       account: { source: 'env', choice: 'auto', locked: true, env: 'GITLAB_TOKEN', dbLogin: 'bob', cli: { name: 'glab' } },
       sync: { source: GITLAB_HOST, running: false, tokenSource: 'env', viewer: 'bob', problem: null },
-      repos: { owned: 1, added: 0, hidden: 0 },
+      repos: { owned: 1, added: 0 },
     });
     // The list is public information about sources, not credentials.
     expect(JSON.stringify(res.body)).not.toContain('glpat-test-bob');
   });
 
-  it('counts repos added by hand and hidden ones, live ones only', async () => {
+  it('counts repos added by hand, live ones only', async () => {
     const t = sourcesApp();
     const gl = sourceByHost(t.db, GITLAB_HOST)!;
     addManualRepo(t.db, 'team/platform/api', { source: gl });
-    addManualRepo(t.db, 'team/docs', { source: gl, hidden: true });
+    addManualRepo(t.db, 'team/docs', { source: gl, status: 'inactive' });
     addManualRepo(t.db, 'bob/tool');
     const removed = addManualRepo(t.db, 'bob/gone', { source: gl });
     t.db.run("UPDATE repos SET removed_at = '2026-09-28T00:00:00Z' WHERE id = ?", [removed]);
     const items = (await t.call('GET', '/sources')).body.items as Source[];
     expect(items.map((s) => s.repos)).toEqual([
-      { owned: 5, added: 1, hidden: 1 },
-      { owned: 1, added: 2, hidden: 1 },
+      { owned: 5, added: 1 },
+      { owned: 1, added: 2 },
     ]);
   });
 
@@ -151,7 +151,7 @@ describe('GET /sources', () => {
     const t = sourcesApp({ gitlab: 'unconfigured' });
     const items = (await t.call('GET', '/sources')).body.items as Source[];
     expect(items[1]).toMatchObject({
-      host: GITLAB_HOST, configured: false, removable: true, account: null, viewer: { login: 'bob' }, repos: { owned: 1, added: 0, hidden: 0 },
+      host: GITLAB_HOST, configured: false, removable: true, account: null, viewer: { login: 'bob' }, repos: { owned: 1, added: 0 },
       sync: { tokenSource: 'none', problem: `GitLab (${GITLAB_HOST}) isn't configured on this server` },
     });
     expect(t.gl.requests).toEqual([]);

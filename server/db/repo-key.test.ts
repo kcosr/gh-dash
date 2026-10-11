@@ -251,9 +251,9 @@ describe('call sites', () => {
     const db = fixture();
     expect(setRepoPrefs(db, 'app', { pinned: true })).toBe(true);
     expect(getRepo(db, 'alice/app', 'UTC')?.pinned).toBe(true);
-    expect(setRepoPrefs(db, 'bob/app', { hidden: true })).toBe(true);
-    expect(getRepo(db, 'bob/app', 'UTC')?.hidden).toBe(true);
-    expect(getRepo(db, 'alice/app', 'UTC')?.hidden).toBe(false);
+    expect(setRepoPrefs(db, 'bob/app', { status: 'inactive' })).toBe(true);
+    expect(getRepo(db, 'bob/app', 'UTC')?.status).toBe('inactive');
+    expect(getRepo(db, 'alice/app', 'UTC')?.status).toBe('auto');
     // No preferences: only existence is reported.
     expect(setRepoPrefs(db, 'secret', {})).toBe(true);
     expect(setRepoPrefs(db, 'nope', {})).toBe(false);

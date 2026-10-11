@@ -1,17 +1,18 @@
 import { beforeAll, describe, expect, it } from 'vitest';
-import { addManualRepo, seedDb } from '../test/seed';
+import { addManualRepo, SEED_NOW, seedDb } from '../test/seed';
 import { activityCsv, commitsCsv, prsCsv } from '../format/csv';
 import { eventsMarkdown, prsMarkdown } from '../format/markdown';
 import { createThread, getPrincipal, SELF_PRINCIPAL_ID, setThreadStatus, type ThreadTarget } from './comments';
 import type { Db } from './db';
 import { ftsQuery, loadQueryCtx, type QueryCtx, type Scope } from './filters';
 import { COMMIT_SELECT, type CursorKey, getPrDetail, listActivity, listCommits, listIssues, listPrs, listStars, PR_FROM, PR_SELECT } from './lists';
+import { patchSettings } from './settings';
 
 let db: Db;
 let ctx: QueryCtx;
 beforeAll(() => {
   db = seedDb();
-  ctx = loadQueryCtx(db);
+  ctx = loadQueryCtx(db, [], SEED_NOW);
 });
 
 const scope = (over: Partial<Scope> = {}): Scope => ({
@@ -34,7 +35,9 @@ describe('PR filters', () => {
   });
 
   it('includes forks when settings.includeForks is on', () => {
-    expect(listPrs(db, { ...ctx, includeForks: true }, scope(), all, null).items.map((p) => p.id)).toContain('alice/fork#1');
+    const d = seedDb();
+    patchSettings(d, { includeForks: true });
+    expect(listPrs(d, loadQueryCtx(d, [], SEED_NOW), scope(), all, null).items.map((p) => p.id)).toContain('alice/fork#1');
   });
 
   it('filters by visibility, who and state', () => {
@@ -117,7 +120,7 @@ describe('repo keys', () => {
     const bob = addManualRepo(d, 'bob/app');
     d.run(`INSERT INTO pull_requests (repo_id, number, title, state, created_at, updated_at, activity_at, url)
       VALUES (?, 7, 'Namesake', 'open', '2026-09-26T00:00:00Z', '2026-09-26T00:00:00Z', '2026-09-26T00:00:00Z', 'u')`, [bob]);
-    const c = loadQueryCtx(d);
+    const c = loadQueryCtx(d, [], SEED_NOW);
     const ids = (repos: string[] | null) => listPrs(d, c, scope({ repos }), all, null).items.map((p) => p.id);
     expect(ids(['app'])).toEqual(['alice/app#3', 'alice/app#2', 'alice/app#1']);
     expect(ids(['alice/app'])).toEqual(ids(['app']));
@@ -151,7 +154,7 @@ describe('PR comment threads', () => {
   // Neither the same number in another repo nor a commit thread counts.
   open('secret', { kind: 'pr', number: 2 });
   open('app', { kind: 'commit', oid: 'a'.repeat(40) });
-  const ownCtx = loadQueryCtx(own);
+  const ownCtx = loadQueryCtx(own, [], SEED_NOW);
 
   it('counts them on list items and the detail', () => {
     const counts = Object.fromEntries(listPrs(own, ownCtx, scope(), all, null).items.map((p) => [p.id, p.comments]));
@@ -196,7 +199,7 @@ describe("PR comment threads of a branch's line of work", () => {
   open({ repoId: app, kind: 'pr', number: 3 }, '2026-09-24T12:00:00.000Z');
   // Made on the revision c3, but on a branch: not the commit's.
   open({ repoId: app, kind: 'branch', branch: 'other' }, '2026-09-24T12:00:00.000Z');
-  const ownCtx = loadQueryCtx(own);
+  const ownCtx = loadQueryCtx(own, [], SEED_NOW);
   const wide = scope({ repos: ['app'] });
 
   it("counts each PR's threads as its view shows them: its own and its branch group", () => {
@@ -248,7 +251,7 @@ describe('commit comment threads, and counts on activity events', () => {
   open('secret', { kind: 'commit', oid: oid('c4') }, oid('c4'));
   open('app', { kind: 'commit', oid: oid('c4') }, oid('c4'));
   setThreadStatus(own, open('app', { kind: 'pr', number: 3 }, oid('c3')).id, 'resolved', you);
-  const ownCtx = loadQueryCtx(own);
+  const ownCtx = loadQueryCtx(own, [], SEED_NOW);
   const wide = scope({ repos: ['app', 'secret'] });
 
   it('counts commit threads on the commits list', () => {

@@ -45,7 +45,7 @@ function prNumberParam(c: Context): number {
  * The comment routes: services/comments.ts does the work, as the dashboard's own user (every HTTP request is; agents
  * write through MCP, as themselves).
  */
-export function commentRoutes({ db, config, bus }: AppDeps): Hono {
+export function commentRoutes({ db, config, bus, now }: AppDeps): Hono {
   const r = new Hono();
   const deps: CommentDeps = { db, bus };
   const me = () => selfPrincipal(db);
@@ -109,7 +109,7 @@ export function commentRoutes({ db, config, bus }: AppDeps): Hono {
 
   // Every thread in scope, across PRs, branches and commits (the scope hides removed repos, as /prs does).
   r.get('/threads', (c) => {
-    const out = queryThreads({ db, config }, parseWith(threadQuerySchema, c.req.query()));
+    const out = queryThreads({ db, config, now }, parseWith(threadQuerySchema, c.req.query()));
     if (out.format === 'json') return c.json(out.body);
     return c.body(out.text, 200, { 'Content-Type': 'text/markdown; charset=utf-8' });
   });

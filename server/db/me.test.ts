@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ActivityEvent } from '../../shared/api';
 import { ymdToDayNum, zonedMidnight } from '../lib/time';
-import { commitRecord, GITLAB_HOST, prRecord, repoRecord, seedDb, seedGitLab, setViewer } from '../test/seed';
+import { commitRecord, GITLAB_HOST, prRecord, repoRecord, SEED_NOW, seedDb, seedGitLab, setViewer } from '../test/seed';
 import type { Db } from './db';
 import { isMeFn, loadQueryCtx, meSql, type Scope } from './filters';
 import { getPrDetail, listActivity, listCommits, listIssues, listPrs, listReleases } from './lists';
@@ -55,7 +55,7 @@ describe('the query context', () => {
   it('holds the account of each source that has one, lower-cased, and its own addresses', () => {
     const { db } = world();
     ensureSource(db, { kind: 'gitlab', host: 'gitlab2.example.com', baseUrl: 'https://gitlab2.example.com' });
-    const ctx = loadQueryCtx(db, ['ME@Home.example']);
+    const ctx = loadQueryCtx(db, ['ME@Home.example'], SEED_NOW);
     // gitlab2 has no account yet: it has no entry.
     expect(ctx.viewers).toEqual(new Map([[1, 'alice'], [2, 'bob']]));
     // The addresses that count on every source; a source's own are kept apart.
@@ -107,7 +107,7 @@ describe('meSql', () => {
 
 describe('lists across sources', () => {
   const { db } = world();
-  const ctx = loadQueryCtx(db);
+  const ctx = loadQueryCtx(db, [], SEED_NOW);
   const prs = (over: Partial<Scope> = {}) => listPrs(db, ctx, scope(over), all, null).items;
   const ids = (items: { id: string }[]) => items.map((i) => i.id);
   const partition = <T>(everyone: T[], me: T[], others: T[]) => {
@@ -158,7 +158,7 @@ describe('lists across sources', () => {
   });
 
   it('GH_DASH_MY_EMAILS counts on every source', () => {
-    const c = loadQueryCtx(db, ['dan@x.example']);
+    const c = loadQueryCtx(db, ['dan@x.example'], SEED_NOW);
     const dan = listCommits(db, c, scope({ who: 'me' }), null).items.map((x) => x.headline).filter((h) => h.startsWith('Dan'));
     expect(dan.sort()).toEqual(['Dan on GitHub', 'Dan on GitLab']);
   });
@@ -190,7 +190,7 @@ describe('lists across sources', () => {
         { oid: 'q2', headline: 'by alice', committedAt: '2026-09-25T01:00:00Z', url: 'u', author: by('alice') },
       ],
     }));
-    const c = loadQueryCtx(d);
+    const c = loadQueryCtx(d, [], SEED_NOW);
     const flags = (repo: string, n: number) => getPrDetail(d, c, repo, n)!.commits.map((x) => [x.headline, x.author.isMe]);
     expect(flags('alice/app', 9)).toEqual([['from the work laptop', false], ['by alice', true]]);
     expect(flags(KEY, 1)).toEqual([['parser', true], ['review fixes', false]]);
@@ -244,7 +244,7 @@ describe('lists across sources', () => {
     const d = seedDb();
     seedGitLab(d);
     setViewer(d, null, 2);
-    const c = loadQueryCtx(d);
+    const c = loadQueryCtx(d, [], SEED_NOW);
     expect(ids(listPrs(d, c, scope({ who: 'me' }), all, null).items)).toEqual(['alice/secret#1', 'alice/app#1']);
     // Not dropped by a NULL: bob's and alice's MRs are others until bob's account is known.
     expect(ids(listPrs(d, c, scope({ who: 'others' }), all, null).items)).toEqual([`${KEY}#3`, 'alice/app#3', `${KEY}#2`, 'alice/app#2', `${KEY}#1`]);
@@ -257,7 +257,7 @@ describe('lists across sources', () => {
 
 describe('stats across sources', () => {
   const { db } = world();
-  const ctx = loadQueryCtx(db);
+  const ctx = loadQueryCtx(db, [], SEED_NOW);
   const total = (s: ReturnType<typeof computeStats>, key: 'commitsMine' | 'prsMergedMine' | 'commits' | 'prsMerged') =>
     s.series.reduce((a, b) => a + b[key], 0);
   const rows = (s: ReturnType<typeof computeStats>) =>
@@ -321,7 +321,7 @@ describe('stats across sources', () => {
   it('shows the first source’s viewer that has an account when source 1 has none', () => {
     const d = world().db;
     setViewer(d, null, 1);
-    const s = computeStats(d, loadQueryCtx(d), STATS);
+    const s = computeStats(d, loadQueryCtx(d, [], SEED_NOW), STATS);
     // GitHub’s events are now nobody’s but the addresses (c2 by alice@work.example, shared); GitLab’s are bob’s.
     expect(s.contributors.filter((c) => c.actor.isMe)).toEqual([
       { actor: { ...BOB_GITLAB, isMe: true }, commits: 3, prsMerged: 1, total: 4 },
@@ -337,7 +337,7 @@ describe('stats across sources', () => {
     }, '2026-09-27T12:00:00Z');
     upsertCommit(d, other, commitRecord('z1', '2026-09-22T00:00:00Z', by(null, 'carol@corp.example'), null, 'Provision'));
     upsertCommit(d, other, commitRecord('z2', '2026-09-22T01:00:00Z', by('bob'), null, 'Bob on gitlab2'));
-    const s = computeStats(d, loadQueryCtx(d), { ...STATS, who: 'me' });
+    const s = computeStats(d, loadQueryCtx(d, [], SEED_NOW), { ...STATS, who: 'me' });
     // carol@corp.example counts on gitlab2 only, where carol is the viewer; bob is not the viewer there.
     expect(s.tiles.commits.value).toBe(6);
     expect(s.byRepo.find((r) => r.repo === 'gitlab2.example.com/ops/infra')).toMatchObject({ commits: 1 });

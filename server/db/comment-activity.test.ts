@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import type { ActivityEvent, Principal, ThreadAnchor } from '../../shared/api';
 import { activityCsv } from '../format/csv';
 import { eventsMarkdown } from '../format/markdown';
-import { seedDb, seedGitLab } from '../test/seed';
+import { SEED_NOW, seedDb, seedGitLab } from '../test/seed';
 import { createAgent } from './agents';
 import { addComment, createThread, deleteComment, deleteThread, getPrincipal, SELF_PRINCIPAL_ID, setThreadStatus, type ThreadTarget } from './comments';
 import type { Db } from './db';
@@ -25,7 +25,7 @@ const scope = (over: Partial<Scope> = {}): Scope => ({
   repos: null, visibility: 'all', ownership: 'all', who: 'everyone',
   from: Date.parse('2026-09-01T00:00:00Z'), to: Date.parse('2026-10-01T00:00:00Z'), tz: 'UTC', q: null, ...over,
 });
-const comments = (s: Scope = scope()) => listActivity(db, loadQueryCtx(db), s, ['comment'], null);
+const comments = (s: Scope = scope()) => listActivity(db, loadQueryCtx(db, [], SEED_NOW), s, ['comment'], null);
 const brief = (e: ActivityEvent) => (e.type === 'comment' ? `${e.actor.name} ${e.kind} ${e.comment.threadId}` : e.type);
 
 function open(target: ThreadTarget, body: string, author: Principal, when: string, anchor: ThreadAnchor = general) {
@@ -137,7 +137,7 @@ describe('comment events in the activity feed', () => {
   it('joins the other event types in one feed, pages with the cursor, and is left out by types', () => {
     const t = open({ repoId: app, kind: 'pr', number: 2 }, 'Why?', me, at(22, '09:30:00.000'));
     for (let i = 0; i < 3; i++) addComment(db, t.id, claude, `Reply ${i}`, at(22, '09:30:00.000'));
-    const ctx = loadQueryCtx(db);
+    const ctx = loadQueryCtx(db, [], SEED_NOW);
     const s = scope({ repos: ['app'], from: Date.parse('2026-09-22T00:00:00Z'), to: Date.parse('2026-09-23T00:00:00Z') });
     const everything = listActivity(db, ctx, s, null, null).items;
     expect(everything.map((e) => (e.type === 'comment' ? `${e.kind}` : `${e.type}`))).toEqual([
@@ -222,7 +222,7 @@ describe('comment events in the activity feed', () => {
   });
 
   it('leaves the insights (stats) as they were', () => {
-    const ctx = loadQueryCtx(db);
+    const ctx = loadQueryCtx(db, [], SEED_NOW);
     const before = computeStats(db, ctx, scope());
     const t = open({ repoId: app, kind: 'pr', number: 2 }, 'Why?', me, at(20));
     addComment(db, t.id, claude, 'Because.', at(21));

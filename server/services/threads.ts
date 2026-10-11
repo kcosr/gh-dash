@@ -13,8 +13,8 @@ import { type ListReply, page, type QueryDeps, repoKinds, scopedQuery } from './
  * Every comment thread in scope. The cursor is `[sort, updatedAt, id]`: a cursor made under the other sort order would
  * skip or repeat threads, so it is a 400 (the client starts again from the first page when it changes the sort).
  */
-export function queryThreads({ db, config }: QueryDeps, q: z.infer<typeof threadQuerySchema>): ListReply<ThreadListResponse> {
-  const { scope, ctx } = scopedQuery(db, config, q);
+export function queryThreads({ db, config, now }: QueryDeps, q: z.infer<typeof threadQuerySchema>): ListReply<ThreadListResponse> {
+  const { scope, ctx } = scopedQuery(db, config, q, now?.());
   // An id nobody has is a mistake, not "nobody's threads" (principals are never deleted).
   const author = typeof q.author === 'number' ? getPrincipal(db, q.author) : null;
   if (typeof q.author === 'number' && !author) throw new HttpError(400, `author: there is no agent with id ${q.author}`);

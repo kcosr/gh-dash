@@ -96,7 +96,7 @@ export function reposInReach<T extends { source: string }>(reach: Reach, repos: 
  */
 export function reachScope(reach: Reach, query: ScopeParams): { scope: Scope; ctx: QueryCtx } {
   if (reach.sources !== null) requireSourcesInReach(reach, parseSources(query.source));
-  const out = scopedQuery(reach.deps.db, reach.deps.config, query);
+  const out = scopedQuery(reach.deps.db, reach.deps.config, query, reach.deps.now?.());
   if (reach.sources === null) return out;
   const hosts = reachableHosts(reach);
   return { ...out, scope: { ...out.scope, source: (out.scope.source ?? hosts).filter((h) => hosts.includes(h)) } };

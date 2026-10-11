@@ -9,7 +9,7 @@ import { GitHubDiffSources } from '../github/diff-source';
 import { SyncManager } from '../sync/manager';
 import { addBranch } from '../test/branches';
 import { fakeGitHub, type Handler, type Reply, restFile, sha } from '../test/github';
-import { seedDb } from '../test/seed';
+import { SEED_NOW, seedDb } from '../test/seed';
 import { testTokens } from '../test/tokens';
 import { createApp } from './app';
 import { diffRoutes } from './routes/diffs';
@@ -27,7 +27,7 @@ function branchApp(routes: Record<string, Handler> = {}, token: string | null = 
   const gh = fakeGitHub(routes);
   const sources = new GitHubDiffSources({ tokens, fetchImpl: gh.fetchImpl, sleep: async () => {}, log: () => {} });
   const diffs = new DiffService({ db, cache: new DiffCache(':memory:'), sources, log: () => {} });
-  return { app: createApp({ db, config, sync, diffs, tokens }), gh, db };
+  return { app: createApp({ db, config, sync, diffs, tokens, now: () => SEED_NOW }), gh, db };
 }
 
 const feature: Record<string, Handler> = {

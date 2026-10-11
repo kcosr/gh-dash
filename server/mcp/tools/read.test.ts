@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createThread, getPrincipal, SELF_PRINCIPAL_ID } from '../../db/comments';
+import { setRepoPrefs } from '../../db/repos';
 import { ensureSource } from '../../db/sources';
 import { upsertPr } from '../../db/write';
 import * as comments from '../../services/comments';
@@ -37,8 +38,13 @@ describe('list_repos', () => {
     expect(repos.find((r: { key: string }) => r.key === 'alice/app')).toEqual({
       key: 'alice/app', provider: 'github', url: 'https://github.com/alice/app', defaultBranch: 'main', trackedBy: 'owned', openPrs: 0, openThreads: 1,
     });
-    expect(repos.find((r: { key: string }) => r.key === 'alice/old')).toMatchObject({ archived: true });
-    expect(repos.find((r: { key: string }) => r.key === 'alice/hidden')).toMatchObject({ hidden: true });
+    // Inactive ones (out of the default selection that lists without `repo` cover) say so; active ones don't.
+    expect(repos.find((r: { key: string }) => r.key === 'alice/old')).toMatchObject({ archived: true, inactive: true });
+    expect(repos.find((r: { key: string }) => r.key === 'alice/hidden')).toMatchObject({ inactive: true });
+    expect(repos.find((r: { key: string }) => r.key === 'alice/fork')).toMatchObject({ inactive: true });
+    expect(repos.filter((r: { inactive?: boolean }) => !r.inactive).map((r: { key: string }) => r.key).sort()).toEqual([
+      'alice/app', 'alice/secret', 'bob/lib', `${GITLAB_HOST}/platform/app`,
+    ]);
     expect(repos.find((r: { key: string }) => r.key === `${GITLAB_HOST}/platform/app`)).toMatchObject({ provider: 'gitlab', openThreads: 0 });
   });
 
@@ -143,6 +149,16 @@ describe('list_prs', () => {
     const second = await h.ok('list_prs', { repo: 'alice/app', state: 'all', limit: 2, cursor: first.nextCursor });
     expect(second.items.map((p: { number: number }) => p.number)).toEqual([1]);
     expect(await h.fails('list_prs', { repo: 'alice/nope' })).toContain("alice/nope isn't tracked");
+  });
+
+  it("covers the user's active repositories without `repo`; an inactive one's only by name", async () => {
+    const h = mcpHarness({ db: withGitLab() });
+    const repos = async (args: Record<string, unknown> = {}) =>
+      [...new Set((await h.ok('list_prs', { state: 'all', ...args })).items.map((p: { repo: string }) => p.repo))].sort();
+    expect(await repos()).toEqual(['alice/app', 'alice/secret', `${GITLAB_HOST}/platform/app`]);
+    setRepoPrefs(h.db, 'alice/secret', { status: 'inactive' });
+    expect(await repos()).toEqual(['alice/app', `${GITLAB_HOST}/platform/app`]);
+    expect(await repos({ repo: 'alice/secret' })).toEqual(['alice/secret']);
   });
 });
 

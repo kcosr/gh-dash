@@ -235,7 +235,7 @@ describe('syncing repos added by hand', () => {
     t.add('carol/lib');
     t.hold();
     expect(await t.m.startOrQueue({ repo: 'carol/lib' })).toBe('started');
-    const revived = addManual(t.db, GITHUB, mapRepo(repoNode('bob/tool')), { hidden: false }, '2026-09-29T01:00:00Z');
+    const revived = addManual(t.db, GITHUB, mapRepo(repoNode('bob/tool')), { status: 'auto' }, '2026-09-29T01:00:00Z');
     expect(revived).toMatchObject({ added: true });
     expect(await t.m.startOrQueue({ repo: 'bob/tool' })).toBe('queued');
     t.gql.state.ops.length = 0;
@@ -251,7 +251,7 @@ describe('syncing repos added by hand', () => {
     expect(await t.m.startOrQueue({ repo: 'bob/tool' })).toBe('started');
     await t.idle();
     t.db.run(`UPDATE repos SET removed_at = '2026-09-29T00:00:00Z' WHERE name_with_owner = 'bob/tool'`);
-    addManual(t.db, GITHUB, mapRepo(repoNode('bob/tool')), { hidden: false }, '2026-09-29T01:00:00Z');
+    addManual(t.db, GITHUB, mapRepo(repoNode('bob/tool')), { status: 'auto' }, '2026-09-29T01:00:00Z');
     setMeta(t.db, 'lastFullSyncAt', new Date().toISOString());
     t.gql.state.ops.length = 0;
     t.m.startScheduler();

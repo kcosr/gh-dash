@@ -78,8 +78,12 @@
 
 /* ---------- PR list additions */
 /* Long lists (a year of PRs is ~1,000 rows): skip layout/paint of off-screen groups. Measured at
-   ytd: re-grouping 570 -> 170 ms, clearing the filter 400 -> 70 ms of main-thread blocking. */
-.list > section, .day-sec { content-visibility: auto; contain-intrinsic-size: auto 900px; }
+   ytd: re-grouping 570 -> 170 ms, clearing the filter 400 -> 70 ms of main-thread blocking.
+   content-visibility clips a section's paint to its padding box: the padding is room for the rows' outset
+   (.pr, .cv-row: margin 0 -12px), so their hover, active and cursor edges aren't cut off. The sticky header spans it
+   too, covering the rows that scroll under it edge to edge. */
+.list > section, .day-sec { content-visibility: auto; contain-intrinsic-size: auto 900px; margin: 0 -12px; padding: 0 12px; }
+.list > section > .group-h, .day-sec > .group-h { margin-inline: -12px; padding-inline: 12px; }
 .pr { scroll-margin-top: 52px; scroll-margin-bottom: 12px; }
 .pr.rel { cursor: default; }
 /* "No PR yet": a branch's icon stays quiet, as in the Branches card; no state to color. */
@@ -619,8 +623,6 @@ a.sync:hover .sync-text { color: var(--wb-fg); text-decoration: underline; text-
    size, behind a disclosure that opens the conversation under the row; group headers are the PR list's. */
 .nav a .n { font-size: 11.5px; font-weight: 500; color: var(--wb-muted); font-variant-numeric: tabular-nums; }
 .wb-seg .n { color: var(--wb-muted); font-variant-numeric: tabular-nums; }
-/* Sections skip layout off screen (content-visibility, which clips their paint): room for the rows' outset. */
-.cv-list > section { margin: 0 -12px; padding: 0 12px; }
 .cv-list.flat { padding-top: 12px; }
 .cv-list .wb-empty-text { max-width: 560px; margin-inline: auto; }
 .cv-gh { align-items: center; }
@@ -830,3 +832,12 @@ button.cm-quote { display: -webkit-box; text-align: left; }
 .filter-toolbar .wb-seg-btn[aria-pressed="true"] .st-open { color: var(--open); }
 .filter-toolbar .wb-seg-btn[aria-pressed="true"] .st-merged { color: var(--merged); }
 .filter-toolbar .wb-seg-btn[aria-pressed="true"] .st-closed { color: var(--closed); }
+
+/* ---------- reduced motion (Workbench's own motion follows it already). Last, so it wins over the rules above:
+   spinners hold still, fades and fills change at once. A list still dims only after its .2 s grace, so a quick refetch
+   doesn't flash it. The diff's and the charts' motion: diff.css, charts.css. */
+@media (prefers-reduced-motion: reduce) {
+  .sync .spin svg, .setup-card .ic.spin svg, .wb-btn .spin svg, .ar-note .spin svg { animation: none; }
+  .list.stale { transition: opacity 0s .2s; }
+  .meter i { transition: none; }
+}

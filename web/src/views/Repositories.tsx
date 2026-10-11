@@ -7,7 +7,7 @@ import { repoPath, selectRepos } from '../../../shared/repos';
 import { repoListParams } from '../lib/apiQuery';
 import { usePatchRepo, useRepos, useSets, useSettings } from '../api/hooks';
 import { Sparkline } from '../charts';
-import { Ctl } from '../components/bits';
+import { Ctl, RelTime } from '../components/bits';
 import { EmptyState, ErrorState, ProgressBar, Menu, Seg, useToast } from '../workbench';
 import { FilterInput } from '../components/FilterInput';
 import { FilterToolbar } from '../components/FilterToolbar';
@@ -18,7 +18,7 @@ import { useRepoLabel, useSourceCtx, useWords } from '../components/repoMapConte
 import { SourceBadge } from '../components/SourceBadge';
 import { useSyncNow } from '../components/TopBar';
 import { useUI } from '../components/ui';
-import { addDays, fmtDate, rel, startOfWeek } from '../lib/time';
+import { addDays, fmtDate, startOfWeek } from '../lib/time';
 import { carrySearch, inContext, repoLinkSearch, useUrlState } from '../lib/urlState';
 import type { RepoLayout, RepoSort } from '../lib/urlState';
 import { cx } from '../lib/util';
@@ -184,7 +184,7 @@ function RepoCard({ repo: r, sets, titles, search }: { repo: Repo; sets: RepoSet
         <span className="l">commits · 12 wk</span>
       </div>
       <div className="rc-foot">
-        <span title={last(r)}>Updated {rel(last(r))}</span>
+        <span title={last(r)}>Updated <RelTime at={last(r)} /></span>
         <span className="spacer" />
         {sets.map((x) => <span key={x.id} className="set-chip">{x.name}</span>)}
       </div>
@@ -215,7 +215,7 @@ function RepoTable({ list, titles, search }: { list: Repo[]; titles: string[]; s
               <td className="r">{r.stats.openPrs}</td>
               <td className="r">{r.stats.mergedPrs30d}</td>
               <td className="r">{r.stats.commits30d}</td>
-              <td title={last(r)}>{rel(last(r))}</td>
+              <td title={last(r)}><RelTime at={last(r)} /></td>
               <td><Sparkline values={r.stats.weeklyCommits} titles={titles} unit="commits" width={120} height={18} focusable={false} ariaLabel={`${label(r.key)}: commits per week, last 12 weeks`} /></td>
               <td className="acts"><PinButton repo={r} /><RepoMenu repo={r} /></td>
             </tr>

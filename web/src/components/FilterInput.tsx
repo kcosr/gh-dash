@@ -54,6 +54,8 @@ export function FilterInput({ id = 'q', value, onChange, placeholder, kbd = '/',
         aria-label={placeholder}
         onChange={(e) => { setV(e.target.value); push(e.target.value); }}
         onKeyDown={(e) => {
+          // Enter and Esc mid-composition (an IME) belong to the composition: they pick or drop its text.
+          if (e.nativeEvent.isComposing || e.keyCode === 229) return;
           if (e.key === 'Enter') push(v, true);
           if (e.key === 'Escape' && v) { e.stopPropagation(); e.nativeEvent.stopImmediatePropagation(); setV(''); push('', true); }
         }}

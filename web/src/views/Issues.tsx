@@ -3,6 +3,7 @@ import type { Issue, IssueState } from '../../../shared/api';
 import { refText } from '../../../shared/provider';
 import { useIssueList } from '../api/hooks';
 import { Avatar } from '../components/Avatar';
+import { RelTime } from '../components/bits';
 import { DateRangeButton } from '../components/DateRange';
 import { EmptyState, ErrorState, ProgressBar, Seg } from '../workbench';
 import { FilterInput } from '../components/FilterInput';
@@ -16,7 +17,7 @@ import { WHO_OPTIONS } from '../lib/filterOptions';
 import { useUI } from '../components/ui';
 import { issueListParams } from '../lib/apiQuery';
 import { plainPreview } from '../lib/markdown';
-import { fmtDateTime, plural, rel } from '../lib/time';
+import { fmtDateTime, plural } from '../lib/time';
 import { useUrlState } from '../lib/urlState';
 import { actorName } from '../lib/util';
 
@@ -119,7 +120,7 @@ const IssueRow = memo(function IssueRow({ issue }: { issue: Issue }) {
         </div>
         <div className="pr-meta">
           <RepoChip repo={issue.repo} /><span className="num">#{issue.number}</span><span className="sep">·</span>
-          <span>{issue.state === 'open' ? 'Opened' : 'Closed'} <time dateTime={at} title={fmtDateTime(at)}>{rel(at)}</time></span>
+          <span>{issue.state === 'open' ? 'Opened' : 'Closed'} <time dateTime={at} title={fmtDateTime(at)}><RelTime at={at} /></time></span>
           <span className="sep">·</span><span>created by</span>
           <span className="author"><Avatar actor={issue.author} /><b>{issue.author.isMe ? 'you' : actorName(issue.author)}</b></span>
         </div>

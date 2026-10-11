@@ -176,3 +176,21 @@ for (const lookup of ['pull requests', 'branches'] as const) {
     await expect(section.getByRole('option', { name: resultName })).toBeVisible();
   });
 }
+
+test('pull request results read as loading while the typed text waits to be searched', async ({ page }) => {
+  await page.clock.install();
+  await page.goto('/prs?source=github.com');
+  const palette = await openPalette(page);
+  const recent = palette.getByRole('group', { name: 'Recent pull requests', exact: true });
+  await expect(recent.getByRole('option', { name: /^Improve cache refresh/ })).toBeVisible();
+  await expect(recent.getByText('Loading Recent pull requests…', { exact: true })).toHaveCount(0);
+  // Time stands still: the search waits out its debounce (160 ms), and the results shown are the previous text's.
+  await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
+  await palette.getByRole('combobox').fill('cache');
+  const section = palette.getByRole('group', { name: 'Pull requests', exact: true });
+  await expect(section.getByText('Loading Pull requests…', { exact: true })).toBeVisible();
+  await expect(section.getByRole('option', { name: /^Improve cache refresh/ })).toBeVisible();
+  await page.clock.runFor(200);
+  await expect(section.getByText('Loading Pull requests…', { exact: true })).toHaveCount(0);
+  await expect(section.getByRole('option', { name: /^Improve cache refresh/ })).toBeVisible();
+});

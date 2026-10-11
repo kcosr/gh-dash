@@ -4,6 +4,19 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>gh-dash</title>
+    <script>
+      // The saved theme before first paint, so a dark one doesn't flash light. Read as Workbench's theme API stores it
+      // (workbench/lib/theme.ts, under lib/storage.ts's THEME_KEY): "light", "dark", or nothing for the system's.
+      // main.tsx applies it again. The desktop window allows this script by its hash (electron/csp.ts).
+      (function () {
+        var mode = null;
+        try { mode = localStorage.getItem('gh-dash:theme'); } catch (e) {}
+        var dark = mode === 'dark' || (mode !== 'light' && !!window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches);
+        var root = document.documentElement;
+        root.dataset.theme = dark ? 'dark' : 'light';
+        root.style.colorScheme = dark ? 'dark' : 'light';
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

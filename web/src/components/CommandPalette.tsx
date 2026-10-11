@@ -303,8 +303,9 @@ export function CommandPalette({ onClose, onRun, onSync, onToggleTheme, onToggle
       onRetry: () => { void repos.refetch(); },
     });
   } else {
+    // While the typed text waits out the debounce, the PRs shown are the previous text's: say they're loading.
     addStatus({
-      id: 'prs', title: q.trim() ? capitalize(w.many) : `Recent ${w.many}`, loading: prSearch.isFetching,
+      id: 'prs', title: q.trim() ? capitalize(w.many) : `Recent ${w.many}`, loading: prSearch.isFetching || dq !== q.trim(),
       error: prSearch.isError ? `Could not load ${w.many}` : undefined,
       onRetry: () => { void prSearch.refetch(); },
     });

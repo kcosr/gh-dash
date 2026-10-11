@@ -5,12 +5,12 @@ import type { PullRequest, PullRequestDetail } from '../../../shared/api';
 import { capitalize, refText } from '../../../shared/provider';
 import { findCachedPr, splitPrId, usePrDetail, useThreads } from '../api/hooks';
 import { Drawer, DrawerSection, hasBlockingLayer, isTypingTarget } from '../workbench';
-import { dur, fmtDate, fmtDateTime, plural, rel } from '../lib/time';
+import { dur, fmtDate, fmtDateTime, plural } from '../lib/time';
 import { sortThreads } from '../lib/threadList';
 import { commitDiffId, useUrlState } from '../lib/urlState';
 import { actorName, actorSubject, copyText, isPlainClick } from '../lib/util';
 import { Avatar } from './Avatar';
-import { Diffstat, prIconName } from './bits';
+import { Diffstat, RelTime, prIconName } from './bits';
 import { Icon } from './Icon';
 import { Labels } from './Label';
 import { Markdown } from './Markdown';
@@ -110,7 +110,7 @@ export function PrDrawer({ id, compact, resize }: { id: string; compact: boolean
       meta={<>
           <span className={`state-pill ${pill[1]}`}><Icon name={prIconName(pr)} />{pill[0]}</span>
           <Avatar actor={pr.author} size={18} />
-          <b>{actorSubject(pr.author)}</b> {verb} · <span title={fmtDateTime(when)}>{rel(when)}</span>
+          <b>{actorSubject(pr.author)}</b> {verb} · <span title={fmtDateTime(when)}><RelTime at={when} /></span>
       </>}
       actions={<>
           <a className="wb-btn wb-btn--primary" href={pr.url} target="_blank" rel="noopener noreferrer"><Icon name="ext" />Open on {p.name}</a>

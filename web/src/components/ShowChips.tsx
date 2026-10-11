@@ -4,7 +4,7 @@
  * focus (it is announced), hides after half a minute unless the pointer or focus is on it, and a few stack. Following
  * agents, the window opens what they show at once, unless you're typing or in a dialog; its chip only says so.
  */
-import { Switch, isTypingTarget } from '../workbench';
+import { Switch, activeTrapRoot, isTypingTarget } from '../workbench';
 import { useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
@@ -44,8 +44,12 @@ export function useOpenShown(): (target: ShowTarget, auto?: () => boolean) => Pr
   }, target, auto), [qc]);
 }
 
-/** Whether following may open something now: it's on, and you're not typing or in a dialog. */
-const mayFollow = () => getFollowAgents() && !isTypingTarget(document.activeElement) && !document.querySelector('[aria-modal="true"], .modal, .palette');
+/**
+ * Whether following may open something now: it's on, and you're not typing or in a dialog. A dialog (a modal, the palette,
+ * the narrow sidebar, a narrow diff's file list or comments) holds focus in a trap; a blocking layer alone isn't one: the
+ * diff view is one too, and following opens the places agents show in it.
+ */
+const mayFollow = () => getFollowAgents() && !isTypingTarget(document.activeElement) && !activeTrapRoot();
 
 /**
  * The stream's `show` messages: a chip, or (following agents) the place opened at once with a chip saying so. Whether

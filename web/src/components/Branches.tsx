@@ -11,10 +11,10 @@ import type { Provider } from '../../../shared/provider';
 import { isUnreachable, rateLimitResetAt } from '../api/client';
 import { useBranches } from '../api/hooks';
 import { hostBranchQuery } from '../lib/branches';
-import { fmtDateTime, relFuture, rel } from '../lib/time';
+import { fmtDateTime, relFuture } from '../lib/time';
 import { branchDiffId, useUrlState } from '../lib/urlState';
 import { cx, useDebounced } from '../lib/util';
-import { prIconClass, prIconName } from './bits';
+import { RelTime, prIconClass, prIconName } from './bits';
 import { Icon } from './Icon';
 import { useSyncNow } from './TopBar';
 
@@ -102,7 +102,7 @@ export function BranchesCard({ repo }: { repo: Repo }) {
               <Icon name="branch" />
               <span className="mb-name">{b.name}</span>
               {b.pr ? <BranchPrRef pr={b.pr} p={p} /> : <span />}
-              {b.committedAt ? <time dateTime={b.committedAt} title={fmtDateTime(b.committedAt)}>{rel(b.committedAt)}</time> : <span />}
+              {b.committedAt ? <time dateTime={b.committedAt} title={fmtDateTime(b.committedAt)}><RelTime at={b.committedAt} /></time> : <span />}
             </button>
           );
         })

@@ -8,16 +8,15 @@ import { repoListParams } from '../lib/apiQuery';
 import { usePatchRepo, useRepos, useSets } from '../api/hooks';
 import { Sparkline } from '../charts';
 import { Ctl, RelTime } from '../components/bits';
-import { EmptyState, ErrorState, ProgressBar, Menu, Seg } from '../workbench';
+import { EmptyState, ErrorState, ProgressBar, Seg } from '../workbench';
 import { FilterInput } from '../components/FilterInput';
 import { FilterToolbar } from '../components/FilterToolbar';
 import { Icon } from '../components/Icon';
-import { UnavailableNote, useConfirmRemoveRepo } from '../components/RepoTracking';
+import { UnavailableNote } from '../components/RepoTracking';
 import { RepoName } from '../components/RepoName';
-import { statusItems, useSetRepoStatus } from '../components/RepoStatusMenu';
+import { RepoMenu } from '../components/RepoMenu';
 import { useRepoLabel, useSourceCtx, useWords } from '../components/repoMapContext';
 import { SourceBadge } from '../components/SourceBadge';
-import { useSyncNow } from '../components/TopBar';
 import { useUI } from '../components/ui';
 import { activeReasonText, inactiveBadge } from '../lib/repoStatus';
 import { addDays, fmtDate, startOfWeek } from '../lib/time';
@@ -109,31 +108,6 @@ function PinButton({ repo }: { repo: Repo }) {
     >
       <Icon name="pin" />
     </button>
-  );
-}
-
-function RepoMenu({ repo }: { repo: Repo }) {
-  const patch = usePatchRepo();
-  const setStatus = useSetRepoStatus();
-  const sync = useSyncNow();
-  const confirmRemove = useConfirmRemoveRepo();
-  const label = useRepoLabel()(repo.key);
-  const { current } = useSourceCtx();
-  return (
-    <Menu label={`Actions for ${label}`} trigger={(props) => (
-      <button {...props} type="button" className="pin-btn" aria-label={`More actions for ${label}`} title="More"><Icon name="dots" /></button>
-    )} items={[
-      { id: 'pin', icon: 'pin', label: repo.pinned ? 'Unpin' : 'Pin', onSelect: () => patch.mutate({ key: repo.key, patch: { pinned: !repo.pinned } }) },
-      { id: 'sync', icon: 'refresh', label: 'Sync now', onSelect: () => sync.run({ repo: repo.key }) },
-      { id: 'activity', icon: 'activity', label: 'Activity in this repo', href: `/activity?${repoLinkSearch(repo.key, current?.host ?? null)}` },
-      { id: 'external', icon: 'external', label: `Open on ${repoProvider(repo).name}`, href: repo.url, external: true },
-      { type: 'separator' as const },
-      ...statusItems(repo, setStatus),
-      ...(repo.trackedBy === 'manual' ? [
-        { type: 'separator' as const },
-        { id: 'remove', icon: 'trash' as const, label: 'Remove…', danger: true, onSelect: () => confirmRemove(repo) },
-      ] : []),
-    ]} />
   );
 }
 

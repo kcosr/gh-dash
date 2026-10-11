@@ -17,6 +17,7 @@ import { OVERLAY_KEYS, canonicalQuery, encodeParams, passesRepoFilters, useUrlSt
 import { cx } from '../lib/util';
 import { Icon } from './Icon';
 import { Menu, FilterInput, Seg, useToast } from '../workbench';
+import { RepoMenu } from './RepoMenu';
 import { RepoName } from './RepoName';
 import { useRepoLabel, useSourceCtx, useWords } from './repoMapContext';
 import { SourceBadge, sourceTitle } from './SourceBadge';
@@ -159,8 +160,14 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
       r.stats.openIssues > 0 ? `${r.stats.openIssues} open issues` : '',
     ].filter(Boolean).join('. ');
     const describedBy = description ? `repo-info-${r.key}` : undefined;
+    // Right-click opens the row's menu (its "…", shown while the row is hovered), as on the Repositories tab.
     return (
-      <div key={r.key} className={cx('repo-item', on && 'on')}>
+      <div key={r.key} className={cx('repo-item', on && 'on')} onContextMenu={(e) => {
+        const more = e.currentTarget.querySelector<HTMLButtonElement>('.repo-more');
+        if (!more) return;
+        e.preventDefault();
+        more.click();
+      }}>
         <label className="repo-check-hit" title={`Include ${name} in selection`}>
           <input
             type="checkbox"
@@ -199,6 +206,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
             </span>}
           </span>}
         </button>
+        <RepoMenu repo={r} className="repo-more" onNavigate={onNavigate} />
         {description && <span className="sr-only" id={describedBy}>{description}</span>}
       </div>
     );

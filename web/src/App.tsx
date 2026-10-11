@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider, useIsFetching, useQueryClient } from '@tanstack/react-query';
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, Navigate, Outlet, RouterProvider, createBrowserRouter, useLocation, useRouteError } from 'react-router';
-import { qk, refetchAfterSync, usePresentSources, useRepos, useSyncStatus } from './api/hooks';
+import { followActiveRepos, qk, refetchAfterSync, usePresentSources, useRepos, useSyncStatus } from './api/hooks';
 import { useStream } from './api/stream';
 import { CommandPalette } from './components/CommandPalette';
 import { DiffView } from './components/DiffView';
@@ -86,6 +86,7 @@ const queryClient = new QueryClient({
     queries: { staleTime: 30_000, gcTime: 30 * 60_000, refetchOnWindowFocus: false, retry: 1 },
   },
 });
+followActiveRepos(queryClient);
 
 /** Invalidate synced data when a sync finishes, and toast the result. */
 function useSyncWatcher() {

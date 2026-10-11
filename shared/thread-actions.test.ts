@@ -1,7 +1,7 @@
 import { QueryClient, QueryObserver } from '@tanstack/react-query';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { CommentThread, ThreadListResponse } from './api';
-import { followsDefaultSelection, patchThreadLists, qk, refetchAfterSync, threadActions, threadsQuery } from '../web/src/api/hooks';
+import type { CommentThread, Repo, ThreadListResponse } from './api';
+import { followActiveRepos, followsDefaultSelection, patchThreadLists, qk, refetchAfterSync, threadActions, threadsQuery } from '../web/src/api/hooks';
 
 const thread = (id: number, status: CommentThread['status'] = 'open'): CommentThread => ({
   id, kind: 'pr', repo: 'app', number: 2, branch: null, commitOid: 'a'.repeat(40), baseOid: null, path: null, side: null, startLine: null, endLine: null,
@@ -49,7 +49,7 @@ describe('thread actions', () => {
     expect(qc.getQueryState(key)?.isInvalidated).toBe(true);
   });
 
-  it("refetches repos' comment counts when comments come or go, on PRs and commits alike", async () => {
+  it('refetches the repos after any change, on PRs and commits alike: comment counts, and activity', async () => {
     const qc = new QueryClient();
     const repos = () => qc.getQueryState(qk.repos)?.isInvalidated;
     const fresh = () => qc.setQueryData(qk.repos, { items: [] });
@@ -60,6 +60,8 @@ describe('thread actions', () => {
       [commit, (a) => a.reply(1, 'x'), thread(1)],
       ['app#2', (a) => a.deleteComment(1, 5), { thread: null }],
       [commit, (a) => a.deleteThread(1), null, 204],
+      [commit, (a) => a.setStatus(1, 'resolved'), thread(1, 'resolved')],
+      ['app#2', (a) => a.edit(5, 'y'), thread(1)],
     ];
     for (const [id, act, body, status] of cases) {
       fresh();
@@ -67,12 +69,27 @@ describe('thread actions', () => {
       await act(threadActions(qc, id));
       expect(repos(), id).toBe(true);
     }
-    // A status change or an edit leaves the counts alone.
-    fresh();
-    vi.stubGlobal('fetch', reply(thread(1, 'resolved')));
-    await threadActions(qc, commit).setStatus(1, 'resolved');
-    await threadActions(qc, 'app#2').edit(5, 'y');
-    expect(repos()).toBe(false);
+  });
+
+  it('refetches what follows the default selection when the active repos change, and only then', () => {
+    const qc = new QueryClient();
+    const stop = followActiveRepos(qc);
+    const repo = (key: string, active: boolean) => ({ key, active }) as Repo;
+    const prs = qk.prs({ state: 'open' });
+    const stale = () => qc.getQueryState(prs)?.isInvalidated;
+    qc.setQueryData(qk.repos, { items: [repo('a', true), repo('b', false)] });
+    qc.setQueryData(prs, { items: [] });
+    // The same active repos (a pin, a new lastActivityAt): nothing to refetch.
+    qc.setQueryData(qk.repos, { items: [repo('b', false), { ...repo('a', true), pinned: true }] });
+    expect(stale()).toBe(false);
+    // b became active (a comment, a status, a sync): the lists follow.
+    qc.setQueryData(qk.repos, { items: [repo('a', true), repo('b', true)] });
+    expect(stale()).toBe(true);
+    // Another query under 'repos' isn't the list.
+    qc.setQueryData(prs, { items: [] });
+    qc.setQueryData(['repos', 'x'], { items: [repo('a', false)] });
+    expect(stale()).toBe(false);
+    stop();
   });
 
   it('refetches the Comments list and the tab count after any change, from the diff or the list', async () => {

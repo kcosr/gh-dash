@@ -13,14 +13,11 @@
 import { useQueryClient } from '@tanstack/react-query';
 import type { QueryClient, QueryKey } from '@tanstack/react-query';
 import { useEffect } from 'react';
-import type { CommentEventKind, StreamMessage } from '../../../shared/api';
+import type { StreamMessage } from '../../../shared/api';
 import { branchDiffId, commitDiffId } from '../lib/urlState';
 import { AUTHOR_KEYS, qk, threadChangeKeys } from './hooks';
 
 export const STREAM_URL = '/api/v1/stream';
-
-/** Events after which a thread has more or fewer comments (a repo's comment counts change). */
-const COMMENTS_CHANGE: readonly CommentEventKind[] = ['thread_opened', 'replied', 'comment_deleted', 'thread_deleted'];
 
 /**
  * The queries a message makes stale: for `comments`, what threadActions refetches after the same change (a thread with
@@ -32,7 +29,7 @@ export function streamInvalidations(msg: StreamMessage): QueryKey[] {
   const id = msg.kind === 'pr' && msg.number !== null ? `${msg.repo}#${msg.number}`
     : msg.kind === 'branch' && msg.branch ? branchDiffId(msg.repo, msg.branch)
       : commitDiffId(msg.repo, msg.commitOid);
-  return threadChangeKeys(id, { comments: COMMENTS_CHANGE.includes(msg.event), branch: msg.branch });
+  return threadChangeKeys(id, { branch: msg.branch });
 }
 
 /** What a missed stretch may have changed (after a reconnect): every list and count the stream would have refetched. */

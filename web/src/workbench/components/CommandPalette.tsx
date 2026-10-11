@@ -322,7 +322,7 @@ function PaletteSurface({
     .join(" ");
   const resultCount = flat.filter((item) => !item.control).length;
   const announcement =
-    feedback || (resultCount ? `${resultCount} results.` : "");
+    feedback || (resultCount ? `${resultCount} results.` : emptyText);
 
   useEffect(() => {
     setIndex(0);
@@ -516,7 +516,7 @@ function PaletteSurface({
               </div>
             ))}
             {!sections.length ? (
-              <div className="wb-palette-empty" role="status">
+              <div className="wb-palette-empty" role="presentation">
                 {emptyText}
               </div>
             ) : null}

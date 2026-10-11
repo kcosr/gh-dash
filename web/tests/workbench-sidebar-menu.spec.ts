@@ -2,25 +2,37 @@ import type { Page } from '@playwright/test';
 import { test, expect, repos as fixtureRepos } from './fixtures';
 import type { Repo, RepoStatus } from '../../shared/api';
 
-/** The fixture's repos, answering PATCH as the server would: both have an open PR, so Automatic keeps them active. */
+/**
+ * The fixture's repos, answering PATCH as the server would: both have an open PR, so Automatic keeps them active.
+ * `hold()` keeps the next PATCH answers back until the function it returns is called.
+ */
 async function serveRepos(page: Page) {
   const list: Repo[] = fixtureRepos.map((r) => ({ ...r }));
+  let gate: Promise<void> | null = null;
   await page.route('**/api/v1/repos**', async (route) => {
     const path = decodeURIComponent(new URL(route.request().url()).pathname.replace('/api/v1/', ''));
     if (path === 'repos') { await route.fulfill({ json: { items: list } }); return; }
     const repo = list.find((r) => path === `repos/${r.key}`);
     if (!repo) { await route.fallback(); return; }
     if (route.request().method() === 'PATCH') {
+      if (gate) await gate;
       Object.assign(repo, route.request().postDataJSON() as { pinned?: boolean; status?: RepoStatus });
       repo.active = repo.status !== 'inactive';
       repo.activeReason = repo.status !== 'auto' ? 'set' : repo.pinned ? 'pinned' : 'open';
     }
     await route.fulfill({ json: repo });
   });
+  return {
+    hold: () => {
+      let release = () => {};
+      gate = new Promise<void>((resolve) => { release = resolve; });
+      return () => { gate = null; release(); };
+    },
+  };
 }
 
 test("a sidebar row's menu opens on right-click, leaves its links the browser's menu, and keyboard focus follows the repo", async ({ page }) => {
-  await serveRepos(page);
+  const served = await serveRepos(page);
   await page.goto('/prs?state=open');
   const side = page.locator('#repository-sidebar');
   const more = side.locator('.repo-item[data-key="owner/alpha"] .repo-more');
@@ -36,10 +48,15 @@ test("a sidebar row's menu opens on right-click, leaves its links the browser's 
   await expect(menu).toHaveCount(0);
   await expect(more).toBeFocused();
 
-  // Pin by keyboard: the row moves to Pinned, and focus goes with it.
+  // Pin by keyboard: the row moves to Pinned at once (before the answer), and focus goes with it.
+  const release = served.hold();
+  const answered = page.waitForResponse((r) => r.request().method() === 'PATCH');
   await page.keyboard.press('Enter');
   await menu.getByRole('menuitem', { name: 'Pin', exact: true }).press('Enter');
   await expect(side.locator('.side-h', { hasText: 'Pinned' })).toBeVisible();
+  await expect(more).toBeFocused();
+  release();
+  await answered;
   await expect(more).toBeFocused();
   // Unpinned: back in the main list, still focused.
   await page.keyboard.press('Enter');

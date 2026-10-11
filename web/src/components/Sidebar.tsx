@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { Ownership, Repo, VisibilityFilter } from '../../../shared/api';
 import { repoProvider } from '../../../shared/provider';
 import { defaultRepoScope } from '../../../shared/repos';
@@ -149,15 +149,24 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
 
   /**
    * A pin or status change from a row's menu can move the row (to Pinned, or out of it) or hide it (into the collapsed
-   * inactive section), taking keyboard focus with it: once the answer is in, focus goes to the repo's "…" where it is
-   * now, else to the inactive section's toggle, else the filter. Only when focus was lost (it's on the page itself).
+   * inactive section), taking keyboard focus with it: at once for a pin (shown before the answer), on the answer for a
+   * status, back on a failure. Until the change settles, every render that left focus on the page itself sends it to the
+   * repo's "…" where it is now, else to the inactive section's toggle, else the filter.
    */
+  const refocus = useRef<string | null>(null);
+  const restoreFocus = () => {
+    const key = refocus.current;
+    const side = sideRef.current;
+    if (!key || !side || (document.activeElement && document.activeElement !== document.body)) return;
+    const row = [...side.querySelectorAll<HTMLElement>('.repo-item')].find((el) => el.dataset.key === key);
+    (row?.querySelector<HTMLElement>('.repo-more') ?? side.querySelector<HTMLElement>('.side-more') ?? side.querySelector<HTMLElement>('#repoQ'))?.focus();
+  };
+  useLayoutEffect(restoreFocus);
   const keepFocus = (key: string, done: Promise<unknown>) => {
+    refocus.current = key;
     void done.finally(() => requestAnimationFrame(() => {
-      const side = sideRef.current;
-      if (!side || (document.activeElement && document.activeElement !== document.body)) return;
-      const row = [...side.querySelectorAll<HTMLElement>('.repo-item')].find((el) => el.dataset.key === key);
-      (row?.querySelector<HTMLElement>('.repo-more') ?? side.querySelector<HTMLElement>('.side-more') ?? side.querySelector<HTMLElement>('#repoQ'))?.focus();
+      restoreFocus();
+      if (refocus.current === key) refocus.current = null;
     }));
   };
 

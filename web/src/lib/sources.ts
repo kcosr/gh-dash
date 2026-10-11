@@ -170,12 +170,11 @@ export function sourceMethodLabel(a: Pick<SourceAccount, 'source' | 'choice' | '
   }
 }
 
-/** "56 personal · 3 added · 1 hidden": what the token sees in its namespace (else what is tracked), and the rest. */
+/** "56 personal · 3 added": what the token sees in its namespace (else what is tracked), and the ones added by hand. */
 export function projectsLine(s: Pick<Source, 'repos'> & { account: Pick<SourceAccount, 'repos'> | null }): string {
   const personal = s.account?.repos?.total ?? s.repos.owned;
   const parts = [`${fmtNum(personal)} personal`];
   if (s.repos.added) parts.push(`${fmtNum(s.repos.added)} added`);
-  if (s.repos.hidden) parts.push(`${fmtNum(s.repos.hidden)} hidden`);
   return parts.join(' · ');
 }
 

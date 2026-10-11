@@ -29,6 +29,7 @@ import type {
   RepoCandidatesResponse,
   RepoLookup,
   RepoSet,
+  RepoStatus,
   SavedView,
   ScopeQuery,
   Settings,
@@ -168,12 +169,12 @@ export const api = {
 
   repos: () => get<{ items: Repo[] }>('/api/v1/repos'),
   repo: (key: string) => get<Repo>(`/api/v1/repos/${enc(key)}`),
-  patchRepo: (key: string, body: { pinned?: boolean; hidden?: boolean }) => request<Repo>('PATCH', `/api/v1/repos/${enc(key)}`, body),
+  patchRepo: (key: string, body: { pinned?: boolean; status?: RepoStatus }) => request<Repo>('PATCH', `/api/v1/repos/${enc(key)}`, body),
   /** Repositories of other owners the token can read, and suggestions (the Add dialog). `source`: a host (default github.com). */
   repoCandidates: (refresh = false, source?: string) => get<RepoCandidatesResponse>(apiUrl('repo-candidates', { refresh: refresh ? '1' : undefined, source })),
   /** Whether the token can read `repo` (owner/name, a project path, a key or a URL), with a preview. */
   repoLookup: (repo: string, source?: string) => get<RepoLookup>(apiUrl('repo-lookup', { repo, source })),
-  addRepo: (body: { repo: string; source?: string; includeInDefault?: boolean }) => request<AddRepoResponse>('POST', '/api/v1/repos', body),
+  addRepo: (body: { repo: string; source?: string; status?: RepoStatus }) => request<AddRepoResponse>('POST', '/api/v1/repos', body),
   /** Stop tracking a repository added by hand and delete its data from this dashboard (not on GitHub). */
   removeRepo: (key: string) => request<void>('DELETE', `/api/v1/repos/${enc(key)}`),
 

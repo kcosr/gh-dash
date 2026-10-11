@@ -215,7 +215,7 @@ export function ActivityView() {
           ) : !pages ? (
             <FeedSkeleton />
           ) : s.repos?.length === 0 ? (
-            <NoReposSelected onSelectAll={() => set({ repos: null })} />
+            <NoReposSelected onSelectActive={() => set({ repos: null })} />
           ) : noTypes ? (
             <EmptyState icon="pulse" title="No event types selected">Turn on at least one of the chips above.</EmptyState>
           ) : days.length === 0 ? (

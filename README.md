@@ -104,7 +104,7 @@ window.
 | **PRs & MRs** | Pull and merge requests by state, author and date. <kbd>Enter</kbd> opens the details panel, and <kbd>d</kbd> the diff. |
 | **Issues** | Open or closed issues, with their descriptions. |
 | **Comments** | Every comment thread, on PRs, branches and commits. Filter to unresolved, resolved or all, by who wrote them, or to threads waiting on you. Group and sort them as you like. <kbd>Enter</kbd> opens the diff right at the thread. |
-| **Repositories** | The repositories you track, as a grid or a list. Pin, hide, add or remove them. |
+| **Repositories** | The repositories you track, as a grid or a list, inactive ones last. Pin, add or remove them, or mark them active or inactive. |
 | **Activity** | One timeline of commits, pull requests, issues, releases, stars and comments. Click a day in the strip to jump to it. |
 | **Insights** | Charts of activity, contributors and trends. |
 
@@ -118,9 +118,13 @@ The sidebar decides which repositories every tab shows.
 
 - Click a repository to focus on it, or use the checkboxes to build a selection. Clicking a
   repository's name anywhere in a list does the same.
-- **All** goes back to the default: everything except archived, hidden and forked repositories.
-  **Hide from default selection**, in a repository's menu, leaves one out. **Show inactive** lets
-  you pick those too.
+- **Active** goes back to the default: the active repositories, the sidebar's main list. A
+  repository is active while it has open pull requests, issues or comment threads, activity in the
+  last six months, or a pin; archived ones, and forks unless Settings includes them, are not.
+  **Show inactive**, under the list, lets you pick the rest too. **None** clears the selection, and
+  **Pinned** selects the pinned ones.
+- A repository's menu (or the button on its page) sets it **Automatic** (the rule above),
+  **Active** or **Inactive**, to keep a quiet one in the list or leave a busy one out.
 - **All / Mine / Others** shows every repository, the ones you own, or the ones you added. The
   filter button next to the search box narrows them by visibility.
 - **+** adds a repository: pick one your token can read, or paste `owner/name`, a GitLab

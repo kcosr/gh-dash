@@ -19,6 +19,7 @@ import type {
   PullRequestDetail,
   Repo,
   RepoSet,
+  RepoStatus,
   SavedView,
   ScopeQuery,
   Settings,
@@ -31,7 +32,6 @@ import type {
 import { GITHUB_HOST } from '../../../shared/api';
 import { ApiError, api, isClientError, isUnreachable } from './client';
 import { resolveApiBase } from '../lib/account';
-import { defaultRepoScope } from '../../../shared/repos';
 import { presentSources } from '../lib/contexts';
 import type { SourceInfo } from '../lib/contexts';
 import { sourceStatuses, workSources } from '../lib/sources';
@@ -107,7 +107,7 @@ export const refetchAfterSync = (q: Query) =>
 
 /**
  * Queries whose answers follow the default selection: every list or stats request without an explicit `repos=`
- * (the views, the palette's PR search, the export previews). Hiding or showing a repo changes them.
+ * (the views, the palette's PR search, the export previews). A repo becoming active or inactive changes them.
  */
 const SELECTION_QUERIES = ['prs', 'branch-list', 'issues', 'activity', 'releases', 'commits', 'stars', 'stats', 'thread-list', 'palette-prs', 'export-md', 'export-sample'];
 export const followsDefaultSelection = (q: Query) => SELECTION_QUERIES.includes(q.queryKey[0] as string);
@@ -280,11 +280,6 @@ export function useWorkSources(): WorkSource[] {
   const repos = useRepos().data;
   const githubMismatch = !!useAccount().data?.mismatch;
   return useMemo(() => workSources(sources, sourceStatuses(st), repos ?? [], { githubMismatch }), [sources, st, repos, githubMismatch]);
-}
-
-/** The default selection: not archived, not hidden, not a fork (unless includeForks). */
-export function defaultScope(repos: Repo[], settings?: Settings): string[] {
-  return defaultRepoScope(repos, settings?.includeForks);
 }
 
 // ---------------------------------------------------------------- lists
@@ -701,17 +696,22 @@ export function useThreadActions(id: string) {
 export function usePatchRepo() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ key, patch }: { key: string; patch: { pinned?: boolean; hidden?: boolean } }) => api.patchRepo(key, patch),
+    mutationFn: ({ key, patch }: { key: string; patch: { pinned?: boolean; status?: RepoStatus } }) => api.patchRepo(key, patch),
     onMutate: async ({ key, patch }) => {
       await qc.cancelQueries({ queryKey: qk.repos });
       const prev = qc.getQueryData<{ items: Repo[] }>(qk.repos);
+      // Only the choice: whether the repo is active (and why) is the server's answer.
       if (prev) qc.setQueryData(qk.repos, { items: prev.items.map((r) => (r.key === key ? { ...r, ...patch } : r)) });
       return { prev };
     },
     onError: (_e, _v, ctx) => { if (ctx?.prev) qc.setQueryData(qk.repos, ctx.prev); },
-    // Hidden or shown: the default selection changed, and with it every list and chart that follows it. (Pinning
-    // only reorders repos.) These callbacks run even when hiding unmounted the component that asked.
-    onSuccess: (_r, { patch }) => { if (patch.hidden !== undefined) void qc.invalidateQueries({ predicate: followsDefaultSelection }); },
+    // A status or a pin can make the repo active or inactive: then the default selection changed, and with it every
+    // list and chart that follows it. These callbacks run even when the component that asked has unmounted.
+    onSuccess: (repo, _v, ctx) => {
+      const cur = qc.getQueryData<{ items: Repo[] }>(qk.repos);
+      if (cur) qc.setQueryData(qk.repos, { items: cur.items.map((r) => (r.key === repo.key ? repo : r)) });
+      if (ctx?.prev?.items.find((r) => r.key === repo.key)?.active !== repo.active) void qc.invalidateQueries({ predicate: followsDefaultSelection });
+    },
     onSettled: () => qc.invalidateQueries({ queryKey: qk.repos }),
   });
 }

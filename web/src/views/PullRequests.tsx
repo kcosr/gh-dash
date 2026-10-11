@@ -192,7 +192,7 @@ export function PullRequestsView() {
           ) : !data ? (
             <ListSkeleton density={s.density} />
           ) : s.repos?.length === 0 ? (
-            <NoReposSelected onSelectAll={() => set({ repos: null })} />
+            <NoReposSelected onSelectActive={() => set({ repos: null })} />
           ) : groups.length === 0 ? (
             <EmptyState
               icon={noPr ? 'fork' : 'merge'}
@@ -267,9 +267,9 @@ export function PullRequestsView() {
   );
 }
 
-export function NoReposSelected({ onSelectAll }: { onSelectAll: () => void }) {
+export function NoReposSelected({ onSelectActive }: { onSelectActive: () => void }) {
   return (
-    <EmptyState icon="book" title="No repositories selected" actions={<button type="button" className="wb-btn" onClick={onSelectAll}>Select all</button>}>
+    <EmptyState icon="book" title="No repositories selected" actions={<button type="button" className="wb-btn" onClick={onSelectActive}>Select active repositories</button>}>
       Pick repositories in the sidebar, or choose a set.
     </EmptyState>
   );

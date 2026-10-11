@@ -1,10 +1,10 @@
 /** Settings → Tracked repositories (`/settings#tracked`): your own (automatic) and the ones you added by hand. */
-import { Switch, useToast } from '../workbench';
 import { Link } from 'react-router';
 import type { Repo } from '../../../shared/api';
-import { usePatchRepo, useRepos } from '../api/hooks';
+import { useRepos } from '../api/hooks';
 import { Icon } from '../components/Icon';
 import { RepoName } from '../components/RepoName';
+import { RepoStatusMenu } from '../components/RepoStatusMenu';
 import { useConfirmRemoveRepo } from '../components/RepoTracking';
 import { useRepoLabel } from '../components/repoMapContext';
 import { useUI } from '../components/ui';
@@ -20,20 +20,14 @@ function Status({ repo, now }: { repo: Repo; now: number }) {
 
 export function TrackedSection() {
   const repos = useRepos();
-  const patch = usePatchRepo();
-  const toast = useToast();
   const label = useRepoLabel();
   const { openAddRepo } = useUI();
   const confirmRemove = useConfirmRemoveRepo();
   const now = useNow(60_000);
   const all = repos.data ?? [];
   const owned = all.filter((r) => r.trackedBy === 'owned');
-  const ownedHidden = owned.filter((r) => r.hidden).length;
+  const ownedInactive = owned.filter((r) => !r.active).length;
   const added = all.filter((r) => r.trackedBy === 'manual').sort((a, b) => a.key.localeCompare(b.key));
-
-  const setDefault = (r: Repo, on: boolean) => patch.mutate({ key: r.key, patch: { hidden: !on } }, {
-    onError: (e) => toast(`Couldn't update ${label(r.key)}: ${e.message}`, { tone: 'error' }),
-  });
 
   return (
     <section className="card set-sec" id="tracked">
@@ -46,11 +40,11 @@ export function TrackedSection() {
             <span className="set-l">Repositories you own<small>Tracked automatically.</small></span>
             <span className="set-c">
               <Link to="/repos?own=mine">{fmtNum(owned.length)} {owned.length === 1 ? 'repository' : 'repositories'}</Link>
-              {ownedHidden > 0 && <span className="muted">({fmtNum(ownedHidden)} hidden)</span>}
+              {ownedInactive > 0 && <span className="muted">({fmtNum(ownedInactive)} inactive)</span>}
             </span>
           </div>
           <div className="set-row top">
-            <span className="set-l">Added repositories<small>Other owners' repositories you added. Switched off, one stays tracked but out of the default selection.</small></span>
+            <span className="set-l">Added repositories<small>Other owners' repositories you added. Inactive ones stay tracked but out of the default selection.</small></span>
             <span className="set-c grow stack">
               {added.length ? (
                 <ul className="trk-list">
@@ -62,8 +56,7 @@ export function TrackedSection() {
                       </span>
                       <Status repo={r} now={now} />
                       <span className="spacer" />
-                      <Switch checked={!r.hidden} onChange={(e) => setDefault(r, e.target.checked)}
-                        title="Default selection" aria-label={`Include ${label(r.key)} in the default selection`} />
+                      <RepoStatusMenu repo={r} size="sm" />
                       <button type="button" className="pin-btn" title="Remove…" aria-label={`Remove ${label(r.key)}`} onClick={() => confirmRemove(r)}>
                         <Icon name="trash" />
                       </button>

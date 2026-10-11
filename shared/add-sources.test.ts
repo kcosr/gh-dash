@@ -86,7 +86,7 @@ const source = (sync: SourceSyncStatus, over: Partial<Source> = {}): Source => {
   const github = sync.source === 'github.com';
   return {
     host: sync.source, kind: github ? 'github' : 'gitlab', name: github ? 'GitHub' : 'GitLab', url: github ? 'https://github.com' : `https://${sync.source}/gitlab`,
-    configured: true, removable: false, viewer: null, account: account({ source: sync.tokenSource }), sync, repos: { owned: 0, added: 0, hidden: 0 }, ...over,
+    configured: true, removable: false, viewer: null, account: account({ source: sync.tokenSource }), sync, repos: { owned: 0, added: 0 }, ...over,
   };
 };
 const ghOk = status();

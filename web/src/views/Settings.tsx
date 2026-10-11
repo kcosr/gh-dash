@@ -237,7 +237,7 @@ export function SettingsView() {
                   </span>
                 </div>
                 <label className="set-row">
-                  <span className="set-l">Include forks<small>Forks are always synced; this adds them to the default selection.</small></span>
+                  <span className="set-l">Include forks<small>Forks are always synced. On, they're active or inactive like other repositories; off, they're inactive unless marked Active.</small></span>
                   <span className="set-c"><Switch checked={form.includeForks} onChange={(e) => setForm({ ...form, includeForks: e.target.checked })} /></span>
                 </label>
                 <div className="set-actions">

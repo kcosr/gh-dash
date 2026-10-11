@@ -217,7 +217,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
           <button type="button" onClick={() => set({ repos: [] })}>None</button>
           <button type="button" onClick={() => select(all.filter((r) => r.pinned).map((r) => r.key))}>Pinned</button>
           <span className="spacer" />
-          <span className="muted">{nSel} of {shown.length} selected</span>
+          <span className="muted" title={`${nSel} of ${shown.length} selected`}>{nSel} of {shown.length}</span>
         </div>
       </div>
 

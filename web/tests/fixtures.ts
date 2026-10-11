@@ -11,7 +11,7 @@ export const repos: Repo[] = [
   ...r, provider: r.provider as Repo['provider'], description: 'Browser regression fixture', url: `https://${r.source}/${r.nameWithOwner}`,
   visibility: 'public', isArchived: false, isFork: false, language: { name: 'TypeScript', color: '#3178c6' }, topics: [],
   defaultBranch: 'main', stars: 2, forks: 0, createdAt: at, pushedAt: at, lastActivityAt: at, pinned: false,
-  status: 'auto', active: true, activeReason: 'open',
+  status: 'auto', active: true, activeReason: 'open', autoActive: true,
   setIds: [], stats: { openPrs: 1, openIssues: 0, mergedPrs30d: 0, commits30d: 1, newStars30d: 0, weeklyCommits: Array(12).fill(1) },
   syncedAt: at, trackedBy: 'owned', addedAt: null, unavailable: null, commentCount: 0,
 }));

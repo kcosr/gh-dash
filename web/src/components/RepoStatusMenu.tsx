@@ -20,12 +20,12 @@ export function useSetRepoStatus(): (repo: Repo, status: RepoStatus) => void {
   };
 }
 
-/** The three choices, the current one checked. Automatic says what the activity rule makes of the repo when it applies. */
+/** The three choices, the current one checked. Automatic says what the activity rule makes of the repo, chosen or not. */
 export function statusItems(repo: Repo, set: (repo: Repo, status: RepoStatus) => void): MenuItem[] {
   return (['auto', 'active', 'inactive'] as const).map((status) => ({
     id: `status-${status}`,
     label: STATUS_LABEL[status],
-    hint: status === 'auto' && repo.status === 'auto' ? (repo.active ? 'active' : 'inactive') : undefined,
+    hint: status === 'auto' ? (repo.autoActive ? 'active' : 'inactive') : undefined,
     checked: repo.status === status,
     onSelect: () => set(repo, status),
   }));

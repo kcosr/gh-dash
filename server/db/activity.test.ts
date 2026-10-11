@@ -120,6 +120,15 @@ describe('the default selection', () => {
     expect(why(db, 'bob/busy')).toEqual({ status: 'inactive', active: false, reason: 'set' });
   });
 
+  it('says what Automatic would give whatever the status (autoActive)', () => {
+    const { db, add } = setup();
+    add('bob/archived', { isArchived: true });
+    setRepoPrefs(db, 'bob/archived', { status: 'active' });
+    setRepoPrefs(db, 'alice/app', { status: 'inactive' });
+    const auto = (key: string) => listRepos(db, 'UTC', SEED_NOW).find((r) => r.key === key)!.autoActive;
+    expect([auto('bob/archived'), auto('alice/app'), auto('alice/hidden'), auto('alice/secret')]).toEqual([false, true, true, true]);
+  });
+
   it('keeps a quiet repo with an unresolved gh-dash thread active, until it is resolved', () => {
     const { db, add } = setup();
     const id = add('bob/reviewed');

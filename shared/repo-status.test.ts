@@ -6,7 +6,7 @@ import { activeReasonText, inactiveBadge, inactiveNote, statusToast } from '../w
 const now = new Date('2026-10-11T12:00:00Z');
 const repo = (over: Partial<Repo> = {}) => ({
   provider: 'github' as const, url: 'https://github.com/alice/app', nameWithOwner: 'alice/app',
-  status: 'auto' as const, active: true, activeReason: 'recent' as const, lastActivityAt: '2026-09-01T12:00:00Z', ...over,
+  status: 'auto' as const, active: true, activeReason: 'recent' as const, autoActive: true, lastActivityAt: '2026-09-01T12:00:00Z', ...over,
 });
 const gitlab = { provider: 'gitlab' as const, url: 'https://gitlab.example.com/alice/app', nameWithOwner: 'alice/app' };
 

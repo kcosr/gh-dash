@@ -127,6 +127,8 @@ export interface Repo {
    */
   active: boolean;
   activeReason: RepoActiveReason;
+  /** What the activity rule alone makes of it, the status aside: what choosing Automatic would give. */
+  autoActive: boolean;
   setIds: number[];
   stats: RepoStats;
   syncedAt: string | null;

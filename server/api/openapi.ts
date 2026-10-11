@@ -85,6 +85,7 @@ const schemas: Record<string, Schema> = {
         "set: the status chose it. Otherwise the rule's deciding fact, checked in this order: archived, and fork (while includeForks is off), make it inactive; " +
         'pinned, open (open pull requests, issues or unresolved gh-dash comment threads) and recent (activity within 180 days) make it active; quiet (none of these) leaves it inactive.',
     },
+    autoActive: { ...bool, description: 'What the activity rule alone makes of it, the status aside: what status auto would give' },
     setIds: arr(int()), stats: ref('RepoStats'), syncedAt: nullable(dateTime),
     trackedBy: { ...enumOf('owned', 'manual'), description: 'owned: one of your repositories, tracked automatically; manual: added by hand' },
     addedAt: { ...nullable(dateTime), description: 'Manual repos: when they were added' },

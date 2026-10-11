@@ -94,6 +94,7 @@ export function listRepos(db: Db, tz: string, now = Date.now(), onlyKey?: string
 
   return rows.map((r) => {
     const { active, reason } = repoActivity(r, now, includeForks);
+    const autoActive = r.status === 'auto' ? active : repoActivity({ ...r, status: 'auto' }, now, includeForks).active;
     return {
       key: repoKey(r),
       source: r.source_host,
@@ -118,6 +119,7 @@ export function listRepos(db: Db, tz: string, now = Date.now(), onlyKey?: string
       status: repoStatus(r.status),
       active,
       activeReason: reason,
+      autoActive,
       setIds: setIds.get(r.id) ?? [],
       stats: {
         openPrs: r.open_prs,

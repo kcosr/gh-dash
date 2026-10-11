@@ -122,7 +122,8 @@ export function FirstSyncCard({ status, onSync }: { status: SyncStatus | undefin
               releases and stars appear as each repository finishes.
             </p>
             {p && p.total > 0 && (
-              <div className="meter" role="progressbar" aria-valuemin={0} aria-valuemax={p.total} aria-valuenow={p.done}>
+              <div className="meter" role="progressbar" aria-label="First sync" aria-valuemin={0} aria-valuemax={p.total} aria-valuenow={p.done}
+                aria-valuetext={`${p.done} of ${p.total} repositories`}>
                 <i style={{ width: `${Math.round((p.done / p.total) * 100)}%` }} />
               </div>
             )}

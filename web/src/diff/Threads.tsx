@@ -182,7 +182,7 @@ export function Composer({
     }
   };
   const onKeyDown = (e: ReactKeyboardEvent) => {
-    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !e.nativeEvent.isComposing) {
       e.preventDefault();
       void submit();
     }

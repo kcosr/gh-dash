@@ -242,6 +242,13 @@ function SourcesPicker({ id, known, pick, onChange }: { id: string; known: reado
 }
 
 /** Add agent: a name, its token (generated, or the user's own) and the sources it may reach. */
+/** An agent form's Esc: cancel it (and nothing under it), unless an IME is composing, whose Esc drops its text. */
+const escapeCancels = (onCancel: () => void) => (e: ReactKeyboardEvent) => {
+  if (e.key !== 'Escape' || e.nativeEvent.isComposing || e.keyCode === 229) return;
+  e.stopPropagation();
+  onCancel();
+};
+
 function AddAgent({ agents, known, portOff, onAdded, onCancel }: {
   agents: readonly Agent[];
   known: readonly AgentSource[];
@@ -269,9 +276,8 @@ function AddAgent({ agents, known, portOff, onAdded, onCancel }: {
     });
   };
   const err = (tried && (problem ?? (tokenProblem && `Token: ${tokenProblem}`) ?? picked.problem)) || (add.error ? bridgeError(add.error) : null);
-  const escape = (e: ReactKeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); onCancel(); } };
   return (
-    <form className="agent-add" onSubmit={submit} onKeyDown={escape}>
+    <form className="agent-add" onSubmit={submit} onKeyDown={escapeCancels(onCancel)}>
       <label className="sr-only" htmlFor="agent-name">Agent name</label>
       <input id="agent-name" className="wb-input" value={name} placeholder="Name, e.g. Claude" autoFocus autoComplete="off" maxLength={80}
         onChange={(e) => setName(e.target.value)} aria-invalid={tried && problem ? true : undefined} aria-describedby={err ? 'agent-add-err' : undefined} />
@@ -296,7 +302,7 @@ function NewToken({ agent, onMade, onCancel }: { agent: Agent; onMade: (s: Shown
   };
   const err = problem ? `Token: ${problem}` : regenerate.error ? bridgeError(regenerate.error) : null;
   return (
-    <form className="agent-add agent-new" onSubmit={submit} onKeyDown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); onCancel(); } }}
+    <form className="agent-add agent-new" onSubmit={submit} onKeyDown={escapeCancels(onCancel)}
       aria-label={`New token for ${agent.name}`}>
       <p className="agent-new-h">
         New token for <b>{agent.name}</b>. {agent.disabledAt ? `${agent.name} is enabled with it, and can write here again.` : 'The one it uses now stops working at once.'}
@@ -321,7 +327,7 @@ function AgentSources({ agent, known, onDone, onCancel }: { agent: Agent; known:
   };
   const err = picked.problem ?? (setSources.error ? bridgeError(setSources.error) : null);
   return (
-    <form className="agent-add agent-new" onSubmit={submit} onKeyDown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); onCancel(); } }}
+    <form className="agent-add agent-new" onSubmit={submit} onKeyDown={escapeCancels(onCancel)}
       aria-label={`Sources for ${agent.name}`}>
       <p className="agent-new-h">
         The sources <b>{agent.name}</b> may reach through MCP{agent.builtIn && ' (requests without a token)'}. To it, the others'

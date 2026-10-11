@@ -15,7 +15,9 @@ This scope does not validate provider integrations, Electron, or backend behavio
 Coverage includes desktop and 390/900px layouts, light/dark themes, sidebar and
 drawer resizing and saved preferences, filter/context memory, command palette
 search and branch steps, menus and date selection, asynchronous prompts, email
-editing, chart tables, and nested overlay keyboard/focus behavior.
+editing, chart tables, nested overlay keyboard/focus behavior, the PR list's cursor
+across refetches and its row click guards and edges, the pre-paint theme under the
+desktop window's CSP, and reduced motion.
 
 Failed runs preserve screenshots and traces in `test-results/`. Set
 `PLAYWRIGHT_OUTPUT_DIR` to retain evidence outside the checkout. Selected successful

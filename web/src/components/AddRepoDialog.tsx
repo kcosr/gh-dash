@@ -83,6 +83,8 @@ export function AddRepoDialog({ onClose }: { onClose: () => void }) {
     : source.trouble === 'no-token' ? 'token' : source.trouble === 'mismatch' || refused ? 'mismatch' : null;
   const add = useAddRepo();
   const patch = usePatchRepo();
+  // Adding, or putting a known repo back in the default selection: the dialog stays until the answer is in.
+  const busy = add.isPending || patch.isPending;
   const toast = useToast();
   const navigate = useNavigate();
 
@@ -178,6 +180,8 @@ export function AddRepoDialog({ onClose }: { onClose: () => void }) {
   const open = (key: string) => { onClose(); navigate(`${repoPath(key)}${carrySearch(window.location.search)}`); };
 
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    // Arrows and Enter mid-composition (an IME) move through and pick its candidates.
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
     if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && rows.length) {
       e.preventDefault();
       setActive((cur + (e.key === 'ArrowDown' ? 1 : -1) + rows.length) % rows.length);
@@ -274,7 +278,7 @@ export function AddRepoDialog({ onClose }: { onClose: () => void }) {
   }
 
   return (
-    <Modal open onClose={onClose} title="Add repository" className="add-repo" dismissible={!add.isPending} footer={<>
+    <Modal open onClose={onClose} title="Add repository" className="add-repo" dismissible={!busy} footer={<>
 
           {addable && (
             <label className="ar-inc" title="Unchecked: it's tracked but left out of the default selection, like a hidden repository">
@@ -283,11 +287,11 @@ export function AddRepoDialog({ onClose }: { onClose: () => void }) {
             </label>
           )}
           <span className="spacer" />
-          <button type="button" className="wb-btn" ref={cancel} disabled={add.isPending} onClick={onClose}>Cancel</button>
+          <button type="button" className="wb-btn" ref={cancel} disabled={busy} onClick={onClose}>Cancel</button>
           {known ? (
             <>
               {known.hidden && <button type="button" className="wb-btn" disabled={patch.isPending} onClick={() => show(known.key)}>Show in default selection</button>}
-              {known.open && <button type="button" className="wb-btn wb-btn--primary" onClick={() => open(known.key)}>Open</button>}
+              {known.open && <button type="button" className="wb-btn wb-btn--primary" disabled={busy} onClick={() => open(known.key)}>Open</button>}
             </>
           ) : pending && !stray && !checking && (failure || lookup.isError) ? (
             <button type="button" className="wb-btn" onClick={() => { setErr(null); void lookup.refetch(); }}><Icon name="sync" />Try again</button>

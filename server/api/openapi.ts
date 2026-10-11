@@ -24,6 +24,11 @@ const obj = (properties: Record<string, Schema>, optional: string[] = []): Schem
 const TOKEN_SOURCE = enumOf('env', 'file', 'gh-cli', 'app', 'none');
 /** Any source's credential (SourceAccount, SourceSyncStatus): glab is for GitLab sources. */
 const SOURCE_TOKEN_SOURCE = enumOf('env', 'file', 'gh-cli', 'glab', 'app', 'none');
+/** A repository's status (RepoStatus): the user's choice. */
+const REPO_STATUS: Schema = {
+  ...enumOf('auto', 'active', 'inactive'),
+  description: "auto: follows the activity rule (Repo.active); active and inactive override it. Local: nothing changes on the code host",
+};
 /** An instance setting with where it came from. */
 const setting = (value: Schema): Schema => obj({ value, source: enumOf('default', 'file', 'env') });
 
@@ -64,8 +69,23 @@ const schemas: Record<string, Schema> = {
     name: str('Short name'), nameWithOwner: str(), owner: str(), description: nullable(str()), url: str(),
     visibility: enumOf('public', 'private', 'internal'), isArchived: bool, isFork: bool,
     language: nullable(obj({ name: str(), color: nullable(str()) })), topics: arr(str()), defaultBranch: nullable(str()),
-    stars: int(), forks: int(), createdAt: dateTime, pushedAt: nullable(dateTime), lastActivityAt: nullable(dateTime),
-    pinned: bool, hidden: bool, setIds: arr(int()), stats: ref('RepoStats'), syncedAt: nullable(dateTime),
+    stars: int(), forks: int(), createdAt: dateTime, pushedAt: nullable(dateTime),
+    lastActivityAt: {
+      ...nullable(dateTime),
+      description: 'Latest of pushedAt and any pull request, issue, release or gh-dash comment activity stored (stars are not activity)',
+    },
+    pinned: bool, status: REPO_STATUS,
+    active: {
+      ...bool,
+      description: 'In the default selection (and the main list), as of the read: decided by the server from status, then the activity rule; see activeReason',
+    },
+    activeReason: {
+      ...enumOf('set', 'archived', 'fork', 'pinned', 'open', 'recent', 'quiet'),
+      description:
+        "set: the status chose it. Otherwise the rule's deciding fact, checked in this order: archived, and fork (while includeForks is off), make it inactive; " +
+        'pinned, open (open pull requests, issues or unresolved gh-dash comment threads) and recent (activity within 180 days) make it active; quiet (none of these) leaves it inactive.',
+    },
+    setIds: arr(int()), stats: ref('RepoStats'), syncedAt: nullable(dateTime),
     trackedBy: { ...enumOf('owned', 'manual'), description: 'owned: one of your repositories, tracked automatically; manual: added by hand' },
     addedAt: { ...nullable(dateTime), description: 'Manual repos: when they were added' },
     unavailable: {
@@ -145,7 +165,10 @@ const schemas: Record<string, Schema> = {
     backfillDays: { ...int(), minimum: 1, maximum: 3650 },
     myEmails: arr(str()),
     myEmailsFromEnv: { ...arr(str()), readOnly: true, description: 'Emails from GH_DASH_MY_EMAILS; always count as "me". Ignored in PATCH.' },
-    includeForks: bool,
+    includeForks: {
+      ...bool,
+      description: "On: forks follow the activity rule like other repositories. Off: they are inactive unless marked active, and their commit history and branches aren't synced",
+    },
     diffCacheMb: { ...int(), minimum: 10, maximum: 10000, description: 'Diff cache size cap in MB' },
   }, ['myEmailsFromEnv']),
   Me: obj({ login: str(), name: nullable(str()), avatarUrl: nullable(str()), tokenSource: enumOf('env', 'file', 'gh-cli', 'app', 'none') }),
@@ -214,7 +237,7 @@ const schemas: Record<string, Schema> = {
     viewer: { ...nullable(obj({ login: str(), name: nullable(str()), avatarUrl: nullable(str()) })), description: 'The account its data belongs to (claimed by its first sync); null before that' },
     account: { anyOf: [ref('SourceAccount'), { type: 'null' }], description: "Its credential as this server holds it, never the token; null when the source isn't configured here" },
     sync: ref('SourceSyncStatus'),
-    repos: { ...obj({ owned: int(), added: int(), hidden: int() }), description: 'Live repositories on it: tracked automatically, added by hand, and (of both) hidden from the default selection' },
+    repos: { ...obj({ owned: int(), added: int() }), description: 'Live repositories on it: tracked automatically, and added by hand' },
   }),
   RepoCandidate: obj({
     key: str('Repo key: owner/name on github.com, <host>/<path> on other sources'), owner: str('Owner, or GitLab namespace path'), name: str(), description: nullable(str()), visibility: enumOf('public', 'private', 'internal'),
@@ -231,7 +254,7 @@ const schemas: Record<string, Schema> = {
     allOf: [ref('RepoCandidate'), obj({
       url: str(), openPrs: int(), openIssues: int(),
       owned: { ...bool, description: 'You own it: tracked automatically, so it cannot be added' },
-      hidden: { ...nullable(bool), description: 'When tracked: left out of the default selection' },
+      status: { ...nullable(REPO_STATUS), description: "When tracked: its status; null when it isn't tracked" },
       backfill: {
         ...obj({ since: dateTime, commits: nullable(int()), prs: nullable(int()), issues: nullable(int()), releases: int(), requests: nullable(int()) }),
         description: "What the first sync would fetch since `since` (null: unknown; GitLab doesn't count commits), and about how many requests to the code host",
@@ -500,7 +523,7 @@ const SOURCE_PATH = { ...p('source', "The source's host: github.com, or a GitLab
 const SOURCE = q('source', "The source to look on, by its host; default github.com. A GitLab source must be configured on this server.", str(), 'gitlab.example.com');
 
 const SCOPE: ParamDoc[] = [
-  q('repos', 'Comma-separated repo keys (owner/name on github.com, <host>/<path> on other sources; the short name of a github.com repo you own also works). Omitted: the default selection (non-archived, non-hidden, non-fork unless includeForks). Empty (`repos=`): no repos.', str(), 'kcosr/gh-dash,kcosr/tools'),
+  q('repos', 'Comma-separated repo keys (owner/name on github.com, <host>/<path> on other sources; the short name of a github.com repo you own also works). Omitted: the default selection (active repositories, Repo.active). Empty (`repos=`): no repos.', str(), 'kcosr/gh-dash,kcosr/tools'),
   q('source', 'Comma-separated source hosts: only repos on those sources (the app\'s context switcher). Omitted or empty: every source. Narrows `repos` and the default selection alike. 400 for a host that isn\'t a source.', str(), 'gitlab.example.com'),
   q('visibility', 'Repo visibility filter (internal: GitHub Enterprise, and GitLab projects visible to every signed-in user).', { ...enumOf('all', 'public', 'private', 'internal'), default: 'all' }),
   q('ownership', 'mine: repositories you own (tracked automatically); others: repositories added by hand.', { ...enumOf('all', 'mine', 'others'), default: 'all' }),
@@ -739,12 +762,12 @@ export const ENDPOINTS: EndpointDoc[] = [
   },
   { method: 'get', path: '/api/v1/repos', tag: 'Repos', summary: 'Repository inventory or a filtered selection', params: [
     q('repos', 'Comma-separated repo keys (or short names of github.com repos you own); explicit empty selects nothing. Overrides scope.'),
-    q('scope', 'all (default) returns the inventory; default returns the default selection, which leaves out archived and hidden repos, and forks unless enabled in settings.', enumOf('all', 'default')),
+    q('scope', 'all (default) returns the inventory, inactive repositories included; default returns the default selection: the active repositories (Repo.active).', enumOf('all', 'default')),
     q('source', 'Comma-separated source hosts: only repos on those sources. Omitted or empty: every source. 400 for a host that isn\'t a source.', str(), 'gitlab.example.com'),
     q('visibility', 'Repository visibility (internal: GitHub Enterprise, and GitLab projects visible to every signed-in user)', enumOf('all', 'public', 'private', 'internal')),
     q('ownership', 'mine: repositories you own; others: repositories added by hand', enumOf('all', 'mine', 'others')),
     q('q', 'Case-insensitive substring in the repo key, description, topics or language'),
-    q('sort', 'Sort within pinned/hidden groups; default activity', enumOf('activity', 'stars', 'open', 'name')),
+    q('sort', 'Pinned first, then active before inactive; within those, by this; default activity', enumOf('activity', 'stars', 'open', 'name')),
   ], response: { status: 200, schema: obj({ items: arr(ref('Repo')) }) } },
   { method: 'get', path: '/api/v1/repos/{repo}', tag: 'Repos', summary: 'One repo', params: [REPO], response: { status: 200, schema: ref('Repo') } },
   {
@@ -767,26 +790,27 @@ export const ENDPOINTS: EndpointDoc[] = [
     method: 'post', path: '/api/v1/repos', tag: 'Repos', summary: "Track a repository you don't own, and start its first sync",
     description:
       'Checks access again first. 400 bad input; 404 `{ details: { problem: "not-found", hint } }`; 403 `{ details: { problem: "sso" | "org-policy" | "permission", hint } }`; ' +
-      '409 `{ details: { key, trackedBy, hidden } }` when you own it (tracked automatically) or it is tracked already, or when the token is for another account; 503 without a token; 429 rate limited.',
+      '409 `{ details: { key, trackedBy, status } }` when you own it (tracked automatically) or it is tracked already, or when the token is for another account; 503 without a token; 429 rate limited.',
     body: {
       schema: obj({
         repo: str('As for /repo-lookup: owner/name or a github.com URL; on GitLab group/…/project, its key, or a web or ssh address'),
         source: { ...str(), default: 'github.com', description: "The source's host. An address or key on another source's host in `repo` wins." },
-        includeInDefault: { ...bool, default: true, description: 'Include in the default selection (hidden: false)' },
-      }, ['source', 'includeInDefault']),
+        status: { ...REPO_STATUS, default: 'auto', description: 'Its status; inactive leaves it out of the default selection' },
+      }, ['source', 'status']),
       example: { repo: 'dlvhdr/gh-dash' },
     },
     response: { status: 201, schema: ref('AddRepoResponse') },
   },
   {
     method: 'delete', path: '/api/v1/repos/{repo}', tag: 'Repos', summary: 'Stop tracking a repository you added',
-    description: 'Deletes its pull requests, issues, commits, releases and cached diffs from this dashboard, and its set memberships. Nothing changes on the code host. 409 for a repository you own (hide it instead), 404 when unknown, 400 for a source that isn\'t one here.',
+    description: 'Deletes its pull requests, issues, commits, releases and cached diffs from this dashboard, and its set memberships. Nothing changes on the code host. 409 for a repository you own (mark it inactive instead), 404 when unknown, 400 for a source that isn\'t one here.',
     params: [REPO, q('source', "The repo's source (its host). With it, `repo` may also be the repo's path on that source (group%2Fproject), and must be on it.", str(), 'gitlab.example.com')],
     response: { status: 204, description: 'Removed' },
   },
   {
-    method: 'patch', path: '/api/v1/repos/{repo}', tag: 'Repos', summary: 'Pin/unpin or hide/unhide a repo (local preference)',
-    params: [REPO], body: { schema: obj({ pinned: bool, hidden: bool }, ['pinned', 'hidden']), example: { pinned: true } },
+    method: 'patch', path: '/api/v1/repos/{repo}', tag: 'Repos', summary: 'Pin/unpin a repo or set its status (local preferences)',
+    description: 'Returns the repo, with whether it is active now: pinning makes a quiet repository active, and a status overrides the rule. 400 for an unknown field or status.',
+    params: [REPO], body: { schema: obj({ pinned: bool, status: REPO_STATUS }, ['pinned', 'status']), example: { status: 'inactive' } },
     response: { status: 200, schema: ref('Repo') },
   },
   { method: 'get', path: '/api/v1/sets', tag: 'Sets & views', summary: 'Repo sets', response: { status: 200, schema: obj({ items: arr(ref('RepoSet')) }) } },

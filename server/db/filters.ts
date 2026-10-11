@@ -1,5 +1,6 @@
 import type { Ownership, VisibilityFilter, Who } from '../../shared/api';
 import { isoSec } from '../lib/time';
+import { activeRepoIds } from './activity';
 import type { Db, Param } from './db';
 import { REPO_IDS_FOR_KEYS } from './repo-key';
 import { getSettings } from './settings';
@@ -7,7 +8,7 @@ import { listSources } from './sources';
 
 /** Parsed, validated scope shared by every list/stats query. Times are UTC ms; `to` is exclusive. */
 export interface Scope {
-  /** null = the default selection (non-archived, non-hidden, non-fork unless includeForks). */
+  /** null = the default selection: the active repos (QueryCtx.activeRepoIds). */
   repos: string[] | null;
   /**
    * The sources to look at, by host (lower-case): the context switcher's `source=`. Absent or null = every source. It
@@ -35,11 +36,15 @@ export interface QueryCtx {
   myEmails: string[];
   /** Lower-cased commit emails of each source's account, by source id: they count as me in that source's repos only. */
   viewerEmails: Map<number, string[]>;
-  includeForks: boolean;
+  /** The repos active as of the request (db/activity.ts): the default selection. */
+  activeRepoIds: number[];
 }
 
-/** `envEmails`: GH_DASH_MY_EMAILS, which always count as "me" in addition to settings.myEmails. */
-export function loadQueryCtx(db: Db, envEmails: readonly string[] = []): QueryCtx {
+/**
+ * `envEmails`: GH_DASH_MY_EMAILS, which always count as "me" in addition to settings.myEmails. `now`: what the activity
+ * rule measures "recent" from.
+ */
+export function loadQueryCtx(db: Db, envEmails: readonly string[] = [], now = Date.now()): QueryCtx {
   const settings = getSettings(db);
   const viewers = new Map<number, string>();
   const viewerEmails = new Map<number, string[]>();
@@ -53,7 +58,7 @@ export function loadQueryCtx(db: Db, envEmails: readonly string[] = []): QueryCt
     viewers,
     myEmails: [...new Set([...settings.myEmails, ...envEmails].map((e) => e.toLowerCase()))],
     viewerEmails,
-    includeForks: settings.includeForks,
+    activeRepoIds: activeRepoIds(db, now, settings.includeForks),
   };
 }
 
@@ -89,7 +94,7 @@ export class Where {
 export function addRepoScope(w: Where, scope: Scope, ctx: QueryCtx, ignoreRepos = false): void {
   w.add('r.removed_at IS NULL');
   if (!ignoreRepos) {
-    if (scope.repos === null) w.add(`r.is_archived = 0 AND r.hidden = 0${ctx.includeForks ? '' : ' AND r.is_fork = 0'}`);
+    if (scope.repos === null) w.add('r.id IN (SELECT value FROM json_each(?))', JSON.stringify(ctx.activeRepoIds));
     else if (scope.repos.length === 0) w.add('0');
     else w.add(`r.id IN ${REPO_IDS_FOR_KEYS}`, JSON.stringify(scope.repos));
   }

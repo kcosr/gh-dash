@@ -13,7 +13,7 @@ import { loadQueryCtx } from './filters';
 import { listActivity } from './lists';
 import { listThreadItems } from './thread-list';
 import { ensureSource, removeSource } from './sources';
-import { GITLAB_HOST, seedDb, seedGitLab } from '../test/seed';
+import { GITLAB_HOST, SEED_NOW, seedDb, seedGitLab } from '../test/seed';
 
 const T0 = '2026-09-29T10:00:00.000Z';
 const T1 = '2026-09-29T11:00:00.000Z';
@@ -425,14 +425,14 @@ describe('deleting agents', () => {
       ['replied', gone.name], ['resolved', gone.name], ['thread_opened', gone.name], ['replied', gone.name], ['thread_opened', gone.name],
     ]);
     const scope = { repos: null, visibility: 'all', ownership: 'all', who: 'everyone', from: Date.parse('2026-09-01T00:00:00Z'), to: Date.parse('2026-10-01T00:00:00Z'), tz: 'UTC', q: null } as const;
-    const activity = listActivity(db, loadQueryCtx(db), scope, ['comment'], null).items;
+    const activity = listActivity(db, loadQueryCtx(db, [], SEED_NOW), scope, ['comment'], null).items;
     expect(activity.filter((e) => e.type === 'comment' && e.comment.by.id === id).map((e) => e.actor!.name)).toEqual(Array(5).fill(gone.name));
     // The Comments list and its Markdown.
-    const { items } = listThreadItems(db, loadQueryCtx(db), scope, { status: 'all', kind: 'all', sort: 'recent', author: id }, null);
+    const { items } = listThreadItems(db, loadQueryCtx(db, [], SEED_NOW), scope, { status: 'all', kind: 'all', sort: 'recent', author: id }, null);
     expect(items.map((t) => t.comments[0]!.author.name)).toEqual([gone.name, gone.name]);
     expect(threadListMarkdown(items, { status: 'all', kind: 'all', q: null, by: gone.name, waiting: false })).toContain(`**${gone.name}**: Rename this`);
     // And still what agents wrote.
-    expect(listThreadItems(db, loadQueryCtx(db), scope, { status: 'all', kind: 'all', sort: 'recent', author: 'agents' }, null).items).toHaveLength(3);
+    expect(listThreadItems(db, loadQueryCtx(db, [], SEED_NOW), scope, { status: 'all', kind: 'all', sort: 'recent', author: 'agents' }, null).items).toHaveLength(3);
   });
 
   it("frees its name for a new agent, and keeps names like a deleted agent's from any agent", () => {

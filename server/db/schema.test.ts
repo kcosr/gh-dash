@@ -805,13 +805,48 @@ describe('migration to synced branches (v11)', () => {
   });
 });
 
+describe('migration to repository status (v12)', () => {
+  const REPO_STATUS = versionOf('repo-status');
+
+  /** A v11 database: a plain repo, a hidden one, and a pinned one. */
+  function v11(): Db {
+    const sqlite = new DatabaseSync(':memory:');
+    sqlite.exec('PRAGMA foreign_keys = ON');
+    const db = new Db(sqlite);
+    migrate(db, true, { upTo: REPO_STATUS - 1 });
+    repo(db, 1, 'a');
+    repo(db, 2, 'b', { hidden: 1 });
+    repo(db, 3, 'c', { pinned: 1 });
+    return db;
+  }
+
+  it('marks hidden repos inactive and leaves the others automatic; new ones start automatic', () => {
+    const db = v11();
+    migrate(db, true, { upTo: REPO_STATUS });
+    expect(version(db)).toBe(REPO_STATUS);
+    expect(db.all('SELECT id, status FROM repos ORDER BY id')).toEqual([{ id: 1, status: 'auto' }, { id: 2, status: 'inactive' }, { id: 3, status: 'auto' }]);
+    repo(db, 4, 'd');
+    expect(db.get('SELECT status FROM repos WHERE id = 4')).toEqual({ status: 'auto' });
+    db.run(`UPDATE repos SET status = 'active' WHERE id = 1`);
+    expect(() => db.run(`UPDATE repos SET status = 'hidden' WHERE id = 1`)).toThrow(/CHECK constraint/);
+    // hidden stays (dropping it takes a rebuild), unread from now on.
+    expect(db.get('SELECT hidden FROM repos WHERE id = 2')).toEqual({ hidden: 1 });
+  });
+
+  it('is additive: a GH_DASH_SYNC=off instance may run it', () => {
+    const db = v11();
+    migrate(db, false, { upTo: REPO_STATUS });
+    expect(version(db)).toBe(REPO_STATUS);
+  });
+});
+
 describe('migration names', () => {
   it('number migrations by name, and stop where asked', () => {
     // The final order: T2's repos rebuild, then local comments (diff-comments), then sources (the GitLab wave), then
     // agents and the comment event log (the MCP wave), then branch reviews, then the sources agents may reach, then the
-    // branches the sync holds.
-    expect(['repos-v5', 'comments', 'sources', 'agents', 'branches', 'agent-sources', 'synced-branches'].map(versionOf)).toEqual([5, 6, 7, 8, 9, 10, 11]);
-    expect(SCHEMA_VERSION).toBe(versionOf('synced-branches'));
+    // branches the sync holds, then repository status.
+    expect(['repos-v5', 'comments', 'sources', 'agents', 'branches', 'agent-sources', 'synced-branches', 'repo-status'].map(versionOf)).toEqual([5, 6, 7, 8, 9, 10, 11, 12]);
+    expect(SCHEMA_VERSION).toBe(versionOf('repo-status'));
     expect(() => versionOf('nope')).toThrow('No migration is called nope');
     const db = new Db(new DatabaseSync(':memory:'));
     migrate(db, true, { upTo: versionOf('repos-v5') });

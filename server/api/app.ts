@@ -58,6 +58,8 @@ export interface AppDeps {
    * apps (startServer passes it). By default a bus of this app's own.
    */
   bus?: CommentBus;
+  /** The clock: "now" for the activity rule (Repo.active, the default selection) and default ranges. Tests fix it. */
+  now?: () => number;
 }
 
 export type AppTransport = { kind: 'tcp' } | { kind: 'desktop'; secret: string };
@@ -65,7 +67,8 @@ export type AppTransport = { kind: 'tcp' } | { kind: 'desktop'; secret: string }
 export function createApp(input: AppDeps): Hono {
   const deps: AppDeps = {
     ...input,
-    tracking: input.tracking ?? new Tracking({ db: input.db, tokens: input.tokens, sources: input.sources, sync: input.sync, tz: input.config.defaultTz }),
+    tracking:
+      input.tracking ?? new Tracking({ db: input.db, tokens: input.tokens, sources: input.sources, sync: input.sync, tz: input.config.defaultTz, now: input.now }),
     bus: input.bus ?? new CommentBus(),
   };
   const { config } = deps;

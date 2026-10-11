@@ -12,7 +12,7 @@ import { newestFirst } from '../provider/branches';
 import { SourceError } from '../provider/errors';
 import type { CommitDiff, DiffSource, PrRevision } from '../provider/types';
 import { SyncManager } from '../sync/manager';
-import { seedDb } from './seed';
+import { SEED_NOW, seedDb } from './seed';
 import { testTokens } from './tokens';
 
 export const sha = (c: string) => c.repeat(64).slice(0, 40);
@@ -167,7 +167,8 @@ export function mcpHarness(opts: McpHarnessOptions = {}) {
   const { principal: agent, token } = addAgent(db, 'Claude');
   const { principal: other, token: otherToken } = addAgent(db, 'Codex');
   const bus = new CommentBus();
-  const app = createApp({ db, config, sync, diffs, tokens, transport: opts.transport, bus });
+  // The seed's "now": what is active (list_repos, the default selection) doesn't change with the date the tests run.
+  const app = createApp({ db, config, sync, diffs, tokens, transport: opts.transport, bus, now: () => SEED_NOW });
 
   let nextId = 1;
   /** `headers`: added to the defaults (Claude's token); null leaves one out altogether. */

@@ -8,7 +8,7 @@ import { getRepo } from '../db/repos';
 import { HttpError, parseWith } from '../lib/errors';
 import { SyncManager } from '../sync/manager';
 import { removeTrackedRepo } from '../sync/tracking';
-import { addManualRepo, GITLAB_HOST, seedDb, seedGitLab } from '../test/seed';
+import { addManualRepo, GITLAB_HOST, SEED_NOW, seedDb, seedGitLab } from '../test/seed';
 import { testTokens } from '../test/tokens';
 import { parsePrNumber, prDetail, queryActivity, queryCommits, queryIssues, queryPrs, queryReleases, queryStars, queryStats, scopedQuery } from './lists';
 import { patchRepo, queryRepos, repoDetail } from './repos';
@@ -30,7 +30,7 @@ async function failure(fn: () => unknown): Promise<{ status: number; message: st
 
 describe('lists', () => {
   const db = seedDb();
-  const deps = { db, config };
+  const deps = { db, config, now: () => SEED_NOW };
 
   it('answers a page as JSON with an opaque cursor, or the whole selection as text', () => {
     const q = parseWith(prQuerySchema, { ...range, state: 'merged', limit: 1 });
@@ -93,7 +93,7 @@ describe('source scope, called directly', () => {
   // seedDb's github.com repos plus seedGitLab's gitlab.example.com/platform/app: the services honour `source` as the routes do.
   const db = seedDb();
   seedGitLab(db);
-  const deps = { db, config };
+  const deps = { db, config, now: () => SEED_NOW };
   const KEY = `${GITLAB_HOST}/platform/app`;
   const window = { from: '2026-09-20', to: '2026-09-26', tz: 'UTC' };
   type Page = { items: { id?: string; repo: string }[]; total: number; facets?: { byRepo: Record<string, number> } };
@@ -181,13 +181,15 @@ describe('source scope, called directly', () => {
 });
 
 describe('repos', () => {
-  it('lists, reads and pins repos', async () => {
+  it('lists, reads, pins and sets the status of repos', async () => {
     const db = seedDb();
-    const deps = { db, config };
+    const deps = { db, config, now: () => SEED_NOW };
     expect(queryRepos(deps, { scope: 'default' }).map((r) => r.name).sort()).toEqual(['app', 'secret']);
     expect(queryRepos(deps, {}).map((r) => r.key).sort()).toEqual(['alice/app', 'alice/fork', 'alice/hidden', 'alice/old', 'alice/secret']);
     expect(repoDetail(deps, 'alice/app')).toMatchObject({ key: 'alice/app', source: 'github.com', pinned: false });
     expect(patchRepo(deps, 'app', { pinned: true })).toMatchObject({ key: 'alice/app', pinned: true });
+    expect(patchRepo(deps, 'app', { status: 'inactive' })).toMatchObject({ key: 'alice/app', pinned: true, status: 'inactive', active: false, activeReason: 'set' });
+    expect(queryRepos(deps, { scope: 'default' }).map((r) => r.name)).toEqual(['secret']);
     expect(await failure(() => repoDetail(deps, 'alice/nope'))).toEqual({ status: 404, message: 'Repository not found' });
     expect(await failure(() => patchRepo(deps, 'alice/nope', { pinned: true }))).toEqual({ status: 404, message: 'Repository not found' });
   });
@@ -219,7 +221,7 @@ describe('removeTrackedRepo', () => {
 
   it('refuses what it should, and changes nothing', async () => {
     const { db, diffs } = setup();
-    expect(await failure(() => removeTrackedRepo({ db, diffs }, 'alice/app'))).toEqual({ status: 409, message: 'Repositories you own are tracked automatically; hide it instead.' });
+    expect(await failure(() => removeTrackedRepo({ db, diffs }, 'alice/app'))).toEqual({ status: 409, message: 'Repositories you own are tracked automatically; mark it inactive instead.' });
     expect(await failure(() => removeTrackedRepo({ db, diffs }, 'nobody/nothing'))).toEqual({ status: 404, message: 'Repository not found' });
     expect(await failure(() => removeTrackedRepo({ db, diffs }, 'bob/tool', 'elsewhere.example'))).toEqual({ status: 400, message: "elsewhere.example isn't a source here." });
     // A path on another source's host isn't found there.

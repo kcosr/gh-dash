@@ -6,7 +6,7 @@ import { afterAll, describe, expect, it, vi } from 'vitest';
 import { type Config, loadConfig } from '../config';
 import { getMeta, setMeta } from '../db/meta';
 import { ensureSource, GITHUB_SOURCE_ID, getSource, tryClaimViewer } from '../db/sources';
-import { upsertCommit, upsertOwned } from '../db/write';
+import { upsertCommit, upsertOwned, upsertPr } from '../db/write';
 import { DiffCache } from '../diff/cache';
 import { DiffService } from '../diff/service';
 import { GitHubDiffSources } from '../github/diff-source';
@@ -14,7 +14,7 @@ import { SyncManager } from '../sync/manager';
 import { fakeGitHub, page, type Reply, restFile, sha } from '../test/github';
 import { fakeGraphQL, prNode, repoNode } from '../test/graphql';
 import { Tracking } from '../sync/tracking';
-import { addManualRepo, GITHUB, repoRecord, seedDb, seedGitLab, setViewer } from '../test/seed';
+import { addManualRepo, GITHUB, prRecord, repoRecord, SEED_NOW, seedDb, seedGitLab, setViewer } from '../test/seed';
 import { SourceRegistry } from '../sources/registry';
 import lookupFixture from '../test/fixtures/gitlab/lookup.json';
 import { BASE as GITLAB_BASE, type Handler as GitLabHandler } from '../test/gitlab';
@@ -31,7 +31,7 @@ function makeApp(over: Partial<Config> = {}, db = seedDb(), transport?: AppTrans
   const tokens = testTokens();
   const sync = new SyncManager({ db, schedule: false, tokens, log: () => {} });
   const diffs = new DiffService({ db, cache: new DiffCache(':memory:'), sources: new GitHubDiffSources({ tokens }), log: () => {} });
-  return createApp({ db, config, sync, diffs, tokens, transport });
+  return createApp({ db, config, sync, diffs, tokens, transport, now: () => SEED_NOW });
 }
 
 describe('HTTP API', () => {
@@ -84,7 +84,7 @@ describe('HTTP API', () => {
     const read = async (query: string) => (await (await app.request(`/api/v1/repos?${query}`)).json()) as { items: { name: string }[] };
     expect((await read('')).items.map((r) => r.name).sort()).toEqual(['app', 'fork', 'hidden', 'old', 'secret']);
     expect((await read('scope=default')).items.map((r) => r.name).sort()).toEqual(['app', 'secret']);
-    expect((await read('scope=default&repos=hidden,old,fork&sort=name')).items.map((r) => r.name)).toEqual(['fork', 'old', 'hidden']);
+    expect((await read('scope=default&repos=hidden,old,fork&sort=name')).items.map((r) => r.name)).toEqual(['fork', 'hidden', 'old']);
     expect((await read('scope=default&repos=')).items).toEqual([]);
     expect((await read('scope=default&visibility=private')).items.map((r) => r.name)).toEqual(['secret']);
     expect((await read('scope=default&q=APP')).items.map((r) => r.name)).toEqual(['app']);
@@ -381,6 +381,65 @@ describe('repo keys', () => {
   });
 });
 
+describe('repository status', () => {
+  const json = async (res: Response) => ({ status: res.status, body: (await res.json()) as Record<string, any> });
+  const send = (method: string, body: unknown) => ({ method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  const range = 'from=2025-01-01&to=2026-09-30&tz=UTC&state=all';
+
+  /** The seed, and bob/dusty: added by hand, last pushed in January 2025, with a PR from then (quiet as of SEED_NOW). */
+  function statusApp() {
+    const db = seedDb();
+    const dusty = addManualRepo(db, 'bob/dusty', { pushedAt: '2025-01-15T00:00:00Z' });
+    upsertPr(db, dusty, prRecord(1, { state: 'merged', createdAt: '2025-01-10T00:00:00Z', mergedAt: '2025-01-15T00:00:00Z' }));
+    const app = makeApp({}, db);
+    const patch = async (key: string, body: unknown) => json(await app.request(`/api/v1/repos/${encodeURIComponent(key)}`, send('PATCH', body)));
+    const selected = async () => ((await (await app.request('/api/v1/repos?scope=default')).json()) as { items: { key: string }[] }).items.map((r) => r.key).sort();
+    const prRepos = async () =>
+      [...new Set(((await (await app.request(`/api/v1/prs?${range}`)).json()) as { items: { repo: string }[] }).items.map((p) => p.repo))].sort();
+    return { app, db, patch, selected, prRepos };
+  }
+
+  it('says whether each repo is active, and why', async () => {
+    const t = statusApp();
+    const items = ((await (await t.app.request('/api/v1/repos?sort=name')).json()) as { items: Record<string, unknown>[] }).items;
+    expect(items.map((r) => [r.key, r.status, r.active, r.activeReason])).toEqual([
+      ['alice/app', 'auto', true, 'recent'],
+      ['alice/secret', 'auto', true, 'recent'],
+      ['bob/dusty', 'auto', false, 'quiet'],
+      ['alice/fork', 'auto', false, 'fork'],
+      ['alice/hidden', 'inactive', false, 'set'],
+      ['alice/old', 'auto', false, 'archived'],
+    ]);
+    expect(items[0]).not.toHaveProperty('hidden');
+    expect(await t.selected()).toEqual(['alice/app', 'alice/secret']);
+    expect(await t.prRepos()).toEqual(['alice/app', 'alice/secret']);
+  });
+
+  it('sets a status, answering with the repo as it is now; the default selection follows', async () => {
+    const t = statusApp();
+    expect(await t.patch('bob/dusty', { status: 'active' })).toMatchObject({ status: 200, body: { key: 'bob/dusty', status: 'active', active: true, activeReason: 'set' } });
+    expect(await t.selected()).toEqual(['alice/app', 'alice/secret', 'bob/dusty']);
+    expect(await t.prRepos()).toEqual(['alice/app', 'alice/secret', 'bob/dusty']);
+    expect(await t.patch('app', { status: 'inactive' })).toMatchObject({ status: 200, body: { key: 'alice/app', status: 'inactive', active: false, activeReason: 'set' } });
+    expect(await t.prRepos()).toEqual(['alice/secret', 'bob/dusty']);
+    // Back to automatic: the rule decides again. Pinning makes a quiet repo active, without writing a status.
+    expect(await t.patch('app', { status: 'auto' })).toMatchObject({ body: { status: 'auto', active: true, activeReason: 'recent' } });
+    expect(await t.patch('bob/dusty', { status: 'auto', pinned: true })).toMatchObject({ body: { status: 'auto', pinned: true, active: true, activeReason: 'pinned' } });
+    expect(await t.patch('bob/dusty', { pinned: false })).toMatchObject({ body: { status: 'auto', pinned: false, active: false, activeReason: 'quiet' } });
+    expect(await t.patch('fork', { status: 'active' })).toMatchObject({ body: { status: 'active', active: true, activeReason: 'set' } });
+    expect(await t.selected()).toEqual(['alice/app', 'alice/fork', 'alice/secret']);
+  });
+
+  it('refuses a status it does not know, and anything but pinned and status', async () => {
+    const t = statusApp();
+    for (const body of [{ status: 'hidden' }, { status: 'Active' }, { status: null }, { status: true }, { hidden: true }, { pinned: true, extra: 1 }]) {
+      expect((await t.patch('bob/dusty', body)).status, JSON.stringify(body)).toBe(400);
+    }
+    expect(await t.patch('bob/nope', { status: 'active' })).toMatchObject({ status: 404 });
+    expect(t.db.get(`SELECT status, pinned FROM repos WHERE key = 'bob/dusty'`)).toEqual({ status: 'auto', pinned: 0 });
+  });
+});
+
 /** The fake GitLab instance as a source configured on this server: its token (null: none), and changes to its answers. */
 interface GitLabSetup {
   token?: string | null;
@@ -448,7 +507,7 @@ describe('adding and removing repositories', () => {
     const res = await t.call('GET', '/repo-lookup?repo=https://github.com/Bob/tool.git');
     expect(res).toMatchObject({ status: 200, body: { ok: true, repo: {
       key: 'bob/tool', owner: 'bob', name: 'tool', description: 'A tool', visibility: 'public', stars: 120, tracked: null,
-      url: 'https://github.com/bob/tool', openPrs: 3, openIssues: 51, owned: false, hidden: null,
+      url: 'https://github.com/bob/tool', openPrs: 3, openIssues: 51, owned: false, status: null,
       // max(240/100, 60/50, 12/50) = 3 rounds, plus 1 for the open PRs and 2 for the open issues
       backfill: { commits: 240, prs: 60, issues: 12, releases: 4, requests: 6 },
     } } });
@@ -458,7 +517,7 @@ describe('adding and removing repositories', () => {
     expect((await t.call('GET', '/repo-lookup?repo=bob/tool')).body).toMatchObject({ ok: true, repo: { backfill: { prs: null, requests: null } } });
     expect((await t.call('GET', '/repo-lookup?repo=app')).status).toBe(400);
     expect((await t.call('GET', '/repo-lookup?repo=gitlab.com/bob/tool')).status).toBe(400);
-    expect((await t.call('GET', '/repo-lookup?repo=alice/app')).body).toMatchObject({ ok: true, repo: { owned: true, tracked: 'owned', hidden: false } });
+    expect((await t.call('GET', '/repo-lookup?repo=alice/app')).body).toMatchObject({ ok: true, repo: { owned: true, tracked: 'owned', status: 'auto' } });
   });
 
   it('explains why a repository can’t be read, with a hint for the kind of token', async () => {
@@ -486,9 +545,10 @@ describe('adding and removing repositories', () => {
 
   it('adds a repository and starts its first sync', async () => {
     const t = trackApp();
-    const res = await t.call('POST', '/repos', { repo: 'bob/tool', includeInDefault: false });
+    const res = await t.call('POST', '/repos', { repo: 'bob/tool', status: 'inactive' });
     expect(res).toMatchObject({ status: 201, body: { sync: 'started', repo: {
-      key: 'bob/tool', trackedBy: 'manual', hidden: true, description: 'A tool', stats: { openPrs: 3, openIssues: 51 }, unavailable: null,
+      key: 'bob/tool', trackedBy: 'manual', status: 'inactive', active: false, activeReason: 'set', description: 'A tool', stats: { openPrs: 3, openIssues: 51 },
+      unavailable: null,
     } } });
     expect(res.body!.repo.addedAt).toMatch(/^\d{4}-/);
     expect(t.sync.status()).toMatchObject({ running: true, repo: 'bob/tool' });
@@ -499,9 +559,9 @@ describe('adding and removing repositories', () => {
     expect(prs.body!.items.map((p: { id: string }) => p.id)).toEqual(['bob/tool#7']);
     // Now it's tracked: adding it again is refused, with how it is tracked.
     expect(await t.call('POST', '/repos', { repo: 'bob/tool' })).toMatchObject({
-      status: 409, body: { error: 'bob/tool is already tracked.', details: { key: 'bob/tool', trackedBy: 'manual', hidden: true } },
+      status: 409, body: { error: 'bob/tool is already tracked.', details: { key: 'bob/tool', trackedBy: 'manual', status: 'inactive' } },
     });
-    expect((await t.call('GET', '/repo-lookup?repo=bob/tool')).body).toMatchObject({ repo: { tracked: 'manual', hidden: true } });
+    expect((await t.call('GET', '/repo-lookup?repo=bob/tool')).body).toMatchObject({ repo: { tracked: 'manual', status: 'inactive' } });
   });
 
   it('lets one account claim an unclaimed database when adds by two accounts race', async () => {
@@ -535,13 +595,16 @@ describe('adding and removing repositories', () => {
     const t = trackApp();
     const now = new Date().toISOString();
     setMeta(t.db, 'syncLock', { instance: 'other', pid: 1, trigger: 'scheduled', startedAt: now, heartbeatAt: now, progress: { done: 0, total: 5, current: null } });
-    expect(await t.call('POST', '/repos', { repo: 'bob/tool' })).toMatchObject({ status: 201, body: { sync: 'queued', repo: { key: 'bob/tool', hidden: false } } });
+    // Automatic by default, and active: it has open pull requests.
+    expect(await t.call('POST', '/repos', { repo: 'bob/tool' })).toMatchObject({
+      status: 201, body: { sync: 'queued', repo: { key: 'bob/tool', status: 'auto', active: true, activeReason: 'open' } },
+    });
   });
 
   it('refuses what it can’t add', async () => {
     const t = trackApp();
     expect(await t.call('POST', '/repos', { repo: 'alice/app' })).toMatchObject({
-      status: 409, body: { error: "You own alice/app, so it's tracked automatically.", details: { key: 'alice/app', trackedBy: 'owned', hidden: false } },
+      status: 409, body: { error: "You own alice/app, so it's tracked automatically.", details: { key: 'alice/app', trackedBy: 'owned', status: 'auto' } },
     });
     expect(await t.call('POST', '/repos', { repo: 'bob/nope' })).toMatchObject({ status: 404, body: { details: { problem: 'not-found', hint: expect.any(String) } } });
     t.gql.state.errors['bob/tool'] = { type: 'FORBIDDEN', message: 'Resource protected by organization SAML enforcement.' };
@@ -550,6 +613,8 @@ describe('adding and removing repositories', () => {
     expect(await t.call('POST', '/repos', { repo: 'bob/tool' })).toMatchObject({ status: 403, body: { details: { problem: 'permission' } } });
     expect((await t.call('POST', '/repos', { repo: 'not a repo' })).status).toBe(400);
     expect((await t.call('POST', '/repos', { repo: 'bob/tool', extra: 1 })).status).toBe(400);
+    expect((await t.call('POST', '/repos', { repo: 'bob/tool', status: 'hidden' })).status).toBe(400);
+    expect((await t.call('POST', '/repos', { repo: 'bob/tool', includeInDefault: false })).status).toBe(400);
     expect(t.db.get(`SELECT 1 FROM repos WHERE owner = 'bob'`)).toBeUndefined();
 
     t.gql.state.viewer = { id: 'U_mallory', login: 'mallory', name: null, avatarUrl: null };
@@ -564,7 +629,7 @@ describe('adding and removing repositories', () => {
     expect((await none.call('GET', '/repo-candidates')).status).toBe(503);
   });
 
-  it('removes a repository added by hand with all its data; owned ones are hidden instead', async () => {
+  it('removes a repository added by hand with all its data; owned ones are marked inactive instead', async () => {
     const t = trackApp();
     await t.call('POST', '/repos', { repo: 'bob/tool' });
     await t.idle();
@@ -579,7 +644,7 @@ describe('adding and removing repositories', () => {
     const count = (table: string) => t.db.get<{ n: number }>(`SELECT count(*) AS n FROM ${table} WHERE repo_id = ?`, [id])!.n;
     expect(children.map(count).every((n) => n > 0)).toBe(true);
 
-    expect(await t.call('DELETE', '/repos/alice%2Fapp')).toMatchObject({ status: 409, body: { error: 'Repositories you own are tracked automatically; hide it instead.' } });
+    expect(await t.call('DELETE', '/repos/alice%2Fapp')).toMatchObject({ status: 409, body: { error: 'Repositories you own are tracked automatically; mark it inactive instead.' } });
     expect(await t.call('DELETE', '/repos/bob%2Fnope')).toMatchObject({ status: 404 });
     expect(await t.call('DELETE', '/repos/bob%2Ftool')).toEqual({ status: 204, body: null });
     expect(children.map(count)).toEqual(children.map(() => 0));
@@ -683,7 +748,7 @@ describe('adding and removing repositories', () => {
       const preview = {
         key: `${GL}/team/platform/api`, owner: 'team/platform', name: 'api', description: 'Platform API', visibility: 'private', isArchived: false,
         isFork: false, stars: 5, tracked: null, url: 'https://gitlab.example.com/gitlab/team/platform/api', openPrs: 3, openIssues: 7, owned: false,
-        hidden: null,
+        status: null,
         // GitLab doesn't count commits cheaply, so neither they nor the requests are known.
         backfill: { commits: null, prs: 12, issues: 30, releases: 4, requests: null },
       };
@@ -771,9 +836,9 @@ describe('adding and removing repositories', () => {
     it("adds a project, claims the source's account, and starts its first sync on GitLab", async () => {
       const t = onGitLab();
       const github = getSource(t.db, GITHUB_SOURCE_ID)!.viewer;
-      const res = await t.call('POST', '/repos', { repo: 'https://gitlab.example.com/gitlab/team/platform/api/-/issues', includeInDefault: false });
+      const res = await t.call('POST', '/repos', { repo: 'https://gitlab.example.com/gitlab/team/platform/api/-/issues', status: 'inactive' });
       expect(res).toMatchObject({ status: 201, body: { sync: 'started', repo: {
-        key: `${GL}/team/platform/api`, source: GL, provider: 'gitlab', owner: 'team/platform', name: 'api', trackedBy: 'manual', hidden: true,
+        key: `${GL}/team/platform/api`, source: GL, provider: 'gitlab', owner: 'team/platform', name: 'api', trackedBy: 'manual', status: 'inactive',
         url: 'https://gitlab.example.com/gitlab/team/platform/api', stats: { openPrs: 3, openIssues: 7 }, unavailable: null,
       } } });
       expect(res.body!.repo.addedAt).toMatch(/^\d{4}-/);
@@ -787,14 +852,14 @@ describe('adding and removing repositories', () => {
 
       // Now it's tracked: adding it again is refused, and the lookup and candidates say how it is tracked.
       expect(await t.call('POST', '/repos', { repo: 'team/platform/api', source: GL })).toMatchObject({
-        status: 409, body: { error: `${GL}/team/platform/api is already tracked.`, details: { key: `${GL}/team/platform/api`, trackedBy: 'manual', hidden: true } },
+        status: 409, body: { error: `${GL}/team/platform/api is already tracked.`, details: { key: `${GL}/team/platform/api`, trackedBy: 'manual', status: 'inactive' } },
       });
-      expect((await t.call('GET', q('team/platform/api', GL))).body).toMatchObject({ repo: { tracked: 'manual', hidden: true } });
+      expect((await t.call('GET', q('team/platform/api', GL))).body).toMatchObject({ repo: { tracked: 'manual', status: 'inactive' } });
       const listed = (await t.call('GET', '/repo-candidates?source=gitlab.example.com')).body!;
       expect(listed.items.find((c: RepoCandidate) => c.key === `${GL}/team/platform/api`).tracked).toBe('manual');
       expect(listed.suggested.map((c: RepoCandidate) => c.key)).not.toContain(`${GL}/team/platform/api`);
       expect(await t.call('POST', '/repos', { repo: 'alice/app', source: GL })).toMatchObject({
-        status: 409, body: { error: `You own ${GL}/alice/app, so it's tracked automatically.`, details: { key: `${GL}/alice/app`, trackedBy: 'owned', hidden: false } },
+        status: 409, body: { error: `You own ${GL}/alice/app, so it's tracked automatically.`, details: { key: `${GL}/alice/app`, trackedBy: 'owned', status: 'auto' } },
       });
     });
 
@@ -858,7 +923,7 @@ describe('adding and removing repositories', () => {
       expect(t.sync.status().sources[1]).toMatchObject({ source: GL, tokenSource: 'none', problem: t.sources!.byHost(GL)!.tokens.noTokenMessage() });
     });
 
-    it('removes a project added by hand, by its key or by its path with the source; owned ones are hidden instead', async () => {
+    it('removes a project added by hand, by its key or by its path with the source; owned ones are marked inactive instead', async () => {
       const t = onGitLab();
       await t.call('POST', '/repos', { repo: 'team/platform/api', source: GL });
       await t.call('POST', '/repos', { repo: 'team/docs', source: GL });
@@ -866,7 +931,7 @@ describe('adding and removing repositories', () => {
       const live = () => t.db.all<{ key: string }>('SELECT key FROM repos WHERE source_id = ? ORDER BY key', [t.glId]).map((r) => r.key);
       expect(live()).toEqual([`${GL}/alice/app`, `${GL}/team/docs`, `${GL}/team/platform/api`]);
 
-      const owned = { status: 409, body: { error: 'Repositories you own are tracked automatically; hide it instead.' } };
+      const owned = { status: 409, body: { error: 'Repositories you own are tracked automatically; mark it inactive instead.' } };
       expect(await t.call('DELETE', '/repos/gitlab.example.com%2Falice%2Fapp')).toMatchObject(owned);
       expect(await t.call('DELETE', '/repos/alice%2Fapp?source=gitlab.example.com')).toMatchObject(owned);
       // A path names a repo on the source given, and a key must be on it.

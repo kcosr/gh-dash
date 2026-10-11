@@ -28,8 +28,9 @@ export const listThreads = readTool({
   name: 'list_threads',
   title: 'List comment threads',
   description:
-    'Comment threads in gh-dash, most recent activity first: everywhere, or on one repo, PR (repo and pr), branch (repo and ' +
-    "branch) or commit (repo and commit), optionally one file or directory (path). A PR's or branch's list includes the " +
+    "Comment threads in gh-dash, most recent activity first: without `repo`, across the user's active repositories (the " +
+    'default selection); or on one repo, PR (repo and pr), branch (repo and branch) or commit (repo and commit), ' +
+    "optionally one file or directory (path). A PR's or branch's list includes the " +
     "threads it shares with the branch's other PRs and the branch itself (`ref` says which), all placed on its diff. " +
     'waiting_on "me": open threads whose last comment isn\'t ' +
     'yours, so someone (usually the user) is waiting for your answer; "you": open threads whose last comment isn\'t the ' +

@@ -51,7 +51,7 @@ export const listPrs = readTool({
   title: 'List pull requests',
   description:
     'Pull requests (GitLab: merge requests) gh-dash has synced, most recent activity first; without `repo`, across the ' +
-    "user's default selection of repositories. `ref` is how the host writes it (owner/app#12, group/app!12). " +
+    "user's active repositories (the default selection). `ref` is how the host writes it (owner/app#12, group/app!12). " +
     '`comments` counts gh-dash comment threads. Pass `cursor` from nextCursor for the next page.',
   input: z
     .object({

@@ -23,13 +23,13 @@ export interface SourceDeps {
 
 type RepoCounts = Source['repos'];
 
-/** Live repositories per source: tracked automatically, added by hand, and hidden from the default selection. */
+/** Live repositories per source: tracked automatically, and added by hand. */
 function repoCounts(db: Db): Map<number, RepoCounts> {
-  const rows = db.all<{ source_id: number; total: number; added: number; hidden: number }>(
-    `SELECT source_id, count(*) AS total, sum(tracked_by = 'manual') AS added, sum(hidden) AS hidden
+  const rows = db.all<{ source_id: number; total: number; added: number }>(
+    `SELECT source_id, count(*) AS total, sum(tracked_by = 'manual') AS added
      FROM repos WHERE removed_at IS NULL GROUP BY source_id`,
   );
-  return new Map(rows.map((r) => [r.source_id, { owned: r.total - r.added, added: r.added, hidden: r.hidden }]));
+  return new Map(rows.map((r) => [r.source_id, { owned: r.total - r.added, added: r.added }]));
 }
 
 /** Whether DELETE would remove the source now: not github.com, and not while this server has it configured. */
@@ -56,7 +56,7 @@ async function describeSources(deps: SourceDeps, runtimes: SourceRuntime[]): Pro
       viewer: row.viewer ? { login: row.viewer.login, name: row.viewer.name, avatarUrl: row.viewer.avatarUrl } : null,
       account: accounts[i]!,
       sync,
-      repos: counts.get(runtime.id) ?? { owned: 0, added: 0, hidden: 0 },
+      repos: counts.get(runtime.id) ?? { owned: 0, added: 0 },
     };
   });
 }

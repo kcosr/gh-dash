@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { addBranch, branchesSynced } from '../test/branches';
 import { sha } from '../test/github';
-import { GITLAB_HOST, prRecord, seedDb, seedGitLab } from '../test/seed';
+import { GITLAB_HOST, prRecord, SEED_NOW, seedDb, seedGitLab } from '../test/seed';
 import { BRANCH_FROM, BRANCH_SELECT, listBranches, NO_PR_SQL } from './branches';
 import { createThread, getPrincipal, SELF_PRINCIPAL_ID, setThreadStatus } from './comments';
 import type { Db } from './db';
 import { loadQueryCtx, type Scope } from './filters';
 import type { CursorKey } from './lists';
+import { patchSettings } from './settings';
 import { upsertPr } from './write';
 
 const day = (d: number, time = '12:00:00') => `2026-09-${String(d).padStart(2, '0')}T${time}Z`;
@@ -24,8 +25,8 @@ const scope = (over: Partial<Scope> = {}): Scope => ({
 });
 
 const repoId = (db: Db, key: string) => db.get<{ id: number }>('SELECT id FROM repos WHERE key = ?', [key])!.id;
-const list = (db: Db, s: Partial<Scope> = {}, ctx = loadQueryCtx(db)) => listBranches(db, ctx, scope(s), null);
-const ids = (db: Db, s: Partial<Scope> = {}, ctx = loadQueryCtx(db)) => list(db, s, ctx).items.map((b) => b.id);
+const list = (db: Db, s: Partial<Scope> = {}, ctx = loadQueryCtx(db, [], SEED_NOW)) => listBranches(db, ctx, scope(s), null);
+const ids = (db: Db, s: Partial<Scope> = {}, ctx = loadQueryCtx(db, [], SEED_NOW)) => list(db, s, ctx).items.map((b) => b.id);
 
 /**
  * The seed (alice/app's PRs 1 merged, 2 open and 3 closed are from `feature`, heads sha('1'), sha('2') and sha('3'), the
@@ -135,7 +136,6 @@ describe('GET /branches: scope', () => {
     const { repoId: gitlab } = seedGitLab(db);
     addBranch(db, `${GITLAB_HOST}/platform/app`, 'gl-branch', { head: sha('f'), at: day(22), by: { name: 'Bob (laptop)', email: 'bob@corp.example' } });
     expect(ids(db)).toEqual(['alice/app~wip', 'alice/app~fix/login', 'alice/secret~spike', `${GITLAB_HOST}/platform/app~gl-branch`, 'alice/app~docs']);
-    expect(ids(db, {}, { ...loadQueryCtx(db), includeForks: true })).toContain('alice/fork~on-fork');
     expect(ids(db, { repos: ['old', 'hidden'] })).toEqual(['alice/hidden~on-hidden', 'alice/old~on-old']);
     expect(ids(db, { repos: [] })).toEqual([]);
     expect(ids(db, { visibility: 'private' })).toEqual(['alice/secret~spike']);
@@ -148,6 +148,9 @@ describe('GET /branches: scope', () => {
     // A repo the sync marked removed lists nothing, even by name.
     db.run('UPDATE repos SET removed_at = ? WHERE id = ?', [day(27), gitlab]);
     expect(ids(db, { repos: [`${GITLAB_HOST}/platform/app`] })).toEqual([]);
+    // Forks follow the activity rule once settings.includeForks is on.
+    patchSettings(db, { includeForks: true });
+    expect(ids(db)).toContain('alice/fork~on-fork');
   });
 
   it("takes `who` as the head commit's author, by login or commit address, on each branch's own source", () => {
@@ -189,7 +192,7 @@ describe('GET /branches: pages and counts', () => {
     addBranch(db, 'alice/app', 'z', { head: sha('e'), at: day(25) });
     const all = ids(db);
     expect(all).toEqual(['alice/app~wip', 'alice/app~fix/login', 'alice/app~z', 'alice/secret~a', 'alice/secret~b', 'alice/secret~spike', 'alice/app~docs']);
-    const ctx = loadQueryCtx(db);
+    const ctx = loadQueryCtx(db, [], SEED_NOW);
     const seen: string[] = [];
     let after: CursorKey | null = null;
     let pages = 0;

@@ -42,7 +42,7 @@ function manual(db: Db, nameWithOwner: string, nodeId: string, over: { unavailab
   ).lastInsertRowid;
 }
 
-interface Row { id: number; name: string; name_with_owner: string; tracked_by: string; removed_at: string | null; added_at: string | null; unavailable_at: string | null; pinned: number; hidden: number }
+interface Row { id: number; name: string; name_with_owner: string; tracked_by: string; removed_at: string | null; added_at: string | null; unavailable_at: string | null; pinned: number; status: string }
 const row = (db: Db, id: number) => db.get<Row>('SELECT * FROM repos WHERE id = ?', [id])!;
 const live = (db: Db) => db.all<{ name_with_owner: string }>('SELECT name_with_owner FROM repos WHERE removed_at IS NULL ORDER BY id').map((r) => r.name_with_owner);
 
@@ -56,18 +56,18 @@ describe('upsertOwned', () => {
   it('follows a rename by node id, keeping the id and local preferences', () => {
     const db = openDb(':memory:');
     const id = upsertOwned(db, GITHUB, rec('alice/app', 'R_app'), NOW);
-    db.run('UPDATE repos SET pinned = 1, hidden = 1 WHERE id = ?', [id]);
+    db.run(`UPDATE repos SET pinned = 1, status = 'inactive' WHERE id = ?`, [id]);
     expect(upsertOwned(db, GITHUB, rec('alice/app2', 'R_app'), NOW)).toBe(id);
-    expect(row(db, id)).toMatchObject({ name: 'app2', name_with_owner: 'alice/app2', pinned: 1, hidden: 1 });
+    expect(row(db, id)).toMatchObject({ name: 'app2', name_with_owner: 'alice/app2', pinned: 1, status: 'inactive' });
   });
 
   it('claims a repo that was added by hand (transferred to the viewer)', () => {
     const db = openDb(':memory:');
     const id = manual(db, 'bob/tool', 'R_tool', { unavailable: true });
-    db.run('UPDATE repos SET hidden = 1 WHERE id = ?', [id]);
+    db.run(`UPDATE repos SET status = 'inactive' WHERE id = ?`, [id]);
     expect(upsertOwned(db, GITHUB, rec('alice/tool', 'R_tool'), NOW)).toBe(id);
     expect(row(db, id)).toMatchObject({
-      name_with_owner: 'alice/tool', tracked_by: 'owned', added_at: null, unavailable_at: null, removed_at: null, hidden: 1,
+      name_with_owner: 'alice/tool', tracked_by: 'owned', added_at: null, unavailable_at: null, removed_at: null, status: 'inactive',
     });
   });
 
@@ -140,9 +140,9 @@ describe('refreshManual', () => {
   it('updates a live repo added by hand and clears unavailable', () => {
     const db = openDb(':memory:');
     const id = manual(db, 'bob/tool', 'R_tool', { unavailable: true });
-    db.run('UPDATE repos SET pinned = 1, hidden = 1 WHERE id = ?', [id]);
+    db.run(`UPDATE repos SET pinned = 1, status = 'inactive' WHERE id = ?`, [id]);
     expect(refreshManual(db, GITHUB, rec('bob/tool2', 'R_tool', { description: 'renamed' }), NOW)).toBe(id);
-    expect(row(db, id)).toMatchObject({ name_with_owner: 'bob/tool2', tracked_by: 'manual', unavailable_at: null, added_at: '2026-09-01T00:00:00Z', pinned: 1, hidden: 1 });
+    expect(row(db, id)).toMatchObject({ name_with_owner: 'bob/tool2', tracked_by: 'manual', unavailable_at: null, added_at: '2026-09-01T00:00:00Z', pinned: 1, status: 'inactive' });
   });
 
   it('never inserts, and leaves removed or owned rows alone', () => {
@@ -185,32 +185,32 @@ describe('markUnavailable', () => {
 });
 
 describe('addManual', () => {
-  it('inserts a repo tracked by hand, hidden from the default selection if asked', () => {
+  it('inserts a repo tracked by hand, with the status asked for', () => {
     const db = openDb(':memory:');
-    const res = addManual(db, GITHUB, rec('bob/tool', 'R_tool'), { hidden: true }, NOW);
+    const res = addManual(db, GITHUB, rec('bob/tool', 'R_tool'), { status: 'inactive' }, NOW);
     expect(res).toEqual({ added: true, id: expect.any(Number) });
-    expect(row(db, (res as { id: number }).id)).toMatchObject({ tracked_by: 'manual', added_at: NOW, hidden: 1, removed_at: null });
+    expect(row(db, (res as { id: number }).id)).toMatchObject({ tracked_by: 'manual', added_at: NOW, status: 'inactive', removed_at: null });
   });
 
   it('reports a live repo with that node id instead of touching it', () => {
     const db = openDb(':memory:');
     const owned = upsertOwned(db, GITHUB, rec('alice/app', 'R_app'), NOW);
-    db.run('UPDATE repos SET hidden = 1 WHERE id = ?', [owned]);
-    expect(addManual(db, GITHUB, rec('alice/app', 'R_app'), { hidden: false }, NOW)).toEqual({ added: false, id: owned, trackedBy: 'owned', hidden: true });
+    db.run(`UPDATE repos SET status = 'inactive' WHERE id = ?`, [owned]);
+    expect(addManual(db, GITHUB, rec('alice/app', 'R_app'), { status: 'auto' }, NOW)).toEqual({ added: false, id: owned, trackedBy: 'owned', status: 'inactive' });
     const tool = manual(db, 'bob/tool', 'R_tool');
-    expect(addManual(db, GITHUB, rec('bob/tool', 'R_tool'), { hidden: true }, NOW)).toEqual({ added: false, id: tool, trackedBy: 'manual', hidden: false });
-    expect(row(db, tool).hidden).toBe(0);
+    expect(addManual(db, GITHUB, rec('bob/tool', 'R_tool'), { status: 'inactive' }, NOW)).toEqual({ added: false, id: tool, trackedBy: 'manual', status: 'auto' });
+    expect(row(db, tool).status).toBe('auto');
   });
 
-  it('revives a removed row with its earlier data (an owned repo transferred away, then added)', () => {
+  it('revives a removed row with its earlier data (an owned repo transferred away, then added), and the status asked for', () => {
     const db = openDb(':memory:');
     const id = upsertOwned(db, GITHUB, rec('alice/lib', 'R_lib'), NOW);
-    db.run('UPDATE repos SET pinned = 1 WHERE id = ?', [id]);
+    db.run(`UPDATE repos SET pinned = 1, status = 'inactive' WHERE id = ?`, [id]);
     db.run(`INSERT INTO pull_requests (repo_id, number, title, state, created_at, updated_at, activity_at, url) VALUES (?, 1, 'Old', 'open', 'x', 'x', 'x', 'u')`, [id]);
     markReposRemoved(db, GITHUB, [], NOW);
-    const res = addManual(db, GITHUB, rec('carol/lib', 'R_lib'), { hidden: false }, '2026-09-30T00:00:00Z');
+    const res = addManual(db, GITHUB, rec('carol/lib', 'R_lib'), { status: 'auto' }, '2026-09-30T00:00:00Z');
     expect(res).toEqual({ added: true, id });
-    expect(row(db, id)).toMatchObject({ name_with_owner: 'carol/lib', tracked_by: 'manual', added_at: '2026-09-30T00:00:00Z', removed_at: null, pinned: 1 });
+    expect(row(db, id)).toMatchObject({ name_with_owner: 'carol/lib', tracked_by: 'manual', added_at: '2026-09-30T00:00:00Z', removed_at: null, pinned: 1, status: 'auto' });
     expect(db.get<{ n: number }>('SELECT count(*) AS n FROM pull_requests WHERE repo_id = ?', [id])!.n).toBe(1);
   });
 
@@ -219,14 +219,14 @@ describe('addManual', () => {
     const id = upsertOwned(db, GITHUB, rec('alice/lib', 'R_lib'), NOW);
     db.run(`INSERT INTO sync_state (repo_id, synced_at, prs_hwm, commits_head) VALUES (?, '2026-09-01T00:00:00Z', '2026-08-31T00:00:00Z', 'abc')`, [id]);
     markReposRemoved(db, GITHUB, [], NOW);
-    addManual(db, GITHUB, rec('carol/lib', 'R_lib'), { hidden: false }, NOW);
+    addManual(db, GITHUB, rec('carol/lib', 'R_lib'), { status: 'auto' }, NOW);
     expect(db.get('SELECT synced_at, prs_hwm, commits_head FROM sync_state WHERE repo_id = ?', [id])).toEqual({ synced_at: null, prs_hwm: '2026-08-31T00:00:00Z', commits_head: 'abc' });
   });
 
   it('releases the key from another live row holding it', () => {
     const db = openDb(':memory:');
     const stale = manual(db, 'bob/tool', 'R_old');
-    addManual(db, GITHUB, rec('bob/tool', 'R_new'), { hidden: false }, NOW);
+    addManual(db, GITHUB, rec('bob/tool', 'R_new'), { status: 'auto' }, NOW);
     expect(row(db, stale).removed_at).toBe(NOW);
     expect(live(db)).toEqual(['bob/tool']);
   });
@@ -260,8 +260,8 @@ describe('by source', () => {
     const a = upsertOwned(db, gl, rec('alice/app', gid(5)), NOW);
     const b = upsertOwned(db, gl2, rec('alice/app', gid(5)), NOW);
     expect(b).not.toBe(a);
-    const c = addManual(db, gl, rec('bob/tool', gid(9)), { hidden: false }, NOW);
-    const d = addManual(db, gl2, rec('bob/tool', gid(9)), { hidden: false }, NOW);
+    const c = addManual(db, gl, rec('bob/tool', gid(9)), { status: 'auto' }, NOW);
+    const d = addManual(db, gl2, rec('bob/tool', gid(9)), { status: 'auto' }, NOW);
     expect([c.added, d.added]).toEqual([true, true]);
     expect(keys(db)).toEqual(['gitlab.example.com/alice/app', 'gitlab2.example.com/alice/app', 'gitlab.example.com/bob/tool', 'gitlab2.example.com/bob/tool']);
   });
@@ -269,14 +269,14 @@ describe('by source', () => {
   it('addManual reports a live repo with that node id on the same source only', () => {
     const { db, gl, gl2 } = sources();
     const owned = upsertOwned(db, gl, rec('alice/app', gid(5)), NOW);
-    expect(addManual(db, gl, rec('alice/app', gid(5)), { hidden: true }, NOW)).toEqual({ added: false, id: owned, trackedBy: 'owned', hidden: false });
-    expect(addManual(db, gl2, rec('alice/app', gid(5)), { hidden: true }, NOW)).toMatchObject({ added: true });
-    expect(addManual(db, GITHUB, rec('alice/app', gid(5)), { hidden: true }, NOW)).toMatchObject({ added: true });
+    expect(addManual(db, gl, rec('alice/app', gid(5)), { status: 'inactive' }, NOW)).toEqual({ added: false, id: owned, trackedBy: 'owned', status: 'auto' });
+    expect(addManual(db, gl2, rec('alice/app', gid(5)), { status: 'inactive' }, NOW)).toMatchObject({ added: true });
+    expect(addManual(db, GITHUB, rec('alice/app', gid(5)), { status: 'inactive' }, NOW)).toMatchObject({ added: true });
   });
 
   it('refreshManual and storedRepoRecord look a node up on its source', () => {
     const { db, gl, gl2 } = sources();
-    const res = addManual(db, gl, rec('bob/tool', gid(7)), { hidden: false }, NOW);
+    const res = addManual(db, gl, rec('bob/tool', gid(7)), { status: 'auto' }, NOW);
     const id = (res as { id: number }).id;
     expect(refreshManual(db, gl2, rec('bob/tool', gid(7), { description: 'other instance' }), NOW)).toBeNull();
     expect(refreshManual(db, GITHUB, rec('bob/tool', gid(7), { description: 'github' }), NOW)).toBeNull();
@@ -292,7 +292,7 @@ describe('by source', () => {
     upsertOwned(db, GITHUB, rec('alice/app', 'R_app'), NOW);
     upsertOwned(db, gl, rec('alice/notes', gid(1)), NOW);
     upsertOwned(db, gl2, rec('alice/notes', gid(1)), NOW);
-    addManual(db, gl, rec('bob/tool', gid(2)), { hidden: false }, NOW);
+    addManual(db, gl, rec('bob/tool', gid(2)), { status: 'auto' }, NOW);
     // A GitHub run's owned list names no GitLab project.
     expect(markReposRemoved(db, GITHUB, [], NOW)).toBe(1);
     expect(keys(db)).toEqual(['gitlab.example.com/alice/notes', 'gitlab2.example.com/alice/notes', 'gitlab.example.com/bob/tool']);

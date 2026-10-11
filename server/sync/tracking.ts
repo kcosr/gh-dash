@@ -7,9 +7,19 @@
 // another source's host, which wins (a GitLab URL pasted while GitHub is selected). A host that isn't a source here, or
 // isn't configured on this server, is a 400 that names it.
 
-import { GITHUB_HOST, type AddRepoResponse, type RepoCandidate, type RepoCandidatesResponse, type RepoLookup, type RepoPreview, type TrackedBy } from '../../shared/api';
+import {
+  GITHUB_HOST,
+  type AddRepoResponse,
+  type RepoCandidate,
+  type RepoCandidatesResponse,
+  type RepoLookup,
+  type RepoPreview,
+  type RepoStatus,
+  type TrackedBy,
+} from '../../shared/api';
 import { inputHost, parseGitHubInput, parseGitLabInput } from '../../shared/repos';
 import { HttpError } from '../lib/errors';
+import { repoStatus } from '../db/activity';
 import type { Db } from '../db/db';
 import { resolveRepo, resolveRepoOn } from '../db/repo-key';
 import { getRepo, removeRepo } from '../db/repos';
@@ -36,8 +46,8 @@ export const notASource = (host: string) => `${host} isn't a source here.`;
  * Stops tracking a repository added by hand: deletes its pull requests, issues, commits, releases and stars, its set
  * memberships and its cached diffs. Nothing changes on the code host. `input` is the repo's key (or an owned github.com
  * repo's short name); with `source` (a host) it may also be the repo's path there, and the repo must be on that source.
- * 400 for a host that isn't a source here, 404 for an unknown repo, 409 for one the viewer owns (hide it instead). A
- * source that isn't configured on this server still has its repos removed: that needs no token.
+ * 400 for a host that isn't a source here, 404 for an unknown repo, 409 for one the viewer owns (mark it inactive
+ * instead). A source that isn't configured on this server still has its repos removed: that needs no token.
  */
 export function removeTrackedRepo(deps: { db: Db; diffs: { evict(): void } }, input: string, source?: string): void {
   const { db } = deps;
@@ -46,7 +56,7 @@ export function removeTrackedRepo(deps: { db: Db; diffs: { evict(): void } }, in
   const ref = src ? resolveRepoOn(db, input, src) : resolveRepo(db, input);
   if (!ref) throw new HttpError(404, 'Repository not found');
   if (ref.trackedBy === 'owned') {
-    throw new HttpError(409, 'Repositories you own are tracked automatically; hide it instead.', { key: ref.key, trackedBy: 'owned' });
+    throw new HttpError(409, 'Repositories you own are tracked automatically; mark it inactive instead.', { key: ref.key, trackedBy: 'owned' });
   }
   // TODO(diff-comments): once comments exist, the Remove confirmation shows how many of the user's comments go with
   // the repo (the user decided: show the count, then delete). Add Repo.commentCount; the cascade already deletes them.
@@ -220,12 +230,12 @@ export class Tracking {
   }
 
   /** How each live repo of the source with one of these node ids is tracked. */
-  private trackedBy(reach: Reach, nodeIds: string[]): Map<string, { trackedBy: TrackedBy; hidden: boolean }> {
-    const rows = this.opts.db.all<{ node_id: string; tracked_by: string; hidden: number }>(
-      'SELECT node_id, tracked_by, hidden FROM repos WHERE source_id = ? AND removed_at IS NULL AND node_id IN (SELECT value FROM json_each(?))',
+  private trackedBy(reach: Reach, nodeIds: string[]): Map<string, { trackedBy: TrackedBy; status: RepoStatus }> {
+    const rows = this.opts.db.all<{ node_id: string; tracked_by: string; status: string }>(
+      'SELECT node_id, tracked_by, status FROM repos WHERE source_id = ? AND removed_at IS NULL AND node_id IN (SELECT value FROM json_each(?))',
       [reach.id, JSON.stringify(nodeIds)],
     );
-    return new Map(rows.map((r) => [r.node_id, { trackedBy: r.tracked_by === 'manual' ? 'manual' : 'owned', hidden: !!r.hidden }]));
+    return new Map(rows.map((r) => [r.node_id, { trackedBy: r.tracked_by === 'manual' ? 'manual' : 'owned', status: repoStatus(r.status) }]));
   }
 
   /**
@@ -295,7 +305,7 @@ export class Tracking {
       tracked: tracked?.trackedBy ?? null,
       url: record.url, openPrs: probe.openPrs, openIssues: probe.openIssues,
       owned: result.owned,
-      hidden: tracked ? tracked.hidden : null,
+      status: tracked?.status ?? null,
       backfill: { since, commits: counts.commits, prs: counts.prs, issues: counts.issues, releases: counts.releases, requests },
       ...(result.unavailable?.length ? { unavailable: result.unavailable } : {}),
     };
@@ -313,7 +323,7 @@ export class Tracking {
    * trusted), then starts or queues its first sync. Refused: repos the viewer owns (tracked automatically) and ones
    * already tracked (409), and ones the token can't read (404 not-found, else 403).
    */
-  async add(input: string, includeInDefault: boolean, source?: string): Promise<AddRepoResponse> {
+  async add(input: string, status: RepoStatus, source?: string): Promise<AddRepoResponse> {
     const l = await this.look(input, source);
     const { reach, result } = l;
     if (!result.ok) {
@@ -322,7 +332,7 @@ export class Tracking {
     }
     const p = this.preview(l, result);
     if (p.owned) {
-      throw new HttpError(409, `You own ${p.key}, so it's tracked automatically.`, { key: p.key, trackedBy: 'owned', hidden: p.hidden ?? false });
+      throw new HttpError(409, `You own ${p.key}, so it's tracked automatically.`, { key: p.key, trackedBy: 'owned', status: p.status ?? 'auto' });
     }
     const { db } = this.opts;
     const now = isoSec(this.now());
@@ -330,16 +340,16 @@ export class Tracking {
       // Again under the write lock: another add, or a sync, may have claimed the source since the lookup.
       const mismatch = tryClaimViewer(db, reach.id, result.viewer);
       if (mismatch) throw new HttpError(409, mismatch);
-      const added = addManual(db, reach, result.record, { hidden: !includeInDefault }, now);
+      const added = addManual(db, reach, result.record, { status }, now);
       if (added.added) applyProbe(db, added.id, result.probe);
       return added;
     });
     if (!res.added) {
       const why = res.trackedBy === 'owned' ? `You own ${p.key}, so it's tracked automatically.` : `${p.key} is already tracked.`;
-      throw new HttpError(409, why, { key: p.key, trackedBy: res.trackedBy, hidden: res.hidden });
+      throw new HttpError(409, why, { key: p.key, trackedBy: res.trackedBy, status: res.status });
     }
     const sync = await this.opts.sync.startOrQueue({ repo: p.key, source: reach.host });
-    return { repo: getRepo(db, p.key, this.opts.tz)!, sync };
+    return { repo: getRepo(db, p.key, this.opts.tz, this.now())!, sync };
   }
 }
 

@@ -1,10 +1,11 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { Principal, ThreadAnchor } from '../../shared/api';
-import { addManualRepo, GITLAB_HOST, seedDb, seedGitLab } from '../test/seed';
+import { addManualRepo, GITLAB_HOST, SEED_NOW, seedDb, seedGitLab } from '../test/seed';
 import { createThread, addComment, getPrincipal, getThread, SELF_PRINCIPAL_ID, setThreadStatus, type ThreadTarget, viewOfThread } from './comments';
 import type { Db } from './db';
-import { loadQueryCtx, type QueryCtx, type Scope } from './filters';
+import { loadQueryCtx, type Scope } from './filters';
 import type { Page } from './lists';
+import { patchSettings } from './settings';
 import { listThreadItems, type ThreadFilter, type ThreadListResult } from './thread-list';
 
 const HEAD = 'a'.repeat(40);
@@ -22,7 +23,6 @@ const lines: ThreadAnchor = { path: 'src/a.ts', side: 'new', startLine: 3, endLi
 const at = (minute: number) => `2026-09-29T10:${String(minute).padStart(2, '0')}:00.000Z`;
 
 let db: Db;
-let ctx: QueryCtx;
 let me: Principal;
 let agent: Principal;
 
@@ -45,13 +45,13 @@ const add = (target: ThreadTarget, body = 'Why?', minute = 0, anchor: ThreadAnch
 
 const FILTER: ThreadFilter = { status: 'open', kind: 'all', sort: 'recent' };
 const list = (f: Partial<ThreadFilter> = {}, s: Partial<Scope> = {}, page: Page = null): ThreadListResult =>
-  listThreadItems(db, ctx, scope(s), { ...FILTER, ...f }, page);
+  // The default selection as of the call, as a request would read it.
+  listThreadItems(db, loadQueryCtx(db, [], SEED_NOW), scope(s), { ...FILTER, ...f }, page);
 const ids = (r: ThreadListResult) => r.items.map((t) => t.id);
 const bodies = (r: ThreadListResult) => r.items.map((t) => t.comments[0]!.body);
 
 beforeEach(() => {
   db = seedDb();
-  ctx = loadQueryCtx(db);
   me = getPrincipal(db, SELF_PRINCIPAL_ID)!;
   agent = getPrincipal(db, db.run("INSERT INTO principals (kind, name, created_at) VALUES ('agent', 'Reviewer', ?)", [at(0)]).lastInsertRowid)!;
 });
@@ -117,7 +117,8 @@ describe('thread list scope', () => {
   });
 
   it('includes forks when settings.includeForks is on', () => {
-    expect(bodies(listThreadItems(db, { ...ctx, includeForks: true }, scope(), FILTER, null))).toEqual(['fork', 'secret', 'app']);
+    patchSettings(db, { includeForks: true });
+    expect(bodies(listThreadItems(db, loadQueryCtx(db, [], SEED_NOW), scope(), FILTER, null))).toEqual(['fork', 'secret', 'app']);
   });
 
   it('takes explicit repos as they are, and an empty list as none', () => {

@@ -298,7 +298,7 @@ export function CommentsView() {
           ) : !data ? (
             <ListSkeleton density="titles" />
           ) : s.repos?.length === 0 ? (
-            <NoReposSelected onSelectAll={() => set({ repos: null })} />
+            <NoReposSelected onSelectActive={() => set({ repos: null })} />
           ) : !rows.length && counts && counts.open + counts.resolved === 0 && !s.q && s.kind === 'all' && s.author === null && !s.waiting ? (
             <EmptyState icon="inbox" title={s.repos === null && s.vis === 'all' && s.own === 'all' ? 'No comments yet' : 'No comments in these repositories'}>
               Comments you add in a diff show up here. Open the changes of a {changeWord}, a branch or a commit, and use the +

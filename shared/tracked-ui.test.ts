@@ -36,6 +36,16 @@ describe('ownership in the URL (own=)', () => {
   });
 });
 
+describe('the repository tab', () => {
+  it('lists every repository with the default selection, inactive ones included, and the selection otherwise', () => {
+    const all = repoListParams(parseUrlState('', 'repos'));
+    expect([all.scope, all.repos]).toEqual([undefined, undefined]);
+    const some = repoListParams(parseUrlState('?repos=alice/app', 'repos'));
+    expect([some.scope, some.repos]).toEqual([undefined, 'alice/app']);
+    expect(repoListParams(parseUrlState('?repos=', 'repos')).repos).toBe('');
+  });
+});
+
 describe('a repo page and its export', () => {
   it('exports the repo whatever the ownership and visibility filters, like the page shows it', () => {
     const s = parseUrlState('?own=mine&vis=private&who=me&range=7d', 'repo');

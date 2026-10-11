@@ -571,7 +571,7 @@ describe('GitHubSyncSource and the Add dialog', () => {
     const preview = (r: Extract<LookupRecord, { ok: true }>) => ({
       key: r.record.nameWithOwner, owner: r.record.owner, name: r.record.name, description: r.record.description, visibility: r.record.visibility,
       isArchived: r.record.isArchived, isFork: r.record.isFork, stars: r.record.stars, pushedAt: r.record.pushedAt, tracked: null, url: r.record.url,
-      openPrs: r.probe.openPrs, openIssues: r.probe.openIssues, owned: r.owned, hidden: null,
+      openPrs: r.probe.openPrs, openIssues: r.probe.openIssues, owned: r.owned, status: null,
       backfill: { since, commits: r.counts.commits, prs: r.counts.prs, issues: r.counts.issues, releases: r.counts.releases, requests: source.requestsFor(r.counts) },
     });
     const cases: [string, () => void][] = [

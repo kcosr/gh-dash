@@ -15,6 +15,8 @@ export interface McpDeps {
   diffs: DiffService;
   /** Comment writes are announced here (the comment service emits); wait_for_reply listens, show emits. */
   bus: CommentBus;
+  /** The clock (AppDeps.now): Date.now by default. */
+  now?: () => number;
 }
 
 /**

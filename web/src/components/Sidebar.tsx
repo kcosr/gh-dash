@@ -1,29 +1,27 @@
-import { useMemo, useState } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { Ownership, Repo, VisibilityFilter } from '../../../shared/api';
 import { repoProvider } from '../../../shared/provider';
+import { defaultRepoScope } from '../../../shared/repos';
 import {
-  defaultScope,
   useCreateSet,
   useCreateView,
   useDeleteSet,
   useDeleteView,
   useRepos,
   useSets,
-  useSettings,
   useViews,
 } from '../api/hooks';
 import { ctxOf } from '../lib/contexts';
-import { DAY } from '../lib/time';
+import { activeReasonText } from '../lib/repoStatus';
 import { OVERLAY_KEYS, canonicalQuery, encodeParams, passesRepoFilters, useUrlState } from '../lib/urlState';
 import { cx } from '../lib/util';
 import { Icon } from './Icon';
 import { Menu, FilterInput, Seg, useToast } from '../workbench';
+import { RepoMenu } from './RepoMenu';
 import { RepoName } from './RepoName';
 import { useRepoLabel, useSourceCtx, useWords } from './repoMapContext';
 import { SourceBadge, sourceTitle } from './SourceBadge';
 import { useUI } from './ui';
-
-const ACTIVE_DAYS = 180;
 
 const VIS_LABEL: Record<VisibilityFilter, string> = { all: 'Any', public: 'Public', private: 'Private', internal: 'Internal' };
 
@@ -57,7 +55,6 @@ const byActivity = (a: Repo, b: Repo) =>
 export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const { s, set, location, navigate } = useUrlState();
   const repos = useRepos();
-  const settings = useSettings();
   const sets = useSets();
   const views = useViews();
   const { openPrompt, openAddRepo } = useUI();
@@ -73,13 +70,13 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
 
   const [filter, setFilter] = useState('');
   const [showInactive, setShowInactive] = useState(false);
+  const sideRef = useRef<HTMLElement>(null);
 
   // The context's repos: the sidebar lists, selects and counts only these (a set made here holds only these).
   const everything = repos.data ?? [];
   const all = useMemo(() => (ctx ? everything.filter((r) => r.source === ctx) : everything), [everything, ctx]);
-  const scope = useMemo(() => defaultScope(all, settings.data), [all, settings.data]);
+  const scope = useMemo(() => defaultRepoScope(all), [all]);
   const selected = useMemo(() => new Set(s.repos ?? scope), [s.repos, scope]);
-  const includeForks = !!settings.data?.includeForks;
 
   const fq = filter.trim().toLowerCase();
   const visCounts = useMemo(() => {
@@ -90,13 +87,9 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const shown = all.filter((r) => passesRepoFilters(r, s) && (!fq || r.key.toLowerCase().includes(fq)));
   const pinned = shown.filter((r) => r.pinned).sort(byActivity);
   const rest = shown.filter((r) => !r.pinned).sort(byActivity);
-  const cutoff = Date.now() - ACTIVE_DAYS * DAY;
-  // Keep repositories with an open backlog visible; stars never promote an inactive repo.
-  const isMain = (r: Repo) =>
-    !r.isArchived && !r.hidden && (!r.isFork || includeForks) &&
-    ((!!r.lastActivityAt && Date.parse(r.lastActivityAt) >= cutoff) || r.stats.openPrs > 0 || r.stats.openIssues > 0);
-  const main = fq ? rest : rest.filter(isMain);
-  const inactive = fq ? [] : rest.filter((r) => !isMain(r));
+  // The main list is the active repos (the server's call, Repo.active); a search lists every match there.
+  const main = fq ? rest : rest.filter((r) => r.active);
+  const inactive = fq ? [] : rest.filter((r) => !r.active);
   const nSel = shown.filter((r) => selected.has(r.key)).length;
   /** The selection as the lists see it: the visibility and ownership filters apply on top of `repos=`. */
   const inScope = all.filter((r) => selected.has(r.key) && passesRepoFilters(r, s)).map((r) => r.key);
@@ -154,6 +147,29 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
     });
   };
 
+  /**
+   * A pin or status change from a row's menu can move the row (to Pinned, or out of it) or hide it (into the collapsed
+   * inactive section), taking keyboard focus with it: at once for a pin (shown before the answer), on the answer for a
+   * status, back on a failure. Until the change settles, every render that left focus on the page itself sends it to the
+   * repo's "…" where it is now, else to the inactive section's toggle, else the filter.
+   */
+  const refocus = useRef<string | null>(null);
+  const restoreFocus = () => {
+    const key = refocus.current;
+    const side = sideRef.current;
+    if (!key || !side || (document.activeElement && document.activeElement !== document.body)) return;
+    const row = [...side.querySelectorAll<HTMLElement>('.repo-item')].find((el) => el.dataset.key === key);
+    (row?.querySelector<HTMLElement>('.repo-more') ?? side.querySelector<HTMLElement>('.side-more') ?? side.querySelector<HTMLElement>('#repoQ'))?.focus();
+  };
+  useLayoutEffect(restoreFocus);
+  const keepFocus = (key: string, done: Promise<unknown>) => {
+    refocus.current = key;
+    void done.finally(() => requestAnimationFrame(() => {
+      restoreFocus();
+      if (refocus.current === key) refocus.current = null;
+    }));
+  };
+
   const item = (r: Repo) => {
     const on = selected.has(r.key);
     const name = label(r.key);
@@ -163,13 +179,20 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
       badges ? `On ${sourceTitle(byHost.get(r.source) ?? { host: r.source, name: r.source })}` : '',
       r.visibility === 'private' ? 'Private' : r.visibility === 'internal' ? 'Internal' : '',
       r.unavailable ? `Unavailable: ${r.unavailable.reason}` : '', syncing ? 'Syncing' : '',
-      r.isArchived ? 'Archived' : '', r.hidden ? 'Hidden' : '', r.isFork ? 'Fork' : '',
+      r.isArchived ? 'Archived' : '', r.status === 'inactive' ? 'Inactive' : '', r.isFork ? 'Fork' : '',
       r.stats.openPrs > 0 ? openPrs : '',
       r.stats.openIssues > 0 ? `${r.stats.openIssues} open issues` : '',
     ].filter(Boolean).join('. ');
     const describedBy = description ? `repo-info-${r.key}` : undefined;
+    // Right-click opens the row's menu (its "…", shown while the row is hovered), as on the Repositories tab. Only on the
+    // row itself: React passes on events from the menu too (a portal), whose links keep the browser's own menu.
     return (
-      <div key={r.key} className={cx('repo-item', on && 'on')}>
+      <div key={r.key} className={cx('repo-item', on && 'on')} data-key={r.key} onContextMenu={(e) => {
+        const more = e.currentTarget.querySelector<HTMLButtonElement>('.repo-more');
+        if (!more || !e.currentTarget.contains(e.target as Node)) return;
+        e.preventDefault();
+        more.click();
+      }}>
         <label className="repo-check-hit" title={`Include ${name} in selection`}>
           <input
             type="checkbox"
@@ -185,7 +208,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
           className="repo-select"
           aria-label={`Filter to ${name}`}
           aria-describedby={describedBy}
-          title={`Filter to ${name}${r.description ? ` · ${r.description}` : ''}`}
+          title={`Filter to ${name}${r.description ? ` · ${r.description}` : ''}${r.active ? '' : ` · ${activeReasonText(r)}`}`}
           onClick={() => { set({ repos: [r.key], ...(onNavigate ? { pr: null, diff: null } : {}) }); onNavigate?.(); }}
         >
           <span className="repo-name">
@@ -197,8 +220,8 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
           {r.unavailable && <span className="arch" title={r.unavailable.reason}><Icon name="alert" />unavailable</span>}
           {syncing && <span className="arch">syncing…</span>}
           {!r.unavailable && !syncing && r.isArchived && <span className="arch">archived</span>}
-          {!r.unavailable && !syncing && !r.isArchived && r.hidden && <span className="arch">hidden</span>}
-          {!r.unavailable && !syncing && !r.isArchived && !r.hidden && r.isFork && <span className="arch">fork</span>}
+          {!r.unavailable && !syncing && !r.isArchived && r.status === 'inactive' && <span className="arch">inactive</span>}
+          {!r.unavailable && !syncing && !r.isArchived && r.status !== 'inactive' && r.isFork && <span className="arch">fork</span>}
           {(r.stats.openPrs > 0 || r.stats.openIssues > 0) && <span className="repo-counts" aria-hidden="true">
             {r.stats.openPrs > 0 && <span title={openPrs}>
               <Icon name="prOpen" />{r.stats.openPrs.toLocaleString()}
@@ -208,13 +231,14 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
             </span>}
           </span>}
         </button>
+        <RepoMenu repo={r} className="repo-more" onNavigate={onNavigate} afterChange={(done) => keepFocus(r.key, done)} />
         {description && <span className="sr-only" id={describedBy}>{description}</span>}
       </div>
     );
   };
 
   return (
-    <aside className="sidebar" id="repository-sidebar" aria-label="Repository scope">
+    <aside ref={sideRef} className="sidebar" id="repository-sidebar" aria-label="Repository scope">
       <div className="side-top">
         <div className="side-search">
           <FilterInput id="repoQ" placeholder="Filter repositories" value={filter} onChange={setFilter} hotkey={null} />
@@ -222,11 +246,11 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
         </div>
         <Seg full value={s.own} onChange={(own) => set({ own })} label="Ownership" options={OWN_OPTIONS} />
         <div className="side-quick">
-          <button type="button" onClick={() => set({ repos: null })} title="Default selection: everything except archived, hidden and forks">All</button>
+          <button type="button" onClick={() => set({ repos: null })} title="Active repositories: the default selection">Active</button>
           <button type="button" onClick={() => set({ repos: [] })}>None</button>
           <button type="button" onClick={() => select(all.filter((r) => r.pinned).map((r) => r.key))}>Pinned</button>
           <span className="spacer" />
-          <span className="muted">{nSel} of {shown.length} selected</span>
+          <span className="muted" title={`${nSel} of ${shown.length} selected`}>{nSel} of {shown.length}</span>
         </div>
       </div>
 

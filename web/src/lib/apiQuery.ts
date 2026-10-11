@@ -57,8 +57,12 @@ export function issueListParams(s: UrlState): IssueQuery & { state: 'open' | 'cl
   return { ...scopeParams(s), state: s.state === 'merged' || s.state === 'nopr' ? 'open' : s.state };
 }
 
+/**
+ * The repository tab: the selection, or with the default selection every repo, inactive ones included (sorted after the
+ * active ones), so that one can be marked active again where it's listed.
+ */
 export function repoListParams(s: UrlState): RepoQuery {
-  return { scope: 'default', source: s.source ?? undefined, repos: s.repos?.join(','), visibility: s.vis, ownership: s.own === 'all' ? undefined : s.own, q: s.q || undefined, sort: s.sort };
+  return { source: s.source ?? undefined, repos: s.repos?.join(','), visibility: s.vis, ownership: s.own === 'all' ? undefined : s.own, q: s.q || undefined, sort: s.sort };
 }
 
 /** The PR list as exported / shown in the API tab (`group` sets the Markdown headings). */

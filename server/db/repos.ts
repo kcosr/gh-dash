@@ -1,10 +1,12 @@
-import type { Repo, RepoSet, SavedView } from '../../shared/api';
+import type { Repo, RepoSet, RepoStatus, SavedView } from '../../shared/api';
 import { type RepoResolver, rewriteRepoParams, rewriteRepoPath } from '../../shared/query';
 import { bucketIndex, DAY_MS, isoSec, localDayNum, makeBuckets, weekdayMon0, zonedMidnight } from '../lib/time';
+import { ACTIVITY_COLS, type ActivityRow, repoActivity, repoStatus } from './activity';
 import type { Db } from './db';
 import { repoKey, repoKeySql, resolveRepo, resolveRepoIds } from './repo-key';
+import { getSettings } from './settings';
 
-interface RepoRow {
+interface RepoRow extends ActivityRow {
   id: number;
   key: string;
   source_host: string;
@@ -15,37 +17,23 @@ interface RepoRow {
   description: string | null;
   url: string;
   visibility: Repo['visibility'];
-  is_archived: number;
-  is_fork: number;
   language_name: string | null;
   language_color: string | null;
   topics: string;
   default_branch: string | null;
   stars: number;
   forks: number;
-  open_prs: number;
-  open_issues: number;
   created_at: string;
   pushed_at: string | null;
-  pinned: number;
-  hidden: number;
   tracked_by: string;
   added_at: string | null;
   unavailable_at: string | null;
   unavailable_reason: string | null;
   synced_at: string | null;
-  last_activity_at: string | null;
 }
 
-// Stars are deliberately not activity: a star on an old repo must not bump it in the sidebar.
 const REPO_SELECT = `
-  SELECT r.*, ss.synced_at, src.host AS source_host, src.kind AS source_kind,
-    max(
-      ifnull(r.pushed_at, ''),
-      ifnull((SELECT max(updated_at) FROM pull_requests WHERE repo_id = r.id), ''),
-      ifnull((SELECT max(updated_at) FROM issues WHERE repo_id = r.id), ''),
-      ifnull((SELECT max(published_at) FROM releases WHERE repo_id = r.id), '')
-    ) AS last_activity_at
+  SELECT r.*, ss.synced_at, src.host AS source_host, src.kind AS source_kind, ${ACTIVITY_COLS}
   FROM repos r JOIN sources src ON src.id = r.source_id LEFT JOIN sync_state ss ON ss.repo_id = r.id
   WHERE r.removed_at IS NULL`;
 
@@ -55,7 +43,10 @@ function countBy(db: Db, sql: string, params: (string | number)[]): Map<number, 
   return new Map(db.all<{ repo_id: number; n: number }>(sql, params).map((r) => [r.repo_id, r.n]));
 }
 
-/** Repos with their stats; 30-day windows end at `now`, weekly buckets are Mon-start weeks in `tz`. */
+/**
+ * Repos with their stats and whether they are active (as of `now`); 30-day windows end at `now`, weekly buckets are
+ * Mon-start weeks in `tz`.
+ */
 export function listRepos(db: Db, tz: string, now = Date.now(), onlyKey?: string): Repo[] {
   const ref = onlyKey ? resolveRepo(db, onlyKey) : null;
   const rows = !onlyKey
@@ -65,6 +56,7 @@ export function listRepos(db: Db, tz: string, now = Date.now(), onlyKey?: string
       : [];
   if (rows.length === 0) return [];
 
+  const { includeForks } = getSettings(db);
   const since30 = isoSec(now - 30 * DAY_MS);
   const merged = countBy(db, 'SELECT repo_id, count(*) AS n FROM pull_requests WHERE merged_at >= ? GROUP BY repo_id', [since30]);
   const commits = countBy(db, 'SELECT repo_id, count(*) AS n FROM commits WHERE committed_at >= ? GROUP BY repo_id', [since30]);
@@ -100,59 +92,66 @@ export function listRepos(db: Db, tz: string, now = Date.now(), onlyKey?: string
     setIds.set(m.repo_id, list);
   }
 
-  return rows.map((r) => ({
-    key: repoKey(r),
-    source: r.source_host,
-    provider: r.source_kind === 'gitlab' ? ('gitlab' as const) : ('github' as const),
-    name: r.name,
-    nameWithOwner: r.name_with_owner,
-    owner: r.owner,
-    description: r.description,
-    url: r.url,
-    visibility: r.visibility,
-    isArchived: !!r.is_archived,
-    isFork: !!r.is_fork,
-    language: r.language_name ? { name: r.language_name, color: r.language_color } : null,
-    topics: JSON.parse(r.topics) as string[],
-    defaultBranch: r.default_branch,
-    stars: r.stars,
-    forks: r.forks,
-    createdAt: r.created_at,
-    pushedAt: r.pushed_at,
-    lastActivityAt: r.last_activity_at || null,
-    pinned: !!r.pinned,
-    hidden: !!r.hidden,
-    setIds: setIds.get(r.id) ?? [],
-    stats: {
-      openPrs: r.open_prs,
-      openIssues: r.open_issues,
-      mergedPrs30d: merged.get(r.id) ?? 0,
-      commits30d: commits.get(r.id) ?? 0,
-      newStars30d: stars.get(r.id) ?? 0,
-      weeklyCommits: (weekly.get(r.id) ?? new Array<number>(weeks.starts.length).fill(0)).slice(-WEEKS),
-    },
-    syncedAt: r.synced_at,
-    trackedBy: r.tracked_by === 'manual' ? ('manual' as const) : ('owned' as const),
-    addedAt: r.added_at,
-    unavailable: r.unavailable_at ? { since: r.unavailable_at, reason: r.unavailable_reason ?? '' } : null,
-    commentCount: comments.get(r.id) ?? 0,
-  }));
+  return rows.map((r) => {
+    const { active, reason } = repoActivity(r, now, includeForks);
+    const autoActive = r.status === 'auto' ? active : repoActivity({ ...r, status: 'auto' }, now, includeForks).active;
+    return {
+      key: repoKey(r),
+      source: r.source_host,
+      provider: r.source_kind === 'gitlab' ? ('gitlab' as const) : ('github' as const),
+      name: r.name,
+      nameWithOwner: r.name_with_owner,
+      owner: r.owner,
+      description: r.description,
+      url: r.url,
+      visibility: r.visibility,
+      isArchived: !!r.is_archived,
+      isFork: !!r.is_fork,
+      language: r.language_name ? { name: r.language_name, color: r.language_color } : null,
+      topics: JSON.parse(r.topics) as string[],
+      defaultBranch: r.default_branch,
+      stars: r.stars,
+      forks: r.forks,
+      createdAt: r.created_at,
+      pushedAt: r.pushed_at,
+      lastActivityAt: r.last_activity_at,
+      pinned: !!r.pinned,
+      status: repoStatus(r.status),
+      active,
+      activeReason: reason,
+      autoActive,
+      setIds: setIds.get(r.id) ?? [],
+      stats: {
+        openPrs: r.open_prs,
+        openIssues: r.open_issues,
+        mergedPrs30d: merged.get(r.id) ?? 0,
+        commits30d: commits.get(r.id) ?? 0,
+        newStars30d: stars.get(r.id) ?? 0,
+        weeklyCommits: (weekly.get(r.id) ?? new Array<number>(weeks.starts.length).fill(0)).slice(-WEEKS),
+      },
+      syncedAt: r.synced_at,
+      trackedBy: r.tracked_by === 'manual' ? ('manual' as const) : ('owned' as const),
+      addedAt: r.added_at,
+      unavailable: r.unavailable_at ? { since: r.unavailable_at, reason: r.unavailable_reason ?? '' } : null,
+      commentCount: comments.get(r.id) ?? 0,
+    };
+  });
 }
 
-export function getRepo(db: Db, key: string, tz: string): Repo | null {
-  return listRepos(db, tz, Date.now(), key)[0] ?? null;
+export function getRepo(db: Db, key: string, tz: string, now = Date.now()): Repo | null {
+  return listRepos(db, tz, now, key)[0] ?? null;
 }
 
-export function setRepoPrefs(db: Db, key: string, prefs: { pinned?: boolean; hidden?: boolean }): boolean {
+export function setRepoPrefs(db: Db, key: string, prefs: { pinned?: boolean; status?: RepoStatus }): boolean {
   const sets: string[] = [];
   const params: (string | number)[] = [];
   if (prefs.pinned !== undefined) {
     sets.push('pinned = ?');
     params.push(Number(prefs.pinned));
   }
-  if (prefs.hidden !== undefined) {
-    sets.push('hidden = ?');
-    params.push(Number(prefs.hidden));
+  if (prefs.status !== undefined) {
+    sets.push('status = ?');
+    params.push(prefs.status);
   }
   const ref = resolveRepo(db, key);
   if (!ref) return false;

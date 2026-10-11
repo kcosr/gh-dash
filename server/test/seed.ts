@@ -1,3 +1,4 @@
+import type { RepoStatus } from '../../shared/api';
 import { type Db, openDb } from '../db/db';
 import type { ActorRecord, CommitRecord, IssueRecord, PrRecord, RepoRecord } from '../db/records';
 import { patchSettings } from '../db/settings';
@@ -110,26 +111,32 @@ function issue(number: number, over: Partial<IssueRecord> & Pick<IssueRecord, 's
 export function addManualRepo(
   db: Db,
   path: string,
-  over: Partial<RepoRecord> & { hidden?: boolean; addedAt?: string; source?: SourceRef } = {},
+  over: Partial<RepoRecord> & { status?: RepoStatus; addedAt?: string; source?: SourceRef } = {},
 ): number {
-  const { hidden, addedAt, source = GITHUB, ...fields } = over;
+  const { status, addedAt, source = GITHUB, ...fields } = over;
   const i = path.lastIndexOf('/');
   const r: RepoRecord = { ...repo(path.slice(i + 1)), nodeId: `R_${path}`, nameWithOwner: path, owner: path.slice(0, i), url: `https://${source.host}/${path}`, ...fields };
   return db.run(
     `INSERT INTO repos (source_id, key, node_id, name, name_with_owner, owner, description, url, visibility, is_archived, is_fork, language_name,
-       language_color, topics, default_branch, stars, forks, created_at, pushed_at, hidden, tracked_by, added_at)
+       language_color, topics, default_branch, stars, forks, created_at, pushed_at, status, tracked_by, added_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?)`,
     [
       source.id, sourceKey(source, r.nameWithOwner), r.nodeId, r.name, r.nameWithOwner, r.owner, r.description, r.url, r.visibility,
       Number(r.isArchived), Number(r.isFork), r.languageName, r.languageColor, JSON.stringify(r.topics), r.defaultBranch, r.stars, r.forks,
-      r.createdAt, r.pushedAt, Number(hidden ?? false), addedAt ?? '2026-09-27T12:00:00Z',
+      r.createdAt, r.pushedAt, status ?? 'auto', addedAt ?? '2026-09-27T12:00:00Z',
     ],
   ).lastInsertRowid;
 }
 
 /**
- * Viewer "alice"; repos: app (public, 5 stargazers), secret (private), old (archived), fork (fork), hidden (hidden).
- * Keys are alice/<name>. All times are September 2026 UTC.
+ * "Now" for the seed's data: its repos' activity is recent as of it, whatever the date the tests run. Tests that read
+ * Repo.active or the default selection measure from it, not from the clock.
+ */
+export const SEED_NOW = Date.parse('2026-09-30T12:00:00Z');
+
+/**
+ * Viewer "alice"; repos: app (public, 5 stargazers), secret (private), old (archived), fork (fork), hidden (marked
+ * inactive). Keys are alice/<name>. All times are September 2026 UTC. As of SEED_NOW, app and secret are active.
  */
 export function seedDb(): Db {
   const db = openDb(':memory:');
@@ -140,7 +147,7 @@ export function seedDb(): Db {
   const old = upsertOwned(db, GITHUB, repo('old', { isArchived: true, stars: 1 }), now);
   const fork = upsertOwned(db, GITHUB, repo('fork', { isFork: true }), now);
   const hidden = upsertOwned(db, GITHUB, repo('hidden'), now);
-  setRepoPrefs(db, 'hidden', { hidden: true });
+  setRepoPrefs(db, 'hidden', { status: 'inactive' });
 
   upsertPr(db, app, pr(1, {
     state: 'merged', createdAt: '2026-09-20T10:00:00Z', mergedAt: '2026-09-21T10:00:00Z', title: 'Fix login flow',

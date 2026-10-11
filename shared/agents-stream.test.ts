@@ -21,26 +21,23 @@ const comments = (o: Partial<Extract<StreamMessage, { type: 'comments' }>> = {})
 describe('the stream: what a message refetches', () => {
   it("refetches what threadActions does after the same change: the target's threads, the lists, the PR, the feed", () => {
     expect(streamInvalidations(comments({ event: 'edited' }))).toEqual([
-      qk.threads('alice/app#7'), ['thread-list'], ['prs'], qk.pr('alice/app', 7), ['activity'],
+      qk.threads('alice/app#7'), ['thread-list'], ['prs'], qk.pr('alice/app', 7), ['activity'], qk.repos,
     ]);
-    // Comments came or went: repos' comment counts too.
-    for (const event of ['thread_opened', 'replied', 'comment_deleted', 'thread_deleted'] as const) {
+    // Every change is activity in the repo (it can make it active), and some change its comment count: the repos too.
+    for (const event of ['thread_opened', 'replied', 'comment_deleted', 'thread_deleted', 'edited', 'resolved', 'reopened'] as const) {
       expect(streamInvalidations(comments({ event })), event).toContainEqual(qk.repos);
-    }
-    for (const event of ['edited', 'resolved', 'reopened'] as const) {
-      expect(streamInvalidations(comments({ event })), event).not.toContainEqual(qk.repos);
     }
   });
 
   it("names a commit's threads by the full oid, and leaves PR lists alone for it", () => {
     expect(streamInvalidations(comments({ kind: 'commit', number: null, event: 'resolved' }))).toEqual([
-      qk.threads(`alice/app@${OID}`), ['thread-list'], ['activity'],
+      qk.threads(`alice/app@${OID}`), ['thread-list'], ['activity'], qk.repos,
     ]);
   });
 
   it("reaches a branch group whole: a branch's thread, or a PR's from a branch, refetches every thread list of the repo, its PRs and the branches with no PR", () => {
     const branch = comments({ kind: 'branch', number: null, branch: 'fix/login', event: 'resolved' });
-    expect(streamInvalidations(branch)).toEqual([qk.threadsIn('alice/app'), ['thread-list'], ['prs'], qk.prsIn('alice/app'), ['branch-list'], ['activity']]);
+    expect(streamInvalidations(branch)).toEqual([qk.threadsIn('alice/app'), ['thread-list'], ['prs'], qk.prsIn('alice/app'), ['branch-list'], ['activity'], qk.repos]);
     // A PR from a branch of the same repo: its branch's review lists the thread too, and the other PRs from it.
     expect(streamInvalidations(comments({ branch: 'fix/login', event: 'replied' }))).toEqual([
       qk.threadsIn('alice/app'), ['thread-list'], ['prs'], qk.prsIn('alice/app'), ['branch-list'], ['activity'], qk.repos,
@@ -85,7 +82,7 @@ describe('the stream: what a message refetches', () => {
     for (const k of keys) qc.setQueryData(k, {});
     applyStreamMessage(qc, comments({ event: 'resolved' }));
     const stale = keys.filter((k) => qc.getQueryState(k)?.isInvalidated);
-    expect(stale).toEqual([qk.threads('alice/app#7'), qk.threadList({ status: 'open' }), qk.pr('alice/app', 7), qk.prs({ state: 'open' }), qk.activity({ limit: 200 })]);
+    expect(stale).toEqual([qk.threads('alice/app#7'), qk.threadList({ status: 'open' }), qk.pr('alice/app', 7), qk.prs({ state: 'open' }), qk.activity({ limit: 200 }), qk.repos]);
   });
 
   it('after a reconnect refetches everything a missed message could have touched', () => {

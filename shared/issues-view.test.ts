@@ -29,9 +29,9 @@ describe('Issues URL state and navigation', () => {
   });
 
   it('exports repository scope, search and sort without date or author restrictions', () => {
-    const s = parseUrlState('?repos=alice/hidden,alice/old&vis=public&q=type&sort=stars&who=me&range=7d', 'repos');
+    const s = parseUrlState('?repos=alice/quiet,alice/old&vis=public&q=type&sort=stars&who=me&range=7d', 'repos');
     expect(exportTarget('repos', s)).toEqual({ endpoint: 'repos', md: false, label: 'repositories', params: {
-      scope: 'default', repos: 'alice/hidden,alice/old', visibility: 'public', q: 'type', sort: 'stars',
+      repos: 'alice/quiet,alice/old', visibility: 'public', q: 'type', sort: 'stars',
     } });
   });
 

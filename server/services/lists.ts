@@ -44,6 +44,8 @@ import { HttpError } from '../lib/errors';
 export interface QueryDeps {
   db: Db;
   config: Pick<Config, 'defaultTz' | 'myEmails'>;
+  /** The clock (AppDeps.now): Date.now by default. */
+  now?: () => number;
 }
 
 export type ScopeParams = z.infer<typeof scopeSchema>;
@@ -61,7 +63,7 @@ export type ListReply<T> = { format: 'json'; body: T } | { format: 'md' | 'csv';
  */
 export function scopedQuery(db: Db, config: QueryDeps['config'], query: ScopeParams, now = Date.now()): { scope: Scope; ctx: QueryCtx } {
   const scope = scopeFor(db, query, config.defaultTz, now);
-  return { scope, ctx: loadQueryCtx(db, config.myEmails) };
+  return { scope, ctx: loadQueryCtx(db, config.myEmails, now) };
 }
 
 /** A PR number from a path parameter; 400 unless it is a positive integer. */
@@ -99,8 +101,8 @@ const markdown = (text: string): ListReply<never> => ({ format: 'md', text });
 const csv = (text: string): ListReply<never> => ({ format: 'csv', text });
 const wantsText = (q: PageParams) => q.format === 'md' || q.format === 'csv';
 
-export function queryPrs({ db, config }: QueryDeps, q: z.infer<typeof prQuerySchema>): ListReply<PrListResponse> {
-  const { scope, ctx } = scopedQuery(db, config, q);
+export function queryPrs({ db, config, now }: QueryDeps, q: z.infer<typeof prQuerySchema>): ListReply<PrListResponse> {
+  const { scope, ctx } = scopedQuery(db, config, q, now?.());
   const filter = { state: q.state ?? 'all', labels: splitList(q.labels), comments: q.comments };
   if (wantsText(q)) {
     const { items } = listPrs(db, ctx, scope, filter, null);
@@ -113,8 +115,8 @@ export function queryPrs({ db, config }: QueryDeps, q: z.infer<typeof prQuerySch
 }
 
 /** Branches with no PR yet, from the sync (no code host request): JSON only, as branchQuerySchema allows. */
-export function queryBranches({ db, config }: QueryDeps, q: z.infer<typeof branchQuerySchema>): BranchesResponse {
-  const { scope, ctx } = scopedQuery(db, config, q);
+export function queryBranches({ db, config, now }: QueryDeps, q: z.infer<typeof branchQuerySchema>): BranchesResponse {
+  const { scope, ctx } = scopedQuery(db, config, q, now?.());
   const res = listBranches(db, ctx, scope, page(q, 3));
   return { ...res, nextCursor: encodeCursor(res.nextCursor) };
 }
@@ -127,8 +129,8 @@ export function prDetail({ db, config }: QueryDeps, repo: string, number: string
   return pr;
 }
 
-export function queryActivity({ db, config }: QueryDeps, q: z.infer<typeof activityQuerySchema>): ListReply<ActivityResponse> {
-  const { scope, ctx } = scopedQuery(db, config, q);
+export function queryActivity({ db, config, now }: QueryDeps, q: z.infer<typeof activityQuerySchema>): ListReply<ActivityResponse> {
+  const { scope, ctx } = scopedQuery(db, config, q, now?.());
   const types = parseTypes(q.types);
   if (wantsText(q)) {
     const { items } = listActivity(db, ctx, scope, types, null);
@@ -139,8 +141,8 @@ export function queryActivity({ db, config }: QueryDeps, q: z.infer<typeof activ
   return json({ ...res, nextCursor: encodeCursor(res.nextCursor) });
 }
 
-export function queryCommits({ db, config }: QueryDeps, q: z.infer<typeof listQuerySchema>): ListReply<ListResponse<Commit>> {
-  const { scope, ctx } = scopedQuery(db, config, q);
+export function queryCommits({ db, config, now }: QueryDeps, q: z.infer<typeof listQuerySchema>): ListReply<ListResponse<Commit>> {
+  const { scope, ctx } = scopedQuery(db, config, q, now?.());
   if (wantsText(q)) {
     const { items } = listCommits(db, ctx, scope, null);
     return q.format === 'md' ? markdown(eventsMarkdown('Commits', items.map(commitEvent), mdCtx(scope, repoKinds(db)))) : csv(commitsCsv(items));
@@ -149,8 +151,8 @@ export function queryCommits({ db, config }: QueryDeps, q: z.infer<typeof listQu
   return json({ ...res, nextCursor: encodeCursor(res.nextCursor) });
 }
 
-export function queryIssues({ db, config }: QueryDeps, q: z.infer<typeof issueQuerySchema>): ListReply<ListResponse<Issue>> {
-  const { scope, ctx } = scopedQuery(db, config, q);
+export function queryIssues({ db, config, now }: QueryDeps, q: z.infer<typeof issueQuerySchema>): ListReply<ListResponse<Issue>> {
+  const { scope, ctx } = scopedQuery(db, config, q, now?.());
   const state = q.state ?? 'all';
   if (wantsText(q)) {
     const { items } = listIssues(db, ctx, scope, state, null);
@@ -160,8 +162,8 @@ export function queryIssues({ db, config }: QueryDeps, q: z.infer<typeof issueQu
   return json({ ...res, nextCursor: encodeCursor(res.nextCursor) });
 }
 
-export function queryReleases({ db, config }: QueryDeps, q: z.infer<typeof listQuerySchema>): ListReply<ListResponse<Release>> {
-  const { scope, ctx } = scopedQuery(db, config, q);
+export function queryReleases({ db, config, now }: QueryDeps, q: z.infer<typeof listQuerySchema>): ListReply<ListResponse<Release>> {
+  const { scope, ctx } = scopedQuery(db, config, q, now?.());
   if (wantsText(q)) {
     const { items } = listReleases(db, ctx, scope, null);
     return q.format === 'md' ? markdown(eventsMarkdown('Releases', items.map(releaseEvent), mdCtx(scope, repoKinds(db)))) : csv(releasesCsv(items));
@@ -170,8 +172,8 @@ export function queryReleases({ db, config }: QueryDeps, q: z.infer<typeof listQ
   return json({ ...res, nextCursor: encodeCursor(res.nextCursor) });
 }
 
-export function queryStars({ db, config }: QueryDeps, q: z.infer<typeof listQuerySchema>): ListReply<ListResponse<Star>> {
-  const { scope, ctx } = scopedQuery(db, config, q);
+export function queryStars({ db, config, now }: QueryDeps, q: z.infer<typeof listQuerySchema>): ListReply<ListResponse<Star>> {
+  const { scope, ctx } = scopedQuery(db, config, q, now?.());
   if (wantsText(q)) {
     const { items } = listStars(db, ctx, scope, null);
     return q.format === 'md' ? markdown(eventsMarkdown('Stars', items.map(starEvent), mdCtx(scope, repoKinds(db)))) : csv(starsCsv(items));
@@ -180,7 +182,7 @@ export function queryStars({ db, config }: QueryDeps, q: z.infer<typeof listQuer
   return json({ ...res, nextCursor: encodeCursor(res.nextCursor) });
 }
 
-export function queryStats({ db, config }: QueryDeps, q: z.infer<typeof statsQuerySchema>): StatsResponse {
-  const { scope, ctx } = scopedQuery(db, config, q);
+export function queryStats({ db, config, now }: QueryDeps, q: z.infer<typeof statsQuerySchema>): StatsResponse {
+  const { scope, ctx } = scopedQuery(db, config, q, now?.());
   return computeStats(db, ctx, scope, q.bucket);
 }

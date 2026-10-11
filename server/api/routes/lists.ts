@@ -21,9 +21,9 @@ function reply<T>(c: Context, out: ListReply<T>) {
 }
 
 // Thin adapters: parse the query, call the service (services/lists.ts), send the answer.
-export function listRoutes({ db, config }: AppDeps): Hono {
+export function listRoutes({ db, config, now }: AppDeps): Hono {
   const r = new Hono();
-  const deps = { db, config };
+  const deps = { db, config, now };
 
   r.get('/prs', (c) => reply(c, queryPrs(deps, parseWith(prQuerySchema, c.req.query()))));
 

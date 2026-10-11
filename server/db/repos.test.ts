@@ -24,6 +24,19 @@ describe('listRepos lastActivityAt', () => {
     expect(repos.at(-1)!.name).toBe('dusty');
     expect(byName.get('dusty')!.stats.newStars30d).toBe(1);
   });
+
+  it('counts gh-dash comment activity too', () => {
+    const db = seedDb();
+    const secret = db.get<{ id: number }>(`SELECT id FROM repos WHERE key = 'alice/secret'`)!.id;
+    const general = { path: null, side: null, startLine: null, endLine: null, snippet: null };
+    const t = createThread(db, { repoId: secret, kind: 'pr', number: 1 }, { commitOid: 'a'.repeat(40), baseOid: null, anchor: general, body: 'Hm' },
+      getPrincipal(db, SELF_PRINCIPAL_ID)!, '2026-09-27T08:00:00.000Z');
+    const at = () => listRepos(db, 'UTC', Date.parse('2026-09-28T00:00:00Z')).find((r) => r.key === 'alice/secret')!.lastActivityAt;
+    expect(at()).toBe('2026-09-27T08:00:00.000Z');
+    // The event log outlives the thread.
+    db.run('DELETE FROM comment_threads WHERE id = ?', [t.id]);
+    expect(at()).toBe('2026-09-27T08:00:00.000Z');
+  });
 });
 
 describe('listRepos identity', () => {

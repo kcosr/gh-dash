@@ -73,7 +73,7 @@ export function IssuesView() {
           {issues.isError && !data ? <ErrorState error={issues.error} onRetry={() => issues.refetch()} />
             : !data ? <div className="wb-empty" role="status">Loading issues…</div>
             : !issues.isPlaceholderData && s.repos?.length === 0 ? (
-              <EmptyState icon="book" title="No repositories selected" actions={<button type="button" className="wb-btn" onClick={() => set({ repos: null })}>Select default repositories</button>} />
+              <EmptyState icon="book" title="No repositories selected" actions={<button type="button" className="wb-btn" onClick={() => set({ repos: null })}>Select active repositories</button>} />
             ) : !items.length && issues.isPlaceholderData ? <div className="wb-empty" role="status">Updating issues…</div>
             : !items.length ? (
               <EmptyState icon="issue" title="No issues match these filters" actions={

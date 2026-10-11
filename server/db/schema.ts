@@ -562,6 +562,15 @@ ALTER TABLE sync_state ADD COLUMN branches_synced_at TEXT;
 ALTER TABLE sync_state ADD COLUMN branches_complete INTEGER;
 `;
 
+// A repository's status, the user's choice (shared/api.ts RepoStatus): 'auto' follows the activity rule (db/activity.ts),
+// 'active' and 'inactive' override it. A local preference like pinned: the sync never writes it. Hidden repos (left out
+// of the default selection) become 'inactive'. `hidden` stays, unread and unwritten: dropping a column takes a rebuild,
+// which a GH_DASH_SYNC=off instance refuses; the next rebuild of repos drops it.
+const REPO_STATUS = `
+ALTER TABLE repos ADD COLUMN status TEXT NOT NULL DEFAULT 'auto' CHECK (status IN ('auto', 'active', 'inactive'));
+UPDATE repos SET status = 'inactive' WHERE hidden = 1;
+`;
+
 const MIGRATIONS: Migration[] = [
   { name: 'initial', version: 1, destructive: false, sql: V1 },
   { name: 'commits-repo-index', version: 2, destructive: false, sql: V2 },
@@ -574,6 +583,7 @@ const MIGRATIONS: Migration[] = [
   { name: 'branches', version: 9, destructive: false, sql: BRANCHES },
   { name: 'agent-sources', version: 10, destructive: false, sql: AGENT_SOURCES },
   { name: 'synced-branches', version: 11, destructive: false, sql: SYNCED_BRANCHES },
+  { name: 'repo-status', version: 12, destructive: false, sql: REPO_STATUS },
 ];
 
 /** The schema version this build creates and understands. */

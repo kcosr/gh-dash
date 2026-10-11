@@ -1,5 +1,5 @@
 import { useCallback, useMemo } from 'react';
-import { defaultScope, useRepoMap, useRepos, useSettings, useStats, useSyncStatus } from '../api/hooks';
+import { useRepoMap, useRepos, useStats, useSyncStatus } from '../api/hooks';
 import { CalendarHeatmap, ChartCard, HBars, LineChart, StackedColumns, StatTile } from '../charts';
 import { DateRangeButton } from '../components/DateRange';
 import { ErrorState, ProgressBar, Seg } from '../workbench';
@@ -21,7 +21,7 @@ import {
   tileProps,
   ttmLine,
 } from '../lib/statsCharts';
-import { repoPath } from '../../../shared/repos';
+import { defaultRepoScope, repoPath } from '../../../shared/repos';
 import { contextSearch, passesRepoFilters, patchSearch, useUrlState } from '../lib/urlState';
 
 export function InsightsView() {
@@ -29,7 +29,6 @@ export function InsightsView() {
   const { openExport } = useUI();
   const repos = useRepos();
   const repoMap = useRepoMap();
-  const settings = useSettings();
   const stats = useStats(statsParams(s));
   const st = stats.data;
   const viewer = useSyncStatus().data?.viewer;
@@ -38,9 +37,9 @@ export function InsightsView() {
 
   const nRepos = useMemo(() => {
     const all = repos.data ?? [];
-    const keys = new Set(s.repos ?? defaultScope(all, settings.data));
+    const keys = new Set(s.repos ?? defaultRepoScope(all));
     return all.filter((r) => keys.has(r.key) && passesRepoFilters(r, s)).length;
-  }, [repos.data, settings.data, s.repos, s.vis, s.own]);
+  }, [repos.data, s.repos, s.vis, s.own]);
 
   const byWho = s.who === 'me' ? ' by you' : s.who === 'others' ? ' by others' : '';
   const whoSuffix = byWho ? `,${byWho}` : '';

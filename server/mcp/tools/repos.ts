@@ -45,7 +45,8 @@ export const listRepos = readTool({
   title: 'List repositories',
   description:
     'Repositories gh-dash tracks that you may reach, most recently active first. `key` is how every other tool names a ' +
-    'repository. To find the one a local clone is of, prefer resolve_repo with its remote URL.',
+    "repository. `inactive`: not among the user's active repositories (lists without `repo` leave it out). To find the " +
+    'one a local clone is of, prefer resolve_repo with its remote URL.',
   input: z
     .object({
       query: z.string().max(200).optional().describe('Case-insensitive text in the key, description, topics or language'),
@@ -73,7 +74,7 @@ export const listRepos = readTool({
         openPrs: r.stats.openPrs,
         openThreads: open.get(ids.get(r.key) ?? 0) ?? 0,
         ...(r.isArchived ? { archived: true } : {}),
-        ...(r.hidden ? { hidden: true } : {}),
+        ...(r.active ? {} : { inactive: true }),
       })),
       total: all.length,
     };

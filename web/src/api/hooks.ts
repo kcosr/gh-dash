@@ -19,6 +19,7 @@ import type {
   PullRequestDetail,
   Repo,
   RepoSet,
+  RepoStatus,
   SavedView,
   ScopeQuery,
   Settings,
@@ -31,7 +32,6 @@ import type {
 import { GITHUB_HOST } from '../../../shared/api';
 import { ApiError, api, isClientError, isUnreachable } from './client';
 import { resolveApiBase } from '../lib/account';
-import { defaultRepoScope } from '../../../shared/repos';
 import { presentSources } from '../lib/contexts';
 import type { SourceInfo } from '../lib/contexts';
 import { sourceStatuses, workSources } from '../lib/sources';
@@ -107,10 +107,28 @@ export const refetchAfterSync = (q: Query) =>
 
 /**
  * Queries whose answers follow the default selection: every list or stats request without an explicit `repos=`
- * (the views, the palette's PR search, the export previews). Hiding or showing a repo changes them.
+ * (the views, the palette's PR search, the export previews). A repo becoming active or inactive changes them.
  */
 const SELECTION_QUERIES = ['prs', 'branch-list', 'issues', 'activity', 'releases', 'commits', 'stars', 'stats', 'thread-list', 'palette-prs', 'export-md', 'export-sample'];
 export const followsDefaultSelection = (q: Query) => SELECTION_QUERIES.includes(q.queryKey[0] as string);
+
+/**
+ * Refetches what follows the default selection whenever the active repos change, whatever changed them: a status or a
+ * pin (usePatchRepo), comment activity here or streamed (threadChangeKeys refetches the repos), a sync, a repo going
+ * quiet. The repos list says which are active (the server decides): each answer is compared with the last one seen.
+ * Returns the unsubscribe.
+ */
+export function followActiveRepos(qc: QueryClient): () => void {
+  let last: string | null = null;
+  return qc.getQueryCache().subscribe((e) => {
+    if (e.type !== 'updated' || e.query.queryKey.length !== 1 || e.query.queryKey[0] !== qk.repos[0]) return;
+    const items = (e.query.state.data as { items: Repo[] } | undefined)?.items;
+    if (!items) return;
+    const active = items.filter((r) => r.active).map((r) => r.key).sort().join('\n');
+    if (last !== null && active !== last) void qc.invalidateQueries({ predicate: followsDefaultSelection });
+    last = active;
+  });
+}
 
 // ---------------------------------------------------------------- reference data
 
@@ -280,11 +298,6 @@ export function useWorkSources(): WorkSource[] {
   const repos = useRepos().data;
   const githubMismatch = !!useAccount().data?.mismatch;
   return useMemo(() => workSources(sources, sourceStatuses(st), repos ?? [], { githubMismatch }), [sources, st, repos, githubMismatch]);
-}
-
-/** The default selection: not archived, not hidden, not a fork (unless includeForks). */
-export function defaultScope(repos: Repo[], settings?: Settings): string[] {
-  return defaultRepoScope(repos, settings?.includeForks);
 }
 
 // ---------------------------------------------------------------- lists
@@ -612,14 +625,15 @@ function fetchThreads(t: DiffTarget) {
 /**
  * What a change to a target's threads makes stale, made here (threadActions) or elsewhere (an agent, another window: the
  * stream): the target's threads, the Comments list with the tab's count, a PR's counts (lists and its details), the
- * Activity feed (its comment events, and its PR and commit counts), and when comments came or went, repos' comment
- * counts (the Remove confirmation quotes them). `id`: the target, as the `diff` param names it.
+ * Activity feed (its comment events, and its PR and commit counts), and the repos: every change is activity in its repo
+ * (lastActivityAt, and it can make the repo active: followActiveRepos), and comments coming or going change its comment
+ * count (the Remove confirmation quotes it). `id`: the target, as the `diff` param names it.
  *
  * A thread in a branch group (a branch's, or a PR's with `branch` set) is on the branch's list and on its PRs' too, and
  * in their counts (see "Branch groups" in shared/api.ts): then every thread list of the repo, every PR's details there
  * (rather than working out which PRs are from the branch), and the "No PR yet" list, whose rows count branch groups.
  */
-export function threadChangeKeys(id: string, change: { comments?: boolean; branch?: string | null } = {}): QueryKey[] {
+export function threadChangeKeys(id: string, change: { branch?: string | null } = {}): QueryKey[] {
   const t = parseDiffId(id);
   const group = !!t && (t.kind === 'branch' || (t.kind === 'pr' && !!change.branch));
   return [
@@ -627,7 +641,7 @@ export function threadChangeKeys(id: string, change: { comments?: boolean; branc
     ['thread-list'],
     ...(group ? [['prs'], qk.prsIn(t.repo), ['branch-list']] : t?.kind === 'pr' ? [['prs'], qk.pr(t.repo, t.number)] : []),
     ['activity'],
-    ...(change.comments ? [qk.repos] : []),
+    qk.repos,
   ];
 }
 
@@ -660,12 +674,12 @@ export function threadActions(qc: QueryClient, id: string) {
   const drop = (threadId: number) => qc.setQueryData<CommentThread[]>(key, (list) => list?.filter((x) => x.id !== threadId));
   /** A thread's branch as the list on screen has it, for a change whose answer doesn't carry the thread (a delete). */
   const branchOf = (threadId: number) => qc.getQueryData<CommentThread[]>(key)?.find((x) => x.id === threadId)?.branch ?? null;
-  /** `comments`: comments came or went. `branch`: the thread's (its answer's, else as known before the change). */
-  const done = async <T,>(p: Promise<T>, apply: (v: T) => void, change: { comments?: boolean; branch?: (v: T) => string | null } = {}) => {
+  /** `branch`: the thread's (its answer's, else as known before the change). */
+  const done = async <T,>(p: Promise<T>, apply: (v: T) => void, change: { branch?: (v: T) => string | null } = {}) => {
     const v = await p;
     await qc.cancelQueries({ queryKey: key });
     apply(v);
-    for (const queryKey of threadChangeKeys(id, { comments: change.comments, branch: change.branch?.(v) })) void qc.invalidateQueries({ queryKey });
+    for (const queryKey of threadChangeKeys(id, { branch: change.branch?.(v) })) void qc.invalidateQueries({ queryKey });
     return v;
   };
   const own = (x: CommentThread) => x.branch;
@@ -675,18 +689,18 @@ export function threadActions(qc: QueryClient, id: string) {
     return t.kind === 'branch' ? api.createBranchThread(t.repo, t.branch, body) : api.createCommitThread(t.repo, t.oid, body);
   };
   return {
-    create: (body: NewPrThread) => done(create(body), put, { comments: true, branch: own }),
-    reply: (threadId: number, body: string) => done(api.reply(threadId, body), put, { comments: true, branch: own }),
+    create: (body: NewPrThread) => done(create(body), put, { branch: own }),
+    reply: (threadId: number, body: string) => done(api.reply(threadId, body), put, { branch: own }),
     setStatus: (threadId: number, status: 'open' | 'resolved') => done(api.setThreadStatus(threadId, status), put, { branch: own }),
     edit: (commentId: number, body: string) => done(api.editComment(commentId, body), put, { branch: own }),
     // Deleting a thread's first comment deletes the thread.
     deleteComment: (threadId: number, commentId: number) => {
       const branch = branchOf(threadId);
-      return done(api.deleteComment(commentId), (r) => (r.thread ? put(r.thread) : drop(threadId)), { comments: true, branch: (r) => r.thread?.branch ?? branch });
+      return done(api.deleteComment(commentId), (r) => (r.thread ? put(r.thread) : drop(threadId)), { branch: (r) => r.thread?.branch ?? branch });
     },
     deleteThread: (threadId: number) => {
       const branch = branchOf(threadId);
-      return done(api.deleteThread(threadId), () => drop(threadId), { comments: true, branch: () => branch });
+      return done(api.deleteThread(threadId), () => drop(threadId), { branch: () => branch });
     },
   };
 }
@@ -701,17 +715,21 @@ export function useThreadActions(id: string) {
 export function usePatchRepo() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ key, patch }: { key: string; patch: { pinned?: boolean; hidden?: boolean } }) => api.patchRepo(key, patch),
+    mutationFn: ({ key, patch }: { key: string; patch: { pinned?: boolean; status?: RepoStatus } }) => api.patchRepo(key, patch),
     onMutate: async ({ key, patch }) => {
       await qc.cancelQueries({ queryKey: qk.repos });
       const prev = qc.getQueryData<{ items: Repo[] }>(qk.repos);
+      // Only the choice: whether the repo is active (and why) is the server's answer.
       if (prev) qc.setQueryData(qk.repos, { items: prev.items.map((r) => (r.key === key ? { ...r, ...patch } : r)) });
       return { prev };
     },
     onError: (_e, _v, ctx) => { if (ctx?.prev) qc.setQueryData(qk.repos, ctx.prev); },
-    // Hidden or shown: the default selection changed, and with it every list and chart that follows it. (Pinning
-    // only reorders repos.) These callbacks run even when hiding unmounted the component that asked.
-    onSuccess: (_r, { patch }) => { if (patch.hidden !== undefined) void qc.invalidateQueries({ predicate: followsDefaultSelection }); },
+    // The server's answer in at once: a status or a pin can make the repo active or inactive, and followActiveRepos then
+    // refetches what follows the default selection. These callbacks run even when the component that asked has unmounted.
+    onSuccess: (repo) => {
+      const cur = qc.getQueryData<{ items: Repo[] }>(qk.repos);
+      if (cur) qc.setQueryData(qk.repos, { items: cur.items.map((r) => (r.key === repo.key ? repo : r)) });
+    },
     onSettled: () => qc.invalidateQueries({ queryKey: qk.repos }),
   });
 }

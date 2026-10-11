@@ -74,6 +74,15 @@
 .set-item:hover .count { display: none; }
 .set-item .del:hover { background: var(--wb-surface-3); color: var(--wb-fg); }
 .repo-item .arch { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
+/* A row's "…" takes the place of its counts while the row is hovered or keyboard-focused, or its menu is open (like a
+   set's ×). Not on any focus: a click leaves focus on the row's button, and its counts would stay hidden. Transparent
+   rather than not displayed when hidden: it stays focusable (the Tab order, focus coming back after a change) and keeps
+   a place for its menu to open from. */
+.repo-item .repo-more { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); display: grid; opacity: 0; width: 22px; height: 22px; border-radius: 5px; place-items: center; color: var(--wb-muted); -webkit-tap-highlight-color: transparent; }
+.repo-item .repo-more svg { width: 14px; height: 14px; }
+.repo-item:hover .repo-more, .repo-item:has(:focus-visible) .repo-more, .repo-item .repo-more[aria-expanded="true"] { opacity: 1; }
+.repo-item:hover .repo-counts, .repo-item:has(:focus-visible) .repo-counts, .repo-item:has(.repo-more[aria-expanded="true"]) .repo-counts { visibility: hidden; }
+.repo-item .repo-more:hover, .repo-item .repo-more[aria-expanded="true"] { background: var(--wb-surface-3); color: var(--wb-fg); }
 .repo-item .lk { display: inline-flex; }
 
 /* ---------- PR list additions */
@@ -427,6 +436,9 @@ a.sync:hover .sync-text { color: var(--wb-fg); text-decoration: underline; text-
 .mobile-sidebar input { font-size: 16px; }
 .mobile-sidebar .mini { min-width: 40px; min-height: 40px; }
 .mobile-sidebar .set-item .del { display: grid; width: 40px; height: 40px; flex: none; }
+.mobile-sidebar .repo-item .repo-more { position: static; transform: none; opacity: 1; width: 40px; height: 40px; flex: none; }
+/* Always there on a phone, beside the counts (no hover to swap them). */
+.mobile-sidebar .repo-item .repo-counts, .mobile-sidebar .repo-item:has(.repo-more[aria-expanded="true"]) .repo-counts { visibility: visible; }
 @media (max-width: 900px) {
   .app { height: 100dvh; grid-template-rows: auto minmax(0, 1fr); }
   .filter-toolbar { flex: none; padding: 4px 12px; gap: 0; max-height: 60dvh; overflow-y: auto; }
@@ -584,7 +596,7 @@ a.sync:hover .sync-text { color: var(--wb-fg); text-decoration: underline; text-
 .trk-st { display: inline-flex; align-items: center; gap: 4px; flex: none; font-size: 12px; color: var(--wb-muted); white-space: nowrap; }
 .trk-st svg { width: 12px; height: 12px; }
 .trk-st.warn svg { color: var(--star); }
-.trk-row .wb-switch, .trk-row .pin-btn { flex: none; }
+.trk-row .wb-btn, .trk-row .pin-btn { flex: none; }
 
 /* Sources: the context switcher (top bar) and the small marks that say which source a repo is on (All only). */
 .ctx-switch { flex: none; }

@@ -10,6 +10,7 @@ import { inputHost, repoLabel as labelOf, repoPath, resolveRepoKey, sourceForInp
 import { ApiError } from '../api/client';
 import { qk, useAccount, useAddRepo, usePatchRepo, useRepoCandidates, useRepoLookup, useWorkSources } from '../api/hooks';
 import { Modal, Seg, useToast } from '../workbench';
+import { inactiveNote, statusToast } from '../lib/repoStatus';
 import { addDefault, sourceSettingsLink } from '../lib/sources';
 import type { WorkSource } from '../lib/sources';
 import { getAddSource, setAddSource } from '../lib/storage';
@@ -83,7 +84,7 @@ export function AddRepoDialog({ onClose }: { onClose: () => void }) {
     : source.trouble === 'no-token' ? 'token' : source.trouble === 'mismatch' || refused ? 'mismatch' : null;
   const add = useAddRepo();
   const patch = usePatchRepo();
-  // Adding, or putting a known repo back in the default selection: the dialog stays until the answer is in.
+  // Adding, or marking a known repo active: the dialog stays until the answer is in.
   const busy = add.isPending || patch.isPending;
   const toast = useToast();
   const navigate = useNavigate();
@@ -92,7 +93,7 @@ export function AddRepoDialog({ onClose }: { onClose: () => void }) {
   /** A key chosen outright (a row, Enter, a paste): checked without waiting for typing to pause. */
   const [picked, setPicked] = useState<string | null>(null);
   const [active, setActive] = useState(0);
-  const [include, setInclude] = useState(true);
+  const [markInactive, setMarkInactive] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const list = useRef<HTMLDivElement>(null);
   const cancel = useRef<HTMLButtonElement>(null);
@@ -131,9 +132,9 @@ export function AddRepoDialog({ onClose }: { onClose: () => void }) {
   const preview = res?.ok ? res.repo : null;
   const failure = res && !res.ok ? res : null;
   const known = trackedRepo
-    ? { key: trackedRepo.key, owned: trackedRepo.trackedBy === 'owned', hidden: trackedRepo.hidden, open: true }
+    ? { key: trackedRepo.key, owned: trackedRepo.trackedBy === 'owned', inactive: inactiveNote(trackedRepo), open: true }
     : preview && (preview.owned || preview.tracked)
-      ? { key: preview.key, owned: preview.owned || preview.tracked === 'owned', hidden: !!preview.hidden, open: repoMap.has(preview.key) }
+      ? { key: preview.key, owned: preview.owned || preview.tracked === 'owned', inactive: inactiveNote(repoMap.get(preview.key) ?? preview), open: repoMap.has(preview.key) }
       : null;
   const checking = !!pending && !known && (!target || lookup.isFetching);
   const addable = !!preview && !known && !checking;
@@ -161,7 +162,7 @@ export function AddRepoDialog({ onClose }: { onClose: () => void }) {
   const doAdd = () => {
     if (!addable || !preview || blocked || add.isPending) return;
     setErr(null);
-    add.mutate({ repo: preview.key, source: github ? undefined : source.host, includeInDefault: include }, {
+    add.mutate({ repo: preview.key, source: github ? undefined : source.host, status: markInactive ? 'inactive' : 'auto' }, {
       onSuccess: (r) => {
         setAddSource(source.host);
         toast(`Added ${labelOf(r.repo.key, [r.repo])} · ${r.sync === 'started' ? 'syncing its history' : 'it syncs after the current sync'}`, { duration: 5000 });
@@ -173,8 +174,8 @@ export function AddRepoDialog({ onClose }: { onClose: () => void }) {
       },
     });
   };
-  const show = (key: string) => patch.mutate({ key, patch: { hidden: false } }, {
-    onSuccess: () => { toast(`${label(key)} is back in the default selection`); onClose(); },
+  const markActive = (key: string) => patch.mutate({ key, patch: { status: 'active' } }, {
+    onSuccess: (r) => { toast(statusToast(label(r.key), r)); onClose(); },
     onError: (e) => setErr(`Couldn't update ${label(key)}: ${e.message}`),
   });
   const open = (key: string) => { onClose(); navigate(`${repoPath(key)}${carrySearch(window.location.search)}`); };
@@ -240,7 +241,7 @@ export function AddRepoDialog({ onClose }: { onClose: () => void }) {
       out = (
         <Note icon={<Icon name="check" />}>
           <p className="ar-note-h"><RepoName repo={known.key} /></p>
-          <p>{known.owned ? `You own this ${words.one}, so it's tracked automatically.` : 'Already tracked.'}{known.hidden ? " It's left out of your default selection." : ''}</p>
+          <p>{known.owned ? `You own this ${words.one}, so it's tracked automatically.` : 'Already tracked.'}{known.inactive ? ` ${known.inactive}` : ''}</p>
         </Note>
       );
     } else if (checking) {
@@ -281,16 +282,16 @@ export function AddRepoDialog({ onClose }: { onClose: () => void }) {
     <Modal open onClose={onClose} title="Add repository" className="add-repo" dismissible={!busy} footer={<>
 
           {addable && (
-            <label className="ar-inc" title="Unchecked: it's tracked but left out of the default selection, like a hidden repository">
-              <input type="checkbox" checked={include} onChange={(e) => setInclude(e.target.checked)} disabled={add.isPending} />
-              Include in default selection
+            <label className="ar-inc" title="Inactive repositories are left out of the default selection">
+              <input type="checkbox" checked={markInactive} onChange={(e) => setMarkInactive(e.target.checked)} disabled={add.isPending} />
+              Mark inactive
             </label>
           )}
           <span className="spacer" />
           <button type="button" className="wb-btn" ref={cancel} disabled={busy} onClick={onClose}>Cancel</button>
           {known ? (
             <>
-              {known.hidden && <button type="button" className="wb-btn" disabled={patch.isPending} onClick={() => show(known.key)}>Show in default selection</button>}
+              {known.inactive && <button type="button" className="wb-btn" disabled={patch.isPending} onClick={() => markActive(known.key)}>Mark active</button>}
               {known.open && <button type="button" className="wb-btn wb-btn--primary" disabled={busy} onClick={() => open(known.key)}>Open</button>}
             </>
           ) : pending && !stray && !checking && (failure || lookup.isError) ? (

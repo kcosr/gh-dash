@@ -1,3 +1,5 @@
+import type { RepoStatus } from '../../shared/api';
+import { repoStatus } from './activity';
 import type { Db, Param } from './db';
 import type {
   ActorRecord,
@@ -31,7 +33,7 @@ const actorVals = (a: ActorRecord | null): Param[] => [a?.login ?? null, a?.name
 // Repos
 // ---------------------------------------------------------------------------
 
-// pinned and hidden are local preferences: never written here, so they survive every sync. A repo is identified by
+// pinned and status are local preferences: never written here, so they survive every sync. A repo is identified by
 // its source and node id (GitLab node ids repeat across instances); its key is derived from them (sourceKey).
 const REPO_COLS = [
   'source_id', 'node_id', 'key', 'name', 'name_with_owner', 'owner', 'description', 'url', 'visibility', 'is_archived',
@@ -121,27 +123,27 @@ export function markUnavailable(db: Db, id: number, nodeId: string, reason: stri
   );
 }
 
-const UPSERT_MANUAL = upsertSql('repos', [...REPO_COLS, 'hidden'], ['source_id', 'node_id']);
+const UPSERT_MANUAL = upsertSql('repos', [...REPO_COLS, 'status'], ['source_id', 'node_id']);
 
 export type AddManualResult =
   | { added: true; id: number }
   /** Already live: added by hand before, or one of the viewer's own. */
-  | { added: false; id: number; trackedBy: 'owned' | 'manual'; hidden: boolean };
+  | { added: false; id: number; trackedBy: 'owned' | 'manual'; status: RepoStatus };
 
 /**
  * Tracks a repo on `src` by hand. A live row with its node id is left alone (reported back). A removed row is revived
  * with its earlier data (an owned repo transferred away, then added by hand), waiting for a sync; otherwise the repo
- * is inserted. `hidden` keeps it out of the default selection.
+ * is inserted. Either way it takes `status`.
  */
-export function addManual(db: Db, src: SourceRef, r: RepoRecord, opts: { hidden: boolean }, now: string): AddManualResult {
+export function addManual(db: Db, src: SourceRef, r: RepoRecord, opts: { status: RepoStatus }, now: string): AddManualResult {
   return db.tx(() => {
-    const live = db.get<{ id: number; tracked_by: string; hidden: number }>(
-      'SELECT id, tracked_by, hidden FROM repos WHERE source_id = ? AND node_id = ? AND removed_at IS NULL',
+    const live = db.get<{ id: number; tracked_by: string; status: string }>(
+      'SELECT id, tracked_by, status FROM repos WHERE source_id = ? AND node_id = ? AND removed_at IS NULL',
       [src.id, r.nodeId],
     );
-    if (live) return { added: false, id: live.id, trackedBy: live.tracked_by === 'manual' ? 'manual' : 'owned', hidden: !!live.hidden };
+    if (live) return { added: false, id: live.id, trackedBy: live.tracked_by === 'manual' ? 'manual' : 'owned', status: repoStatus(live.status) };
     releaseKey(db, sourceKey(src, r.nameWithOwner), r.nodeId, now);
-    const row = db.get<{ id: number }>(UPSERT_MANUAL, [...recordVals(src, r), null, 'manual', now, null, null, Number(opts.hidden)]);
+    const row = db.get<{ id: number }>(UPSERT_MANUAL, [...recordVals(src, r), null, 'manual', now, null, null, opts.status]);
     // A revived row keeps its sync state from before it was removed. Its high-water marks still save work, but it
     // waits for its post-add sync like a new repo: synced_at is set again only by a successful run (queue draining
     // and the scheduler both go by it).

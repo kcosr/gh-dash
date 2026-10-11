@@ -1,12 +1,14 @@
 import { memo } from 'react';
+import type { MouseEvent } from 'react';
 import type { Branch, CommentCounts, PullRequest, Release } from '../../../shared/api';
 import { plainPreview } from '../lib/markdown';
 import { isNewSinceLastVisit } from '../lib/storage';
-import { fmtDate, fmtDateTime, rel } from '../lib/time';
+import { fmtDate, fmtDateTime } from '../lib/time';
 import type { Density } from '../lib/urlState';
 import { actorName, cx } from '../lib/util';
+import { ROW_ID_ATTR, hasTextSelection, isPlainClick } from '../workbench';
 import { Avatar } from './Avatar';
-import { Diffstat, prIconClass, prIconName } from './bits';
+import { Diffstat, RelTime, prIconClass, prIconName } from './bits';
 import { Icon } from './Icon';
 import { Labels } from './Label';
 import { Markdown } from './Markdown';
@@ -28,6 +30,22 @@ export function CommentBadge({ c }: { c: CommentCounts | undefined }) {
   return <span className={cx('pr-comments', c.unresolved > 0 && 'open')} title={title} aria-label={title}><Icon name="comment" />{c.unresolved || c.threads}</span>;
 }
 
+/** Controls inside a row, which a click on them is for (a description's links, a task list's boxes). */
+const CONTROLS = 'a[href], button, input, select, textarea, summary, label, [role="button"], [role="link"], [role="checkbox"], [contenteditable="true"]';
+
+/**
+ * Whether a click on a row opens it: a plain click (modified ones are the browser's: a new tab, extending a selection),
+ * not on a control inside the row, and not the end of selecting the row's text.
+ */
+function opensRow(e: MouseEvent<HTMLElement>): boolean {
+  if (!isPlainClick(e) || hasTextSelection()) return false;
+  const control = e.target instanceof Element ? e.target.closest(CONTROLS) : null;
+  return !control || !e.currentTarget.contains(control);
+}
+
+/** The attribute the list's j/k cursor (useListCursor) finds a row by. */
+const rowId = (id: string) => ({ [ROW_ID_ATTR]: id });
+
 const GhLink = ({ url, host }: { url: string; host: string }) => (
   <a className="gh" href={url} target="_blank" rel="noopener noreferrer" title={`Open on ${host} (o)`} onClick={(e) => e.stopPropagation()}>
     <Icon name="ext" />
@@ -42,13 +60,13 @@ export const PrRow = memo(function PrRow({ pr, density, cursor, active, onOpen }
   const p = useProviderOf()(pr.repo);
   const at = pr.activityAt;
   const cls = cx('pr', density === 'titles' && 't', cursor && 'cursor', active && 'active');
-  const open = () => onOpen(pr);
+  const open = (e: MouseEvent<HTMLElement>) => { if (opensRow(e)) onOpen(pr); };
   // Enter is handled by the list (it opens the row under the j/k cursor, which follows clicks).
   const time = <time dateTime={at} title={fmtDateTime(at)}>{fmtDate(at)}</time>;
 
   if (density === 'titles') {
     return (
-      <article className={cls} onClick={open} tabIndex={-1} aria-label={pr.title} data-id={pr.id}>
+      <article className={cls} onClick={open} tabIndex={-1} aria-label={pr.title} data-id={pr.id} {...rowId(pr.id)}>
         <span className={`pr-ic ${prIconClass(pr)}`}><Icon name={prIconName(pr)} /></span>
         <span className="t-repo"><RepoChip repo={pr.repo} /><span className="num">{p.prRef}{pr.number}</span></span>
         <span className="t-title">{pr.title}{pr.isDraft && <span className="draft-tag">Draft</span>}<Labels labels={pr.labels} /><CommentBadge c={pr.comments} /></span>
@@ -62,7 +80,7 @@ export const PrRow = memo(function PrRow({ pr, density, cursor, active, onOpen }
   const verb = pr.state === 'merged' ? 'merged' : pr.state === 'closed' ? 'closed' : 'opened';
   const isNew = isNewSinceLastVisit(at);
   return (
-    <article className={cls} onClick={open} tabIndex={-1} aria-label={pr.title} data-id={pr.id}>
+    <article className={cls} onClick={open} tabIndex={-1} aria-label={pr.title} data-id={pr.id} {...rowId(pr.id)}>
       <span className={`pr-ic ${prIconClass(pr)}`}><Icon name={prIconName(pr)} /></span>
       <div className="pr-main">
         <div className="pr-title">
@@ -74,7 +92,7 @@ export const PrRow = memo(function PrRow({ pr, density, cursor, active, onOpen }
           <RepoChip repo={pr.repo} />
           <span className="num">{p.prRef}{pr.number}</span>
           <span className="sep">·</span>
-          <span>{verb} {rel(at)} by</span>
+          <span>{verb} <RelTime at={at} /> by</span>
           <span className="author">
             <Avatar actor={pr.author} />
             <b>{pr.author.isMe ? 'you' : actorName(pr.author)}</b>
@@ -115,13 +133,13 @@ export const BranchRow = memo(function BranchRow({ branch: b, density, cursor, a
   const p = useProviderOf()(b.repo);
   const at = b.committedAt;
   const cls = cx('pr', 'br', density === 'titles' && 't', cursor && 'cursor', active && 'active');
-  const open = () => onOpen(b);
+  const open = (e: MouseEvent<HTMLElement>) => { if (opensRow(e)) onOpen(b); };
   const time = at ? <time dateTime={at} title={fmtDateTime(at)}>{fmtDate(at)}</time> : <span />;
   const icon = <span className="pr-ic branch" title="Branch"><Icon name="branch" /></span>;
 
   if (density === 'titles') {
     return (
-      <article className={cls} onClick={open} tabIndex={-1} aria-label={b.name} data-id={b.id}>
+      <article className={cls} onClick={open} tabIndex={-1} aria-label={b.name} data-id={b.id} {...rowId(b.id)}>
         {icon}
         <span className="t-repo"><RepoChip repo={b.repo} /></span>
         <span className="t-title">{b.name}<CommentBadge c={b.comments} /></span>
@@ -133,13 +151,13 @@ export const BranchRow = memo(function BranchRow({ branch: b, density, cursor, a
   }
 
   return (
-    <article className={cls} onClick={open} tabIndex={-1} aria-label={b.name} data-id={b.id}>
+    <article className={cls} onClick={open} tabIndex={-1} aria-label={b.name} data-id={b.id} {...rowId(b.id)}>
       {icon}
       <div className="pr-main">
         <div className="pr-title">{b.name}</div>
         <div className="pr-meta">
           <RepoChip repo={b.repo} />
-          {at && <><span className="sep">·</span><span>committed {rel(at)}{b.author && ' by'}</span></>}
+          {at && <><span className="sep">·</span><span>committed <RelTime at={at} />{b.author && ' by'}</span></>}
           {b.author && (
             <span className="author">
               <Avatar actor={b.author} />
@@ -186,7 +204,7 @@ export const ReleaseRow = memo(function ReleaseRow({ release: r, density }: { re
         <div className="pr-meta">
           <RepoChip repo={r.repo} />
           <span className="sep">·</span>
-          <span>released {rel(r.publishedAt)}</span>
+          <span>released <RelTime at={r.publishedAt} /></span>
         </div>
         {density === 'full'
           ? r.body.trim() && <Markdown source={r.body} repo={r.repo} />

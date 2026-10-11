@@ -10,12 +10,12 @@ import type { CommentThread, Me, ThreadComment } from '../../../shared/api';
 import type { ThreadPlacement } from '../../../shared/comment-placement';
 import type { useThreadActions } from '../api/hooks';
 import { Avatar } from '../components/Avatar';
-import { AgentMark } from '../components/bits';
+import { AgentMark, RelTime } from '../components/bits';
 import { Icon } from '../components/Icon';
 import { Markdown } from '../components/Markdown';
 import { useToast, useLayer } from '../workbench';
 import { plainPreview } from '../lib/markdown';
-import { fmtDateTime, plural, rel } from '../lib/time';
+import { fmtDateTime, plural } from '../lib/time';
 import { copyText, cx } from '../lib/util';
 import { getDraft, isSendingDraft, loadNewDraft, setDraft, setNewDraftBody, setSendingDraft, subscribeNewDrafts } from './drafts';
 import type { DraftAnchor, DraftSpot } from './threadModel';
@@ -227,7 +227,7 @@ function CommentRow({ thread, c, first }: { thread: CommentThread; c: ThreadComm
     <div className="dth-c" data-comment={c.id}>
       <div className="dth-c-head">
         <Author c={c} />
-        <time dateTime={c.createdAt} title={fmtDateTime(c.createdAt)}>{rel(c.createdAt)}</time>
+        <time dateTime={c.createdAt} title={fmtDateTime(c.createdAt)}><RelTime at={c.createdAt} /></time>
         {c.editedAt && <span className="dth-edited" title={`Edited ${fmtDateTime(c.editedAt)}`}>edited</span>}
         <span className="spacer" />
         {!editing && !confirm && (

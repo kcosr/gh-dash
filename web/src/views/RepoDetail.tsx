@@ -5,7 +5,7 @@ import type { PullRequest } from '../../../shared/api';
 import { capitalize, repoProvider } from '../../../shared/provider';
 import { usePatchRepo, usePrList, useReleases, useRepos, useStats, useSyncStatus } from '../api/hooks';
 import { ChartCard, HBars, StackedColumns, StatTile } from '../charts';
-import { prIconClass, prIconName } from '../components/bits';
+import { RelTime, prIconClass, prIconName } from '../components/bits';
 import { BranchesCard } from '../components/Branches';
 import { DateRangeButton } from '../components/DateRange';
 import { Button, EmptyState, ErrorState, ProgressBar, Seg } from '../workbench';
@@ -20,7 +20,7 @@ import { WHO_OPTIONS } from '../lib/filterOptions';
 import { useUI } from '../components/ui';
 import { ALL_TIME_FROM, repoPageScope, scopeParams, statsParams } from '../lib/apiQuery';
 import { activityColumns, contributorBars, mergedLabel, tileProps } from '../lib/statsCharts';
-import { fmtDate, fmtDateTime, isoDate, rel } from '../lib/time';
+import { fmtDate, fmtDateTime, isoDate } from '../lib/time';
 import { carrySearch, encodeParams, repoFromPath, repoLinkSearch, useUrlState } from '../lib/urlState';
 import { actorName, cx } from '../lib/util';
 import { InsightsSkeleton } from './Insights';
@@ -35,7 +35,7 @@ function CompactPr({ pr, onOpen, active }: { pr: PullRequest; onOpen: () => void
       <span className="mp-title">{pr.title}<Labels labels={pr.labels} /></span>
       <span className="num">{p.prRef}{pr.number}</span>
       <span className="mp-who">{pr.author.isMe ? 'you' : actorName(pr.author)}</span>
-      <time dateTime={pr.activityAt} title={fmtDateTime(pr.activityAt)}>{pr.state === 'open' ? rel(pr.activityAt) : fmtDate(pr.activityAt)}</time>
+      <time dateTime={pr.activityAt} title={fmtDateTime(pr.activityAt)}>{pr.state === 'open' ? <RelTime at={pr.activityAt} /> : fmtDate(pr.activityAt)}</time>
     </div>
   );
 }
@@ -138,7 +138,7 @@ export function RepoDetailView() {
               <span><Icon name="prOpen" />{repo.stats.openPrs} open {w.shortMany}</span>
               <span><Icon name="issue" />{repo.stats.openIssues} open issues</span>
               {repo.defaultBranch && <span><code>{repo.defaultBranch}</code></span>}
-              <span className="muted">Updated {rel(repo.lastActivityAt ?? repo.pushedAt ?? repo.createdAt)}</span>
+              <span className="muted">Updated <RelTime at={repo.lastActivityAt ?? repo.pushedAt ?? repo.createdAt} /></span>
               <a className="rh-link" href={p.link.prs(repo.url)} target="_blank" rel="noopener noreferrer">{capitalize(w.many)} ↗</a>
               <a className="rh-link" href={p.link.issues(repo.url)} target="_blank" rel="noopener noreferrer">Issues ↗</a>
               <a className="rh-link" href={p.link.releases(repo.url)} target="_blank" rel="noopener noreferrer">Releases ↗</a>

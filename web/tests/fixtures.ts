@@ -33,7 +33,7 @@ const sources: Source[] = repos.map((r) => ({
   account: null, repos: { owned: 1, added: 0, hidden: 0 },
   sync: { source: r.source, running: false, progress: null, lastSyncAt: at, lastResult: { newItems: 0, errors: [] }, rateLimit: null, tokenSource: 'env', viewer: 'owner', problem: null },
 }));
-const sync: SyncStatus = {
+export const sync: SyncStatus = {
   running: false, trigger: null, progress: null, lastSyncAt: at, lastSyncDurationMs: 100,
   lastResult: { newItems: 0, errors: [] }, nextSyncAt: null, rateLimit: null, tokenSource: 'env', viewer: 'owner', sources: sources.map((s) => s.sync),
 };

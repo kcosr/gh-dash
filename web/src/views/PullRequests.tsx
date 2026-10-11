@@ -1,5 +1,5 @@
-import { ChipToggle, EmptyState, ErrorState, ProgressBar, Seg, hasBlockingLayer, isTypingTarget } from '../workbench';
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { ChipToggle, EmptyState, ErrorState, ProgressBar, Seg, hasBlockingLayer, isTypingTarget, useListCursor } from '../workbench';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import type { Branch, PullRequest } from '../../../shared/api';
 import type { PrWords } from '../../../shared/provider';
 import { useBranchList, usePrList, useReleases, useRepoMap } from '../api/hooks';
@@ -54,18 +54,8 @@ export function PullRequestsView() {
     () => groups.flatMap((g) => g.items.flatMap((i): (PullRequest | Branch)[] => (i.kind === 'pr' ? [i.pr] : i.kind === 'branch' ? [i.branch] : []))),
     [groups],
   );
-  const [cursor, setCursor] = useState(-1);
-
-  // Reset the cursor when the filters change.
-  const filterKey = JSON.stringify(noPr ? branchListParams(s) : prFetchParams(s));
-  useEffect(() => { setCursor(-1); }, [filterKey]);
-  // Keep the cursor on the open PR, or on the branch whose diff is open.
-  const openRow = noPr ? s.diff : s.pr;
-  useEffect(() => {
-    if (!openRow) return;
-    const i = order.findIndex((r) => r.id === openRow);
-    if (i >= 0) setCursor(i);
-  }, [openRow, order]);
+  const ids = useMemo(() => order.map((r) => r.id), [order]);
+  const byId = useMemo(() => new Map(order.map((r) => [r.id, r])), [order]);
 
   // Stable identity (reads the open PR through a ref) so memoized rows don't all re-render
   // whenever the drawer opens or moves.
@@ -77,35 +67,41 @@ export function PullRequestsView() {
   // A branch has no details: it opens its diff (its id is the diff's), as the repo page's Branches card does.
   const openBranch = useCallback((b: Pick<Branch, 'id'>) => set({ diff: b.id, file: null, thread: null, only: null }), [set]);
 
+  // The j/k cursor is a row's id, not a place in the list: a refetch or a sync that reorders or shrinks the list leaves
+  // it on its row (or on none, once its row is gone). Reset when the filters change; on the open PR, or on the branch
+  // whose diff is open, and moving it with details open moves them along.
+  const filterKey = JSON.stringify(noPr ? branchListParams(s) : prFetchParams(s));
+  const openRow = noPr ? s.diff : s.pr;
+  const { cursorId, setCursorId } = useListCursor({
+    ids,
+    activeId: openRow,
+    resetKey: filterKey,
+    onOpen: (id) => { if (noPr) openBranch({ id }); else set({ pr: id }); },
+    // The diff (a branch's) is a blocking layer over the list: only details follow.
+    onFollow: (id) => { if (!noPr) set({ pr: id }, { replace: true }); },
+    onExternal: (id) => { const row = byId.get(id); if (row) window.open(row.url, '_blank', 'noopener'); },
+  });
+  // The hook snaps to the open row when it opens or first appears; after a filter change (which resets the cursor) the
+  // open row keeps it while it's still listed, as it does once the new answer lists it.
+  useEffect(() => {
+    if (openRow && ids.includes(openRow)) setCursorId(openRow);
+  }, [ids, openRow, filterKey, setCursorId]);
+
+  // `d`: the cursor row's diff. With details open, the drawer handles `d` (for its PR).
+  const cursorRef = useRef(cursorId);
+  useLayoutEffect(() => { cursorRef.current = cursorId; });
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (hasBlockingLayer() || isTypingTarget(document.activeElement) || e.metaKey || e.ctrlKey || e.altKey || !order.length) return;
-      if (e.key === 'j' || e.key === 'k') {
-        e.preventDefault();
-        const next = Math.max(0, Math.min(order.length - 1, cursor + (e.key === 'j' ? 1 : -1)));
-        setCursor(next);
-        const row = order[next];
-        document.querySelector(`article.pr[data-id="${CSS.escape(row.id)}"]`)?.scrollIntoView({ block: 'nearest' });
-        if (s.pr && !noPr) set({ pr: row.id }, { replace: true });
-      } else if (e.key === 'Enter' && cursor >= 0) {
-        // Enter on a focused control (a toolbar button, a link) belongs to that control.
-        if ((e.target as Element | null)?.closest?.('button, a[href], input, select, textarea, summary, [role="button"], [role="checkbox"], [role="link"], [role="menuitem"], [role="separator"]')) return;
-        e.preventDefault();
-        if (noPr) openBranch(order[cursor]);
-        else set({ pr: order[cursor].id });
-      } else if (e.key === 'o' && cursor >= 0) {
-        e.preventDefault();
-        window.open(order[cursor].url, '_blank', 'noopener');
-      } else if (e.key === 'd' && cursor >= 0 && !s.pr) {
-        // With details open, the drawer handles `d` (for its PR).
-        e.preventDefault();
-        if (noPr) openBranch(order[cursor]);
-        else set({ diff: order[cursor].id });
-      }
+      if (e.key !== 'd' || s.pr || e.defaultPrevented || e.isComposing || e.metaKey || e.ctrlKey || e.altKey) return;
+      const id = cursorRef.current;
+      if (!id || hasBlockingLayer() || isTypingTarget(document.activeElement)) return;
+      e.preventDefault();
+      if (noPr) openBranch({ id });
+      else set({ diff: id });
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [order, cursor, s.pr, noPr, openBranch, set]);
+  }, [s.pr, noPr, openBranch, set]);
 
   const data = list.data;
   const total = data?.total ?? 0;
@@ -113,7 +109,6 @@ export function PullRequestsView() {
   const stWord = s.state === 'nopr' ? '' : ST_WORD[s.state];
   const whoWord = WHO_WORD[s.who];
   const fetching = (list.isFetching && !!data) || (relOn && rels.isFetching && !!rels.data);
-  const cursorId = cursor >= 0 ? order[cursor]?.id : undefined;
   const what = noPr ? `${plural(total, 'branch', 'branches')} without ${aShort(w)}` : [stWord, plural(total, w.short, w.shortMany)].filter(Boolean).join(' ');
   const summaryRest = `${[what, whoWord].filter(Boolean).join(' ')} · ${nRepos} ${plural(nRepos, 'repo')}`;
   const stateLabel = noPr ? `No ${w.short} yet` : s.state === 'all' ? `All ${w.shortMany}` : s.state[0].toUpperCase() + s.state.slice(1);

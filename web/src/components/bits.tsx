@@ -1,6 +1,9 @@
 /** Tiny shared bits that don't warrant their own file. */
 import type { ReactNode } from 'react';
 import type { PullRequest } from '../../../shared/api';
+import { rel } from '../lib/time';
+import type { DateLike } from '../lib/time';
+import { useNow } from '../workbench';
 import type { IconName } from './Icon';
 
 export function Diffstat({ add, del }: { add: number; del: number }) {
@@ -25,6 +28,14 @@ export function prIconClass(p: Pick<PullRequest, 'state' | 'isDraft'>): string {
  */
 export function AgentMark() {
   return <span className="agent-mark" title="An agent, writing through MCP"><span className="sr-only"> (</span>agent<span className="sr-only">)</span></span>;
+}
+
+/**
+ * "3m ago" that stays current: it re-renders on its own with the shared 30 s clock, so the age in a memoized row (which
+ * re-renders only when its props change) doesn't freeze at the row's last render.
+ */
+export function RelTime({ at }: { at: DateLike }) {
+  return <>{rel(at, useNow())}</>;
 }
 
 /** Keep a toolbar label and its control together when the row wraps. */

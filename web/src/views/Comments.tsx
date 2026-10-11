@@ -21,7 +21,7 @@ import { useUrlState } from '../lib/urlState';
 import type { ThreadAuthor, ThreadGroup, ThreadOrder } from '../lib/urlState';
 import { cx } from '../lib/util';
 import { Avatar } from '../components/Avatar';
-import { AgentMark, Ctl, MOD_K, prIconName } from '../components/bits';
+import { AgentMark, Ctl, MOD_K, RelTime, prIconName } from '../components/bits';
 import { FilterInput } from '../components/FilterInput';
 import { FilterToolbar } from '../components/FilterToolbar';
 import { Icon } from '../components/Icon';
@@ -442,7 +442,7 @@ function TargetHeader({ g, status, onDiff, onDetails }: { g: ThreadGroupOf<Threa
         <a className="gh" href={t.targetUrl} target="_blank" rel="noopener noreferrer" title={`Open on ${p.name}`} aria-label={`Open on ${p.name}`}><Icon name="ext" /></a>
       </span>
       <span className="rule" />
-      <span className="gc">{groupCount(g, status)}<span className="cv-when"> · <time dateTime={g.lastAt} title={fmtDateTime(g.lastAt)}>{rel(g.lastAt)}</time></span></span>
+      <span className="gc">{groupCount(g, status)}<span className="cv-when"> · <time dateTime={g.lastAt} title={fmtDateTime(g.lastAt)}><RelTime at={g.lastAt} /></time></span></span>
     </div>
   );
 }
@@ -495,7 +495,7 @@ const Row = memo(function Row({ t, on, cursor, open, me, onOpen, onToggle, onSta
         after={<>
           {t.earlierPush && <span className="cv-tag" title={`Made on an earlier push (${t.commitOid.slice(0, 7)}); the ${providerOf(t.repo).pr.short} has changed since`}>earlier push</span>}
           {resolved && t.resolvedBy && <span className="cv-by" title={t.resolvedAt ? `Resolved ${fmtDateTime(t.resolvedAt)}` : undefined}>resolved by {principalWord(t.resolvedBy)}</span>}
-          <time className="cv-time" dateTime={t.updatedAt} title={fmtDateTime(t.updatedAt)}>{rel(t.updatedAt)}</time>
+          <time className="cv-time" dateTime={t.updatedAt} title={fmtDateTime(t.updatedAt)}><RelTime at={t.updatedAt} /></time>
         </>} />
       {open && <Conversation id={convId} t={t} me={me} onOpen={onOpen} onStatus={onStatus} />}
     </div>
@@ -517,7 +517,7 @@ function Conversation({ id, t, me, onOpen, onStatus }: { id: string; t: ThreadLi
               <Avatar actor={self ? { login: me?.login ?? null, name: me?.name ?? me?.login ?? 'You', avatarUrl: null, isMe: true } : { login: null, name: c.author.name, avatarUrl: null, isMe: false }} size={16} />
               <b>{self ? 'You' : c.author.name}</b>
               {!self && <AgentMark />}
-              <time dateTime={c.createdAt} title={fmtDateTime(c.createdAt)}>{rel(c.createdAt)}</time>
+              <time dateTime={c.createdAt} title={fmtDateTime(c.createdAt)}><RelTime at={c.createdAt} /></time>
               {c.editedAt && <span title={`Edited ${fmtDateTime(c.editedAt)}`}>· edited</span>}
             </div>
             <Markdown source={c.body} repo={t.repo} className="md cv-md" />
@@ -527,7 +527,7 @@ function Conversation({ id, t, me, onOpen, onStatus }: { id: string; t: ThreadLi
       {resolved && t.resolvedBy && (
         <p className="cv-resolved">
           <Icon name="check" />Resolved by <b>{t.resolvedBy.kind === 'self' ? 'you' : t.resolvedBy.name}</b>{t.resolvedBy.kind === 'agent' && <AgentMark />}
-          {t.resolvedAt && <> · <time dateTime={t.resolvedAt} title={fmtDateTime(t.resolvedAt)}>{rel(t.resolvedAt)}</time></>}
+          {t.resolvedAt && <> · <time dateTime={t.resolvedAt} title={fmtDateTime(t.resolvedAt)}><RelTime at={t.resolvedAt} /></time></>}
         </p>
       )}
       <div className="cv-foot">

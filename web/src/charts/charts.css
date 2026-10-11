@@ -57,6 +57,7 @@
 .gd-card .tbl-btn:focus-visible { outline: 2px solid var(--wb-accent); outline-offset: 2px; }
 .gd-card-body { transition: opacity .15s ease; min-width: 0; }
 .gd-card.gd-loading .gd-card-body { opacity: .5; }
+@media (prefers-reduced-motion: reduce) { .gd-card-body { transition: none; } }
 .gd-card .dtable-wrap { max-height: var(--gd-table-h, 220px); }
 .gd-card .dtable thead th { position: sticky; top: 0; background: var(--wb-surface); z-index: 1; }
 .gd-card .dtable tbody th { text-align: left; font-weight: 450; color: var(--wb-fg); padding: 5px 8px; border-bottom: 1px solid var(--wb-border); white-space: nowrap; max-width: 280px; overflow: hidden; text-overflow: ellipsis; }

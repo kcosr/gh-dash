@@ -832,3 +832,12 @@ button.cm-quote { display: -webkit-box; text-align: left; }
 .filter-toolbar .wb-seg-btn[aria-pressed="true"] .st-open { color: var(--open); }
 .filter-toolbar .wb-seg-btn[aria-pressed="true"] .st-merged { color: var(--merged); }
 .filter-toolbar .wb-seg-btn[aria-pressed="true"] .st-closed { color: var(--closed); }
+
+/* ---------- reduced motion (Workbench's own motion follows it already). Last, so it wins over the rules above:
+   spinners hold still, fades and fills change at once. A list still dims only after its .2 s grace, so a quick refetch
+   doesn't flash it. The diff's and the charts' motion: diff.css, charts.css. */
+@media (prefers-reduced-motion: reduce) {
+  .sync .spin svg, .setup-card .ic.spin svg, .wb-btn .spin svg, .ar-note .spin svg { animation: none; }
+  .list.stale { transition: opacity 0s .2s; }
+  .meter i { transition: none; }
+}

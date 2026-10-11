@@ -7,14 +7,14 @@ import type { MenuItem } from '../workbench';
 import { Icon } from './Icon';
 import { useRepoLabel } from './repoMapContext';
 
-/** Set a repo's status, then say what it is now (the server's answer). */
-export function useSetRepoStatus(): (repo: Repo, status: RepoStatus) => void {
+/** Set a repo's status, then say what it is now (the server's answer). Settles once the answer is in, or failed. */
+export function useSetRepoStatus(): (repo: Repo, status: RepoStatus) => Promise<void> {
   const patch = usePatchRepo();
   const toast = useToast();
   const label = useRepoLabel();
   return (repo, status) => {
-    if (status === repo.status) return;
-    void patch.mutateAsync({ key: repo.key, patch: { status } })
+    if (status === repo.status) return Promise.resolve();
+    return patch.mutateAsync({ key: repo.key, patch: { status } })
       .then((r) => toast(statusToast(label(r.key), r)))
       .catch((error: Error) => toast(`Couldn't update ${label(repo.key)}: ${error.message}`, { tone: 'error' }));
   };

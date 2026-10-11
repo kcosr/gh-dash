@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import type { Ownership, Repo, VisibilityFilter } from '../../../shared/api';
 import { repoProvider } from '../../../shared/provider';
 import { defaultRepoScope } from '../../../shared/repos';
@@ -70,6 +70,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
 
   const [filter, setFilter] = useState('');
   const [showInactive, setShowInactive] = useState(false);
+  const sideRef = useRef<HTMLElement>(null);
 
   // The context's repos: the sidebar lists, selects and counts only these (a set made here holds only these).
   const everything = repos.data ?? [];
@@ -146,6 +147,20 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
     });
   };
 
+  /**
+   * A pin or status change from a row's menu can move the row (to Pinned, or out of it) or hide it (into the collapsed
+   * inactive section), taking keyboard focus with it: once the answer is in, focus goes to the repo's "…" where it is
+   * now, else to the inactive section's toggle, else the filter. Only when focus was lost (it's on the page itself).
+   */
+  const keepFocus = (key: string, done: Promise<unknown>) => {
+    void done.finally(() => requestAnimationFrame(() => {
+      const side = sideRef.current;
+      if (!side || (document.activeElement && document.activeElement !== document.body)) return;
+      const row = [...side.querySelectorAll<HTMLElement>('.repo-item')].find((el) => el.dataset.key === key);
+      (row?.querySelector<HTMLElement>('.repo-more') ?? side.querySelector<HTMLElement>('.side-more') ?? side.querySelector<HTMLElement>('#repoQ'))?.focus();
+    }));
+  };
+
   const item = (r: Repo) => {
     const on = selected.has(r.key);
     const name = label(r.key);
@@ -160,11 +175,12 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
       r.stats.openIssues > 0 ? `${r.stats.openIssues} open issues` : '',
     ].filter(Boolean).join('. ');
     const describedBy = description ? `repo-info-${r.key}` : undefined;
-    // Right-click opens the row's menu (its "…", shown while the row is hovered), as on the Repositories tab.
+    // Right-click opens the row's menu (its "…", shown while the row is hovered), as on the Repositories tab. Only on the
+    // row itself: React passes on events from the menu too (a portal), whose links keep the browser's own menu.
     return (
-      <div key={r.key} className={cx('repo-item', on && 'on')} onContextMenu={(e) => {
+      <div key={r.key} className={cx('repo-item', on && 'on')} data-key={r.key} onContextMenu={(e) => {
         const more = e.currentTarget.querySelector<HTMLButtonElement>('.repo-more');
-        if (!more) return;
+        if (!more || !e.currentTarget.contains(e.target as Node)) return;
         e.preventDefault();
         more.click();
       }}>
@@ -206,14 +222,14 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
             </span>}
           </span>}
         </button>
-        <RepoMenu repo={r} className="repo-more" onNavigate={onNavigate} />
+        <RepoMenu repo={r} className="repo-more" onNavigate={onNavigate} afterChange={(done) => keepFocus(r.key, done)} />
         {description && <span className="sr-only" id={describedBy}>{description}</span>}
       </div>
     );
   };
 
   return (
-    <aside className="sidebar" id="repository-sidebar" aria-label="Repository scope">
+    <aside ref={sideRef} className="sidebar" id="repository-sidebar" aria-label="Repository scope">
       <div className="side-top">
         <div className="side-search">
           <FilterInput id="repoQ" placeholder="Filter repositories" value={filter} onChange={setFilter} hotkey={null} />

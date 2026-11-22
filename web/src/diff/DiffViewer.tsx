@@ -26,7 +26,8 @@ import {
   setOpenNewDraft, setSendingDraft, subscribeNewDrafts,
 } from './drafts';
 import { createCurrentFile, FileList, type CurrentFile } from './FileList';
-import { buildFiles, parseFiles, type ViewerFile } from './model';
+import { fullContextDiff } from './fullContext';
+import { buildFiles, parseFiles, toFileDiff, type ViewerFile } from './model';
 import { DraftComposer, FileNotes, LineThreads, ThreadsCtx, type ThreadsState } from './Threads';
 import {
   annotationsFor, countsByFile, type DraftAnchor, draftSnippet, draftSpot, type Note, notesByFile, type PierreRange, pierreSide, readingOrder, selectionAnchor,
@@ -84,6 +85,7 @@ export interface DiffComments {
 type Item = CodeViewItem<Note>;
 type CodeViewInstance = CodeViewClass<Note, undefined>;
 type Annotation = DiffLineAnnotation<Note> | LineAnnotation<Note>;
+type FullContext = 'loading' | FileDiffMetadata;
 const NO_THREADS: CommentThread[] = [];
 
 /** Row metrics shared by the CSS (pierre.css, diff.css) and the virtualizer's height estimates. */
@@ -178,9 +180,16 @@ function useExpandControls(scroller: RefObject<HTMLDivElement | null>) {
     if (!roots.current.has(root)) {
       roots.current.add(root);
       root.addEventListener('focusin', track);
+      // The trailing label and its arrow perform the same expansion.
+      root.addEventListener('click', (event) => {
+        const label = event.target instanceof Element && event.target.closest('[data-separator-last] [data-unmodified-lines]');
+        if (label) label.closest('[data-separator-wrapper]')?.querySelector<HTMLElement>('[data-expand-up]')?.click();
+      });
     }
     for (const el of root.querySelectorAll<HTMLElement>('[data-expand-button]:not([tabindex])')) {
-      const label = el.hasAttribute('data-expand-up') ? 'Expand down' : el.hasAttribute('data-expand-down') ? 'Expand up' : 'Expand all';
+      const label = el.hasAttribute('data-expand-up')
+        ? el.closest('[data-separator-last]') ? 'Expand toward end of file' : 'Expand down'
+        : el.hasAttribute('data-expand-down') ? 'Expand up' : 'Expand all';
       el.tabIndex = 0;
       el.title = label;
       el.setAttribute('aria-label', label);
@@ -224,6 +233,18 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
   }, [files, count]);
   const byId = useMemo(() => new Map(files.map((f) => [f.id, f])), [files]);
   const indexOf = useMemo(() => new Map(files.map((f, i) => [f.id, i])), [files]);
+  const [fullContext, setFullContext] = useState(() => ({ files, byFile: new Map<string, FullContext>() }));
+  if (fullContext.files !== files) setFullContext({ files, byFile: new Map() });
+  const fullByFile = fullContext.byFile;
+  const setFullFile = useCallback((id: string, value: FullContext | null) => {
+    setFullContext((current) => {
+      if (current.files !== files) return current;
+      const byFile = new Map(current.byFile);
+      if (value === null) byFile.delete(id);
+      else byFile.set(id, value);
+      return { files, byFile };
+    });
+  }, [files]);
   const toast = useToast();
 
   // Comment threads: placed in this diff (shared/comment-placement.ts), then per file as Pierre annotations.
@@ -231,9 +252,9 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
   const { files: diffFiles, headOid, baseOid } = diff;
   const placements = useMemo(() => placeThreads(threads, { files: diffFiles, headOid, baseOid }), [threads, diffFiles, headOid, baseOid]);
   const threadById = useMemo(() => new Map(threads.map((t) => [t.id, t])), [threads]);
-  // Pierre renders (and annotates) only the lines a file's patch shows, until its context is expanded.
+  // The compact diff anchors annotations to its patch. A full file can place them on any line of either revision.
   const shownLines = useMemo(() => new Map<string, { old: SideLines; new: SideLines }>(), [byId]);
-  const shown = useCallback((path: string, side: 'old' | 'new', line: number) => {
+  const patchShows = useCallback((path: string, side: 'old' | 'new', line: number) => {
     let sides = shownLines.get(path);
     if (!sides) {
       const patch = byId.get(path)?.file.patch;
@@ -242,6 +263,11 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
     }
     return sides[side].has(line);
   }, [byId, shownLines]);
+  const shown = useCallback((path: string, side: 'old' | 'new', line: number) => {
+    const full = fullByFile.get(path);
+    if (!full || full === 'loading') return patchShows(path, side, line);
+    return line > 0 && line <= (side === 'old' ? full.deletionLines.length : full.additionLines.length);
+  }, [fullByFile, patchShows]);
   const notes = useMemo(() => notesByFile(threads, placements, shown), [threads, placements, shown]);
   const counts = useMemo(() => (threads.length ? countsByFile(threads, placements) : null), [threads, placements]);
   const ordered = useMemo(() => readingOrder(threads, placements, indexOf), [threads, placements, indexOf]);
@@ -345,20 +371,22 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
     const n = notes.get(vf.id);
     const d = draft?.path === vf.id ? spot : null;
     const sig = n || d ? JSON.stringify([n, d]) : '';
+    const full = fullByFile.get(vf.id);
+    const fileDiff = full && full !== 'loading' ? full : vf.fileDiff!;
     const cached = itemCache.current.get(vf.id);
-    if (cached && cached.flip === flip && cached.notes === sig && cached.item.type === 'diff' && cached.item.fileDiff === vf.fileDiff) return cached.item;
+    if (cached && cached.flip === flip && cached.notes === sig && cached.item.type === 'diff' && cached.item.fileDiff === fileDiff) return cached.item;
     const item: Item = {
-      id: vf.id, type: 'diff', fileDiff: vf.fileDiff!, version: (cached?.item.version ?? -1) + 1, collapsed: isCollapsed(vf),
+      id: vf.id, type: 'diff', fileDiff, version: (cached?.item.version ?? -1) + 1, collapsed: isCollapsed(vf),
       annotations: annotationsFor(n, d, vf.file.status === 'removed' ? 'deletions' : 'additions'),
     };
     itemCache.current.set(vf.id, { item, flip, notes: sig });
     return item;
-  }), [files, count, flips, isCollapsed, notes, draft, spot]);
+  }), [files, count, flips, isCollapsed, notes, draft, spot, fullByFile]);
 
   // Full contents Pierre loaded, per path: a new thread on expanded context takes its snippet from them. Keyed on
   // the revision, so a refreshed diff starts empty.
   const contents = useMemo(() => new Map<string, { old: string[] | null; new: string[] | null }>(), [rev]);
-  // Context expansion: Pierre asks for both sides of a partial (patch-only) diff on the first expand.
+  // Both the gutter expander and the full-file action load the same two immutable revisions.
   // A failure leaves the hunks as they are and says so in the header. loadFile resolves null for
   // files the server can't serve (missing, binary, too large): those aren't asked for again. It
   // rejects on transient failures (network, rate limit), which the next click retries.
@@ -883,9 +911,37 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
     return () => document.removeEventListener('keydown', onKey);
   }, [isActive, columnIsTop, indexOf, current, goTo, updatePrefs, focusThread, setColumn, replyToFocused, toggleResolved]);
 
+  const toggleFullFile = useCallback(async (vf: ViewerFile) => {
+    const patch = vf.fileDiff;
+    const full = fullByFile.get(vf.id);
+    if (!patch || full === 'loading') return;
+    if (isCollapsed(vf)) toggleCollapsed(vf.id);
+    if (full) {
+      // Move a draft anchored in newly visible context to its file-level composer when those lines fold away.
+      if (draft?.path === vf.id && spot?.at === 'line' && !patchShows(vf.id, spot.side, spot.endLine)) {
+        setDraftOpenedAt(null);
+        view.current?.clearSelectedLines();
+      }
+      // The gutter may already have hydrated this model. Return to the original patch and its folded context.
+      if (!patch.isPartial) vf.fileDiff = toFileDiff(vf.file, vf.cacheKey);
+      setFullFile(vf.id, null);
+      return;
+    }
+    setFullFile(vf.id, 'loading');
+    try {
+      setFullFile(vf.id, fullContextDiff(patch, await loadDiffFiles(patch)));
+    } catch {
+      setFullFile(vf.id, null);
+      setFailed((s) => new Set(s).add(rev + '\0' + vf.id));
+    }
+  }, [draft, fullByFile, isCollapsed, loadDiffFiles, patchShows, rev, setFullFile, spot, toggleCollapsed]);
+
   const renderHeader = useCallback((item: Item) => {
     const vf = byId.get(item.id);
     if (!vf) return null;
+    const patch = vf.fileDiff;
+    const canShowFull = !!baseOid && !!patch?.hunks.length && (patch.type === 'change' || patch.type === 'rename-changed');
+    const full = fullByFile.get(vf.id);
     return (
       <FileHeader
         vf={vf}
@@ -893,10 +949,12 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
         provider={provider}
         collapsed={item.collapsed === true}
         onToggle={toggleCollapsed}
+        fullContext={full === 'loading' ? 'loading' : full ? 'full' : 'changes'}
+        onToggleContext={canShowFull ? () => void toggleFullFile(vf) : undefined}
         contextFailed={failed.has(`${rev}\0${vf.id}`)}
       />
     );
-  }, [byId, diff.url, provider, rev, failed, toggleCollapsed]);
+  }, [baseOid, byId, diff.url, provider, rev, failed, fullByFile, toggleCollapsed, toggleFullFile]);
 
   // Desktop only (the compact list is a touch overlay); memoized so the file list doesn't re-render.
   const hints = useMemo(() => (compact ? undefined : (

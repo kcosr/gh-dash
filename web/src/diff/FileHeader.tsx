@@ -60,12 +60,14 @@ function Path({ vf }: { vf: ViewerFile }) {
 }
 
 /** A file's sticky header: fold toggle, path (renames as old → new), line counts, and a note when there's no diff to show. */
-export function FileHeader({ vf, diffUrl, provider, collapsed, onToggle, contextFailed }: {
+export function FileHeader({ vf, diffUrl, provider, collapsed, onToggle, fullContext, onToggleContext, contextFailed }: {
   vf: ViewerFile;
   diffUrl: string;
   provider: Provider;
   collapsed: boolean;
   onToggle: (id: string) => void;
+  fullContext: 'changes' | 'loading' | 'full';
+  onToggleContext?: (() => void) | undefined;
   contextFailed: boolean;
 }) {
   const f = vf.file;
@@ -89,7 +91,14 @@ export function FileHeader({ vf, diffUrl, provider, collapsed, onToggle, context
           ? <span className="dvh-note">{NOTES[vf.note]}</span>
           : collapsed
             ? <button type="button" className="dvh-note link" onClick={() => onToggle(vf.id)}>{vf.folded === 'deleted' ? 'Deleted' : vf.folded === 'large' ? 'Large diff' : 'Hidden'} · show</button>
-            : contextFailed && <span className="dvh-note">Context unavailable</span>}
+            : contextFailed && <span className="dvh-note" role="status">Context unavailable</span>}
+      {onToggleContext && (
+        <button type="button" className={cx('dvh-context', fullContext === 'full' && 'on')}
+          aria-disabled={fullContext === 'loading' || undefined} onClick={onToggleContext}>
+          <Icon name="chevron" />
+          {fullContext === 'loading' ? 'Loading file…' : fullContext === 'full' ? 'Show changes only' : 'Show full file'}
+        </button>
+      )}
     </div>
   );
 }

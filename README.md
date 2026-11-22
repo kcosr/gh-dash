@@ -138,7 +138,8 @@ The sidebar decides which repositories every tab shows.
 
 - **Opening a diff.** Use **Files changed** in a pull request's details, press <kbd>d</kbd> in the
   list, or click a commit's SHA. Switch between unified and split views, wrap long lines, and expand
-  the unchanged code around a change.
+  the unchanged code around a change. **Show full file** in a file's header reveals all its unchanged
+  lines while keeping the diff and comments. **Show changes only** returns to the hunks.
 - **Reviewing a branch.** A pushed branch can be reviewed before it has a pull request: pick it
   from **Branches** on its repository's page, or with **Review a branch…** in the
   <kbd>Ctrl</kbd>/<kbd>⌘</kbd> <kbd>K</kbd> palette. Its diff is against the default branch, as a

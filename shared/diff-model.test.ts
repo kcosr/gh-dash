@@ -1,6 +1,7 @@
 import type { FileDiffMetadata } from '@pierre/diffs';
 import { describe, expect, it } from 'vitest';
 import type { Diff, DiffFile } from './api';
+import { fullContextDiff } from '../web/src/diff/fullContext';
 import { LARGE_FILE_LINES, buildFiles, parseFiles, renameParts, toFileDiff } from '../web/src/diff/model';
 import commit6df2155 from '../web/src/diff/fixtures/gh-dash-commit-6df2155.json';
 import pr2 from '../web/src/diff/fixtures/gh-dash-pr-2.json';
@@ -66,6 +67,39 @@ describe('toFileDiff', () => {
     const noEol = toFileDiff(file('a.txt', '@@ -1,2 +1,2 @@\n a\n-b\n\\ No newline at end of file\n+c\n\\ No newline at end of file'));
     expect(noEol.additionLines).toEqual(['a\n', 'c']);
     expect(noEol.hunks[0]).toMatchObject({ noEOFCRAdditions: true, noEOFCRDeletions: true });
+  });
+});
+
+describe('fullContextDiff', () => {
+  const patch = toFileDiff(file('src/new.txt', '@@ -2 +1,0 @@\n-remove\n@@ -3,0 +3 @@\n+insert', {
+    previousPath: 'src/old.txt', status: 'renamed',
+  }), 'revision');
+  const oldFile = { name: 'src/old.txt', contents: 'start\nremove\nbetween\nend' };
+  const newFile = { name: 'src/new.txt', contents: 'start\nbetween\ninsert\nend' };
+
+  it('preserves host changes and fills all omitted context, including around zero-length hunk ranges', () => {
+    const full = fullContextDiff(patch, { oldFile, newFile });
+    expect(full).toMatchObject({
+      name: newFile.name, prevName: oldFile.name, type: 'rename-changed', isPartial: false,
+      cacheKey: 'revision:full-context', splitLineCount: 5, unifiedLineCount: 5,
+      deletionLines: ['start\n', 'remove\n', 'between\n', 'end'], additionLines: ['start\n', 'between\n', 'insert\n', 'end'],
+    });
+    expect(full.hunks).toHaveLength(1);
+    expect(full.hunks[0]).toMatchObject({ collapsedBefore: 0, noEOFCRDeletions: true, noEOFCRAdditions: true });
+    expect(full.hunks[0]!.hunkContent).toEqual([
+      { type: 'context', deletionLineIndex: 0, additionLineIndex: 0, lines: 1 },
+      { type: 'change', deletionLineIndex: 1, additionLineIndex: 1, deletions: 1, additions: 0 },
+      { type: 'context', deletionLineIndex: 2, additionLineIndex: 1, lines: 1 },
+      { type: 'change', deletionLineIndex: 3, additionLineIndex: 2, deletions: 0, additions: 1 },
+      { type: 'context', deletionLineIndex: 3, additionLineIndex: 3, lines: 1 },
+    ]);
+    expect(patch).toMatchObject({ isPartial: true, cacheKey: 'revision' });
+    expect(patch.hunks).toHaveLength(2);
+  });
+
+  it('does not present a change missing from the patch as unchanged context', () => {
+    expect(() => fullContextDiff(patch, { oldFile, newFile: { ...newFile, contents: 'start\nbetween\ninsert\nchanged tail' } }))
+      .toThrow('The full files do not match the patch');
   });
 });
 

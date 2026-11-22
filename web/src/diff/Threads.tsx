@@ -31,9 +31,10 @@ export interface ThreadsState {
   focused: number | null;
   /** Focus a thread (null: none); `scroll` also brings it into view. */
   focus: (id: number | null, opts?: { scroll?: boolean }) => void;
-  /** Resolved threads the reader opened; the rest stay one line. */
-  expanded: ReadonlySet<number>;
+  isExpanded: (thread: CommentThread) => boolean;
   setExpanded: (id: number, open: boolean) => void;
+  setStatus: (id: number, status: CommentThread['status']) => Promise<void>;
+  folded: ReadonlySet<number>;
   /** Prefix for this diff's draft keys. */
   draftScope: string;
   /** The new thread being written, if any (one at a time): its record's key, its anchor, and where it shows now. */
@@ -252,7 +253,7 @@ function CommentRow({ thread, c, first }: { thread: CommentThread; c: ThreadComm
 }
 
 /**
- * One thread: its comments, then Reply and Resolve. A resolved thread is one line until opened (or focused).
+ * One thread with title and status controls. The title remains available while the discussion is collapsed.
  * `snippet` shows the lines it was made on, for threads whose lines aren't on screen (outdated, or in the column).
  */
 export function ThreadCard({ thread, snippet = false, note }: { thread: CommentThread; snippet?: boolean; note?: ReactNode }) {
@@ -270,51 +271,45 @@ export function ThreadCard({ thread, snippet = false, note }: { thread: CommentT
   }, [replyRequest, takeReply, thread.id]);
   const resolved = thread.status === 'resolved';
   const focused = s.focused === thread.id;
-  const open = !resolved || s.expanded.has(thread.id) || focused;
+  const open = s.isExpanded(thread);
   const first = thread.comments[0]!;
-  const setStatus = async (status: 'open' | 'resolved') => {
-    try {
-      await s.actions.setStatus(thread.id, status);
-      if (status === 'resolved') s.setExpanded(thread.id, false);
-    } catch (e) {
-      toast(`Couldn't update: ${(e as Error).message}`, { tone: 'error' });
-    }
-  };
-  if (!open) {
-    return (
-      <div className="dth resolved" data-thread={thread.id}>
-        <button type="button" className="dth-sum" onClick={() => { s.setExpanded(thread.id, true); s.focus(thread.id); }} title="Show the resolved thread">
-          <Icon name="check" />
-          <span className="dth-sum-t"><b>{first.author.kind === 'self' ? 'You' : first.author.name}</b>{first.author.kind === 'agent' && <> <AgentMark /></>}: {plainPreview(first.body, 160)}</span>
-          {thread.comments.length > 1 && <span className="dth-n">{thread.comments.length - 1} {plural(thread.comments.length - 1, 'reply', 'replies')}</span>}
-        </button>
-      </div>
-    );
-  }
+  const [changingStatus, setChangingStatus] = useState(false);
+  const statusLabel = resolved ? 'Reopen' : 'Resolve';
   return (
-    <div className={cx('dth', resolved && 'resolved', focused && 'focus')} data-thread={thread.id} onFocusCapture={() => s.focused !== thread.id && s.focus(thread.id)}>
-      {(resolved || note) && (
-        <div className="dth-top">
-          {resolved && (
-            <button type="button" className="dth-state" onClick={() => { s.setExpanded(thread.id, false); if (focused) s.focus(null); }} title="Collapse">
-              <Icon name="check" />Resolved{thread.resolvedBy && <> by {thread.resolvedBy.kind === 'self' ? 'you' : thread.resolvedBy.name}</>}
-            </button>
+    <div className={cx('dth', resolved && 'resolved', focused && open && 'focus', !open && 'dth-collapsed')} data-thread={thread.id}
+      onFocusCapture={() => { if (open && !focused) s.focus(thread.id); }}>
+      <div className="dth-heading">
+        <button type="button" className="dth-sum" aria-expanded={open} onClick={() => {
+          s.setExpanded(thread.id, !open);
+          if (!open || focused) s.focus(open ? null : thread.id);
+        }} title={open ? 'Collapse thread' : 'Expand thread'}>
+          {resolved
+            ? <Icon name="check" title={thread.resolvedBy ? `Resolved by ${thread.resolvedBy.kind === 'self' ? 'you' : thread.resolvedBy.name}` : 'Resolved'} />
+            : <Icon name={open ? 'chevron' : 'chevronRight'} />}
+          <span className="dth-sum-t"><b>{first.author.kind === 'self' ? 'You' : first.author.name}</b>{first.author.kind === 'agent' && <> <AgentMark /></>}: {plainPreview(first.body, 160)}</span>
+          {!open && resolved && thread.comments.length > 1 && <span className="dth-n">{thread.comments.length - 1} {plural(thread.comments.length - 1, 'reply', 'replies')}</span>}
+          {!open && s.folded.has(thread.id) && <Icon name="layers" className="dth-folded-icon" title="Code folded" />}
+        </button>
+        <button type="button" className="dth-btn" disabled={changingStatus} title={open ? `${statusLabel} (e)` : statusLabel} onClick={async () => {
+          setChangingStatus(true);
+          try { await s.setStatus(thread.id, resolved ? 'open' : 'resolved'); }
+          finally { setChangingStatus(false); }
+        }}>{statusLabel}</button>
+      </div>
+      {open && <>
+        {note && <div className="dth-top">{note}</div>}
+        {snippet && thread.snippet !== null && <pre className="dth-snippet">{thread.snippet}</pre>}
+        {thread.comments.map((c, i) => <CommentRow key={c.id} thread={thread} c={c} first={i === 0} />)}
+        {replying
+          ? <Composer draftKey={replyKey} placeholder="Reply" submitLabel="Reply" focusKey={replyFocus} onSubmit={(body) => s.actions.reply(thread.id, body)} onClose={() => setReplying(false)} />
+          : (
+            <div className="dth-foot">
+              <button type="button" className="dth-reply" onClick={() => setReplying(true)} title="Reply (r)">Reply…</button>
+              <button type="button" className="dth-btn icon" onClick={() => void copyLink(thread.id).then((ok) => toast(ok ? 'Link to the thread copied' : 'Copy failed'))}
+                title="Copy a link to this thread" aria-label="Copy a link to this thread"><Icon name="copy" /></button>
+            </div>
           )}
-          {note}
-        </div>
-      )}
-      {snippet && thread.snippet !== null && <pre className="dth-snippet">{thread.snippet}</pre>}
-      {thread.comments.map((c, i) => <CommentRow key={c.id} thread={thread} c={c} first={i === 0} />)}
-      {replying
-        ? <Composer draftKey={replyKey} placeholder="Reply" submitLabel="Reply" focusKey={replyFocus} onSubmit={(body) => s.actions.reply(thread.id, body)} onClose={() => setReplying(false)} />
-        : (
-          <div className="dth-foot">
-            <button type="button" className="dth-reply" onClick={() => setReplying(true)} title="Reply (r)">Reply…</button>
-            <button type="button" className="dth-btn" onClick={() => void setStatus(resolved ? 'open' : 'resolved')} title={`${resolved ? 'Reopen' : 'Resolve'} (e)`}>{resolved ? 'Reopen' : 'Resolve'}</button>
-            <button type="button" className="dth-btn icon" onClick={() => void copyLink(thread.id).then((ok) => toast(ok ? 'Link to the thread copied' : 'Copy failed'))}
-              title="Copy a link to this thread" aria-label="Copy a link to this thread"><Icon name="copy" /></button>
-          </div>
-        )}
+      </>}
     </div>
   );
 }

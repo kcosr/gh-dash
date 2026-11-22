@@ -119,7 +119,7 @@ test('email tokens retain delimiter, paste, blur, removal, and saved payload sem
 
 
 test('author filter communicates its active state with the shared button variant', async ({ page }) => {
-  await page.route('**/api/v1/agents', (route) => route.fulfill({ json: { items: [{ id: 1, name: 'Review assistant', createdAt: '2026-10-05T10:00:00Z', lastUsedAt: null, disabledAt: null, tokenPrefix: 'fixture', builtIn: false, sources: null }] } }));
+  await page.route('**/api/v1/agents', (route) => route.fulfill({ json: { items: [{ id: 1, name: 'Review assistant', createdAt: '2026-10-05T10:00:00Z', lastUsedAt: null, disabledAt: null, tokenPrefix: 'fixture', builtIn: false, sources: null, shareView: false }] } }));
   await page.goto('/comments?source=github.com');
   const trigger = page.getByRole('button', { name: 'Opened by: Anyone' });
   const inactiveBackground = await trigger.evaluate((el) => getComputedStyle(el).backgroundColor);

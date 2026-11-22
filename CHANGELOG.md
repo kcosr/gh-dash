@@ -4,7 +4,7 @@
 
 ### Added
 
-- Expand a changed file to its full context from the diff view. ([#25](https://github.com/kcosr/gh-dash/pull/25))
+- Expand full file context, fold resolved code, and share the current diff and selection with an agent on request. ([#25](https://github.com/kcosr/gh-dash/pull/25))
 
 ## 0.1.0 - 2026-10-11
 

@@ -34,7 +34,7 @@ describe('agents', () => {
   it('makes an agent with a token shown once: only its hash and first characters are kept', () => {
     const { agent, token } = createAgent(db, '  Claude  ', T0);
     expect(token).toMatch(/^ghd_[A-Za-z0-9_-]{43}$/);
-    expect(agent).toEqual({ id: 2, name: 'Claude', tokenPrefix: token.slice(0, 8), createdAt: T0, lastUsedAt: null, disabledAt: null, builtIn: false, sources: null });
+    expect(agent).toEqual({ id: 2, name: 'Claude', tokenPrefix: token.slice(0, 8), createdAt: T0, lastUsedAt: null, disabledAt: null, builtIn: false, sources: null, shareView: false });
     expect(stored(agent.id)).toEqual({ token_hash: createHash('sha256').update(token).digest('hex'), prefix: token.slice(0, 8), last_used_at: null, revoked_at: null });
     expect(JSON.stringify(db.all('SELECT * FROM agent_tokens'))).not.toContain(token);
     expect(db.get('SELECT id, kind, name FROM principals WHERE id = ?', [agent.id])).toEqual({ id: agent.id, kind: 'agent', name: 'Claude' });

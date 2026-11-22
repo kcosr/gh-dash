@@ -122,6 +122,6 @@ export function pickedSources(pick: SourcePick, known: readonly AgentSource[]): 
 export function agentsShown(list: readonly Agent[], builtInLive: boolean): Agent[] {
   const sorted = sortAgents(list);
   if (!builtInLive || sorted.some((a) => a.builtIn)) return sorted;
-  const builtIn: Agent = { id: 0, name: 'Agent', tokenPrefix: null, createdAt: '', lastUsedAt: null, disabledAt: null, builtIn: true, sources: null };
+  const builtIn: Agent = { id: 0, name: 'Agent', tokenPrefix: null, createdAt: '', lastUsedAt: null, disabledAt: null, builtIn: true, sources: null, shareView: false };
   return sortAgents([...sorted, builtIn]);
 }

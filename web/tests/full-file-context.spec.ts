@@ -22,7 +22,7 @@ const thread: CommentThread = {
   }],
 };
 
-async function openDiff(page: Page, changedFiles = files) {
+async function openDiff(page: Page, changedFiles = files, deepLink = false) {
   await page.route('**/api/v1/prs/**/diff', (route) => route.fulfill({ json: {
     kind: 'pr', repo: pr.repo, number: pr.number, title: pr.title, baseOid, headOid, fetchedAt,
     files: changedFiles, totalFiles: changedFiles.length,
@@ -30,11 +30,24 @@ async function openDiff(page: Page, changedFiles = files) {
     url: pr.url,
   } satisfies Diff }));
   await page.route('**/api/v1/prs/**/threads', (route) => route.fulfill({ json: { items: [thread] } }));
-  await page.goto('/prs?source=gitlab.example.com&state=open');
-  await page.getByRole('article', { name: pr.title, exact: true }).click();
-  await page.getByRole('button', { name: /Files changed/ }).click();
+  const url = '/prs?source=gitlab.example.com&state=open';
+  await page.goto(deepLink ? `${url}&diff=${encodeURIComponent(pr.id)}` : url);
+  if (!deepLink) {
+    await page.getByRole('article', { name: pr.title, exact: true }).click();
+    await page.getByRole('button', { name: /Files changed/ }).click();
+  }
   return page.locator('diffs-container').filter({ has: page.locator('.dvh[data-path="src/cache.ts"]') });
 }
+
+test('the merge request number opens its details even from a directly linked diff', async ({ page }) => {
+  await openDiff(page, files, true);
+  const requestNumber = page.getByRole('link', { name: `Open merge request !${pr.number} details` });
+  await requestNumber.press('Enter');
+  await expect(page.getByRole('region', { name: /Changes in/ })).toHaveCount(0);
+  await expect.poll(() => new URL(page.url()).searchParams.get('pr')).toBe(pr.id);
+  await page.getByRole('button', { name: /Files changed/ }).click();
+  await expect(requestNumber).toBeVisible();
+});
 
 test('full file context uses the two displayed revisions and preserves changes and comments', async ({ page }) => {
   const requests: Array<{ ref: string | null; path: string | null }> = [];

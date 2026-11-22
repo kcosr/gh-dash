@@ -4,6 +4,7 @@ import { McpCore } from './core';
 import type { McpDeps, Tool } from './tool';
 import { getBranch, listBranches } from './tools/branches';
 import { addComment, deleteComment, editComment, reopenThread, reply, resolveThread } from './tools/comments';
+import { getCurrentView } from './tools/current-view';
 import { show, waitForReply } from './tools/live';
 import { findPr, getPr, listPrs } from './tools/prs';
 import { listRepos, resolveRepo, whoami } from './tools/repos';
@@ -11,7 +12,7 @@ import { getThreadTool, listThreads } from './tools/threads';
 
 /** In the order tools/list gives them: finding things first, then reading threads, then writing and waiting. */
 export const TOOLS: readonly Tool[] = [
-  whoami, listRepos, resolveRepo, listPrs, findPr, getPr, listBranches, getBranch, listThreads, getThreadTool,
+  whoami, listRepos, resolveRepo, listPrs, findPr, getPr, listBranches, getBranch, getCurrentView, listThreads, getThreadTool,
   addComment, reply, editComment, deleteComment, resolveThread, reopenThread, waitForReply, show,
 ];
 
@@ -25,6 +26,7 @@ export const INSTRUCTIONS = [
   'wait_for_reply for their answer. add_comment annotates the diff (a PR, at its head: path and start_line). A pushed',
   'branch with no PR is reviewed the same way (get_branch, then add_comment and list_threads with branch); its threads',
   'are shared with a PR later opened from it.',
+  'When the user asks about what they are viewing or have selected, get_current_view reads it live if they enabled view sharing.',
   'In results, `by` is "me" (you), "you" (the user) or "agent:<name>" (another agent). The user may limit you to some',
   'of their code hosts (whoami lists yours): repositories on the others read as untracked.',
 ].join(' ');

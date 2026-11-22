@@ -149,10 +149,9 @@ a.dvh-note:hover, .dvh-note.link:hover { color: var(--wb-accent-text); }
 /* Focus: a 1px border a shade toward the accent (the thread's lines are tinted too), no ring. */
 .dth.focus { border-color: color-mix(in srgb, var(--wb-accent) 30%, var(--wb-border-strong)); border-left-color: var(--dth-rule); }
 .dth + .dth { margin-top: -2px; }
+.dth-heading { display: flex; align-items: center; gap: 5px; min-width: 0; margin-bottom: 6px; }
+.dth-heading > .dth-btn { flex: none; }
 .dth-top { display: flex; align-items: center; gap: 8px; margin: -2px 0 6px; font-size: 11.5px; color: var(--wb-muted); }
-.dth-state { display: inline-flex; align-items: center; gap: 4px; color: var(--wb-muted); }
-.dth-state:hover { color: var(--wb-fg); }
-.dth-state svg, .dth-sum svg { width: 12px; height: 12px; }
 .dth-c + .dth-c { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--wb-border); }
 .dth-c-head { display: flex; align-items: center; gap: 6px; min-height: 18px; font-size: 12px; color: var(--wb-muted); }
 .dth-who { color: var(--wb-fg); font-weight: 600; }
@@ -182,11 +181,14 @@ a.dvh-note:hover, .dvh-note.link:hover { color: var(--wb-accent-text); }
 .dth-hint { font-size: 11px; color: var(--wb-muted); }
 .dth-hint kbd { font-size: 10px; padding: 2px 4px; }
 .dth-snippet { margin: 0 0 8px; padding: 5px 8px; max-height: 9em; overflow: auto; border-radius: 4px; background: var(--wb-surface-2); font: 11.5px/1.5 var(--wb-font-mono); color: var(--wb-fg-2); white-space: pre; }
-.dth-sum { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 20px; font-size: 12px; color: var(--wb-muted); text-align: left; }
+.dth-sum { display: flex; flex: 1; align-items: center; gap: 6px; min-width: 0; min-height: 24px; font-size: 12px; color: var(--wb-muted); text-align: left; }
 .dth-sum:hover { color: var(--wb-fg-2); }
+.dth-sum svg { flex: none; width: 12px; height: 12px; }
 .dth-sum-t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dth-sum-t b { font-weight: 600; color: var(--wb-fg-2); }
-.dth.resolved:has(> .dth-sum) { padding-top: 5px; padding-bottom: 5px; background: var(--wb-page); }
+.dth.dth-collapsed { padding-top: 5px; padding-bottom: 5px; background: var(--wb-page); }
+.dth-collapsed .dth-heading { margin-bottom: 0; }
+.dth-sum .dth-folded-icon { color: var(--wb-accent-text); }
 .dth-n { flex: none; font-size: 11.5px; color: var(--wb-muted); }
 
 /* File list: thread counts per file, and the filter that narrows the list (and j/k) to files with threads. */

@@ -183,6 +183,10 @@ export function useAgentActions() {
     mutationFn: ({ id, sources }: { id: number | 'built-in'; sources: string[] | null }) => need(bridge).setAgentSources(id, sources),
     onSettled: changed,
   });
+  const setViewSharing = useMutation({
+    mutationFn: ({ id, shareView }: { id: number; shareView: boolean }) => need(bridge).setAgentViewSharing(id, shareView),
+    onSettled: () => qc.invalidateQueries({ queryKey: qk.agents }),
+  });
   /** "Turn on MCP": the Local API for agents (its REST API as it was), then everything is asked again. */
   const enableMcp = useMutation({
     mutationFn: () => need(bridge).enableMcp(),
@@ -191,5 +195,5 @@ export function useAgentActions() {
       void qc.invalidateQueries({ predicate: (q) => q.queryKey[0] !== qk.desktop[0] });
     },
   });
-  return { add, regenerate, setEnabled, footprint, remove, keptToken, setSources, enableMcp };
+  return { add, regenerate, setEnabled, footprint, remove, keptToken, setSources, setViewSharing, enableMcp };
 }

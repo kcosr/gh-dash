@@ -63,7 +63,7 @@ function Reach({ a, known, onSources }: { a: Agent; known: readonly AgentSource[
  * One agent: its name, token prefix, when it was added and last used (or disabled), and the sources it reaches; the
  * desktop app's actions.
  */
-function AgentRow({ a, now, known, onSources, onShowToken, onNewToken, onToggle, onDelete }: {
+function AgentRow({ a, now, known, onSources, onShowToken, onNewToken, onToggle, onDelete, onViewSharing, viewSharingPending }: {
   a: Agent;
   now: number;
   known: readonly AgentSource[];
@@ -72,6 +72,8 @@ function AgentRow({ a, now, known, onSources, onShowToken, onNewToken, onToggle,
   onNewToken?: (a: Agent) => void;
   onToggle?: (a: Agent) => void;
   onDelete?: (a: Agent) => void;
+  onViewSharing?: (a: Agent) => void;
+  viewSharingPending: boolean;
 }) {
   const disabled = !!a.disabledAt;
   // The desktop app's is a button, with the other actions; a server's, text after the status.
@@ -98,6 +100,13 @@ function AgentRow({ a, now, known, onSources, onShowToken, onNewToken, onToggle,
       {!onSources && reach}
       <span className="spacer" />
       {onSources && reach}
+      {onViewSharing ? (
+        <button type="button" className="wb-btn wb-btn--sm wb-btn--ghost" aria-pressed={a.shareView} disabled={viewSharingPending}
+          onClick={() => onViewSharing(a)} aria-label={`Share current view with ${a.name}`}
+          title="Let this agent request the review and code selection you are viewing">
+          {a.shareView && <Icon name="check" />}Share view
+        </button>
+      ) : a.shareView && <span className="agent-reach" title="May request the current review view">View shared</span>}
       {onShowToken && (
         <button type="button" className="wb-btn wb-btn--sm wb-btn--ghost" onClick={() => onShowToken(a)} aria-label={`Show ${a.name}'s token`}
           title="Its token again, with the lines to set it up">
@@ -345,7 +354,7 @@ export function AgentsSection() {
   const agents = useAgents();
   const { bridge, state } = useDesktop();
   const instance = useInstance().data;
-  const { setEnabled, footprint, remove, keptToken, enableMcp } = useAgentActions();
+  const { setEnabled, footprint, remove, keptToken, enableMcp, setViewSharing } = useAgentActions();
   const { openConfirm } = useUI();
   const toast = useToast();
   const now = useNow(60_000);
@@ -372,6 +381,9 @@ export function AgentsSection() {
   // Disable / Enable: at once, nothing to confirm (it's undone the same way).
   const toggleAgent = (a: Agent) => setEnabled.mutate({ id: a.id, enabled: !!a.disabledAt }, {
     onSuccess: (x) => toast(x.disabledAt ? `${x.name} disabled` : `${x.name} enabled`),
+    onError: (e) => toast(bridgeError(e), { tone: 'error' }),
+  });
+  const toggleViewSharing = (a: Agent) => setViewSharing.mutate({ id: a.id, shareView: !a.shareView }, {
     onError: (e) => toast(bridgeError(e), { tone: 'error' }),
   });
   // Delete…: what it wrote first (asked now: it changes with every comment), then the confirmation that says so.
@@ -463,7 +475,8 @@ export function AgentsSection() {
                         onSources={desktop ? (x) => { setShown(null); setAdding(false); setRenewing(null); setScoping(x); } : undefined}
                         onShowToken={desktop ? (x) => void showToken(x) : undefined}
                         onNewToken={desktop ? (x) => { setShown(null); setAdding(false); setScoping(null); setRenewing(x); } : undefined}
-                        onToggle={desktop ? toggleAgent : undefined} onDelete={desktop ? (x) => void deleteAgent(x) : undefined} />
+                        onToggle={desktop ? toggleAgent : undefined} onDelete={desktop ? (x) => void deleteAgent(x) : undefined}
+                        onViewSharing={desktop ? toggleViewSharing : undefined} viewSharingPending={setViewSharing.isPending && setViewSharing.variables.id === a.id} />
                     ))}
                   </ul>
                 ) : <span className="muted">None yet.</span>}

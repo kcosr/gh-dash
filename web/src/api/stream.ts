@@ -2,7 +2,7 @@
  * GET /stream: what the server tells open windows as it happens (StreamMessage, as server-sent events). One connection
  * per window, opened by the shell (useStream): `comments` refetches what a change to that target's threads makes stale,
  * as threadActions does after a change made here; `agents` the agents list (and, when one was deleted, what names its
- * comments' authors); `show` goes to the show chip. It reconnects
+ * comments' authors); `show` goes to the show chip; `current_view_request` reads this window's current view. It reconnects
  * by itself (a server restart, the desktop app's proxy dropping it), and having missed what happened meanwhile, refetches
  * all of that once back. A server without the stream (older, or behind a proxy that won't stream) is left alone,
  * quietly: nothing else waits for it.
@@ -12,9 +12,11 @@
  */
 import { useQueryClient } from '@tanstack/react-query';
 import type { QueryClient, QueryKey } from '@tanstack/react-query';
-import { useEffect } from 'react';
+import { useEffect, useEffectEvent } from 'react';
 import type { StreamMessage } from '../../../shared/api';
+import type { CurrentView } from '../../../shared/current-view';
 import { branchDiffId, commitDiffId } from '../lib/urlState';
+import { api } from './client';
 import { AUTHOR_KEYS, qk, threadChangeKeys } from './hooks';
 
 export const STREAM_URL = '/api/v1/stream';
@@ -40,7 +42,7 @@ export const missedByStream = (key: QueryKey) => MISSED.has(key[0] as string);
 export function parseStreamMessage(data: string): StreamMessage | null {
   try {
     const m = JSON.parse(data) as StreamMessage | null;
-    return m && typeof m === 'object' && (m.type === 'comments' || m.type === 'show' || m.type === 'agents') ? m : null;
+    return m && typeof m === 'object' && (m.type === 'comments' || m.type === 'show' || m.type === 'agents' || m.type === 'current_view_request') ? m : null;
   } catch {
     return null;
   }
@@ -130,18 +132,23 @@ export async function runStream(handlers: StreamHandlers, signal: AbortSignal, o
       status = res.status;
       retryAfter = retryAfterOf(res);
       if (res.ok && res.body && (res.headers.get('content-type') ?? '').includes('text/event-stream')) {
-        if (connected) handlers.onReconnect();
-        connected = true;
-        opened = Date.now();
-        const feed = sseParser((data) => {
-          const msg = parseStreamMessage(data);
-          if (msg) handlers.onMessage(msg);
-        });
         const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          feed(value);
+        try {
+          if (connected) handlers.onReconnect();
+          connected = true;
+          opened = Date.now();
+          const feed = sseParser((data) => {
+            const msg = parseStreamMessage(data);
+            if (msg) handlers.onMessage(msg);
+          });
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            feed(value);
+          }
+        } finally {
+          await reader.cancel().catch(() => { /* the connection can already be gone */ });
+          reader.releaseLock();
         }
         status = null;
       } else {
@@ -171,14 +178,30 @@ export const HIDDEN_MS = 60_000;
  * lets go of its connection after a minute (a browser has six per server over HTTP/1.1, and each tab would hold one),
  * and catches up when it's shown again. The desktop app's window keeps it: its requests don't use the network.
  */
-export function useStream(onShow: (msg: Extract<StreamMessage, { type: 'show' }>) => void): void {
+export function useStream(onShow: (msg: Extract<StreamMessage, { type: 'show' }>) => void, getCurrentView: () => CurrentView | null): void {
   const qc = useQueryClient();
+  const readCurrentView = useEffectEvent(getCurrentView);
   useEffect(() => {
     let ctl: AbortController | null = null;
     let ran = false;
     let timer = 0;
+    let focusedAt = document.hasFocus() ? Date.now() : 0;
+    const noteFocus = () => { focusedAt = Date.now(); };
     const handlers: StreamHandlers = {
-      onMessage: (msg) => (msg.type === 'show' ? onShow(msg) : applyStreamMessage(qc, msg)),
+      onMessage: (msg) => {
+        if (msg.type === 'show') onShow(msg);
+        else if (msg.type === 'current_view_request') {
+          let view: CurrentView | null = null;
+          try {
+            view = readCurrentView();
+          } catch {
+            // The view can be unavailable while the renderer is changing. This window still answers.
+          }
+          void api.replyCurrentView({ requestId: msg.requestId, focusedAt, view }).catch(() => {
+            // The request may already have expired, or the server connection may have dropped.
+          });
+        } else applyStreamMessage(qc, msg);
+      },
       onReconnect: () => void qc.invalidateQueries({ predicate: (q) => missedByStream(q.queryKey) }),
     };
     const start = () => {
@@ -191,13 +214,17 @@ export function useStream(onShow: (msg: Extract<StreamMessage, { type: 'show' }>
     const keep = !!window.ghDashDesktop;
     const onVisibility = () => {
       clearTimeout(timer);
-      if (document.visibilityState === 'visible') start();
-      else if (!keep) timer = window.setTimeout(stop, HIDDEN_MS);
+      if (document.visibilityState === 'visible') {
+        if (document.hasFocus()) noteFocus();
+        start();
+      } else if (!keep) timer = window.setTimeout(stop, HIDDEN_MS);
     };
     start();
+    window.addEventListener('focus', noteFocus);
     document.addEventListener('visibilitychange', onVisibility);
     return () => {
       clearTimeout(timer);
+      window.removeEventListener('focus', noteFocus);
       document.removeEventListener('visibilitychange', onVisibility);
       stop();
     };

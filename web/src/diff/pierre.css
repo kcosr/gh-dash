@@ -34,3 +34,10 @@
 [data-column-number][data-thread-line] { background-image: linear-gradient(var(--dvr-thread-number-tint), var(--dvr-thread-number-tint)); color: var(--wb-fg-2); }
 /* The line number last clicked: where a shift-click extends a range from. */
 [data-column-number][data-anchor-line] { color: var(--wb-accent-text); font-weight: 600; }
+
+/* Keep each grid position for Pierre's line and annotation indexes. A folded cell on only one side of a
+   split row leaves the other visible. Empty split buffers must shrink along with any whole rows they span. */
+[data-resolved-fold] { visibility: hidden; pointer-events: none; }
+[data-resolved-fold="side"] { white-space: nowrap; overflow: clip; }
+[data-resolved-fold="row"] { min-height: 0 !important; height: 0; line-height: 0; overflow: clip; }
+[data-resolved-buffer] { min-height: calc(var(--dvr-visible-buffer-lines) * 1lh) !important; }

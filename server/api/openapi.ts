@@ -1,5 +1,8 @@
 /** Hand-written OpenAPI 3.1 document for /api/v1, mirroring shared/api.ts. Also drives the /api/docs page. */
 
+import { z } from 'zod';
+import { currentViewReplySchema } from '../../shared/current-view';
+
 type Schema = Record<string, unknown>;
 
 const str = (description?: string): Schema => ({ type: 'string', ...(description ? { description } : {}) });
@@ -490,6 +493,7 @@ const schemas: Record<string, Schema> = {
     lastUsedAt: { ...nullable(dateTime), description: 'Last MCP request with the token (updated at most once a minute)' },
     disabledAt: { ...nullable(dateTime), description: 'When it was disabled: its token is refused until it is enabled again. null while enabled' },
     builtIn: { ...bool, description: 'The built-in agent "Agent" (desktop app, MCP without tokens): no token of its own' },
+    shareView: { ...bool, description: 'The agent may ask for the current review view. Off by default and unavailable to the built-in agent.' },
     sources: {
       ...nullable(arr(str())),
       description:
@@ -912,10 +916,16 @@ export const ENDPOINTS: EndpointDoc[] = [
       'threadId, event, by; views of its branch, and of the PRs from it, list it too); `show`: an agent asks the app to show something (id, agent, target ' +
       '{repo, pr?, branch?, commit?, threadId?, path?}, message, at); `agents`: an agent ' +
       'was added, given a new token, limited, disabled, enabled or deleted (`deleted`: its id; what it wrote now reads as by "Deleted agent ' +
-      '#<id>"). A comment line (`: ping`) every 25 s keeps proxies from closing an idle stream; behind nginx, turn ' +
+      '#<id>"); `current_view_request`: asks this window for its active review (requestId). A comment line (`: ping`) every 25 s keeps proxies from closing an idle stream; behind nginx, turn ' +
       'proxy_buffering off for it (deploy/nginx.conf.example). At most 32 streams are open at once (503 with Retry-After beyond), and a client ' +
       'that stops reading is disconnected once 256 KB wait for it: reconnect and refetch.',
     response: { status: 200, schema: str(), type: 'text/event-stream' },
+  },
+  {
+    method: 'post', path: '/api/v1/current-view/reply', tag: 'Comments', summary: 'Answer a current review view request for this window',
+    description: 'The reply is used only for the pending MCP request. An unknown, expired, or already answered request ID returns 404.',
+    body: { schema: z.toJSONSchema(currentViewReplySchema), example: { requestId: '550e8400-e29b-41d4-a716-446655440000', focusedAt: 1795352980000, view: null } },
+    response: { status: 204, description: 'View reply accepted' },
   },
   { method: 'get', path: '/api/v1/sync/status', tag: 'Sync', summary: 'Sync progress, last result, next run and rate limit', response: { status: 200, schema: ref('SyncStatus') } },
   {

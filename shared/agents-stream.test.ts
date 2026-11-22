@@ -156,6 +156,20 @@ describe('the stream: server-sent events', () => {
     vi.useRealTimers();
   });
 
+  it('cancels an abandoned response when processing a message fails', async () => {
+    const cancel = vi.fn();
+    const body = new ReadableStream({
+      start(c) { c.enqueue(new TextEncoder().encode('data: {"type":"agents"}\n\n')); },
+      cancel,
+    });
+    const ctl = new AbortController();
+    await runStream({
+      onMessage: () => { ctl.abort(); throw new Error('Receiver failed'); },
+      onReconnect: () => {},
+    }, ctl.signal, { fetch: async () => new Response(body, { headers: { 'content-type': 'text/event-stream' } }) });
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
   it('counts the first connection as a reconnect when resumed (a tab back from the background)', async () => {
     const enc = new TextEncoder();
     // A stream that stays open until the request is aborted, as fetch's does.

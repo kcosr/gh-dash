@@ -163,7 +163,7 @@ describe('ServerChild', () => {
   it("sends the agents' requests and hands back the agent, with its token when there is one", async () => {
     await startRunning();
     const proc = procs[0]!;
-    const agent = { id: 2, name: 'Claude', tokenPrefix: 'ghd_abcd', createdAt: 'x', lastUsedAt: null, disabledAt: null, builtIn: false, sources: null };
+    const agent = { id: 2, name: 'Claude', tokenPrefix: 'ghd_abcd', createdAt: 'x', lastUsedAt: null, disabledAt: null, builtIn: false, sources: null, shareView: false };
     const added = child.addAgent('Claude');
     const regenerated = child.regenerateAgentToken(2);
     const disabled = child.setAgentEnabled(2, false);
@@ -193,7 +193,7 @@ describe('ServerChild', () => {
   it('enables an agent, asks what one wrote and deletes one, handing back what the child says', async () => {
     await startRunning();
     const proc = procs[0]!;
-    const agent = { id: 2, name: 'Claude', tokenPrefix: 'ghd_abcd', createdAt: 'x', lastUsedAt: null, disabledAt: null, builtIn: false, sources: null };
+    const agent = { id: 2, name: 'Claude', tokenPrefix: 'ghd_abcd', createdAt: 'x', lastUsedAt: null, disabledAt: null, builtIn: false, sources: null, shareView: false };
     const footprint = { comments: 12, threads: 5, openThreads: 3, opened: 4 };
     const enabled = child.setAgentEnabled(2, true);
     const asked = child.agentFootprint(2);
@@ -242,11 +242,12 @@ describe('ServerChild', () => {
   it('sends the sources an agent may reach, for a new agent (none: every source) and one already there', async () => {
     await startRunning();
     const proc = procs[0]!;
-    const agent = { id: 2, name: 'Claude', tokenPrefix: 'ghd_abcd', createdAt: 'x', lastUsedAt: null, disabledAt: null, builtIn: false, sources: ['github.com'] };
+    const agent = { id: 2, name: 'Claude', tokenPrefix: 'ghd_abcd', createdAt: 'x', lastUsedAt: null, disabledAt: null, builtIn: false, sources: ['github.com'], shareView: false };
     void child.addAgent('Claude', null, ['github.com']);
     void child.addAgent('Codex', null, null);
     const limited = child.setAgentSources(2, ['github.com']);
     const builtIn = child.setAgentSources('built-in', null);
+    const sharing = child.setAgentViewSharing(2, true);
     await flush();
     const sent = proc.sent.map((m) => { const { id: _id, ...rest } = m as { id: number }; return rest; });
     expect(sent).toEqual([
@@ -254,12 +255,15 @@ describe('ServerChild', () => {
       { type: 'add-agent', name: 'Codex' },
       { type: 'set-agent-sources', agent: 2, sources: ['github.com'] },
       { type: 'set-agent-sources', agent: 'built-in', sources: null },
+      { type: 'set-agent-view-sharing', agent: 2, shareView: true },
     ]);
-    const [, , s, b] = proc.sent.map((m) => (m as { id: number }).id);
+    const [, , s, b, v] = proc.sent.map((m) => (m as { id: number }).id);
     proc.reply({ type: 'agent-result', id: s!, agent, token: null });
     proc.reply({ type: 'request-failed', id: b!, message: 'There is no agent with id 5.' });
+    proc.reply({ type: 'agent-result', id: v!, agent: { ...agent, shareView: true }, token: null });
     expect(await limited).toEqual(agent);
     await expect(builtIn).rejects.toThrow('There is no agent with id 5.');
+    expect(await sharing).toEqual({ ...agent, shareView: true });
   });
 
   it('keeps the MCP URL the child reports as ready, apart from the REST API URL', async () => {

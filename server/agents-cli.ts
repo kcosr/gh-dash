@@ -6,7 +6,7 @@
 import { agentDeletionSentences, warningText } from '../shared/agents';
 import type { Agent } from '../shared/api';
 import { loadServerConfig } from './config';
-import { AgentWrote, createAgent, deleteAgent, findAgent, listAgents, regenerateAgentToken, setAgentEnabled, setAgentSources } from './db/agents';
+import { AgentWrote, createAgent, deleteAgent, findAgent, listAgents, regenerateAgentToken, setAgentEnabled, setAgentSources, setAgentViewSharing } from './db/agents';
 import { type Db, openDb } from './db/db';
 import { HttpError } from './lib/errors';
 import { localApiUrl } from './start';
@@ -30,6 +30,7 @@ const USAGE = `Usage: gh-dash agents <command>
                                         disabled agent is enabled with it
   scope <id|name> --source <host>... | --all
                                         Limit an agent to some sources, or let it reach every one again
+  view-sharing <id|name> on|off         Allow or deny reading the current gh-dash view on request
   disable <id|name>                     Refuse an agent's token until it's enabled again; its token, sources and
                                         comments stay
   enable <id|name>                      Accept a disabled agent's token again (if it may have leaked, regenerate
@@ -151,8 +152,9 @@ export async function runAgentsCommand(args: string[], io: CliIo = { out: consol
           String(a.id), a.name, a.tokenPrefix ? `${a.tokenPrefix}…` : '-', a.createdAt, a.lastUsedAt ?? 'never',
           a.builtIn ? 'built in (no token)' : a.disabledAt ? `disabled ${a.disabledAt}` : 'active',
           a.sources === null ? 'all' : a.sources.join(',') || 'none',
+          a.shareView ? 'on' : 'off',
         ]);
-        for (const line of table(['ID', 'NAME', 'TOKEN', 'CREATED', 'LAST USED', 'STATUS', 'SOURCES'], rows)) io.out(line);
+        for (const line of table(['ID', 'NAME', 'TOKEN', 'CREATED', 'LAST USED', 'STATUS', 'SOURCES', 'VIEW SHARING'], rows)) io.out(line);
         return 0;
       }
       case 'regenerate': {
@@ -167,6 +169,16 @@ export async function runAgentsCommand(args: string[], io: CliIo = { out: consol
         if (all === !!hosts.length) throw new UsageError(`agents scope takes ${SOURCE} <host> (one or more), or ${ALL}`);
         const agent = setAgentSources(open(), target.id, all ? null : hosts)!;
         io.out(`${agent.name} (id ${agent.id}) now reaches ${reachOf(agent)}, from its next request.`);
+        return 0;
+      }
+      case 'view-sharing': {
+        const [who, mode] = rest;
+        if (rest.length !== 2 || !who?.trim() || who.startsWith('-') || (mode !== 'on' && mode !== 'off')) {
+          throw new UsageError('agents view-sharing takes an agent id or name and on or off');
+        }
+        const target = agentBy(who);
+        const agent = setAgentViewSharing(open(), target.id, mode === 'on')!;
+        io.out(`View sharing for ${agent.name} (id ${agent.id}) is ${mode}.`);
         return 0;
       }
       case 'disable': {

@@ -571,6 +571,10 @@ ALTER TABLE repos ADD COLUMN status TEXT NOT NULL DEFAULT 'auto' CHECK (status I
 UPDATE repos SET status = 'inactive' WHERE hidden = 1;
 `;
 
+const AGENT_VIEW_SHARING = `
+ALTER TABLE principals ADD COLUMN share_view INTEGER NOT NULL DEFAULT 0 CHECK (share_view IN (0, 1));
+`;
+
 const MIGRATIONS: Migration[] = [
   { name: 'initial', version: 1, destructive: false, sql: V1 },
   { name: 'commits-repo-index', version: 2, destructive: false, sql: V2 },
@@ -584,6 +588,7 @@ const MIGRATIONS: Migration[] = [
   { name: 'agent-sources', version: 10, destructive: false, sql: AGENT_SOURCES },
   { name: 'synced-branches', version: 11, destructive: false, sql: SYNCED_BRANCHES },
   { name: 'repo-status', version: 12, destructive: false, sql: REPO_STATUS },
+  { name: 'agent-view-sharing', version: 13, destructive: false, sql: AGENT_VIEW_SHARING },
 ];
 
 /** The schema version this build creates and understands. */

@@ -50,7 +50,7 @@ const fakeChild = () => {
   /** Every set-token the child got, in order (setToken and sendSetToken both send one). */
   const sent: [TokenChoice | null, string | null | undefined][] = [];
   const send = (choice: TokenChoice | null, token?: string | null) => (sent.push([choice, token]), validate(choice, token));
-  const agent = (id: number, name = 'Claude'): Agent => ({ id, name, tokenPrefix: 'ghd_abcd', createdAt: 'x', lastUsedAt: null, disabledAt: null, builtIn: false, sources: null });
+  const agent = (id: number, name = 'Claude'): Agent => ({ id, name, tokenPrefix: 'ghd_abcd', createdAt: 'x', lastUsedAt: null, disabledAt: null, builtIn: false, sources: null, shareView: false });
   return {
     status: 'running', apiUrl: null as string | null, mcpUrl: null as string | null, lastError: null as string | null, sent, setToken: vi.fn(send), sendSetToken: vi.fn(send),
     addAgent: vi.fn(async (name: string) => ({ agent: agent(2, name), token: 'ghd_secret1' })),
@@ -59,6 +59,7 @@ const fakeChild = () => {
     agentFootprint: vi.fn(async () => ({ comments: 2, threads: 1, openThreads: 1, opened: 1 })),
     deleteAgent: vi.fn(async (id: number) => ({ id, name: 'Claude', deletedAs: `Deleted agent #${id}`, footprint: { comments: 2, threads: 1, openThreads: 1, opened: 1 } })),
     setAgentSources: vi.fn(async (id: number | 'built-in', sources: string[] | null) => ({ ...agent(id === 'built-in' ? 5 : id, id === 'built-in' ? 'Agent' : 'Claude'), sources })),
+    setAgentViewSharing: vi.fn(async (id: number, shareView: boolean) => ({ ...agent(id), shareView })),
     checkAgentToken: vi.fn(async (_id: number, _hash: string) => false),
   };
 };
@@ -321,7 +322,7 @@ describe('agents', () => {
     const lines: string[] = [];
     desktop = new Desktop({ child: child as unknown as ServerChild, tokens: tokens as unknown as TokenStore, configPath, dataDir: join(dir, 'data'), version: '1', restart, log: (l) => lines.push(l) });
     writeFileSync(configPath, JSON.stringify({ listen: true }));
-    const work: Agent = { id: 2, name: 'Work', tokenPrefix: 'ghd_abcd', createdAt: 'x', lastUsedAt: null, disabledAt: null, builtIn: false, sources: ['gitlab.example.com'] };
+    const work: Agent = { id: 2, name: 'Work', tokenPrefix: 'ghd_abcd', createdAt: 'x', lastUsedAt: null, disabledAt: null, builtIn: false, sources: ['gitlab.example.com'], shareView: false };
     child.addAgent.mockImplementationOnce(async () => ({ agent: work, token: 'ghd_secret1' }));
     expect(await desktop.addAgent('Work', undefined, [' GitLab.example.com '])).toMatchObject({ agent: { sources: ['gitlab.example.com'] } });
     expect(child.addAgent).toHaveBeenCalledWith('Work', undefined, ['gitlab.example.com']);
@@ -351,6 +352,15 @@ describe('agents', () => {
     const refused = await desktop.setAgentSources(2, ['gitlab.nope']).catch((e: Error) => e);
     expect(refused).toBeInstanceOf(ConfigInputError);
     expect((refused as Error).message).toBe("gitlab.nope isn't a source here (the sources: github.com)");
+  });
+
+  it('changes live view sharing only for a specific agent and a boolean setting', async () => {
+    expect(() => desktop.setAgentViewSharing('built-in', true)).toThrow(ConfigInputError);
+    expect(() => desktop.setAgentViewSharing(2, 'true')).toThrow(ConfigInputError);
+    expect(child.setAgentViewSharing).not.toHaveBeenCalled();
+    expect(await desktop.setAgentViewSharing(2, true)).toMatchObject({ id: 2, shareView: true });
+    expect(await desktop.setAgentViewSharing(2, false)).toMatchObject({ id: 2, shareView: false });
+    expect(child.setAgentViewSharing.mock.calls).toEqual([[2, true], [2, false]]);
   });
 
   it('waits for a restart in progress instead of racing it', async () => {
@@ -383,7 +393,7 @@ describe('kept agent tokens', () => {
   /** The child: agent `id`'s token in its database is `token`. */
   const current = (id: number, token: string) => child.checkAgentToken.mockImplementation(async (i, hash) => i === id && hash === sha(token));
   const made = (id: number, name: string, token: string) => ({
-    agent: { id, name, tokenPrefix: token.slice(0, 8), createdAt: 'x', lastUsedAt: null, disabledAt: null, builtIn: false, sources: null }, token,
+    agent: { id, name, tokenPrefix: token.slice(0, 8), createdAt: 'x', lastUsedAt: null, disabledAt: null, builtIn: false, sources: null, shareView: false }, token,
   });
 
   beforeEach(() => {

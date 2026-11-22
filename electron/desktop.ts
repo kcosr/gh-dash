@@ -643,6 +643,12 @@ export class Desktop {
     });
   }
 
+  setAgentViewSharing(input: unknown, shareView: unknown): Promise<Agent> {
+    const id = agentId(input);
+    if (typeof shareView !== 'boolean') throw new ConfigInputError('Say whether to share the current view with this agent.');
+    return this.exclusive(() => this.agentRequest(() => this.d.child.setAgentViewSharing(id, shareView)));
+  }
+
   /** The child's refusals (a name taken, no such agent) are the user's to read, not stack traces for the log. */
   private async agentRequest<T>(fn: () => Promise<T>): Promise<T> {
     try {

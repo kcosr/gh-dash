@@ -155,6 +155,8 @@ a.iss-li:hover .iss-t { color: var(--wb-accent-text); text-decoration: underline
 .app.has-diff > .main, .app.has-diff > .pr-drawer { visibility: hidden; }
 .dv-head { display: flex; align-items: center; gap: 8px; min-height: 52px; padding: 8px 14px 8px 22px; border-bottom: 1px solid var(--wb-border); font-size: 13px; color: var(--wb-fg-2); }
 .dv-head .repo-chip { flex: none; }
+.dv-head .dv-details-link { flex: none; color: var(--wb-accent-text); }
+.dv-details-link:hover, .dv-details-link:focus-visible { text-decoration: underline; }
 .dv-title { flex: 0 1 auto; min-width: 0; margin: 0 4px; font-size: 14.5px; font-weight: 600; line-height: 1.35; letter-spacing: -.005em; color: var(--wb-fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dv-head .diffstat, .dv-files { flex: none; white-space: nowrap; }
 .dv-files { font-size: 12.5px; color: var(--wb-muted); }

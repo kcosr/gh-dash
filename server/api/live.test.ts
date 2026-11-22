@@ -200,7 +200,7 @@ describe('GET /stream', () => {
     const stream = textReader((await app.request('/api/v1/stream')).body!);
     expect(await stream.until(': connected')).toBe(true);
     // Unread from here on: each message is ~1 KB, the budget 256 KB.
-    const show = (i: number): StreamMessage => ({
+    const show = (i: number): Extract<StreamMessage, { type: 'show' }> => ({
       type: 'show', id: `s${i}`, agent: { id: 2, kind: 'agent', name: 'Claude' }, target: { repo: 'alice/app', pr: 2 }, message: 'x'.repeat(1000), at: '2026-09-29T10:00:00.000Z',
     });
     const reached: number[] = [];
@@ -280,7 +280,8 @@ describe('OpenAPI', () => {
     expect(Object.keys(schemas.CommentActivity!.properties!)).toEqual([
       'eventId', 'threadId', 'commentId', 'live', 'by', 'target', 'commitOid', 'path', 'side', 'startLine', 'endLine', 'excerpt', 'view',
     ]);
-    expect(Object.keys(schemas.Agent!.properties!)).toEqual(['id', 'name', 'tokenPrefix', 'createdAt', 'lastUsedAt', 'disabledAt', 'builtIn', 'sources']);
+    expect(Object.keys(schemas.Agent!.properties!)).toEqual(['id', 'name', 'tokenPrefix', 'createdAt', 'lastUsedAt', 'disabledAt', 'builtIn', 'shareView', 'sources']);
+    expect(doc.paths['/api/v1/current-view/reply']!.post!.responses).toHaveProperty('204');
     expect(schemas.CommentThread!.properties).toHaveProperty('resolvedBy');
     const types = doc.paths['/api/v1/activity']!.get!.parameters!.find((p) => p.name === 'types')!;
     expect(types.description).toContain('comment');

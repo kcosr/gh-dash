@@ -22,10 +22,12 @@ const thread: CommentThread = {
   }],
 };
 
-async function openDiff(page: Page) {
+async function openDiff(page: Page, changedFiles = files) {
   await page.route('**/api/v1/prs/**/diff', (route) => route.fulfill({ json: {
     kind: 'pr', repo: pr.repo, number: pr.number, title: pr.title, baseOid, headOid, fetchedAt,
-    files, totalFiles: files.length, additions: 2, deletions: 2, url: pr.url,
+    files: changedFiles, totalFiles: changedFiles.length,
+    additions: changedFiles.reduce((n, f) => n + f.additions, 0), deletions: changedFiles.reduce((n, f) => n + f.deletions, 0),
+    url: pr.url,
   } satisfies Diff }));
   await page.route('**/api/v1/prs/**/threads', (route) => route.fulfill({ json: { items: [thread] } }));
   await page.goto('/prs?source=gitlab.example.com&state=open');
@@ -87,12 +89,13 @@ test('full file context uses the two displayed revisions and preserves changes a
 
 test('an unavailable full file keeps the patch and can be retried at the same review', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
+  const trailing = Array.from({ length: 100 }, (_, n) => 'unchanged line ' + (n + 5));
   let fail = true;
   await page.route('**/api/v1/blob/**', (route) => {
     if (fail) return route.fulfill({ status: 429, json: { error: 'Rate limited' } });
     const ref = new URL(route.request().url()).searchParams.get('ref');
     const value = ref === headOid ? 'new value' : 'old value';
-    return route.fulfill({ contentType: 'text/plain', body: 'start of file\nunchanged comment line\nbefore change\n' + value + '\nend of file\n' });
+    return route.fulfill({ contentType: 'text/plain', body: ['start of file', 'unchanged comment line', 'before change', value, ...trailing, 'end of file', ''].join('\n') });
   });
   const file = await openDiff(page);
   const showFull = file.getByRole('button', { name: 'Show full file', exact: true });
@@ -105,12 +108,49 @@ test('an unavailable full file keeps the patch and can be retried at the same re
   await expect(changesOnly).toBeVisible();
   await expect(file.getByText('Context unavailable', { exact: true })).toHaveCount(0);
   await changesOnly.click();
-  await file.getByText('More unchanged context may be available', { exact: true }).first().click();
-  await expect(file.getByText('end of file', { exact: true })).toBeVisible();
-  await expect(file.getByText('start of file', { exact: true })).toHaveCount(0);
+  const line = (n: number) => file.locator('[data-line="' + n + '"]');
+  const trailingArrow = file.getByRole('button', { name: 'Expand toward end of file', exact: true });
+  await trailingArrow.click();
+  await expect(line(24)).toHaveText('unchanged line 24');
+  await expect(line(25)).toHaveCount(0);
   await showFull.click();
-  await expect(file.getByText('start of file', { exact: true })).toBeVisible();
   await changesOnly.click();
-  await expect(file.getByText('end of file', { exact: true })).toHaveCount(0);
+
+  await file.getByText('More unchanged context may be available', { exact: true }).first().click();
+  await expect(line(24)).toHaveText('unchanged line 24');
+  await expect(line(25)).toHaveCount(0);
+  await expect(line(1)).toHaveCount(0);
+  await showFull.click();
+  await expect(line(1)).toHaveText('start of file');
+  await page.locator('.dvr-scroll').evaluate((el) => { el.scrollTop = 460; });
+  await changesOnly.press('Enter');
+  await expect(showFull).toBeFocused();
+  await expect(line(5)).toHaveCount(0);
+  await file.getByRole('button', { name: 'Expand up', exact: true }).click();
+  await expect(line(1)).toHaveText('start of file');
+  await expect(line(5)).toHaveCount(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(390);
+});
+
+test('returning to a long patch keeps its already visible header in place', async ({ page }) => {
+  const leading = Array.from({ length: 100 }, (_, n) => `unchanged line ${n + 1}`);
+  const old = Array.from({ length: 60 }, (_, n) => `old value ${n}`);
+  const next = Array.from({ length: 60 }, (_, n) => `new value ${n}`);
+  const patch = ['@@ -101,60 +101,60 @@', ...old.map((line) => '-' + line), ...next.map((line) => '+' + line)].join('\n');
+  await page.route('**/api/v1/blob/**', (route) => {
+    const ref = new URL(route.request().url()).searchParams.get('ref');
+    return route.fulfill({ contentType: 'text/plain', body: [...leading, ...(ref === headOid ? next : old), ''].join('\n') });
+  });
+  const file = await openDiff(page, [{ ...files[0]!, additions: next.length, deletions: old.length, patch }, files[1]!]);
+  const scroller = page.locator('.dvr-scroll');
+  const showFull = file.getByRole('button', { name: 'Show full file', exact: true });
+  const changesOnly = file.getByRole('button', { name: 'Show changes only', exact: true });
+  await expect(file.locator('[data-line="101"]').first()).toBeInViewport();
+  const before = await showFull.boundingBox();
+  await showFull.click();
+  await changesOnly.click();
+  await expect(showFull).toBeFocused();
+  await expect(file.locator('[data-line="101"]').first()).toBeInViewport();
+  expect(await scroller.evaluate((el) => el.scrollTop)).toBe(0);
+  expect((await showFull.boundingBox())?.y).toBe(before?.y);
 });

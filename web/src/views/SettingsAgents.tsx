@@ -11,7 +11,8 @@ import { Link } from 'react-router';
 import { agentDeletionSentences } from '../../../shared/agents';
 import type { Agent } from '../../../shared/api';
 import { useAgentActions, useDesktop } from '../api/desktop';
-import { useAgents, useInstance, useSources, useWorkSources } from '../api/hooks';
+import { useAgentAccess, useAgents, useInstance, useSources, useWorkSources } from '../api/hooks';
+import { repositoryAccessUrl } from '../components/AgentAccess';
 import { Icon } from '../components/Icon';
 import { useToast } from '../workbench';
 import { useUI } from '../components/ui';
@@ -21,7 +22,7 @@ import {
   sourceLabel,
 } from '../lib/agents';
 import { hostNames } from '../lib/sources';
-import { fmtDateTime, relLong } from '../lib/time';
+import { fmtDateTime, fmtNum, relLong } from '../lib/time';
 import { copyText, cx, useNow } from '../lib/util';
 
 /**
@@ -352,6 +353,7 @@ function AgentSources({ agent, known, onDone, onCancel }: { agent: Agent; known:
 
 export function AgentsSection() {
   const agents = useAgents();
+  const access = useAgentAccess().data;
   const { bridge, state } = useDesktop();
   const instance = useInstance().data;
   const { setEnabled, footprint, remove, keptToken, enableMcp, setViewSharing } = useAgentActions();
@@ -373,6 +375,8 @@ export function AgentsSection() {
   const tokensOptional = !!cfg && cfg.listen && cfg.mcp && !cfg.mcpRequireTokens;
   // The built-in agent too while requests without a token act as it, so its sources can be chosen before it acts.
   const list = agentsShown(agents.data ?? [], tokensOptional);
+  const defaults = new Map(access?.sources.map((source) => [source.host, source.defaultAccess]));
+  const allowed = access?.repos.filter((repo) => (repo.access === 'inherit' ? defaults.get(repo.source) : repo.access) === 'allow').length;
 
   const turnOn = () => enableMcp.mutate(undefined, {
     onSuccess: (st) => toast(st.mcpUrl ? (portOff ? 'Local API on, for agents only' : 'MCP on') : `Couldn't turn it on${st.serverError ? `: ${st.serverError}` : ''}`, { tone: st.mcpUrl ? 'default' : 'error' }),
@@ -433,8 +437,12 @@ export function AgentsSection() {
       <p>
         Coding agents such as Claude Code or Codex read and write comments here through MCP, each with a token of its own.
         What an agent writes is marked as its own, and stays here: nothing is posted to {hostNames(useWorkSources()).replace(' and ', ' or ') || 'GitHub'}.
-        An agent reaches every source, or only those you choose: to it, the others' repositories and threads don't exist.
+        Agents can reach only allowed repositories on the sources you choose.
         The REST API isn't limited: it's yours.
+      </p>
+      <p>
+        {access && allowed !== undefined && `${fmtNum(allowed)} of ${fmtNum(access.repos.length)} repositories allowed through gh-dash. `}
+        <Link to={repositoryAccessUrl()}>Manage repository access</Link>
       </p>
       {mcpOff && !shown && (
         <div className="set-note agent-off">

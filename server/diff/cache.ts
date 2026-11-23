@@ -5,10 +5,15 @@ import { Db } from '../db/db';
 
 export type CacheKind = 'pr' | 'commit' | 'branch' | 'blob';
 
+/** A repository's stored identity and current key, since keys can be reassigned and diff payloads include the key. */
+export function repoCacheKey(id: number, key: string): string {
+  return `${id}:${key}`;
+}
+
 export interface CacheEntry {
   key: string;
   kind: CacheKind;
-  /** The repo key (db/repo-key.ts, owner/name): entries of repos that disappear are dropped. */
+  /** The value of repoCacheKey. Entries are dropped when the repository disappears or changes key. */
   repo: string;
   /** PR number for kind 'pr', so a new head can supersede the old one. */
   number?: number | null;
@@ -38,9 +43,9 @@ export type BranchEntry = PrEntry;
 // Evicting stops at this fraction of the cap, so a full cache doesn't evict on every insert.
 const LOW_WATER = 0.9;
 
-// Bump to change the schema: the cache is disposable, so an old one is simply dropped and recreated.
+// Bump to change the schema or the key format: the cache is disposable, so an old one is dropped and recreated.
 // `data` comes last so size and LRU scans never touch the blob pages.
-const VERSION = 3;
+const VERSION = 4;
 const SCHEMA = `
 CREATE TABLE entries (
   key TEXT PRIMARY KEY,
@@ -135,8 +140,7 @@ export class DiffCache {
   }
 
   /**
-   * The cached diff of a branch, whose key (`branch/<repo>/<branch>`) is its identity: there is one per branch, which
-   * a newer head or merge base overwrites in place, so nothing needs dropping (as dropOthers does for a PR).
+   * The cached diff of a branch, keyed by repository identity and branch. A newer head or merge base overwrites it.
    */
   branchEntry(key: string): BranchEntry | null {
     return (

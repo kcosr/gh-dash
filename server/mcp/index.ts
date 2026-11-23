@@ -28,7 +28,7 @@ export const INSTRUCTIONS = [
   'are shared with a PR later opened from it.',
   'When the user asks about what they are viewing or have selected, get_current_view reads it live if they enabled view sharing.',
   'In results, `by` is "me" (you), "you" (the user) or "agent:<name>" (another agent). The user may limit you to some',
-  'of their code hosts (whoami lists yours): repositories on the others read as untracked.',
+  'of their code hosts (whoami lists yours) and decide which repositories are available through gh-dash (see list_repos).',
 ].join(' ');
 
 export function createMcpCore(deps: McpDeps, log?: (line: string) => void): McpCore {

@@ -3,6 +3,7 @@ import { type RepoResolver, rewriteRepoParams, rewriteRepoPath } from '../../sha
 import { bucketIndex, DAY_MS, isoSec, localDayNum, makeBuckets, weekdayMon0, zonedMidnight } from '../lib/time';
 import { ACTIVITY_COLS, type ActivityRow, repoActivity, repoStatus } from './activity';
 import type { Db } from './db';
+import { agentRepoScope } from './filters';
 import { repoKey, repoKeySql, resolveRepo, resolveRepoIds } from './repo-key';
 import { getSettings } from './settings';
 
@@ -47,12 +48,14 @@ function countBy(db: Db, sql: string, params: (string | number)[]): Map<number, 
  * Repos with their stats and whether they are active (as of `now`); 30-day windows end at `now`, weekly buckets are
  * Mon-start weeks in `tz`.
  */
-export function listRepos(db: Db, tz: string, now = Date.now(), onlyKey?: string): Repo[] {
+export function listRepos(db: Db, tz: string, now = Date.now(), onlyKey?: string, agentSources?: readonly number[] | null): Repo[] {
   const ref = onlyKey ? resolveRepo(db, onlyKey) : null;
+  const access = agentSources === undefined ? { sql: '1', params: [] } : agentRepoScope('r', agentSources);
+  const select = `${REPO_SELECT} AND ${access.sql}`;
   const rows = !onlyKey
-    ? db.all<RepoRow>(`${REPO_SELECT} ORDER BY last_activity_at DESC, ${repoKeySql('r')}`)
+    ? db.all<RepoRow>(`${select} ORDER BY last_activity_at DESC, ${repoKeySql('r')}`, access.params)
     : ref
-      ? db.all<RepoRow>(`${REPO_SELECT} AND r.id = ?`, [ref.id])
+      ? db.all<RepoRow>(`${select} AND r.id = ?`, [...access.params, ref.id])
       : [];
   if (rows.length === 0) return [];
 

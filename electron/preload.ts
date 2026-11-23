@@ -36,6 +36,8 @@ const bridge: DesktopBridge = {
   keptAgentToken: (id) => call(DESKTOP_IPC.keptAgentToken, id),
   setAgentSources: (id, sources) => call(DESKTOP_IPC.setAgentSources, id, sources),
   setAgentViewSharing: (id, shareView) => call(DESKTOP_IPC.setAgentViewSharing, id, shareView),
+  setSourceAgentAccess: (host, access) => call(DESKTOP_IPC.setSourceAgentAccess, host, access),
+  setRepoAgentAccess: (ids, access) => call(DESKTOP_IPC.setRepoAgentAccess, ids, access),
   enableMcp: () => call(DESKTOP_IPC.enableMcp),
 };
 

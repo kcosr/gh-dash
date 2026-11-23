@@ -1,17 +1,21 @@
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import type { CurrentView, CurrentViewReply } from '../../../shared/current-view';
+import { setRepoAgentAccess } from '../../db/agent-access';
 import { builtInAgent, setAgentSources, setAgentViewSharing } from '../../db/agents';
+import { getSource } from '../../db/sources';
+import { upsertOwned } from '../../db/write';
 import { mcpHarness, sha } from '../../test/mcp';
-import { GITLAB_HOST, seedGitLab } from '../../test/seed';
+import { GITLAB_HOST, repoRecord, seedGitLab } from '../../test/seed';
 
-const view: CurrentView = {
+const visible: Omit<CurrentView, 'repoId'> = {
   mode: 'diff', target: { kind: 'pr', repo: 'alice/app', number: 2 }, baseOid: sha('a'), headOid: sha('b'),
   file: { path: 'src/index.ts', previousPath: null },
   viewport: { first: { side: 'new', lineNumber: 42 }, visible: [{ side: 'new', startLine: 42, endLine: 51 }], hunk: null },
   selection: { kind: 'text', ranges: [{ path: 'src/index.ts', side: 'new', startLine: 43, endLine: 43, text: 'a + b' }], truncated: false },
   threadId: null,
 };
+const view: CurrentView = { ...visible, repoId: 1 };
 
 type Harness = ReturnType<typeof mcpHarness>;
 
@@ -78,7 +82,7 @@ describe('get_current_view', () => {
       expect((await reply(h, { requestId: newer!, focusedAt: 2, view })).status).toBe(204);
       expect((await reply(h, { requestId: newer!, focusedAt: 3, view: null })).status).toBe(404);
       expect((await reply(h, { requestId: older!, focusedAt: 1, view: null })).status).toBe(204);
-      expect(await call).toEqual({ view });
+      expect(await call).toEqual({ view: visible });
       expect(nonWindow).not.toHaveBeenCalled();
     } finally {
       await Promise.all(windows.map((window) => window.close()));
@@ -88,11 +92,11 @@ describe('get_current_view', () => {
 
   it('never substitutes a background window when the latest view is out of scope or there is no review', async () => {
     const h = mcpHarness();
-    seedGitLab(h.db);
+    const { repoId } = seedGitLab(h.db);
     setAgentSources(h.db, h.agent.id, ['github.com']);
     allow(h);
     const windows = await Promise.all([openWindow(h), openWindow(h)]);
-    const privateView: CurrentView = { ...view, target: { kind: 'pr', repo: `${GITLAB_HOST}/platform/app`, number: 2 } };
+    const privateView: CurrentView = { ...view, repoId, target: { kind: 'pr', repo: `${GITLAB_HOST}/platform/app`, number: 2 } };
     try {
       for (const foreground of [privateView, null]) {
         const call = h.ok('get_current_view');
@@ -103,6 +107,30 @@ describe('get_current_view', () => {
       }
     } finally {
       await Promise.all(windows.map((window) => window.close()));
+    }
+  });
+
+  it('checks the repo policy after waiting and refuses old diff content after a key is reused', async () => {
+    const h = mcpHarness();
+    allow(h);
+    const window = await openWindow(h);
+    try {
+      const pending = h.ok('get_current_view');
+      const requestId = await window.requestId();
+      setRepoAgentAccess(h.db, [view.repoId!], 'block');
+      expect((await reply(h, { requestId, focusedAt: 1, view })).status).toBe(204);
+      expect(await pending).toEqual({ view: null });
+
+      const replacement = upsertOwned(h.db, getSource(h.db, 1)!, repoRecord('app', { nodeId: 'replacement' }), '2026-10-06T00:00:00Z');
+      const stale = h.ok('get_current_view');
+      expect((await reply(h, { requestId: await window.requestId(), focusedAt: 1, view })).status).toBe(204);
+      expect(await stale).toEqual({ view: null });
+
+      const fresh = h.ok('get_current_view');
+      expect((await reply(h, { requestId: await window.requestId(), focusedAt: 1, view: { ...view, repoId: replacement } })).status).toBe(204);
+      expect(await fresh).toEqual({ view: visible });
+    } finally {
+      await window.close();
     }
   });
 

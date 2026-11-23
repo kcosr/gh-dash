@@ -6,8 +6,10 @@
 import { agentDeletionSentences, warningText } from '../shared/agents';
 import type { Agent } from '../shared/api';
 import { loadServerConfig } from './config';
+import { listAgentAccess, setRepoAgentAccess, setSourceAgentAccess } from './db/agent-access';
 import { AgentWrote, createAgent, deleteAgent, findAgent, listAgents, regenerateAgentToken, setAgentEnabled, setAgentSources, setAgentViewSharing } from './db/agents';
 import { type Db, openDb } from './db/db';
+import { resolveRepo } from './db/repo-key';
 import { HttpError } from './lib/errors';
 import { localApiUrl } from './start';
 
@@ -31,6 +33,11 @@ const USAGE = `Usage: gh-dash agents <command>
   scope <id|name> --source <host>... | --all
                                         Limit an agent to some sources, or let it reach every one again
   view-sharing <id|name> on|off         Allow or deny reading the current gh-dash view on request
+  repository-access list                Show source defaults and repository agent access
+  repository-access default <host> allow|block
+                                        Set the policy inherited by repositories on a source
+  repository-access set inherit|allow|block <repo>...
+                                        Change the policy for one or more tracked repositories
   disable <id|name>                     Refuse an agent's token until it's enabled again; its token, sources and
                                         comments stay
   enable <id|name>                      Accept a disabled agent's token again (if it may have leaked, regenerate
@@ -86,6 +93,56 @@ async function readStdin(): Promise<string> {
 
 /** A usage mistake: exit code 2, with the usage. */
 class UsageError extends Error {}
+
+function repositoryAccess(open: () => Db, args: string[], out: CliIo['out']): number {
+  const [action, ...rest] = args;
+  switch (action) {
+    case 'list': {
+      if (rest.length) throw new UsageError('agents repository-access list takes no arguments');
+      const { sources, repos } = listAgentAccess(open());
+      const defaults = new Map(sources.map((src) => [src.host, src.defaultAccess]));
+      for (const line of table(['SOURCE', 'DEFAULT'], sources.map(({ host, defaultAccess }) => [host, defaultAccess]))) out(line);
+      if (!repos.length) {
+        out('No tracked repositories.');
+        return 0;
+      }
+      out('');
+      const rows = repos.map(({ key, source, access }) => [key, access, access === 'inherit' ? defaults.get(source)! : access]);
+      for (const line of table(['REPOSITORY', 'POLICY', 'EFFECTIVE ACCESS'], rows)) out(line);
+      return 0;
+    }
+    case 'default': {
+      const [host, access] = rest;
+      if (rest.length !== 2 || !host?.trim() || host.startsWith('-') || (access !== 'allow' && access !== 'block')) {
+        throw new UsageError('agents repository-access default takes a source host and allow or block');
+      }
+      setSourceAgentAccess(open(), host, access);
+      out(`Default repository access for ${host} is ${access}.`);
+      return 0;
+    }
+    case 'set': {
+      const [access, ...keys] = rest;
+      if ((access !== 'inherit' && access !== 'allow' && access !== 'block') || !keys.length || keys.some((key) => !key.trim() || key.startsWith('-'))) {
+        throw new UsageError('agents repository-access set takes inherit, allow or block followed by one or more repository keys');
+      }
+      const db = open();
+      const count = db.tx(() => {
+        const ids = new Set<number>();
+        for (const key of keys) {
+          const repo = resolveRepo(db, key);
+          if (!repo) throw new HttpError(404, `Repository ${key} is not tracked (see gh-dash agents repository-access list)`);
+          ids.add(repo.id);
+        }
+        setRepoAgentAccess(db, [...ids], access);
+        return ids.size;
+      });
+      out(`Updated repository access to ${access} for ${count} ${count === 1 ? 'repository' : 'repositories'}.`);
+      return 0;
+    }
+    default:
+      throw new UsageError('agents repository-access takes list, default or set');
+  }
+}
 
 /** Runs `agents <args>`; returns the exit code (0 done, 1 failed, 2 usage). */
 export async function runAgentsCommand(args: string[], io: CliIo = { out: console.log, err: console.error, env: process.env }): Promise<number> {
@@ -181,6 +238,8 @@ export async function runAgentsCommand(args: string[], io: CliIo = { out: consol
         io.out(`View sharing for ${agent.name} (id ${agent.id}) is ${mode}.`);
         return 0;
       }
+      case 'repository-access':
+        return repositoryAccess(open, rest, io.out);
       case 'disable': {
         const before = agentBy(one('agent id or name'));
         const agent = setAgentEnabled(open(), before.id, false)!;

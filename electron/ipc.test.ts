@@ -39,6 +39,8 @@ beforeEach(() => {
     deleteAgent: vi.fn(async (id: number) => ({ id, name: 'Claude', deletedAs: `Deleted agent #${id}`, footprint: { comments: 0, threads: 0, openThreads: 0, opened: 0 } })),
     keptAgentToken: vi.fn(async (id: number) => (id === 2 ? 'ghd_kept' : null)),
     setAgentSources: vi.fn(async (id: number | 'built-in', sources: string[] | null) => ({ id: id === 'built-in' ? 5 : id, name: id === 'built-in' ? 'Agent' : 'Claude', sources })),
+    setSourceAgentAccess: vi.fn(async () => {}),
+    setRepoAgentAccess: vi.fn(async () => {}),
     enableMcp: vi.fn(async () => ({ mcpUrl: 'http://127.0.0.1:4780/mcp' })),
     tokenFileHost: vi.fn((url: unknown) => {
       if (url !== 'https://gitlab.example.com') throw new ConfigInputError('Enter the address first.');
@@ -95,6 +97,16 @@ describe('the GitLab sources over IPC', () => {
 });
 
 describe('the agents over IPC', () => {
+  it('accepts repository access edits only from the app window', async () => {
+    const evil = { sender: webContents, senderFrame: { parent: null, url: 'https://evil.example/' } };
+    expect(await electron.handlers.get(DESKTOP_IPC.setSourceAgentAccess)!(evil, 'github.com', 'allow')).toEqual({ error: 'Not allowed.' });
+    expect(await electron.handlers.get(DESKTOP_IPC.setRepoAgentAccess)!(evil, [5], 'allow')).toEqual({ error: 'Not allowed.' });
+    expect(await invoke(DESKTOP_IPC.setSourceAgentAccess, 'github.com', 'block')).toEqual({ value: undefined });
+    expect(await invoke(DESKTOP_IPC.setRepoAgentAccess, [5, 8], 'inherit')).toEqual({ value: undefined });
+    expect(desktop.setSourceAgentAccess.mock.calls).toEqual([['github.com', 'block']]);
+    expect(desktop.setRepoAgentAccess.mock.calls).toEqual([[[5, 8], 'inherit']]);
+  });
+
   it("passes the renderer's arguments to Desktop and the new token back, once", async () => {
     expect(await invoke(DESKTOP_IPC.addAgent, 'Claude')).toEqual({ value: { agent: { id: 2, name: 'Claude' }, token: 'ghd_x' } });
     expect(await invoke(DESKTOP_IPC.regenerateAgentToken, 2)).toEqual({ value: { agent: { id: 2, name: 'Claude' }, token: 'ghd_y' } });

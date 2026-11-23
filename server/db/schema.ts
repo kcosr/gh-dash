@@ -575,6 +575,15 @@ const AGENT_VIEW_SHARING = `
 ALTER TABLE principals ADD COLUMN share_view INTEGER NOT NULL DEFAULT 0 CHECK (share_view IN (0, 1));
 `;
 
+// An explicit repository choice overrides the default of its source. Preserve access on sources already in use.
+// A freshly created database also has a built-in GitHub source by this point, with neither a viewer nor repositories.
+const REPO_AGENT_ACCESS = `
+ALTER TABLE sources ADD COLUMN agent_access TEXT NOT NULL DEFAULT 'block' CHECK (agent_access IN ('allow', 'block'));
+ALTER TABLE repos ADD COLUMN agent_access TEXT CHECK (agent_access IN ('allow', 'block'));
+UPDATE sources SET agent_access = 'allow'
+  WHERE viewer_login IS NOT NULL OR EXISTS (SELECT 1 FROM repos WHERE source_id = sources.id);
+`;
+
 const MIGRATIONS: Migration[] = [
   { name: 'initial', version: 1, destructive: false, sql: V1 },
   { name: 'commits-repo-index', version: 2, destructive: false, sql: V2 },
@@ -589,6 +598,7 @@ const MIGRATIONS: Migration[] = [
   { name: 'synced-branches', version: 11, destructive: false, sql: SYNCED_BRANCHES },
   { name: 'repo-status', version: 12, destructive: false, sql: REPO_STATUS },
   { name: 'agent-view-sharing', version: 13, destructive: false, sql: AGENT_VIEW_SHARING },
+  { name: 'repo-agent-access', version: 14, destructive: false, sql: REPO_AGENT_ACCESS },
 ];
 
 /** The schema version this build creates and understands. */

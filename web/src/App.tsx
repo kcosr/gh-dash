@@ -197,7 +197,7 @@ function Shell() {
     if (diff && readDiff.current) return readDiff.current();
     const target = parseDiffId(diff ?? drawer);
     if (!target) return null;
-    return { mode: diff ? 'diff' : 'details', target, baseOid: null, headOid: null, file: null, viewport: null, selection: null, threadId: null };
+    return { mode: diff ? 'diff' : 'details', target, repoId: null, baseOid: null, headOid: null, file: null, viewport: null, selection: null, threadId: null };
   });
   const compact = useCompactSidebar();
   // Narrow screens open the sidebar as a full-screen panel; on desktop it can be hidden (saved in the browser).

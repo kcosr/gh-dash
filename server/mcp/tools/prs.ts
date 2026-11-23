@@ -6,15 +6,15 @@ import type { Diff, ProviderKind, PullRequest } from '../../../shared/api';
 import { isBranchName } from '../../../shared/branch';
 import { encodeCursor } from '../../api/scope';
 import type { Db } from '../../db/db';
-import { isMeFn, loadQueryCtx } from '../../db/filters';
+import { agentRepoScope, isMeFn, loadQueryCtx } from '../../db/filters';
 import { listPrs as listPrRows, PR_FROM, PR_SELECT } from '../../db/lists';
 import { type PrRow, toPr } from '../../db/rows';
 import { HttpError } from '../../lib/errors';
 import { page, prDetail, repoKinds } from '../../services/lists';
 import { loadDiff } from '../diffs';
 import { clip, commitArg, limitArg, prArg, repoArg, targetRef } from '../format';
-import { reachScope, requireRepo } from '../reach';
-import { readTool, type ToolContext } from '../tool';
+import { reachScope, requireRepo, requireRepoInReach } from '../reach';
+import { readTool, type SourceIds, type ToolContext } from '../tool';
 
 /** The compact PR every tool returns. */
 function prItem(pr: PullRequest, kind: ProviderKind, headOid: string | null) {
@@ -37,11 +37,12 @@ function prItem(pr: PullRequest, kind: ProviderKind, headOid: string | null) {
 }
 
 /** Head commits (as of the last sync) of these PRs, by PullRequest.id. */
-function headOids(db: Db, ids: string[]): Map<string, string | null> {
+function headOids(db: Db, ids: string[], sources: SourceIds): Map<string, string | null> {
+  const { sql, params } = agentRepoScope('r', sources);
   const rows = db.all<{ id: string; head_oid: string | null }>(
     `SELECT r.key || '#' || p.number AS id, p.head_oid FROM ${PR_FROM}
-     WHERE r.removed_at IS NULL AND r.key || '#' || p.number IN (SELECT value FROM json_each(?))`,
-    [JSON.stringify(ids)],
+     WHERE ${sql} AND r.key || '#' || p.number IN (SELECT value FROM json_each(?))`,
+    [...params, JSON.stringify(ids)],
   );
   return new Map(rows.map((r) => [r.id, r.head_oid]));
 }
@@ -65,12 +66,13 @@ export const listPrs = readTool({
     .strict(),
   run: ({ repo, state, comments, q, limit, cursor }, ctx) => {
     const { db } = ctx.deps;
-    if (repo) requireRepo(ctx, repo);
+    const ref = repo === undefined ? null : requireRepo(ctx, repo);
     // Every date: an open PR stays open however old it is (the range is the API's widest). The PRs the agent may reach.
-    const { scope, ctx: qctx } = reachScope(ctx, { repos: repo, q, from: '-20y' });
+    const { scope, ctx: qctx } = reachScope(ctx, { repos: ref?.key, q, from: '-20y' });
     const { items, nextCursor, total } = listPrRows(db, qctx, scope, { state, labels: null, comments }, page({ limit, cursor }, 3));
     const kindOf = repoKinds(db);
-    const heads = headOids(db, items.map((p) => p.id));
+    const heads = headOids(db, items.map((p) => p.id), ctx.sources);
+    if (ref) requireRepoInReach(ctx, ref, repo);
     return { items: items.map((p) => prItem(p, kindOf(p.repo), heads.get(p.id) ?? null)), total, nextCursor: encodeCursor(nextCursor) };
   },
 });
@@ -189,6 +191,8 @@ export const getPr = readTool({
     } catch (err) {
       if (!(err instanceof HttpError)) throw err;
       out.note = `No diff (${err.message}): files and baseOid are left out; headOid is from the last sync`;
+    } finally {
+      requireRepoInReach(ctx, ref, repo);
     }
     return out;
   },

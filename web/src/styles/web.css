@@ -219,6 +219,7 @@ table.rtable .pin-mark svg { width: 12px; height: 12px; }
 .rh-top h1 { margin: 0; font-size: 22px; font-weight: 650; letter-spacing: -.015em; }
 .rh-desc { margin: 8px 0 0; font-size: 14px; color: var(--wb-fg-2); max-width: 820px; }
 .rh-stats { margin-top: 10px; flex-wrap: wrap; row-gap: 6px; }
+.repo-agent-access { margin-top: 10px; font-size: 12.5px; }
 .rh-link { color: var(--wb-accent-text); font-size: 12.5px; }
 .rh-link:hover { text-decoration: underline; }
 .rh-topics { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
@@ -320,6 +321,15 @@ pre.code.muted { color: var(--wb-muted); }
 .set-c { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--wb-fg-2); }
 .set-c.grow { flex: 1; min-width: 0; }
 .set-c.stack { flex-direction: column; align-items: stretch; }
+.agent-access-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.agent-access-controls .wb-filter { min-width: 0; }
+.agent-access-bulk { margin-top: 10px; font-size: 12.5px; }
+.trk-list.agent-access-list { max-height: min(45vh, 400px); overflow: auto; margin-top: 8px; padding: 0 6px; border: 1px solid var(--wb-border); border-radius: 8px; }
+.agent-access-list .trk-row { justify-content: space-between; flex-wrap: wrap; margin: 0; padding: 6px 0; font-size: 12.5px; }
+.agent-access-repository { display: flex; flex: 1; align-items: center; gap: 8px; min-width: min(180px, 100%); }
+.agent-access-list label { cursor: pointer; }
+.agent-access-name { display: flex; flex-direction: column; gap: 2px; overflow-wrap: anywhere; }
+.set-sec .agent-access-empty { margin-top: 12px; }
 .env-emails { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .env-emails small { font-size: 12px; color: var(--wb-muted); }
 .num-in { width: 96px; font-variant-numeric: tabular-nums; }

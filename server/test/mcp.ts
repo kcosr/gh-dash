@@ -4,8 +4,10 @@ import type { DiffFile, Principal } from '../../shared/api';
 import { createApp, type AppDeps } from '../api/app';
 import { CommentBus } from '../comments/bus';
 import { type Config, loadConfig } from '../config';
+import { setSourceAgentAccess } from '../db/agent-access';
 import { createAgent } from '../db/agents';
 import type { Db } from '../db/db';
+import { listSources } from '../db/sources';
 import { DiffCache } from '../diff/cache';
 import { DiffService, type DiffSources } from '../diff/service';
 import { newestFirst } from '../provider/branches';
@@ -154,10 +156,15 @@ export interface McpHarnessOptions {
   db?: Db;
   config?: Partial<Config>;
   transport?: AppDeps['transport'];
+  /** Existing MCP behaviour tests use shared sources; policy tests can exercise a fresh installation's defaults. */
+  allowRepoAccess?: boolean;
 }
 
 export function mcpHarness(opts: McpHarnessOptions = {}) {
   const db = opts.db ?? seedDb();
+  if (opts.allowRepoAccess !== false) {
+    for (const source of listSources(db)) setSourceAgentAccess(db, source.host, 'allow');
+  }
   const config: Config = { ...loadConfig({}), webDir: '/nonexistent', ...opts.config };
   const tokens = testTokens();
   const sync = new SyncManager({ db, schedule: false, tokens, log: () => {} });

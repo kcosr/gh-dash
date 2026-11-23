@@ -6,6 +6,7 @@
  *
  * The web app must work without the bridge (headless server in a browser); desktop-only UI checks for it.
  */
+import type { RepoAgentAccess, SourceAgentAccess } from './agent-access';
 import type { AgentFootprint, DeletedAgent } from './agents';
 import type { AccountStatus, Agent, SourceAccount, SourceCheck, TokenChoice } from './api';
 
@@ -58,6 +59,12 @@ export interface SourceTestDraft {
   tokenEnv?: string;
 }
 
+/** An explicit default selected while adding a source. */
+export interface SourceAgentAccessUpdate {
+  host: string;
+  access: SourceAgentAccess;
+}
+
 export type MainToServer =
   /** Set (or clear) github.com's app-provided token and/or its chosen source. Answered with `token-result`. */
   | { type: 'set-token'; id: number; choice: TokenChoice | null; token?: string | null; source?: undefined }
@@ -70,7 +77,7 @@ export type MainToServer =
    * config.json's `sources` or `glabPath` changed: re-read them and rebuild the sources that changed, without a
    * restart. Answered with `sources-result`.
    */
-  | { type: 'reload-sources'; id: number }
+  | { type: 'reload-sources'; id: number; sourceAgentAccess?: SourceAgentAccessUpdate }
   /** Resolve and validate a draft source with a throwaway credential; nothing is kept. Answered with `source-test-result`. */
   | { type: 'test-source'; id: number; draft: SourceTestDraft }
   /**
@@ -109,6 +116,8 @@ export type MainToServer =
   | { type: 'set-agent-sources'; id: number; agent: number | 'built-in'; sources: string[] | null }
   /** Allow a named agent to request the current review view. Answered with `agent-result`. */
   | { type: 'set-agent-view-sharing'; id: number; agent: number; shareView: boolean }
+  | { type: 'set-source-agent-access'; id: number; host: string; access: SourceAgentAccess }
+  | { type: 'set-repo-agent-access'; id: number; repos: number[]; access: RepoAgentAccess }
   /** Close the listeners and databases, then exit 0. */
   | { type: 'shutdown' };
 
@@ -146,6 +155,7 @@ export type ServerToMain =
   | { type: 'agent-deleted'; id: number; deleted: DeletedAgent }
   /** Result of check-agent-token. */
   | { type: 'agent-token-checked'; id: number; matches: boolean }
+  | { type: 'agent-access-updated'; id: number }
   /** A request with an `id` failed (an unknown source, one still configured...): `message` says why, for the user. */
   | { type: 'request-failed'; id: number; message: string }
   /** Startup failed (bad config, database locked, port in use...). The child exits after sending it. */
@@ -251,7 +261,7 @@ export type CredentialDraft =
   | { method: 'env' };
 
 /** A GitLab source to test or add: its URL (with any relative root) and a credential. */
-export type SourceDraft = { kind: 'gitlab'; url: string } & CredentialDraft;
+export type SourceDraft = { kind: 'gitlab'; url: string; agentAccessDefault?: SourceAgentAccess } & CredentialDraft;
 
 export interface DesktopSourceResult {
   /** The test that decided: the account, instance, scopes and expiry, or the error or conflict. */
@@ -369,6 +379,10 @@ export interface DesktopBridge {
    */
   setAgentSources(id: number | 'built-in', sources: string[] | null): Promise<Agent>;
   setAgentViewSharing(id: number, shareView: boolean): Promise<Agent>;
+  /** Sets the policy new and existing repositories inherit from this source. */
+  setSourceAgentAccess(host: string, access: SourceAgentAccess): Promise<void>;
+  /** Changes access for one or more tracked repositories, by stable local ID. */
+  setRepoAgentAccess(ids: number[], access: RepoAgentAccess): Promise<void>;
 }
 
 /** IPC channel names used by the preload script (ipcRenderer.invoke) and main (ipcMain.handle). */
@@ -396,6 +410,8 @@ export const DESKTOP_IPC = {
   keptAgentToken: 'gh-dash:kept-agent-token',
   setAgentSources: 'gh-dash:set-agent-sources',
   setAgentViewSharing: 'gh-dash:set-agent-view-sharing',
+  setSourceAgentAccess: 'gh-dash:set-source-agent-access',
+  setRepoAgentAccess: 'gh-dash:set-repo-agent-access',
   enableMcp: 'gh-dash:enable-mcp',
 } as const;
 

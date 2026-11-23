@@ -22,9 +22,9 @@ const notFound = () => new HttpError(404, 'Repository not found');
  * The inventory (every live repo, on every source), or the selection `query` describes. `query.source` (a comma list of
  * hosts) narrows it to those sources; 400 for a host that isn't a source of this database.
  */
-export function queryRepos({ db, config, now }: RepoDeps, query: RepoQuery): Repo[] {
+export function queryRepos({ db, config, now }: RepoDeps, query: RepoQuery, agentSources?: readonly number[] | null): Repo[] {
   requireSources(db, parseSources(query.source));
-  return selectRepos(listRepos(db, config.defaultTz, now?.()), query);
+  return selectRepos(listRepos(db, config.defaultTz, now?.(), undefined, agentSources), query);
 }
 
 /** One repo by its key (or an owned github.com repo's short name); 404. */

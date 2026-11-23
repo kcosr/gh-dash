@@ -10,7 +10,7 @@ import * as comments from '../../services/comments';
 import { repoKinds } from '../../services/lists';
 import { branchArg, commitArg, idArg, limitArg, prArg, repoArg } from '../format';
 import { placeThreads, type ViewTarget } from '../placement';
-import { reachScope, requireRepo, requireThreadInReach } from '../reach';
+import { reachScope, repoInReach, requireRepo, requireRepoInReach, requireThreadInReach } from '../reach';
 import { LIST_SNIPPET_CHARS, targetTitle, threadOut } from '../threads';
 import { readTool } from '../tool';
 
@@ -88,7 +88,8 @@ export const listThreads = readTool({
       ...(args.path !== undefined ? { path: args.path } : {}),
       ...(since ? { since } : {}),
     };
-    const res = listThreadItems(db, ctx, scope, filter, { limit: args.limit, after });
+    const list = () => listThreadItems(db, ctx, scope, filter, { limit: args.limit, after });
+    const initial = list();
     // A PR's or branch's view shows its group's threads on its own diff.
     const against: ViewTarget | undefined =
       ref && args.pr !== undefined
@@ -96,22 +97,30 @@ export const listThreads = readTool({
         : ref && args.branch !== undefined
           ? { repo: ref.key, kind: 'branch', branch: args.branch }
           : undefined;
-    const placements = await placeThreads(deps, res.items, signal, { against });
+    const placements = await placeThreads(deps, initial.items, signal, { against });
+    if (ref) requireRepoInReach(reach, ref, args.repo);
+    // Re-read items and totals after placement: repository access may have been revoked while the diffs loaded.
+    const res = list();
+    const placed = new Map(initial.items.map((t) => [t.id, t]));
     // What `shownIn` names is where each is placed: the listed PR or branch for all but commit threads (a thread its merged
     // PR shows may be shared with a PR closed before that merge, whose diff differs), else the thread's own view.
     const shownOn: ThreadView | undefined = against && (against.kind === 'pr' ? { kind: 'pr', number: against.number } : { kind: 'branch', branch: against.branch });
     const kindOf = repoKinds(db);
     return {
-      items: res.items.map((t) =>
-        threadOut(t, principal, {
+      items: res.items.map((t) => {
+        const previous = placed.get(t.id);
+        const placement = previous?.repo === t.repo && JSON.stringify(previous.view) === JSON.stringify(t.view)
+          ? placements.get(t.id)
+          : undefined;
+        return threadOut(t, principal, {
           kind: kindOf(t.repo),
           title: t.targetTitle,
-          placement: placements.get(t.id)!,
+          placement: placement ?? (t.path === null ? { kind: 'target' } : { kind: 'unknown', reason: 'The review changed during this request' }),
           view: shownOn && t.kind !== 'commit' ? shownOn : t.view,
           comments: args.include_comments,
           snippetChars: LIST_SNIPPET_CHARS,
-        }),
-      ),
+        });
+      }),
       total: res.total,
       counts: res.counts,
       nextCursor: encodeCursor(res.nextCursor),
@@ -126,9 +135,10 @@ export const getThreadTool = readTool({
   input: z.object({ id: idArg('Thread id') }).strict(),
   run: async ({ id }, ctx) => {
     const { deps, principal, signal } = ctx;
-    requireThreadInReach(ctx, id);
+    const repo = requireThreadInReach(ctx, id);
     const t = { ...comments.getThread(deps, id), view: viewOfThread(deps.db, id) ?? undefined };
     const placement = (await placeThreads(deps, [t], signal)).get(t.id)!;
+    if (!repoInReach(ctx, repo)) throw new HttpError(404, 'Thread not found');
     return threadOut(t, principal, { kind: repoKinds(deps.db)(t.repo), title: targetTitle(deps.db, t), placement, view: t.view, comments: true, snippetChars: null });
   },
 });

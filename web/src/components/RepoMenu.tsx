@@ -6,6 +6,7 @@ import { usePatchRepo } from '../api/hooks';
 import { repoLinkSearch } from '../lib/urlState';
 import { Menu } from '../workbench';
 import type { MenuEntry } from '../workbench';
+import { repositoryAccessUrl } from './AgentAccess';
 import { Icon } from './Icon';
 import { useConfirmRemoveRepo } from './RepoTracking';
 import { statusItems, useSetRepoStatus } from './RepoStatusMenu';
@@ -34,6 +35,10 @@ export function useRepoMenuItems(repo: Repo, opts: { onNavigate?: () => void; af
       ? { id: 'activity', icon: 'activity', label: 'Activity in this repo', onSelect: () => { navigate(activity); onNavigate(); } }
       : { id: 'activity', icon: 'activity', label: 'Activity in this repo', href: activity },
     { id: 'external', icon: 'external', label: `Open on ${repoProvider(repo).name}`, href: repo.url, external: true },
+    { id: 'agent-access', icon: 'lock', label: 'Agent access through gh-dash', onSelect: () => {
+      navigate(repositoryAccessUrl(repo.source, repo.key));
+      onNavigate?.();
+    } },
     { type: 'separator' },
     ...statusItems(repo, (r, status) => changed(setStatus(r, status))),
     ...(repo.trackedBy === 'manual' ? [

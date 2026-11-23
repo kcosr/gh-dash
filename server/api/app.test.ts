@@ -5,9 +5,10 @@ import { gunzipSync } from 'node:zlib';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import { type Config, loadConfig } from '../config';
 import { getMeta, setMeta } from '../db/meta';
+import { resolveRepo } from '../db/repo-key';
 import { ensureSource, GITHUB_SOURCE_ID, getSource, tryClaimViewer } from '../db/sources';
 import { upsertCommit, upsertOwned, upsertPr } from '../db/write';
-import { DiffCache } from '../diff/cache';
+import { DiffCache, repoCacheKey } from '../diff/cache';
 import { DiffService } from '../diff/service';
 import { GitHubDiffSources } from '../github/diff-source';
 import { SyncManager } from '../sync/manager';
@@ -1234,7 +1235,7 @@ describe('diffs', () => {
     const cache = new DiffCache(':memory:');
     const sources = new GitHubDiffSources({ tokens, fetchImpl: gh.fetchImpl, sleep: async () => {}, log: () => {} });
     const diffs = new DiffService({ db, cache, sources, log: () => {} });
-    return { app: createApp({ db, config, sync, diffs, tokens }), gh, cache };
+    return { app: createApp({ db, config, sync, diffs, tokens }), gh, cache, db };
   }
   const commitRoute = {
     [`/repos/alice/app/commits/${C}`]: {
@@ -1337,7 +1338,7 @@ describe('diffs', () => {
   });
 
   it('reports, clears and caps the cache', async () => {
-    const { app, cache } = diffApp(commitRoute);
+    const { app, cache, db } = diffApp(commitRoute);
     const stats = async (init?: RequestInit) => (await (await app.request('/api/v1/diff-cache', init)).json()) as { entries: number; bytes: number; maxBytes: number };
     expect(await stats()).toEqual({ entries: 0, bytes: 0, maxBytes: 200 * 1024 * 1024 });
     await app.request(`/api/v1/commits/app/${C}/diff`);
@@ -1345,7 +1346,8 @@ describe('diffs', () => {
     expect(await stats({ method: 'DELETE' })).toEqual({ entries: 0, bytes: 0, maxBytes: 200 * 1024 * 1024 });
 
     // Lowering the cap evicts right away.
-    for (const k of ['a', 'b', 'c']) cache.put({ key: k, kind: 'blob', repo: 'alice/app', oid: C, fetchedAt: 1, data: Buffer.alloc(6 * 1024 * 1024) });
+    const repo = repoCacheKey(resolveRepo(db, 'app')!.id, 'alice/app');
+    for (const k of ['a', 'b', 'c']) cache.put({ key: k, kind: 'blob', repo, oid: C, fetchedAt: 1, data: Buffer.alloc(6 * 1024 * 1024) });
     const patch = await app.request('/api/v1/settings', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: '{"diffCacheMb":10}' });
     expect(await patch.json()).toMatchObject({ diffCacheMb: 10 });
     expect(await stats()).toEqual({ entries: 1, bytes: 6 * 1024 * 1024, maxBytes: 10 * 1024 * 1024 });

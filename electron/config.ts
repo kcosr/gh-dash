@@ -4,6 +4,7 @@
  */
 import { dirname, join, posix, resolve, win32 } from 'node:path';
 import type { ConfigFile } from '../server/config-file';
+import type { RepoAgentAccess, SourceAgentAccess } from '../shared/agent-access';
 import type { DesktopConfig, DesktopConfigPatch } from '../shared/desktop';
 
 /** The server's default PORT. */
@@ -187,6 +188,26 @@ export function parseAgentSourcesInput(sources: unknown): string[] | null {
     if (typeof host !== 'string' || !host.trim() || host.length > 253 || /[\s\x00-\x1f\x7f]/.test(host.trim())) throw new ConfigInputError('A source is named by its host, such as github.com.');
   }
   return sources.map((h: string) => h.trim().toLowerCase());
+}
+
+export function parseSourceAgentAccess(access: unknown): SourceAgentAccess {
+  if (access !== 'allow' && access !== 'block') throw new ConfigInputError('Choose Allow or Block for the source default.');
+  return access;
+}
+
+export function parseRepoAgentAccess(access: unknown): RepoAgentAccess {
+  if (access === 'inherit' || access === 'allow' || access === 'block') return access;
+  throw new ConfigInputError('Choose Use source default, Allow or Block for repositories.');
+}
+
+export function parseRepoAgentAccessIds(input: unknown): number[] {
+  if (!Array.isArray(input) || input.length === 0) throw new ConfigInputError('Choose at least one repository.');
+  const ids = new Set<number>();
+  for (const id of input) {
+    if (typeof id !== 'number' || !Number.isSafeInteger(id) || id <= 0) throw new ConfigInputError('Invalid repository ID.');
+    ids.add(id);
+  }
+  return [...ids];
 }
 
 /**

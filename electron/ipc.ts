@@ -93,6 +93,8 @@ export function registerIpc(desktop: Desktop, window: () => BrowserWindow | null
   handle(DESKTOP_IPC.keptAgentToken, (id) => desktop.keptAgentToken(id));
   handle(DESKTOP_IPC.setAgentSources, (id, sources) => desktop.setAgentSources(id, sources));
   handle(DESKTOP_IPC.setAgentViewSharing, (id, shareView) => desktop.setAgentViewSharing(id, shareView));
+  handle(DESKTOP_IPC.setSourceAgentAccess, (host, access) => desktop.setSourceAgentAccess(host, access));
+  handle(DESKTOP_IPC.setRepoAgentAccess, (ids, access) => desktop.setRepoAgentAccess(ids, access));
   handle(DESKTOP_IPC.enableMcp, () => desktop.enableMcp());
   // The picker names the host the file is for; main keeps the file for that host only.
   handle(DESKTOP_IPC.chooseTokenFile, async (url) => {

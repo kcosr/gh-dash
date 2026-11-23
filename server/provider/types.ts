@@ -299,7 +299,7 @@ export interface PrRevision {
 export type BlobResult = { kind: 'file'; bytes: Uint8Array } | { kind: 'not-file' } | { kind: 'too-large' };
 
 /** A commit's diff as a source produces it; the diff service adds the fields it owns. */
-export type CommitDiff = Omit<Diff, 'kind' | 'repo' | 'number' | 'fetchedAt'>;
+export type CommitDiff = Omit<Diff, 'kind' | 'repo' | 'repoId' | 'number' | 'fetchedAt'>;
 
 /**
  * A three-dot comparison as a source produces it: the files changed between `baseOid` (the merge base) and `headOid`,

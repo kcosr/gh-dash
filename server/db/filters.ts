@@ -1,6 +1,7 @@
 import type { Ownership, VisibilityFilter, Who } from '../../shared/api';
 import { isoSec } from '../lib/time';
 import { activeRepoIds } from './activity';
+import { repoAgentAccessSql } from './agent-access';
 import type { Db, Param } from './db';
 import { REPO_IDS_FOR_KEYS } from './repo-key';
 import { getSettings } from './settings';
@@ -15,6 +16,8 @@ export interface Scope {
    * intersects `repos` (and the default selection), and also applies where `repos` is ignored (facets.byRepo).
    */
   source?: string[] | null;
+  /** MCP only. The agent's permitted source ids (null means every source), intersected with live repository policy. */
+  agentSources?: readonly number[] | null;
   visibility: VisibilityFilter;
   /** 'mine': repos tracked because the viewer owns them; 'others': repos added by hand. */
   ownership: Ownership;
@@ -90,9 +93,20 @@ export class Where {
   }
 }
 
+/** A live repository must allow agent access, and its source must be within the agent's scope. */
+export function agentRepoScope(alias: string, sources: readonly number[] | null): { sql: string; params: Param[] } {
+  const w = new Where().add(repoAgentAccessSql(alias));
+  if (sources !== null) w.add(`${alias}.source_id IN (SELECT value FROM json_each(?))`, JSON.stringify(sources));
+  return { sql: w.toSql(), params: w.params };
+}
+
 /** Repo-level scope on alias `r`. `ignoreRepos` drops the repo selection (for facets.byRepo). */
 export function addRepoScope(w: Where, scope: Scope, ctx: QueryCtx, ignoreRepos = false): void {
-  w.add('r.removed_at IS NULL');
+  if (scope.agentSources === undefined) w.add('r.removed_at IS NULL');
+  else {
+    const access = agentRepoScope('r', scope.agentSources);
+    w.add(access.sql, ...access.params);
+  }
   if (!ignoreRepos) {
     if (scope.repos === null) w.add('r.id IN (SELECT value FROM json_each(?))', JSON.stringify(ctx.activeRepoIds));
     else if (scope.repos.length === 0) w.add('0');

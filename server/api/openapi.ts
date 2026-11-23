@@ -243,6 +243,13 @@ const schemas: Record<string, Schema> = {
     sync: ref('SourceSyncStatus'),
     repos: { ...obj({ owned: int(), added: int() }), description: 'Live repositories on it: tracked automatically, and added by hand' },
   }),
+  AgentAccessInventory: obj({
+    sources: arr(obj({ host: str(), name: str(), defaultAccess: enumOf('allow', 'block') })),
+    repos: arr(obj({
+      id: int('Local repository identity, stable through renames'), key: str(), source: str("The source's host"),
+      nameWithOwner: str(), access: enumOf('inherit', 'allow', 'block'),
+    })),
+  }),
   RepoCandidate: obj({
     key: str('Repo key: owner/name on github.com, <host>/<path> on other sources'), owner: str('Owner, or GitLab namespace path'), name: str(), description: nullable(str()), visibility: enumOf('public', 'private', 'internal'),
     isArchived: bool, isFork: bool, stars: int(), pushedAt: nullable(dateTime),
@@ -349,6 +356,7 @@ const schemas: Record<string, Schema> = {
   Diff: obj({
     kind: enumOf('pr', 'commit', 'branch'),
     repo: str(),
+    repoId: int('Local identity of the repository this diff came from'),
     number: nullable(int('PR number; null for commits and branches')),
     branch: str("For kind 'branch': the branch, compared against baseRef. Absent otherwise."),
     baseRef: str("For kind 'branch': the repo's default branch, which the branch is compared against. Absent otherwise."),
@@ -901,6 +909,13 @@ export const ENDPOINTS: EndpointDoc[] = [
   { method: 'get', path: '/api/v1/diff-cache', tag: 'Diffs', summary: 'Diff cache size', response: { status: 200, schema: ref('DiffCacheStats') } },
   { method: 'delete', path: '/api/v1/diff-cache', tag: 'Diffs', summary: 'Empty the diff cache and release its disk space', response: { status: 200, schema: ref('DiffCacheStats') } },
   ...commentEndpoints(),
+  {
+    method: 'get', path: '/api/v1/agent-access', tag: 'Repos', summary: 'Repository access settings for MCP agents',
+    description:
+      'Lists every source’s default and every tracked repository’s override. An inherited repository uses its source default. ' +
+      'Each agent’s source limits also apply. Manage these settings in the desktop app or server CLI.',
+    response: { status: 200, schema: ref('AgentAccessInventory') },
+  },
   {
     method: 'get', path: '/api/v1/agents', tag: 'Comments', summary: 'The agents that may comment through MCP (never their tokens)',
     description:

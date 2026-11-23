@@ -4,6 +4,7 @@ import { useDesktop } from '../api/desktop';
 import { useAccount, useCheckAccount, useWorkSources } from '../api/hooks';
 import { hostNames, kindOfHost, sourceStatuses } from '../lib/sources';
 import { CreateTokenNote, GhCliChoice, TokenForm, TokenOrder } from './Account';
+import { SourceDefaultAccess } from './AgentAccess';
 import { Icon } from './Icon';
 import { useRepoLabel } from './repoMapContext';
 import { useToast } from '../workbench';
@@ -51,6 +52,9 @@ export function NoTokenCard() {
           <span className="ic"><Icon name="key" /></span>
           <h2>Connect gh-dash to GitHub</h2>
           <p>gh-dash syncs your repositories, pull requests and issues with a GitHub token. It only reads; it never changes anything on GitHub.</p>
+          <h3>Default agent access</h3>
+          <p>Applies to GitHub repositories through gh-dash when they inherit this source's policy.</p>
+          <SourceDefaultAccess host="github.com" />
           {account?.locked ? (
             <>
               <p><code>GITHUB_TOKEN</code> is set in the environment gh-dash was started from, so it is always used, but it doesn't work.</p>

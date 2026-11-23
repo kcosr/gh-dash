@@ -10,7 +10,7 @@ import { defaultExec, findCli } from '../server/credentials/cli';
 import { glabCli } from '../server/credentials/glab';
 import { GITLAB_TOKEN_ENV } from '../server/gitlab/credentials';
 import type { CredentialDraft, DesktopState, SourceDraft, SourceMethod } from '../shared/desktop';
-import { ConfigInputError } from './config';
+import { ConfigInputError, parseSourceAgentAccess } from './config';
 
 const MAX_URL = 2048;
 const MAX_TOKEN = 512;
@@ -56,14 +56,17 @@ export function parseCredentialDraft(input: unknown): CredentialDraft {
   }
 }
 
-/** A GitLab source to test or add: `kind`, `url` and a credential (parseCredentialDraft). */
+/** A GitLab source to test or add: `kind`, `url`, a credential and an optional initial repository access policy. */
 export function parseSourceDraft(input: unknown): SourceDraft {
   const raw = plainObject(input, 'a GitLab source');
   if (raw.kind !== 'gitlab') throw new ConfigInputError('Only GitLab sources can be added.');
   if (typeof raw.url !== 'string' || !raw.url.trim()) throw new ConfigInputError("Enter the GitLab instance's URL.");
   if (raw.url.length > MAX_URL) throw new ConfigInputError('That URL is too long.');
-  const { kind: _kind, url, ...credential } = raw;
-  return { kind: 'gitlab', url: raw.url.trim(), ...parseCredentialDraft(credential) };
+  const { kind: _kind, url, agentAccessDefault, ...credential } = raw;
+  return {
+    kind: 'gitlab', url: raw.url.trim(), ...parseCredentialDraft(credential),
+    ...(agentAccessDefault === undefined ? {} : { agentAccessDefault: parseSourceAgentAccess(agentAccessDefault) }),
+  };
 }
 
 /** The URL as it would be saved, and the host that is the source's identity. A user-facing error when it can't be one. */

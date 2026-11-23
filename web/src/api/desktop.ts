@@ -4,6 +4,7 @@
  */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { QueryClient } from '@tanstack/react-query';
+import type { RepoAgentAccess, SourceAgentAccess } from '../../../shared/agent-access';
 import type { AccountStatus } from '../../../shared/api';
 import type { CredentialDraft, DesktopBridge, DesktopConfigPatch, DesktopState, DesktopTokenResult, SourceDraft } from '../../../shared/desktop';
 import { AUTHOR_KEYS, invalidateAccountData, qk, refetchAfterSync } from './hooks';
@@ -104,7 +105,23 @@ export function useDesktopActions() {
  */
 function sourcesChanged(qc: QueryClient, removed = false) {
   if (removed) void qc.invalidateQueries({ predicate: refetchAfterSync });
-  for (const queryKey of [qk.sources, qk.sync, qk.repos, qk.instance, qk.desktop]) void qc.invalidateQueries({ queryKey });
+  for (const queryKey of [qk.sources, qk.sync, qk.repos, qk.instance, qk.desktop, qk.agentAccess]) void qc.invalidateQueries({ queryKey });
+}
+
+/** Repository eligibility is administered only by the desktop app or the server's agents command. */
+export function useAgentAccessActions() {
+  const bridge = getBridge();
+  const qc = useQueryClient();
+  const refresh = () => qc.invalidateQueries({ queryKey: qk.agentAccess });
+  const setDefault = useMutation({
+    mutationFn: ({ host, access }: { host: string; access: SourceAgentAccess }) => need(bridge).setSourceAgentAccess(host, access),
+    onSettled: refresh,
+  });
+  const setRepositories = useMutation({
+    mutationFn: ({ ids, access }: { ids: number[]; access: RepoAgentAccess }) => need(bridge).setRepoAgentAccess(ids, access),
+    onSettled: refresh,
+  });
+  return { editable: !!bridge, setDefault, setRepositories };
 }
 
 /** The desktop app's GitLab source actions (design §8). Each rejects outside the app. */

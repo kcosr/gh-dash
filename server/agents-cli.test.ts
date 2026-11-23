@@ -8,6 +8,8 @@ import { agentForToken, agentSourceIds, principalForToken } from './db/agents';
 import { addComment, createThread, getPrincipal, getThread, SELF_PRINCIPAL_ID, setThreadStatus } from './db/comments';
 import { type Db, openDb } from './db/db';
 import { ensureSource, removeSource } from './db/sources';
+import { upsertOwned } from './db/write';
+import { GITHUB, repoRecord } from './test/seed';
 
 let dir: string;
 let env: NodeJS.ProcessEnv;
@@ -45,6 +47,26 @@ const withDb = <T>(fn: (db: Db) => T): T => {
 const principal = (token: string) => withDb((db) => principalForToken(db, token));
 
 describe('gh-dash agents', () => {
+  it('sets inherited defaults and overrides for tracked repositories in a single operation', async () => {
+    withDb((db) => {
+      const gitlab = ensureSource(db, { kind: 'gitlab', host: 'gitlab.example.com', baseUrl: 'https://gitlab.example.com' });
+      upsertOwned(db, GITHUB, repoRecord('app'), '2026-11-22T00:00:00Z');
+      upsertOwned(db, gitlab, repoRecord('app'), '2026-11-22T00:00:00Z');
+    });
+    const list = async () => (await run('repository-access', 'list')).out;
+    expect(await list()).toMatch(/^alice\/app +inherit +block$/m);
+    expect((await run('repository-access', 'default', 'github.com', 'allow')).code).toBe(0);
+    expect(await list()).toMatch(/^alice\/app +inherit +allow$/m);
+    expect((await run('repository-access', 'set', 'block', 'alice/app', 'unknown/repo')).code).toBe(1);
+    expect(await list()).toMatch(/^alice\/app +inherit +allow$/m);
+    expect((await run('repository-access', 'set', 'allow', 'alice/app', 'gitlab.example.com/alice/app')).code).toBe(0);
+    expect((await run('repository-access', 'default', 'github.com', 'block')).code).toBe(0);
+    expect(await list()).toMatch(/^alice\/app +allow +allow$/m);
+    expect(await list()).toMatch(/^gitlab\.example\.com\/alice\/app +allow +allow$/m);
+    expect((await run('repository-access', 'set', 'inherit', 'alice/app')).code).toBe(0);
+    expect(await list()).toMatch(/^alice\/app +inherit +block$/m);
+  });
+
   it('adds an agent, printing its token once with where to connect', async () => {
     const { code, out, err } = await run('add', 'Claude');
     expect([code, err]).toEqual([0, '']);

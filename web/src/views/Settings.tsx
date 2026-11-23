@@ -14,6 +14,7 @@ import { hostNames } from '../lib/sources';
 import { dur, fmtBytes, fmtDateTime, fmtNum, fmtTime, plural, relFuture, relLong } from '../lib/time';
 import { AgentsSection } from './SettingsAgents';
 import { InstanceSection } from './SettingsInstance';
+import { RepositoryAccessSection } from './SettingsRepositoryAccess';
 import { SourcesSection } from './SettingsSources';
 import { TrackedSection } from './SettingsTracked';
 
@@ -110,7 +111,7 @@ function DiffCacheSection() {
  * while the cards above it load and grow, until the reader scrolls or after a moment.
  */
 function usePinnedHash() {
-  const { hash } = useLocation();
+  const { hash, search } = useLocation();
   useEffect(() => {
     const el = hash ? document.getElementById(decodeURIComponent(hash.slice(1))) : null;
     const box = el?.closest('.scroll');
@@ -124,7 +125,7 @@ function usePinnedHash() {
     const events = ['wheel', 'touchstart', 'pointerdown', 'keydown'] as const;
     for (const e of events) window.addEventListener(e, stop, { once: true, passive: true });
     return () => { stop(); clearTimeout(t); for (const e of events) window.removeEventListener(e, stop); };
-  }, [hash]);
+  }, [hash, search]);
 }
 
 export function SettingsView() {
@@ -176,6 +177,8 @@ export function SettingsView() {
             </section>
           )}
           <SourcesSection rateLimit={st?.rateLimit} />
+
+          <RepositoryAccessSection />
 
           <TrackedSection />
 

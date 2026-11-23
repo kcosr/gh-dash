@@ -60,8 +60,8 @@ describe('the stream: what a message refetches', () => {
     ]);
   });
 
-  it('refetches the agents list on `agents`, nothing on `show`', () => {
-    expect(streamInvalidations({ type: 'agents' })).toEqual([qk.agents]);
+  it('refetches agents and repository access on `agents` and leaves query data alone on `show`', () => {
+    expect(streamInvalidations({ type: 'agents' })).toEqual([qk.agents, qk.agentAccess]);
     expect(streamInvalidations({ type: 'show', id: 'x', agent, target: { repo: 'alice/app', pr: 7 }, message: null, at: '' })).toEqual([]);
   });
 

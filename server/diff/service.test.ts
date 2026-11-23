@@ -113,7 +113,7 @@ describe('PR diffs', () => {
     const miss = await spent(() => diffOf(svc.prDiff('app', 2)));
     expect(miss.requests).toEqual(FULL(A));
     expect(miss.out).toEqual({
-      kind: 'pr', repo: 'alice/app', number: 2, title: 'Add parser', baseOid: MERGE_BASE, headOid: A,
+      kind: 'pr', repo: 'alice/app', repoId: 1, number: 2, title: 'Add parser', baseOid: MERGE_BASE, headOid: A,
       files: [
         { path: 'src/f1.ts', previousPath: null, status: 'modified', additions: 1, deletions: 1, patch: '@@ -1 +1 @@\n-a1\n+b1' },
         { path: 'src/f2.ts', previousPath: null, status: 'added', additions: 1, deletions: 1, patch: null },
@@ -750,7 +750,7 @@ describe('with another source', () => {
     const miss = await asked(() => diffOf(svc.prDiff('app', 2)));
     expect(miss.calls).toEqual(['revision !2', 'files !2']);
     expect(miss.out).toEqual({
-      kind: 'pr', repo: 'alice/app', number: 2, title: 'Add parser', baseOid: MERGE_BASE, headOid: A,
+      kind: 'pr', repo: 'alice/app', repoId: 1, number: 2, title: 'Add parser', baseOid: MERGE_BASE, headOid: A,
       files: [{ path: 'a.ts', previousPath: null, status: 'added', additions: 1, deletions: 0, patch: '@@ -0,0 +1 @@\n+x' }],
       totalFiles: 1, additions: 1, deletions: 0, fetchedAt: new Date(clock.t).toISOString(), url: 'https://gitlab.example/alice/app/-/merge_requests/2/diffs',
     });

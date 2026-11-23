@@ -6,12 +6,14 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { useLocation } from 'react-router';
+import type { SourceAgentAccess } from '../../../shared/agent-access';
 import type { ConfigSource, ProviderKind, Source, SourceAccount, SourceCheck, SyncStatus } from '../../../shared/api';
 import { gitlabTokenCreateUrl, gitlabWriteWarning } from '../../../shared/credentials';
 import type { DesktopState, SourceMethod } from '../../../shared/desktop';
 import { ApiError, isUnreachable } from '../api/client';
 import { useDesktop, useSourceActions } from '../api/desktop';
-import { useCheckSource, useDeleteSource, useInstance, useSources, useStartSync } from '../api/hooks';
+import { useAgentAccess, useCheckSource, useDeleteSource, useInstance, useSources, useStartSync } from '../api/hooks';
+import { SourceRepositoryAccess } from '../components/AgentAccess';
 import { Avatar } from '../components/Avatar';
 import { Icon, ProviderIcon } from '../components/Icon';
 import { useToast } from '../workbench';
@@ -165,10 +167,12 @@ const newForm = (methods: SourceMethod[]): CredentialForm => ({ method: methods[
 /** Desktop: "Add GitLab", inline under the sources. Adding is enabled after a successful test of the same inputs. */
 function AddGitLab({ desk, open, onOpen, onClose }: { desk: DesktopState; open: boolean; onOpen: () => void; onClose: () => void }) {
   const { testSource, addSource } = useSourceActions();
+  const { data: accessInventory } = useAgentAccess();
   const toast = useToast();
   const now = useNow(60_000);
   const methods = methodsFor(desk.gitlabEnv);
   const [url, setUrl] = useState('');
+  const [accessChoice, setAccessChoice] = useState<{ host: string; access: SourceAgentAccess } | null>(null);
   const [picked, setForm] = useState<CredentialForm>(() => newForm(methods));
   // GITLAB_TOKEN's state can change under the form (a first source added): keep to a method still offered.
   const form = methods.includes(picked.method) ? picked : { ...picked, method: methods[0]! };
@@ -185,12 +189,14 @@ function AddGitLab({ desk, open, onOpen, onClose }: { desk: DesktopState; open: 
 
   const input = gitlabUrlInput(url);
   const target = input && !('error' in input) ? input : null;
+  const savedDefault = accessInventory?.sources.find((source) => source.host === target?.host)?.defaultAccess;
+  const agentAccessDefault = accessChoice && accessChoice.host === target?.host ? accessChoice.access : savedDefault ?? 'block';
   const draft = draftOf(url, form);
   const key = 'missing' in draft ? null : draftKey(draft, form.file);
   const current = tested && tested.key === key ? tested.check : null;
   const busy = testSource.isPending || addSource.isPending;
 
-  const reset = () => { setUrl(''); setForm(newForm(methods)); setTested(null); setError(null); };
+  const reset = () => { setUrl(''); setForm(newForm(methods)); setTested(null); setError(null); setAccessChoice(null); };
   const change = (f: CredentialForm) => { setForm(f); setError(null); };
   const test = () => {
     if ('missing' in draft) { setError(draft.missing); return; }
@@ -202,7 +208,7 @@ function AddGitLab({ desk, open, onOpen, onClose }: { desk: DesktopState; open: 
   };
   const add = () => {
     if ('missing' in draft || !current?.ok) return;
-    addSource.mutate(draft, {
+    addSource.mutate({ ...draft, agentAccessDefault }, {
       onSuccess: (r) => {
         if (!r.saved) { setTested({ key: key!, check: r.check }); return; }
         toast(`Added ${r.check.host} · first sync started${r.remembered ? ' · token saved in the OS keychain' : ''}`);
@@ -229,6 +235,16 @@ function AddGitLab({ desk, open, onOpen, onClose }: { desk: DesktopState; open: 
           <span className="set-c grow">
             <input className="wb-input src-url" aria-invalid={!!input && 'error' in input || undefined} value={url} onChange={(e) => { setUrl(e.target.value); setError(null); }}
               placeholder="https://gitlab.example.com" aria-label="GitLab address" autoComplete="off" spellCheck={false} inputMode="url" />
+          </span>
+        </label>
+        <label className="set-row">
+          <span className="set-l">Default agent access<small>Applies to repositories through gh-dash when they inherit this source's policy.</small></span>
+          <span className="set-c">
+            <select className="wb-input" value={agentAccessDefault} disabled={busy || !target}
+              onChange={(e) => target && setAccessChoice({ host: target.host, access: e.currentTarget.value === 'allow' ? 'allow' : 'block' })}>
+              <option value="block">Block</option>
+              <option value="allow">Allow</option>
+            </select>
           </span>
         </label>
         <div className="set-row top">
@@ -415,6 +431,8 @@ function GitLabSource({ s, app, desk, desktopServer, from }: {
         )}
         <dt>Projects</dt>
         <dd>{projectsLine(s)}</dd>
+        <dt>Default repository access</dt>
+        <dd><SourceRepositoryAccess host={s.host} /></dd>
         <dt>Last sync</dt>
         <dd>{syncLine(s.sync, now)}</dd>
         {problem && <><dt>Problem</dt><dd className="acct-err">{problem}</dd></>}
@@ -485,6 +503,10 @@ export function SourcesSection({ rateLimit }: { rateLimit: SyncStatus['rateLimit
       <div className="src-block" id="account">
         <SourceHead kind="github" name="GitHub" host="github.com" />
         <GitHubAccount rateLimit={rateLimit} />
+        <dl className="wb-kv">
+          <dt>Default repository access</dt>
+          <dd><SourceRepositoryAccess host="github.com" /></dd>
+        </dl>
       </div>
       {sources.isError && <p className="src-block muted">Couldn’t load the other sources: {(sources.error as Error).message}</p>}
       {gitlab.map((s) => <GitLabSource key={s.host} s={s} app={!!bridge} desk={desk} desktopServer={desktopServer} from={fromOf(s.host)} />)}

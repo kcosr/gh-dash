@@ -6,6 +6,7 @@
 
 - Expand full file context, fold resolved code, and share the current diff and selection with an agent on request. ([#25](https://github.com/kcosr/gh-dash/pull/25))
 - Manage agent access per repository with source defaults and bulk edits. ([#26](https://github.com/kcosr/gh-dash/pull/26))
+- Find code within a diff file, jump between changes, and keep your place when toggling full-file context. ([#27](https://github.com/kcosr/gh-dash/pull/27))
 
 ## 0.1.0 - 2026-10-11
 

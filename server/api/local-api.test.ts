@@ -2,6 +2,7 @@
 // agent tokens). Each combination serves exactly its routes; /api/health always. The desktop socket is unchanged.
 import { describe, expect, it } from 'vitest';
 import { DESKTOP_SECRET_HEADER } from '../../shared/desktop';
+import { setRepoAgentAccess, setSourceAgentAccess } from '../db/agent-access';
 import { upsertPr } from '../db/write';
 import { BUILT_IN_AGENT, builtInAgent, createAgent, listAgents, setAgentEnabled, setAgentSources } from '../db/agents';
 import { mcpHarness, sha } from '../test/mcp';
@@ -15,7 +16,7 @@ function localApi(switches: { restApi: boolean; mcp: boolean; mcpRequireTokens?:
   return mcpHarness({ config: { desktop: true, listen: true, mcpRequireTokens: true, password: null, ...switches } });
 }
 
-const REST_PATHS = ['/api/v1/instance', '/api/v1/prs', '/api/v1/threads', '/api/v1/agents', '/api/docs', '/api/v1/openapi.json', '/', '/login', '/comments', '/settings', '/assets/x.js'];
+const REST_PATHS = ['/api/v1/instance', '/api/v1/prs', '/api/v1/threads', '/api/v1/agents', '/api/v1/agent-access', '/api/docs', '/api/v1/openapi.json', '/', '/login', '/comments', '/settings', '/assets/x.js'];
 
 describe('the Local API: each switch serves its routes', () => {
   it('REST API and MCP on (a config from before the switches): everything, as always', async () => {
@@ -117,19 +118,35 @@ describe('MCP without agent tokens', () => {
   it('keeps the built-in agent to the sources it is limited to, from the next request', async () => {
     const h = withPr();
     const gitlab = seedGitLab(h.db);
+    setSourceAgentAccess(h.db, GITLAB_HOST, 'allow');
     const gl = `${GITLAB_HOST}/platform/app`;
     expect((await h.call('list_repos', {}, none)).data!.total).toBe(6);
     setAgentSources(h.db, builtInAgent(h.db).id, [GITLAB_HOST]);
     expect((await h.call('whoami', {}, none)).data).toMatchObject({ agent: { name: BUILT_IN_AGENT, scoped: true }, sources: [{ host: GITLAB_HOST }] });
     expect((await h.call('list_repos', {}, none)).data).toMatchObject({ repos: [{ key: gl }], total: 1 });
     expect((await h.call('add_comment', { repo: 'alice/app', pr: 2, body: 'Out of reach' }, none)).error).toBe(
-      "Repository alice/app isn't tracked in gh-dash (list_repos lists the ones that are)",
+      "Repository alice/app isn't available through gh-dash (see list_repos)",
     );
     expect(h.db.get('SELECT count(*) AS n FROM comment_threads')).toEqual({ n: 0 });
     // Listed now, with its sources; agents with tokens are as they were.
     expect(listAgents(h.db).map((a) => [a.name, a.sources])).toEqual([['Claude', null], ['Codex', null], [BUILT_IN_AGENT, [GITLAB_HOST]]]);
     expect((await h.call('list_repos')).data!.total).toBe(6);
     expect(gitlab.repoId).toBeGreaterThan(0);
+  });
+
+  it('applies the repository policy to the built-in agent and agents whose source scope is unrestricted', async () => {
+    const h = withPr();
+    const app = h.db.get<{ id: number }>("SELECT id FROM repos WHERE key = 'alice/app'")!.id;
+    setSourceAgentAccess(h.db, 'github.com', 'block');
+    for (const caller of [none, {}]) {
+      expect((await h.call('list_repos', {}, caller)).data).toMatchObject({ repos: [], total: 0 });
+      expect((await h.call('resolve_repo', { remote_url: 'git@github.com:alice/app.git' }, caller)).error).toBe(
+        "Repository alice/app isn't available through gh-dash (see list_repos)",
+      );
+    }
+    setRepoAgentAccess(h.db, [app], 'allow');
+    expect((await h.call('list_repos', {}, none)).data).toMatchObject({ repos: [{ key: 'alice/app' }], total: 1 });
+    expect((await h.call('list_repos')).data!.total).toBe(1);
   });
 
   it("takes a token the user chose like a generated one", async () => {

@@ -65,7 +65,7 @@ export function DiffView({ id, compact, readView }: { id: string; compact: boole
   const body = useRef<HTMLDivElement>(null);
   const readDiffView = useRef<() => DiffViewContext>(null);
   useImperativeHandle(readView, () => () => ({
-    mode: 'diff', target: t, baseOid: diff.data?.baseOid ?? null, headOid: diff.data?.headOid ?? null,
+    mode: 'diff', target: t, repoId: diff.data?.repoId ?? null, baseOid: diff.data?.baseOid ?? null, headOid: diff.data?.headOid ?? null,
     ...(readDiffView.current?.() ?? { file: null, viewport: null, selection: null, threadId: null }),
   }), [t, diff.data]);
   const [opener] = useState(() => document.activeElement as HTMLElement | null);

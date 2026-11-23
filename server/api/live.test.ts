@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Agent, StreamMessage } from '../../shared/api';
 import { CommentBus } from '../comments/bus';
 import { type Config, loadConfig } from '../config';
+import { setRepoAgentAccess, setSourceAgentAccess } from '../db/agent-access';
 import { createAgent, deleteAgent, setAgentEnabled } from '../db/agents';
 import { DiffCache } from '../diff/cache';
 import { DiffService } from '../diff/service';
@@ -94,6 +95,29 @@ describe('GET /agents', () => {
       expect(res.status, `${method} ${path}`).toBe(404);
     }
     expect(await (await app.request('/api/v1/agents')).json()).toMatchObject({ items: [{ name: 'Claude', disabledAt: null, sources: null }] });
+  });
+});
+
+describe('GET /agent-access', () => {
+  it('lists current defaults and live repository overrides behind the dashboard API', async () => {
+    const { app, db } = makeApp({ password: 'dashboard-password', apiKey: 'dashboard-key' });
+    const path = '/api/v1/agent-access';
+    const headers = { authorization: 'Bearer dashboard-key' };
+    const id = db.get<{ id: number }>(`SELECT id FROM repos WHERE key = 'alice/app'`)!.id;
+    setSourceAgentAccess(db, 'github.com', 'allow');
+    setRepoAgentAccess(db, [id], 'block');
+
+    expect((await app.request(path)).status).toBe(401);
+    const res = await app.request(path, { headers });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      sources: [{ host: 'github.com', name: 'GitHub', defaultAccess: 'allow' }],
+      repos: expect.arrayContaining([
+        { id, key: 'alice/app', source: 'github.com', nameWithOwner: 'alice/app', access: 'block' },
+        expect.objectContaining({ key: 'alice/secret', access: 'inherit' }),
+      ]),
+    });
+    expect((await app.request(path, { method: 'PATCH', headers })).status).toBe(404);
   });
 });
 

@@ -1,13 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import type { BranchListResponse, Diff } from '../../shared/api';
 import { HttpError } from '../api/http';
+import { resolveRepo } from '../db/repo-key';
+import { upsertOwned } from '../db/write';
 import { GitHubDiffSources } from '../github/diff-source';
 import { addBranch, branchesSynced } from '../test/branches';
 import { fakeGitHub, type Handler as Route, restFile, sha } from '../test/github';
 import { branchKey, fakeCode, serveBranch } from '../test/mcp';
-import { seedDb } from '../test/seed';
+import { GITHUB, repoRecord, seedDb } from '../test/seed';
 import { supplyOf } from '../test/tokens';
-import { DiffCache } from './cache';
+import { DiffCache, repoCacheKey } from './cache';
 import { BRANCH_LIST_LIMIT, BRANCH_LIST_TTL_MS, BRANCH_TTL_MS, DiffService, type DiffSources, type Payload, payloadText } from './service';
 
 const MERGE_BASE = sha('9');
@@ -53,13 +55,13 @@ function feature(routes: Record<string, Route>, head: string, files: object[], m
 
 describe('branch diffs', () => {
   it('compares a branch with the default branch once, then serves it for the cost of a free head check', async () => {
-    const { svc, spent, gh, cache, clock } = setup();
+    const { svc, spent, gh, db, cache, clock } = setup();
     feature(gh.routes, A, [restFile(1), restFile(2, { status: 'renamed', previous_filename: 'old/f2.ts', patch: undefined, additions: 0, deletions: 0 })]);
 
     const miss = await spent(() => diffOf(svc.branchDiff('app', 'feature/x')));
     expect(miss.requests).toEqual([BRANCH, compareOf(A)]);
     expect(miss.out).toEqual({
-      kind: 'branch', repo: 'alice/app', number: null, branch: 'feature/x', baseRef: 'main', title: 'feature/x', baseOid: MERGE_BASE, headOid: A,
+      kind: 'branch', repo: 'alice/app', repoId: 1, number: null, branch: 'feature/x', baseRef: 'main', title: 'feature/x', baseOid: MERGE_BASE, headOid: A,
       files: [
         { path: 'src/f1.ts', previousPath: null, status: 'modified', additions: 1, deletions: 1, patch: '@@ -1 +1 @@\n-a1\n+b1' },
         { path: 'src/f2.ts', previousPath: 'old/f2.ts', status: 'renamed', additions: 0, deletions: 0, patch: null },
@@ -67,7 +69,8 @@ describe('branch diffs', () => {
       totalFiles: 2, additions: 1, deletions: 1, fetchedAt: new Date(clock.t).toISOString(), url: 'https://github.com/alice/app/compare/main...feature/x',
     });
     // One entry per branch, keyed as the branch.
-    expect(cache.branchEntry('branch/alice/app/feature/x')).toEqual({ key: 'branch/alice/app/feature/x', oid: A, baseRef: 'main', baseOid: MERGE_BASE, fetchedAt: clock.t });
+    const key = `branch/${repoCacheKey(resolveRepo(db, 'app')!.id, 'alice/app')}/feature/x`;
+    expect(cache.branchEntry(key)).toEqual({ key, oid: A, baseRef: 'main', baseOid: MERGE_BASE, fetchedAt: clock.t });
 
     // Asked again: the head is checked with a conditional request (a 304), and nothing else.
     clock.t += 10 * 60_000;
@@ -77,7 +80,7 @@ describe('branch diffs', () => {
   });
 
   it('compares again when the branch was pushed to, replacing its diff', async () => {
-    const { svc, spent, gh, cache } = setup();
+    const { svc, spent, gh, db, cache } = setup();
     feature(gh.routes, A, [restFile(1)]);
     await svc.branchDiff('app', 'feature/x');
 
@@ -86,7 +89,8 @@ describe('branch diffs', () => {
     expect(pushed.requests).toEqual([BRANCH, compareOf(B)]);
     expect(pushed.out).toMatchObject({ headOid: B, totalFiles: 2 });
     expect(svc.stats().entries).toBe(1);
-    expect(cache.branchEntry('branch/alice/app/feature/x')).toMatchObject({ oid: B });
+    const key = `branch/${repoCacheKey(resolveRepo(db, 'app')!.id, 'alice/app')}/feature/x`;
+    expect(cache.branchEntry(key)).toMatchObject({ oid: B });
     expect((await spent(() => svc.branchDiff('app', 'feature/x'))).requests).toEqual([BRANCH]);
   });
 
@@ -385,6 +389,25 @@ describe('branch lists', () => {
     clock.t += BRANCH_LIST_TTL_MS;
     const both = await asked(() => Promise.all([svc.branchList('app', null), svc.branchList('app', null)]));
     expect(both.requests).toEqual(['branches alice/app']);
+  });
+
+  it('does not reuse a branch list or stale diff when another repository takes the same key', async () => {
+    const { svc, db, asked, code } = listing();
+    expect((await svc.branchList('app', null)).items.map((branch) => branch.name)).toContain('feature/x');
+    await svc.branchDiff('app', 'feature/x');
+    expect(svc.stats().entries).toBe(1);
+
+    upsertOwned(db, GITHUB, repoRecord('app', { nodeId: 'replacement' }), day(29));
+    code.branches.clear();
+    serveBranch(code, 'alice/app', 'new-branch', A, MERGE_BASE, [], day(29));
+    const replacement = await asked(() => svc.branchList('app', null));
+    expect(replacement.requests).toEqual(['branches alice/app']);
+    expect(replacement.out.items.map((branch) => branch.name)).toEqual(['new-branch']);
+
+    code.down = 'The host is unavailable';
+    await expect(svc.branchDiff('app', 'feature/x')).rejects.toMatchObject({ status: 503 });
+    svc.evict();
+    expect(svc.stats().entries).toBe(0);
   });
 
   it('asks for one more than it lists, so that leaving out the default branch still fills the list, and says when there are more', async () => {

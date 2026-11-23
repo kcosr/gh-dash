@@ -18,7 +18,7 @@ const thread = (id: number, startLine: number, endLine: number, options: Partial
 
 async function openReview(page: Page, patch: string, threads: CommentThread[]) {
   await page.route('**/api/v1/prs/**/diff', (route) => route.fulfill({ json: {
-    kind: 'pr', repo: pr.repo, number: pr.number, title: pr.title, baseOid, headOid, fetchedAt: at,
+    kind: 'pr', repo: pr.repo, repoId: 2, number: pr.number, title: pr.title, baseOid, headOid, fetchedAt: at,
     files: [
       { path, previousPath: null, status: 'modified', additions: 1, deletions: 1, patch },
       { path: 'src/other.ts', previousPath: null, status: 'modified', additions: 1, deletions: 1, patch: '@@ -1 +1 @@\n-old other\n+new other' },

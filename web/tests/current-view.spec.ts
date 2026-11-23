@@ -59,7 +59,7 @@ const resolved: CommentThread = {
   comments: [{ id: 19, author, body: 'Check the final value.', createdAt: at, editedAt: null }],
 };
 const reviewDiff = {
-  kind: 'pr', repo: pr.repo, number: pr.number, title: pr.title, baseOid, headOid,
+  kind: 'pr', repo: pr.repo, repoId: 2, number: pr.number, title: pr.title, baseOid, headOid,
   fetchedAt: at, totalFiles: 2, additions: 3, deletions: 3, url: pr.url,
   files: [
     {
@@ -87,7 +87,7 @@ test('a review view answers live with the displayed revisions, file and active c
   await expect(openDiff).toBeVisible();
   const target = { kind: 'pr', repo: pr.repo, number: pr.number };
   expect((await requests.ask()).view).toEqual({
-    mode: 'details', target, file: null, baseOid: null, headOid: null, selection: null, viewport: null, threadId: null,
+    mode: 'details', target, repoId: null, file: null, baseOid: null, headOid: null, selection: null, viewport: null, threadId: null,
   });
 
   await openDiff.click();
@@ -95,7 +95,7 @@ test('a review view answers live with the displayed revisions, file and active c
   const added = file.locator('[data-line="5"][data-line-type="change-addition"]');
   await expect(added).toBeVisible();
   expect((await requests.ask()).view).toMatchObject({
-    mode: 'diff', target, baseOid, headOid, file: { path, previousPath }, selection: null,
+    mode: 'diff', target, repoId: reviewDiff.repoId, baseOid, headOid, file: { path, previousPath }, selection: null,
     viewport: {
       first: { side: 'new', lineNumber: 4 }, hunk: { oldStart: 4, oldCount: 3, newStart: 4, newCount: 3 },
       visible: [

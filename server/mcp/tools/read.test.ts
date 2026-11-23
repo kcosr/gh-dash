@@ -23,6 +23,7 @@ describe('whoami', () => {
       agent: { id: agent.id, name: 'Claude' },
       server: { version: config.version },
       sources: [{ host: 'github.com', kind: 'github' }, { host: GITLAB_HOST, kind: 'gitlab' }],
+      note: 'The user controls repository access. Use list_repos to see the repositories available to you.',
     });
   });
 });
@@ -104,16 +105,16 @@ describe('resolve_repo', () => {
     });
   });
 
-  it('says when the host is no source, or the repository isn\'t tracked, and where the user adds them', async () => {
+  it('says when a source or repository is unavailable', async () => {
     const h = setup();
     expect(await h.fails('resolve_repo', { remote_url: 'git@gitlab.other.example:x/y.git' })).toBe(
       "gitlab.other.example isn't a source in gh-dash. The user can add it in gh-dash (Settings → Sources), then track the repository.",
     );
     expect(await h.fails('resolve_repo', { remote_url: 'gitlab.other.example/x/y' })).toContain("gitlab.other.example isn't a source");
     expect(await h.fails('resolve_repo', { remote_url: 'https://github.com/bob/nope.git' })).toBe(
-      "bob/nope isn't tracked in gh-dash. The user can add it in gh-dash (Repositories → Add).",
+      "Repository bob/nope isn't available through gh-dash (see list_repos)",
     );
-    expect(await h.fails('resolve_repo', { remote_url: `https://${GITLAB_HOST}/platform/other.git` })).toContain(`${GITLAB_HOST}/platform/other isn't tracked`);
+    expect(await h.fails('resolve_repo', { remote_url: `https://${GITLAB_HOST}/platform/other.git` })).toContain(`${GITLAB_HOST}/platform/other isn't available`);
     // The project is at the relative root, not beside it.
     expect(await h.fails('resolve_repo', { remote_url: 'https://git.corp.example/team/tools/cli.git' })).toContain("Can't read a GitLab project");
     expect(await h.fails('resolve_repo', { remote_url: 'not a remote' })).toContain("Can't read a GitHub repository");
@@ -148,7 +149,7 @@ describe('list_prs', () => {
     expect(first.items).toHaveLength(2);
     const second = await h.ok('list_prs', { repo: 'alice/app', state: 'all', limit: 2, cursor: first.nextCursor });
     expect(second.items.map((p: { number: number }) => p.number)).toEqual([1]);
-    expect(await h.fails('list_prs', { repo: 'alice/nope' })).toContain("alice/nope isn't tracked");
+    expect(await h.fails('list_prs', { repo: 'alice/nope' })).toContain("alice/nope isn't available");
   });
 
   it("covers the user's active repositories without `repo`; an inactive one's only by name", async () => {
@@ -310,7 +311,7 @@ describe('list_branches', () => {
     ]);
     h.code.down = 'No GitLab token';
     expect(await h.fails('list_branches', { repo: key, query: 'other' })).toContain('No GitLab token');
-    expect(await h.fails('list_branches', { repo: 'alice/nope' })).toContain("alice/nope isn't tracked");
+    expect(await h.fails('list_branches', { repo: 'alice/nope' })).toContain("alice/nope isn't available");
   });
 });
 
@@ -426,7 +427,7 @@ describe('get_branch', () => {
     expect(await h.fails('get_branch', { repo: 'alice/app', branch: 'main' })).toBe('main is the default branch: branches are compared against it');
     expect(await h.fails('get_branch', { repo: 'alice/app', branch: 'a:b' })).toContain('expected a git branch name');
     expect(await h.fails('get_branch', { repo: 'alice/app' })).toContain('branch');
-    expect(await h.fails('get_branch', { repo: 'alice/nope', branch: 'x' })).toContain("alice/nope isn't tracked");
+    expect(await h.fails('get_branch', { repo: 'alice/nope', branch: 'x' })).toContain("alice/nope isn't available");
     h.db.run("UPDATE repos SET default_branch = NULL WHERE key = 'alice/app'");
     const out = await h.ok('get_branch', { repo: 'alice/app', branch: 'topic/x' });
     expect(out.note).toContain("The default branch isn't known yet");

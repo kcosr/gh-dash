@@ -87,7 +87,7 @@ describe('list_threads', () => {
     expect(resolved.items[0]).toMatchObject({ ref: `${GITLAB_HOST}/platform/app!2`, status: 'resolved', resolvedBy: 'me' });
     expect(await h.fails('list_threads', { pr: 2 })).toContain('pr, branch and commit need repo');
     expect(await h.fails('list_threads', { since: 'yesterday' })).toContain('since: expected an ISO date');
-    expect(await h.fails('list_threads', { repo: 'alice/nope' })).toContain("alice/nope isn't tracked");
+    expect(await h.fails('list_threads', { repo: 'alice/nope' })).toContain("alice/nope isn't available");
   });
 
   it('pages with the cursor and gives whole conversations on request', async () => {

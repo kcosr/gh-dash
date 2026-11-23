@@ -5,12 +5,14 @@
 
 import { describe, expect, it, vi } from 'vitest';
 import type { StreamMessage } from '../../../shared/api';
+import { setRepoAgentAccess, setSourceAgentAccess } from '../../db/agent-access';
 import { setAgentSources } from '../../db/agents';
 import { ensureSource, removeSource } from '../../db/sources';
+import { upsertPr } from '../../db/write';
 import * as comments from '../../services/comments';
 import { selfPrincipal } from '../../services/comments';
-import { addAgent, mcpHarness, sha } from '../../test/mcp';
-import { addManualRepo, GITLAB_HOST, seedDb, seedGitLab } from '../../test/seed';
+import { addAgent, addedFile, mcpHarness, servePr, sha } from '../../test/mcp';
+import { addManualRepo, GITLAB_HOST, prRecord, seedDb, seedGitLab } from '../../test/seed';
 
 const HEAD = sha('a');
 /** The GitLab source's repository. */
@@ -66,8 +68,14 @@ function setup() {
 const later = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const keys = (items: { key?: string; repo?: string }[]) => [...new Set(items.map((i) => i.key ?? i.repo))];
 
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
 describe('whoami', () => {
-  it('lists only the sources within reach, and says the agent is limited; one reaching all is unchanged', async () => {
+  it('lists the sources within reach and explains repository access', async () => {
     const h = setup();
     const note = expect.stringContaining('The user limited you to these sources');
     expect(await h.okAs('gh', 'whoami')).toEqual({
@@ -77,13 +85,14 @@ describe('whoami', () => {
     expect(await h.okAs('all', 'whoami')).toEqual({
       agent: { id: h.principals.all.id, name: 'Third' }, server: { version: h.config.version },
       sources: [{ host: 'github.com', kind: 'github' }, { host: GITLAB_HOST, kind: 'gitlab' }],
+      note: 'The user controls repository access. Use list_repos to see the repositories available to you.',
     });
   });
 
   it('follows a change from the next request', async () => {
     const h = setup();
     setAgentSources(h.db, h.agent.id, null);
-    expect(await h.okAs('gh', 'whoami')).not.toHaveProperty('note');
+    expect((await h.okAs('gh', 'whoami')).note).not.toContain('limited you to these sources');
     expect((await h.okAs('gh', 'whoami')).sources).toHaveLength(2);
     setAgentSources(h.db, h.agent.id, [GITLAB_HOST]);
     expect((await h.okAs('gh', 'whoami')).sources).toEqual([{ host: GITLAB_HOST, kind: 'gitlab' }]);
@@ -132,9 +141,9 @@ describe('resolve_repo', () => {
     expect(await h.okAs('all', 'resolve_repo', { remote_url: GL })).toMatchObject({ key: GL });
   });
 
-  it('still says a repository within reach is untracked', async () => {
+  it('handles an unavailable repository on an allowed source', async () => {
     const h = setup();
-    expect(await h.failsAs('gl', 'resolve_repo', { remote_url: `https://${GITLAB_HOST}/platform/nope.git` })).toBe(`${GITLAB_HOST}/platform/nope isn't tracked in gh-dash. The user can add it in gh-dash (Repositories → Add).`);
+    expect(await h.failsAs('gl', 'resolve_repo', { remote_url: `https://${GITLAB_HOST}/platform/nope.git` })).toBe(unavailable(`${GITLAB_HOST}/platform/nope`));
   });
 });
 
@@ -153,16 +162,16 @@ const BY_REPO: [string, (repo: string) => Record<string, unknown>][] = [
   ['add_comment', (repo) => ({ repo, pr: 2, body: 'Here' })],
 ];
 
-describe('tools that take a repository', () => {
-  const untracked = (key: string) => `Repository ${key} isn't tracked in gh-dash (list_repos lists the ones that are)`;
+const unavailable = (key: string) => `Repository ${key} isn't available through gh-dash (see list_repos)`;
 
+describe('tools that take a repository', () => {
   it('answer for a repository out of reach exactly as for one gh-dash does not track', async () => {
     const h = setup();
     const before = h.snapshot(h.gl.id);
     for (const [name, args] of BY_REPO) {
       for (const [who, key, missing] of [['gh', GL, `${GITLAB_HOST}/platform/nope`], ['gl', GH, 'alice/nope'], ['gl', 'app', 'nope']] as const) {
         const out = await h.failsAs(who, name, args(key));
-        expect(out, `${name} ${who} ${key}`).toBe(untracked(key));
+        expect(out, `${name} ${who} ${key}`).toBe(unavailable(key));
         expect(out.replace(key, 'KEY'), `${name} ${who}`).toBe((await h.failsAs(who, name, args(missing))).replace(missing, 'KEY'));
       }
     }
@@ -368,11 +377,13 @@ describe('sources added and deleted', () => {
     const added = ensureSource(h.db, { kind: 'gitlab', host: OTHER_HOST, baseUrl: `https://${OTHER_HOST}` });
     addManualRepo(h.db, 'team/tool', { source: added });
     const tool = `${OTHER_HOST}/team/tool`;
+    expect(keys((await h.okAs('all', 'list_repos')).repos)).not.toContain(tool);
+    setSourceAgentAccess(h.db, OTHER_HOST, 'allow');
     expect(keys((await h.okAs('all', 'list_repos')).repos)).toContain(tool);
     expect((await h.okAs('all', 'whoami')).sources.map((s: { host: string }) => s.host)).toEqual(['github.com', GITLAB_HOST, OTHER_HOST]);
     for (const who of ['gh', 'gl'] as const) {
       expect(keys((await h.okAs(who, 'list_repos')).repos), who).not.toContain(tool);
-      expect(await h.failsAs(who, 'list_prs', { repo: tool })).toBe(`Repository ${tool} isn't tracked in gh-dash (list_repos lists the ones that are)`);
+      expect(await h.failsAs(who, 'list_prs', { repo: tool })).toBe(unavailable(tool));
     }
   });
 
@@ -393,7 +404,108 @@ describe('sources added and deleted', () => {
     expect((await h.okAs('gh', 'whoami')).sources).toEqual([{ host: 'github.com', kind: 'github' }]);
     const again = ensureSource(h.db, { kind: 'gitlab', host: GITLAB_HOST, baseUrl: `https://${GITLAB_HOST}` });
     addManualRepo(h.db, 'platform/app', { source: again });
+    setSourceAgentAccess(h.db, GITLAB_HOST, 'allow');
     await nothing();
     expect(keys((await h.okAs('all', 'list_repos')).repos)).toContain(GL);
+  });
+});
+
+describe('repository policy on one source', () => {
+  const hiddenKey = 'alice/secret';
+
+  function setupPolicy() {
+    const h = mcpHarness({ allowRepoAccess: false });
+    const deps = { db: h.db, bus: h.bus };
+    const self = selfPrincipal(h.db);
+    const repoId = (key: string) => h.db.get<{ id: number }>('SELECT id FROM repos WHERE key = ?', [key])!.id;
+    const visibleId = repoId(GH);
+    const hiddenId = repoId(hiddenKey);
+    upsertPr(h.db, hiddenId, prRecord(2, { state: 'open', createdAt: '2026-09-24T01:00:00Z', title: 'Hidden PR' }));
+    const visible = comments.createPrThread(deps, self, GH, 2, { commitOid: HEAD, body: 'Visible thread' });
+    const hidden = comments.createPrThread(deps, h.agent, hiddenKey, 2, { commitOid: HEAD, body: 'Hidden thread' });
+    return { ...h, deps, self, visible, hidden, visibleId, hiddenId };
+  }
+
+  it('applies defaults and overrides to discovery, query totals and event cursors for an unrestricted agent', async () => {
+    const h = setupPolicy();
+    expect(await h.ok('list_repos')).toEqual({ repos: [], total: 0 });
+    setRepoAgentAccess(h.db, [h.visibleId], 'allow');
+    expect(await h.ok('list_repos')).toMatchObject({ repos: [{ key: GH, openThreads: 1 }], total: 1 });
+    expect(await h.ok('list_prs', { state: 'all', limit: 1 })).toMatchObject({ items: [{ repo: GH }], total: 3, nextCursor: expect.any(String) });
+    expect(await h.ok('list_threads', { status: 'all', limit: 1 })).toMatchObject({ items: [{ id: h.visible.id }], total: 1, counts: { open: 1, resolved: 0 }, nextCursor: null });
+    const visible = await h.ok('wait_for_reply', { after: 0 });
+    expect(visible.events).toMatchObject([{ threadId: h.visible.id }]);
+    expect(await h.ok('wait_for_reply', { timeout_s: 1 })).toEqual({ events: [], cursor: visible.cursor });
+
+    setRepoAgentAccess(h.db, [h.hiddenId], 'block');
+    setSourceAgentAccess(h.db, 'github.com', 'allow');
+    expect((await h.ok('list_repos')).total).toBe(4);
+    expect(await h.ok('list_repos', { query: 'secret' })).toEqual({ repos: [], total: 0 });
+    setRepoAgentAccess(h.db, [h.hiddenId], 'inherit');
+    expect(await h.ok('get_thread', { id: h.hidden.id })).toMatchObject({ id: h.hidden.id });
+  });
+
+  it('hides a blocked repository in every target form and refuses its thread and comment ids', async () => {
+    const h = setupPolicy();
+    setSourceAgentAccess(h.db, 'github.com', 'allow');
+    setRepoAgentAccess(h.db, [h.hiddenId], 'block');
+    for (const remote_url of [hiddenKey, 'secret', `https://github.com/${hiddenKey}.git`, `git@github.com:${hiddenKey}.git`]) {
+      const missing = remote_url.replace('secret', 'nope');
+      const error = await h.fails('resolve_repo', { remote_url });
+      expect(error.replace('secret', 'nope')).toBe(await h.fails('resolve_repo', { remote_url: missing }));
+    }
+    const spy = vi.spyOn(h.bus, 'emit');
+    for (const [name, args] of BY_REPO) expect(await h.fails(name, args(hiddenKey)), name).toBe(unavailable(hiddenKey));
+    for (const [name, args, what] of BY_ID) {
+      expect(await h.fails(name, args(h.hidden.id, h.hidden.comments[0]!.id)), name).toBe(`${what} not found`);
+    }
+    expect(await h.fails('wait_for_reply', { thread_ids: [h.hidden.id] })).toBe(`Thread ${h.hidden.id} not found`);
+    expect(spy).not.toHaveBeenCalled();
+    expect(h.code.requests).toEqual([]);
+    expect(comments.getThread(h.deps, h.hidden.id)).toEqual(h.hidden);
+  });
+
+  it('rechecks live policy when waking and reading a long-poll', async () => {
+    const h = setupPolicy();
+    setSourceAgentAccess(h.db, 'github.com', 'allow');
+    const subscribed = deferred();
+    const wait = h.bus.waitFor.bind(h.bus);
+    const spy = vi.spyOn(h.bus, 'waitFor').mockImplementationOnce((...args) => {
+      subscribed.resolve();
+      return wait(...args);
+    });
+    const waiting = h.ok('wait_for_reply', { timeout_s: 1 });
+    await subscribed.promise;
+    setRepoAgentAccess(h.db, [h.hiddenId], 'block');
+    comments.reply(h.deps, h.self, h.hidden.id, 'New hidden reply');
+    expect(spy).toHaveBeenCalledTimes(1);
+    comments.reply(h.deps, h.self, h.visible.id, 'New visible reply');
+    expect((await waiting).events).toMatchObject([{ threadId: h.visible.id, excerpt: 'New visible reply' }]);
+    expect(spy).toHaveBeenCalledTimes(2);
+  });
+
+  it('rechecks access before returning a diff or writing comments after a pending provider fetch', async () => {
+    for (const [name, args] of [
+      ['get_pr', { repo: GH, number: 2 }],
+      ['add_comment', { repo: GH, pr: 2, path: 'src/a.ts', start_line: 1, body: 'New comment' }],
+    ] as const) {
+      const h = setupPolicy();
+      setRepoAgentAccess(h.db, [h.visibleId], 'allow');
+      servePr(h.code, GH, 2, HEAD, sha('b'), [addedFile('src/a.ts', ['some code'])]);
+      const started = deferred();
+      const finish = deferred();
+      const diff = h.diffs.prDiff.bind(h.diffs);
+      vi.spyOn(h.diffs, 'prDiff').mockImplementationOnce(async (...input) => {
+        started.resolve();
+        await finish.promise;
+        return diff(...input);
+      });
+      const waiting = h.fails(name, args);
+      await started.promise;
+      setRepoAgentAccess(h.db, [h.visibleId], 'block');
+      finish.resolve();
+      expect(await waiting).toBe(unavailable(GH));
+      expect(h.db.get('SELECT count(*) AS n FROM comment_threads')).toEqual({ n: 2 });
+    }
   });
 });

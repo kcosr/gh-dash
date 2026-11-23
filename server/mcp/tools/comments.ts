@@ -11,9 +11,17 @@ import { repoKinds } from '../../services/lists';
 import { branchAnchor, commitAnchor, prAnchor } from '../anchor';
 import { bodyArg, branchArg, commitArg, idArg, prArg, repoArg } from '../format';
 import { compactPlacement, type Placement } from '../placement';
-import { requireCommentInReach, requireRepo, requireThreadInReach } from '../reach';
+import { requireCommentInReach, requireRepo, requireRepoInReach, requireThreadInReach } from '../reach';
 import { LIST_SNIPPET_CHARS, targetTitle, threadOut } from '../threads';
 import { type ToolContext, writeTool } from '../tool';
+
+/** Check access and write under the same database lock. Announce only after the transaction commits. */
+function writeAuthorizedComment<T>({ deps: { db, bus } }: ToolContext, write: (deps: comments.CommentDeps) => T): T {
+  const events: Parameters<typeof bus.emit>[0][] = [];
+  const result = db.tx(() => write({ db, bus: { emit: (event) => { events.push(event); return 0; } } }));
+  for (const event of events) bus.emit(event);
+  return result;
+}
 
 /** A written thread as the tools return it: compact, with its last comment (the one just written, for a reply). */
 function written(t: CommentThread, { deps, principal }: ToolContext, placement?: Placement) {
@@ -53,21 +61,26 @@ export const addComment = writeTool({
     const { deps, principal, signal } = ctx;
     const ref = requireRepo(ctx, args.repo);
     const kind = repoKinds(deps.db)(ref.key);
-    const anchored =
+    const anchored = await (
       args.pr !== undefined
-        ? await prAnchor(deps, ref, kind, args.pr, args, signal)
+        ? prAnchor(deps, ref, kind, args.pr, args, signal)
         : args.branch !== undefined
-          ? await branchAnchor(deps, ref, kind, args.branch, args, signal)
-          : await commitAnchor(deps, ref, kind, args.commit!, args, signal);
+          ? branchAnchor(deps, ref, kind, args.branch, args, signal)
+          : commitAnchor(deps, ref, kind, args.commit!, args, signal)
+    ).catch((err: unknown) => {
+      requireRepoInReach(ctx, ref, args.repo);
+      throw err;
+    });
     const { diff, ...fields } = anchored;
     const input = { ...fields, body: args.body };
-    // No await since the anchor was read: the service validates and writes at once.
-    const thread =
-      args.pr !== undefined
-        ? comments.createPrThread(deps, principal, ref.key, args.pr, input)
+    const thread = writeAuthorizedComment(ctx, (writeDeps) => {
+      requireRepoInReach(ctx, ref, args.repo);
+      return args.pr !== undefined
+        ? comments.createPrThread(writeDeps, principal, ref.key, args.pr, input)
         : args.branch !== undefined
-          ? comments.createBranchThread(deps, principal, ref.key, args.branch, input)
-          : comments.createCommitThread(deps, principal, ref.key, fields.commitOid, input);
+          ? comments.createBranchThread(writeDeps, principal, ref.key, args.branch, input)
+          : comments.createCommitThread(writeDeps, principal, ref.key, fields.commitOid, input);
+    });
     // Where the diff viewer shows it now (the diff is at hand: no fetch).
     return written(thread, ctx, diff && thread.commitOid === diff.headOid ? compactPlacement(createPlacer(diff)(thread)) : undefined);
   },
@@ -79,8 +92,11 @@ export const reply = writeTool({
   description: 'Adds your reply to a comment thread; its status stays as it is (resolve_thread can reply and resolve at once).',
   input: z.object({ thread_id: threadId, body: bodyArg }).strict(),
   run: ({ thread_id, body }, ctx) => {
-    requireThreadInReach(ctx, thread_id);
-    return written(comments.reply(ctx.deps, ctx.principal, thread_id, body), ctx);
+    const thread = writeAuthorizedComment(ctx, (deps) => {
+      requireThreadInReach(ctx, thread_id);
+      return comments.reply(deps, ctx.principal, thread_id, body);
+    });
+    return written(thread, ctx);
   },
 });
 
@@ -91,8 +107,11 @@ export const editComment = writeTool(
     description: "Replaces the text of one of your own comments (not the user's or another agent's).",
     input: z.object({ comment_id: commentId, body: bodyArg }).strict(),
     run: ({ comment_id, body }, ctx) => {
-      requireCommentInReach(ctx, comment_id);
-      return written(comments.editComment(ctx.deps, ctx.principal, comment_id, body), ctx);
+      const thread = writeAuthorizedComment(ctx, (deps) => {
+        requireCommentInReach(ctx, comment_id);
+        return comments.editComment(deps, ctx.principal, comment_id, body);
+      });
+      return written(thread, ctx);
     },
   },
   { destructiveHint: true },
@@ -107,8 +126,10 @@ export const deleteComment = writeTool(
       'which you may only do when every comment in it is yours.',
     input: z.object({ comment_id: commentId }).strict(),
     run: ({ comment_id }, ctx) => {
-      requireCommentInReach(ctx, comment_id);
-      const { thread } = comments.deleteComment(ctx.deps, ctx.principal, comment_id);
+      const { thread } = writeAuthorizedComment(ctx, (deps) => {
+        requireCommentInReach(ctx, comment_id);
+        return comments.deleteComment(deps, ctx.principal, comment_id);
+      });
       return thread ? { deleted: 'comment', thread: written(thread, ctx) } : { deleted: 'thread' };
     },
   },
@@ -118,9 +139,12 @@ export const deleteComment = writeTool(
 /** Replies first when there is a comment, then sets the status. */
 function setStatus(status: 'resolved' | 'open') {
   return ({ thread_id, comment }: { thread_id: number; comment?: string }, ctx: ToolContext) => {
-    requireThreadInReach(ctx, thread_id);
-    if (comment !== undefined) comments.reply(ctx.deps, ctx.principal, thread_id, comment);
-    return written(comments.setThreadStatus(ctx.deps, ctx.principal, thread_id, status), ctx);
+    const thread = writeAuthorizedComment(ctx, (deps) => {
+      requireThreadInReach(ctx, thread_id);
+      if (comment !== undefined) comments.reply(deps, ctx.principal, thread_id, comment);
+      return comments.setThreadStatus(deps, ctx.principal, thread_id, status);
+    });
+    return written(thread, ctx);
   };
 }
 

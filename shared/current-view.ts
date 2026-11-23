@@ -33,13 +33,17 @@ const viewport = z.strictObject({
 export const currentViewSchema = z.strictObject({
   mode: z.enum(['details', 'diff']),
   target,
+  repoId: z.int().positive().nullable(),
   baseOid: oid.nullable(),
   headOid: oid.nullable(),
   file: z.strictObject({ path, previousPath: path.nullable() }).nullable(),
   viewport: viewport.nullable(),
   selection: z.discriminatedUnion('kind', [textSelection, lineSelection]).nullable(),
   threadId: z.int().positive().nullable(),
-});
+}).refine((view) => view.repoId !== null || (
+  view.baseOid === null && view.headOid === null && view.file === null && view.viewport === null &&
+  view.selection === null && view.threadId === null
+));
 
 export const currentViewReplySchema = z.strictObject({
   requestId: z.uuid(),

@@ -18,11 +18,13 @@ import type {
   DesktopSourceResult,
   DesktopState,
   DesktopTokenResult,
+  InitialSourceAgentAccess,
   SourceMethod,
   SourceTestDraft,
 } from '../shared/desktop';
 import {
-  applyDesktopPatch, ConfigInputError, enableMcpPatch, parseAgentSourcesInput, parseAgentTokenInput, parseDesktopPatch, toDesktopConfig,
+  applyDesktopPatch, ConfigInputError, enableMcpPatch, parseAgentSourcesInput, parseAgentTokenInput, parseDesktopPatch,
+  parseRepoAgentAccess, parseRepoAgentAccessIds, parseSourceAgentAccess, toDesktopConfig,
 } from './config';
 import type { ServerChild, StartResult } from './server-child';
 import {
@@ -271,9 +273,9 @@ export class Desktop {
   }
 
   /** Writes `next`, has the child apply it, and puts `loaded` back if it can't (the child then keeps what it had). */
-  private async applySources(loaded: LoadedConfigFile, next: ConfigFile, what: string): Promise<void> {
+  private async applySources(loaded: LoadedConfigFile, next: ConfigFile, what: string, initialAgentAccess?: InitialSourceAgentAccess): Promise<void> {
     writeConfigFile(this.d.configPath, next);
-    const result = await this.d.child.reloadSources();
+    const result = await this.d.child.reloadSources(initialAgentAccess);
     if (result.ok) return;
     this.d.log(`[sources] ${what} failed (${result.error}); restoring config.json`);
     if (loaded.exists) writeConfigFile(this.d.configPath, loaded.data);
@@ -369,7 +371,8 @@ export class Desktop {
       const check = this.addConflict(await this.d.child.testSource(await this.testDraft(baseUrl, host, draft)), loaded.data);
       if (!check.ok) return { check, saved: false, remembered: false };
       const entry = withMethod({ kind: 'gitlab', url: check.url }, draft.method, draft.method === 'file' ? this.fileFor(host) : null);
-      await this.applySources(loaded, addEntry(loaded.data, entry), `Adding ${check.host}`);
+      const initialAgentAccess = draft.agentAccessDefault && { host: check.host, access: draft.agentAccessDefault };
+      await this.applySources(loaded, addEntry(loaded.data, entry), `Adding ${check.host}`, initialAgentAccess);
       let remembered = false;
       if (draft.method === 'app') {
         this.sourceAppTokens.set(check.host, draft.token);
@@ -647,6 +650,18 @@ export class Desktop {
     const id = agentId(input);
     if (typeof shareView !== 'boolean') throw new ConfigInputError('Say whether to share the current view with this agent.');
     return this.exclusive(() => this.agentRequest(() => this.d.child.setAgentViewSharing(id, shareView)));
+  }
+
+  setSourceAgentAccess(hostInput: unknown, accessInput: unknown): Promise<void> {
+    const host = parseHostInput(hostInput);
+    const access = parseSourceAgentAccess(accessInput);
+    return this.exclusive(() => this.agentRequest(() => this.d.child.setSourceAgentAccess(host, access)));
+  }
+
+  setRepoAgentAccess(idsInput: unknown, accessInput: unknown): Promise<void> {
+    const ids = parseRepoAgentAccessIds(idsInput);
+    const access = parseRepoAgentAccess(accessInput);
+    return this.exclusive(() => this.agentRequest(() => this.d.child.setRepoAgentAccess(ids, access)));
   }
 
   /** The child's refusals (a name taken, no such agent) are the user's to read, not stack traces for the log. */

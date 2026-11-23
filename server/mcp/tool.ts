@@ -20,8 +20,8 @@ export interface McpDeps {
 }
 
 /**
- * The ids of the sources a principal may reach (db/agents.ts agentSourceIds): null for every source. Tools reach
- * repositories, threads and comment events only through reach.ts, which keeps them to these.
+ * The ids of the sources a principal may reach (db/agents.ts agentSourceIds): null for every source. Repository policy
+ * applies independently of this scope.
  */
 export type SourceIds = readonly number[] | null;
 

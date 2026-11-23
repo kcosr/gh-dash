@@ -4,7 +4,7 @@ import type { Diff } from './api';
 import { qk, refreshDiff } from '../web/src/api/hooks';
 
 const diff = (headOid: string): Diff => ({
-  kind: 'pr', repo: 'kcosr/gh-dash', number: 2, title: 'T', baseOid: 'b'.repeat(40), headOid, files: [],
+  kind: 'pr', repo: 'kcosr/gh-dash', repoId: 1, number: 2, title: 'T', baseOid: 'b'.repeat(40), headOid, files: [],
   totalFiles: 0, additions: 0, deletions: 0, fetchedAt: '2026-09-28T00:00:00Z', url: 'https://github.com/o/gh-dash/pull/2/files',
 });
 

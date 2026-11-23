@@ -24,7 +24,7 @@ const thread: CommentThread = {
 
 async function openDiff(page: Page, changedFiles = files, deepLink = false) {
   await page.route('**/api/v1/prs/**/diff', (route) => route.fulfill({ json: {
-    kind: 'pr', repo: pr.repo, number: pr.number, title: pr.title, baseOid, headOid, fetchedAt,
+    kind: 'pr', repo: pr.repo, repoId: 2, number: pr.number, title: pr.title, baseOid, headOid, fetchedAt,
     files: changedFiles, totalFiles: changedFiles.length,
     additions: changedFiles.reduce((n, f) => n + f.additions, 0), deletions: changedFiles.reduce((n, f) => n + f.deletions, 0),
     url: pr.url,

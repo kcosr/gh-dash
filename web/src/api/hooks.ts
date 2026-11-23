@@ -78,6 +78,7 @@ export const qk = {
   threadList: (q: ThreadListQuery) => ['thread-list', q] as const,
   /** GET /agents: who may write comments through MCP. */
   agents: ['agents'] as const,
+  agentAccess: ['agent-access'] as const,
   blob: (repo: string, ref: string, path: string) => ['blob', repo, ref, path] as const,
   diffCache: ['diff-cache'] as const,
   /** The Add dialog's lists and access checks: read from GitHub, never refetched by a sync. */
@@ -134,6 +135,10 @@ export function followActiveRepos(qc: QueryClient): () => void {
 
 export function useRepos() {
   return useQuery({ queryKey: qk.repos, queryFn: api.repos, staleTime: 60_000, select: (d) => d.items });
+}
+
+export function useAgentAccess() {
+  return useQuery({ queryKey: qk.agentAccess, queryFn: api.agentAccess, staleTime: 30_000, refetchOnWindowFocus: 'always' });
 }
 
 export function useRepoMap(): Map<string, Repo> {
@@ -776,6 +781,7 @@ export function useAddRepo() {
       const prev = qc.getQueryData<{ items: Repo[] }>(qk.repos);
       if (prev && !prev.items.some((r) => r.key === res.repo.key)) qc.setQueryData(qk.repos, { items: [...prev.items, res.repo] });
       void qc.invalidateQueries({ queryKey: qk.repos });
+      void qc.invalidateQueries({ queryKey: qk.agentAccess });
       // Its first sync started (or waits): the header shows it.
       void qc.invalidateQueries({ queryKey: qk.sync });
       trackingChanged(qc);

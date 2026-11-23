@@ -9,12 +9,13 @@ import type { ShowTarget, StreamMessage } from '../../../shared/api';
 import { type CommentEventItem, commentEventsAfter, lastCommentEventId } from '../../db/comment-events';
 import { viewOfThread } from '../../db/comments';
 import type { Db } from '../../db/db';
+import { agentRepoScope } from '../../db/filters';
 import { isFullSha } from '../../diff/service';
 import { HttpError } from '../../lib/errors';
 import * as comments from '../../services/comments';
 import { repoKinds } from '../../services/lists';
 import { branchArg, byOf, commitArg, idArg, prArg, repoArg, targetRef } from '../format';
-import { reachSql, repoKeyInReach, requireRepo, requireThreadInReach } from '../reach';
+import { requireRepo, requireThreadInReach } from '../reach';
 import { readTool, writeTool } from '../tool';
 
 /** Most events one call returns; the rest come with the next call, at once. */
@@ -65,19 +66,21 @@ export const waitForReply = readTool({
     // As list_threads checks it: a valid name, not the default branch (which has no threads to wait on).
     if (ref && args.branch !== undefined) comments.resolveTarget(deps, { repo: ref.key, kind: 'branch', branch: args.branch });
     const ids = args.thread_ids ? [...new Set(args.thread_ids)] : null;
-    const inReach = reachSql(sources, 'r');
+    const { sql, params } = agentRepoScope('r', sources);
+    // A deleted thread can still have events. Use its repository identity even if its old key was reused.
+    const reachableRepoId = (threadId: number) => db.get<{ id: number }>(
+      `SELECT r.id FROM repos r WHERE r.id = (
+        SELECT repo_id FROM comment_threads WHERE id = ?
+        UNION ALL SELECT repo_id FROM comment_events WHERE thread_id = ? LIMIT 1
+      ) AND ${sql}`,
+      [threadId, threadId, ...params],
+    )?.id;
     for (const id of ids ?? []) {
-      // A deleted thread still has its events; one that never was is a mistake worth saying, and so is one out of reach.
-      const known = db.get(
-        `SELECT 1 FROM comment_threads t JOIN repos r ON r.id = t.repo_id WHERE t.id = ? AND ${inReach.sql}
-         UNION ALL SELECT 1 FROM comment_events e JOIN repos r ON r.id = e.repo_id WHERE e.thread_id = ? AND ${inReach.sql}`,
-        [id, ...inReach.params, id, ...inReach.params],
-      );
-      if (!known) throw new HttpError(404, `Thread ${id} not found`);
+      if (reachableRepoId(id) === undefined) throw new HttpError(404, `Thread ${id} not found`);
     }
     const commit = args.commit !== undefined ? fullCommit(db, ref!.id, args.commit) : null;
     const scope = {
-      ...(sources !== null ? { sourceIds: sources } : {}),
+      agentSources: sources,
       ...(ids ? { threadIds: ids } : {}),
       ...(ref ? { repoId: ref.id } : {}),
       ...(args.pr !== undefined ? { prNumber: args.pr } : {}),
@@ -93,15 +96,15 @@ export const waitForReply = readTool({
     // What the bus says happened, in the same scope: the log is the truth, this only wakes the wait. A PR's or a branch's
     // scope wakes for any thread of the branch (the log then tells which are in its group, at which times). Nothing out of
     // reach wakes it.
-    const matches = (m: StreamMessage) =>
-      m.type === 'comments' &&
-      m.by.id !== principal.id &&
-      (!ids || ids.includes(m.threadId)) &&
-      (!ref || m.repo === ref.key) &&
-      repoKeyInReach(ctx, m.repo) &&
-      (args.pr === undefined || (m.kind === 'pr' && m.number === args.pr) || (m.branch !== null && m.branch === prBranch())) &&
-      (args.branch === undefined || m.branch === args.branch) &&
-      (!commit || (m.kind === 'commit' && m.commitOid === commit));
+    const matches = (m: StreamMessage) => {
+      if (m.type !== 'comments' || m.by.id === principal.id || (ids && !ids.includes(m.threadId))) return false;
+      const repoId = reachableRepoId(m.threadId);
+      return repoId !== undefined &&
+        (!ref || repoId === ref.id) &&
+        (args.pr === undefined || (m.kind === 'pr' && m.number === args.pr) || (m.branch !== null && m.branch === prBranch())) &&
+        (args.branch === undefined || m.branch === args.branch) &&
+        (!commit || (m.kind === 'commit' && m.commitOid === commit));
+    };
 
     const kindOf = repoKinds(db);
     const out = (e: CommentEventItem) => ({
@@ -118,8 +121,8 @@ export const waitForReply = readTool({
       threadStatus: e.threadStatus ?? 'deleted',
     });
 
-    // Without `after`, from the end of the log within reach: a limited agent's cursor never moves with other sources' events.
-    const cursor = args.after ?? lastCommentEventId(db, sources ?? undefined);
+    // Without `after`, start from the end of the visible log.
+    const cursor = args.after ?? lastCommentEventId(db, sources);
     const deadline = Date.now() + args.timeout_s * 1000;
     for (;;) {
       // Listen first, then look: whatever lands in between wakes the wait.

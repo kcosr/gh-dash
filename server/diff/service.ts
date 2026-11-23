@@ -10,7 +10,7 @@ import { repoKeySql, resolveRepo } from '../db/repo-key';
 import { getSettings } from '../db/settings';
 import { SourceError } from '../provider/errors';
 import type { BranchRef, DiffRepo, DiffSource, PrRevision, ProviderKind } from '../provider/types';
-import type { CacheEntry, DiffCache, PrEntry } from './cache';
+import { type CacheEntry, type DiffCache, type PrEntry, repoCacheKey } from './cache';
 
 const gzip = promisify(gzipCb);
 const gunzip = promisify(gunzipCb);
@@ -52,6 +52,13 @@ interface PrRow {
   base_ref: string;
   state: 'open' | 'merged' | 'closed';
   updated_at: string;
+}
+
+interface ResolvedDiffRepo {
+  id: number;
+  sourceId: number;
+  repo: DiffRepo;
+  cacheRepo: string;
 }
 
 /**
@@ -119,7 +126,7 @@ export class DiffService {
   private readonly now: () => number;
   /** Identical requests in flight share one fetch (a double click doesn't spend twice). */
   private readonly inflight = new Map<string, Promise<unknown>>();
-  /** What the code host last said about a repo's branches (the default branch included), by repo key and name filter. */
+  /** What the code host last said about a repo's branches, by repository identity and name filter. */
   private readonly branchLists = new Map<string, { at: number; refs: BranchRef[]; more: boolean }>();
 
   constructor(opts: DiffServiceOptions) {
@@ -157,10 +164,12 @@ export class DiffService {
     }
   }
 
-  /** Applies the size cap and drops entries of removed repos (at startup, after inserts, when the cap changes). */
+  /** Applies the size cap and drops entries for repository identities and keys that are no longer current. */
   evict(): void {
     this.safely('eviction', () => {
-      const repos = this.db.all<{ key: string }>(`SELECT ${repoKeySql('repos')} AS key FROM repos WHERE removed_at IS NULL`).map((r) => r.key);
+      const repos = this.db.all<{ id: number; key: string }>(
+        `SELECT id, ${repoKeySql('repos')} AS key FROM repos WHERE removed_at IS NULL`,
+      ).map(({ id, key }) => repoCacheKey(id, key));
       const removed = this.cache.evict(this.maxBytes(), repos);
       if (removed) this.log(`[diff] evicted ${removed} cache entries`);
     }, undefined);
@@ -192,14 +201,19 @@ export class DiffService {
    * A tracked repository by its key: its row id (synced PRs and commits hang off it), the source it is on, and what
    * that source is told.
    */
-  private repo(key: string): { id: number; sourceId: number; repo: DiffRepo } {
+  private repo(key: string): ResolvedDiffRepo {
     const ref = resolveRepo(this.db, key);
     if (!ref) throw new HttpError(404, 'Repository not found');
-    return { id: ref.id, sourceId: ref.sourceId, repo: { key: ref.key, owner: ref.owner, name: ref.name, path: ref.path } };
+    return {
+      id: ref.id,
+      sourceId: ref.sourceId,
+      repo: { key: ref.key, owner: ref.owner, name: ref.name, path: ref.path },
+      cacheRepo: repoCacheKey(ref.id, ref.key),
+    };
   }
 
   /** Full SHA for an abbreviated one, from synced commits or cached commit diffs, when unambiguous. */
-  private expandOid(id: number, repo: DiffRepo, oid: string): string | null {
+  private expandOid(id: number, cacheRepo: string, oid: string): string | null {
     if (isFullSha(oid)) return oid;
     const rows = this.db.all<{ oid: string }>('SELECT oid FROM commits WHERE repo_id = ? AND oid >= ? AND oid < ? LIMIT 2', [
       id,
@@ -207,7 +221,7 @@ export class DiffService {
       `${oid}g`,
     ]);
     if (rows.length === 1) return rows[0]!.oid;
-    return rows.length ? null : this.safely('lookup', () => this.cache.findCommit(repo.key, oid), null);
+    return rows.length ? null : this.safely('lookup', () => this.cache.findCommit(cacheRepo, oid), null);
   }
 
   /** The source for a fetch about a repo on source `sourceId`; none to use (not configured here, no token) is a 503 with the reason. */
@@ -272,20 +286,20 @@ export class DiffService {
    * with a retryable 502.
    */
   async prDiff(repoName: string, number: number, refresh = false): Promise<Payload> {
-    const { id, sourceId, repo } = this.repo(repoName);
+    const { id, sourceId, repo, cacheRepo } = this.repo(repoName);
     const pr = this.db.get<PrRow>('SELECT head_oid, base_ref, state, updated_at FROM pull_requests WHERE repo_id = ? AND number = ?', [
       id,
       number,
     ]);
     if (!pr) throw new HttpError(404, 'Pull request not found');
-    const entry = this.safely('lookup', () => this.cache.prEntry(repo.key, number), null);
+    const entry = this.safely('lookup', () => this.cache.prEntry(cacheRepo, number), null);
     const current = !refresh && entry && this.stillCurrent(entry, pr) ? entry : null;
     if (current && current.oid === pr.head_oid) {
       const hit = this.cached(current.key);
       if (hit) return hit;
     }
 
-    const fetched = this.once(`pr/${repo.key}/${number}/${refresh}`, () =>
+    const fetched = this.once(`pr/${cacheRepo}/${number}/${refresh}`, () =>
       this.fetching(sourceId, `${repo.key}#${number}`, async (source, signal) => {
         if (current && (await source.prHeadIs(repo, number, current.oid, signal))) {
           const hit = this.cached(current.key);
@@ -294,12 +308,12 @@ export class DiffService {
         const rev = await source.prRevision(repo, number, signal);
         // Same head and merge base as the cached diff: its files still apply; refresh the PR's own fields only.
         const same = entry && entry.oid === rev.headOid && entry.baseOid === rev.baseOid ? this.cached(entry.key) : null;
-        if (same) return this.savePr(repo, number, rev, { ...(JSON.parse(await payloadText(same)) as Diff), ...this.prFields(rev) });
+        if (same) return this.savePr(cacheRepo, number, rev, { ...(JSON.parse(await payloadText(same)) as Diff), ...this.prFields(rev) });
 
         const snapshot = await source.prFiles(repo, number, rev, signal);
         const { title, totalFiles, additions, deletions, fetchedAt, url } = this.prFields(snapshot.rev);
-        return this.savePr(repo, number, snapshot.rev, {
-          kind: 'pr', repo: repo.key, number, title, baseOid: snapshot.rev.baseOid, headOid: snapshot.rev.headOid, files: snapshot.files,
+        return this.savePr(cacheRepo, number, snapshot.rev, {
+          kind: 'pr', repo: repo.key, repoId: id, number, title, baseOid: snapshot.rev.baseOid, headOid: snapshot.rev.headOid, files: snapshot.files,
           totalFiles, additions, deletions, fetchedAt, url,
         });
       }),
@@ -323,11 +337,11 @@ export class DiffService {
   }
 
   /** Caches `diff` as the PR's diff at `rev`, superseding its other cached diffs. */
-  private async savePr(repo: DiffRepo, number: number, rev: PrRevision, diff: Diff): Promise<Payload> {
-    const key = `pr/${repo.key}/${number}/${rev.headOid}`;
-    const entry = { key, kind: 'pr' as const, repo: repo.key, number, oid: rev.headOid, baseRef: rev.baseRef, baseOid: rev.baseOid, fetchedAt: this.now() };
+  private async savePr(cacheRepo: string, number: number, rev: PrRevision, diff: Diff): Promise<Payload> {
+    const key = `pr/${cacheRepo}/${number}/${rev.headOid}`;
+    const entry = { key, kind: 'pr' as const, repo: cacheRepo, number, oid: rev.headOid, baseRef: rev.baseRef, baseOid: rev.baseOid, fetchedAt: this.now() };
     const out = await this.store(entry, JSON.stringify(diff));
-    this.safely('cleanup', () => this.cache.dropOthers(repo.key, number, key), undefined);
+    this.safely('cleanup', () => this.cache.dropOthers(cacheRepo, number, key), undefined);
     return out;
   }
 
@@ -358,25 +372,25 @@ export class DiffService {
   /** A commit's diff against its first parent. The commit needn't be synced (PR branch commits aren't). */
   async commitDiff(repoName: string, oid: string, refresh = false): Promise<Payload> {
     const short = hexOid(oid, 'commit');
-    const { id, sourceId, repo } = this.repo(repoName);
-    const full = this.expandOid(id, repo, short);
-    const key = (sha: string) => `commit/${repo.key}/${sha}`;
+    const { id, sourceId, repo, cacheRepo } = this.repo(repoName);
+    const full = this.expandOid(id, cacheRepo, short);
+    const key = (sha: string) => `commit/${cacheRepo}/${sha}`;
     const hit = full && !refresh ? this.cached(key(full)) : null;
     if (hit) return hit;
 
     const ref = full ?? short;
-    return this.once(`commit/${repo.key}/${ref}/${refresh}`, () =>
+    return this.once(`${key(ref)}/${refresh}`, () =>
       this.fetching(sourceId, `${repo.key}@${ref.slice(0, 7)}`, async (source, signal) => {
         const commit = await source.commit(repo, ref, signal).catch((err: unknown) => {
           if (err instanceof SourceError && err.kind === 'not-found') throw new HttpError(404, `Commit ${ref} not found on ${HOSTS[source.kind]}`);
           throw err;
         });
         const diff: Diff = {
-          kind: 'commit', repo: repo.key, number: null, title: commit.title, baseOid: commit.baseOid, headOid: commit.headOid, files: commit.files,
+          kind: 'commit', repo: repo.key, repoId: id, number: null, title: commit.title, baseOid: commit.baseOid, headOid: commit.headOid, files: commit.files,
           totalFiles: commit.totalFiles, additions: commit.additions, deletions: commit.deletions, fetchedAt: new Date(this.now()).toISOString(),
           url: commit.url,
         };
-        const entry = { key: key(commit.headOid), kind: 'commit' as const, repo: repo.key, oid: commit.headOid, fetchedAt: this.now() };
+        const entry = { key: key(commit.headOid), kind: 'commit' as const, repo: cacheRepo, oid: commit.headOid, fetchedAt: this.now() };
         return this.store(entry, JSON.stringify(diff));
       }),
     );
@@ -391,7 +405,7 @@ export class DiffService {
    * with) and its page on the code host. Without a default branch (the sync hasn't seen one) there is nothing to
    * compare with, and no branch to leave out of a list: 409.
    */
-  private branchRepo(key: string): { id: number; sourceId: number; repo: DiffRepo; base: string; url: string } {
+  private branchRepo(key: string): ResolvedDiffRepo & { base: string; url: string } {
     const found = this.repo(key);
     const row = this.db.get<{ default_branch: string | null; url: string }>('SELECT default_branch, url FROM repos WHERE id = ?', [found.id])!;
     if (!row.default_branch) throw new HttpError(409, "The default branch isn't known yet: sync the repository");
@@ -413,9 +427,9 @@ export class DiffService {
    */
   async branchDiff(repoName: string, branch: string, refresh = false): Promise<Payload> {
     if (!isBranchName(branch)) throw new HttpError(400, 'Invalid branch name');
-    const { sourceId, repo, base, url } = this.branchRepo(repoName);
+    const { id, sourceId, repo, cacheRepo, base, url } = this.branchRepo(repoName);
     if (branch === base) throw new HttpError(400, `${branch} is the default branch: branches are compared against it`);
-    const key = `branch/${repo.key}/${branch}`;
+    const key = `branch/${cacheRepo}/${branch}`;
     const label = `${repo.key}~${branch}`;
     const entry = this.safely('lookup', () => this.cache.branchEntry(key), null);
     const current = !refresh && entry && entry.baseRef === base && this.now() - entry.fetchedAt < BRANCH_TTL_MS ? entry : null;
@@ -437,11 +451,11 @@ export class DiffService {
           .compare(repo, base, head, signal)
           .catch(notFound(`Can't compare ${branch} with ${base} on ${host}: ${base} isn't a branch there (renamed since the last sync?), or they have no history in common`));
         const diff: Diff = {
-          kind: 'branch', repo: repo.key, number: null, branch, baseRef: base, title: branch, baseOid: compared.baseOid, headOid: compared.headOid,
+          kind: 'branch', repo: repo.key, repoId: id, number: null, branch, baseRef: base, title: branch, baseOid: compared.baseOid, headOid: compared.headOid,
           files: compared.files, totalFiles: compared.totalFiles, additions: compared.additions, deletions: compared.deletions,
           fetchedAt: new Date(this.now()).toISOString(), url: PROVIDERS[source.kind].link.compare(url, base, branch),
         };
-        const stored = { key, kind: 'branch' as const, repo: repo.key, oid: compared.headOid, baseRef: base, baseOid: compared.baseOid, fetchedAt: this.now() };
+        const stored = { key, kind: 'branch' as const, repo: cacheRepo, oid: compared.headOid, baseRef: base, baseOid: compared.baseOid, fetchedAt: this.now() };
         return this.store(stored, JSON.stringify(diff));
       }),
     );
@@ -459,8 +473,9 @@ export class DiffService {
   async branchList(repoName: string, q: string | null, refresh = false): Promise<BranchListResponse> {
     const query = q?.trim() || null;
     if (query && !isBranchQuery(query)) throw new HttpError(400, 'Invalid q');
-    const { id, sourceId, repo, base } = this.branchRepo(repoName);
-    const listed = (!refresh && this.syncedBranches(id, base, query)) || (await this.hostBranches(sourceId, repo, query, refresh));
+    const found = this.branchRepo(repoName);
+    const { id, base } = found;
+    const listed = (!refresh && this.syncedBranches(id, base, query)) || (await this.hostBranches(found, query, refresh));
     const refs = listed.refs.filter((b) => b.name !== base);
     const prs = new Map<string, NonNullable<BranchSummary['pr']>>();
     // Ascending, so that the newest PR from a branch is the one left.
@@ -493,8 +508,8 @@ export class DiffService {
   }
 
   /** The repo's branches as the code host has them (BRANCH_LIST_LIMIT + 1 asked for), kept per repo and name filter. */
-  private async hostBranches(sourceId: number, repo: DiffRepo, query: string | null, refresh: boolean): Promise<{ refs: BranchRef[]; more: boolean }> {
-    const key = `${repo.key}\n${query ?? ''}`;
+  private async hostBranches({ sourceId, repo, cacheRepo }: ResolvedDiffRepo, query: string | null, refresh: boolean): Promise<{ refs: BranchRef[]; more: boolean }> {
+    const key = `${cacheRepo}\n${query ?? ''}`;
     let listed = this.branchLists.get(key);
     if (!listed || refresh || this.now() - listed.at >= BRANCH_LIST_TTL_MS) {
       listed = await this.once(`branches/${key}\n${refresh}`, () =>
@@ -522,9 +537,9 @@ export class DiffService {
   async blob(repoName: string, ref: string, path: string): Promise<Payload> {
     const short = hexOid(ref, 'ref');
     checkPath(path);
-    const { id, sourceId, repo } = this.repo(repoName);
-    const sha = this.expandOid(id, repo, short) ?? short;
-    const key = `blob/${repo.key}/${sha}/${path}`;
+    const { id, sourceId, repo, cacheRepo } = this.repo(repoName);
+    const sha = this.expandOid(id, cacheRepo, short) ?? short;
+    const key = `blob/${cacheRepo}/${sha}/${path}`;
     const hit = isFullSha(sha) ? this.cached(key) : null;
     if (hit) return hit;
 
@@ -539,7 +554,7 @@ export class DiffService {
         // Git's own heuristic: a NUL byte in the first 8000 bytes means binary.
         if (file.bytes.subarray(0, 8000).includes(0)) throw new HttpError(415, `${path} is a binary file`);
         // What a short ref names isn't fixed (it can become ambiguous, or name another commit later): don't keep it.
-        const entry = isFullSha(sha) ? { key, kind: 'blob' as const, repo: repo.key, oid: sha, fetchedAt: this.now() } : null;
+        const entry = isFullSha(sha) ? { key, kind: 'blob' as const, repo: cacheRepo, oid: sha, fetchedAt: this.now() } : null;
         return this.store(entry, new TextDecoder('utf-8', { ignoreBOM: true }).decode(file.bytes));
       }),
     );

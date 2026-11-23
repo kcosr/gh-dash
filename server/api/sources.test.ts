@@ -6,8 +6,9 @@ import type { Source } from '../../shared/api';
 import { loadConfig } from '../config';
 import type { Exec } from '../credentials/types';
 import type { Db } from '../db/db';
+import { resolveRepo } from '../db/repo-key';
 import { GITHUB_SOURCE_ID, getSource, sourceByHost } from '../db/sources';
-import { DiffCache } from '../diff/cache';
+import { DiffCache, repoCacheKey } from '../diff/cache';
 import { DiffService } from '../diff/service';
 import { GitHubDiffSources } from '../github/diff-source';
 import { SourceRegistry } from '../sources/registry';
@@ -291,15 +292,20 @@ describe('DELETE /sources/:source', () => {
     expect(onGitLab).toMatchObject({ pull_requests: 3, commits: 4, issues: 2, releases: 1 });
     const prCommits = count(t.db, 'SELECT count(*) AS n FROM pr_commits');
     // Diffs cached for a repo on each source.
-    const cached = (repo: string) => ({ key: `commit/${repo}/${'a'.repeat(40)}`, kind: 'commit' as const, repo, oid: 'a'.repeat(40), fetchedAt: 1, data: new Uint8Array([1, 2, 3]) });
-    t.cache.put(cached(`${GITLAB_HOST}/platform/app`));
-    t.cache.put(cached('alice/app'));
+    const cached = (key: string) => {
+      const repo = repoCacheKey(resolveRepo(t.db, key)!.id, key);
+      return { key: `commit/${repo}/${'a'.repeat(40)}`, kind: 'commit' as const, repo, oid: 'a'.repeat(40), fetchedAt: 1, data: new Uint8Array([1, 2, 3]) };
+    };
+    const gitlabDiff = cached(`${GITLAB_HOST}/platform/app`);
+    const githubDiff = cached('alice/app');
+    t.cache.put(gitlabDiff);
+    t.cache.put(githubDiff);
 
     const res = await t.call('DELETE', `/sources/${GITLAB_HOST}`);
     expect(res).toEqual({ status: 204, body: null });
     expect(t.evict).toHaveBeenCalledTimes(1);
-    expect(t.cache.get(cached('alice/app').key)).not.toBeNull();
-    expect(t.cache.get(cached(`${GITLAB_HOST}/platform/app`).key)).toBeNull();
+    expect(t.cache.get(githubDiff.key)).not.toBeNull();
+    expect(t.cache.get(gitlabDiff.key)).toBeNull();
 
     expect(sourceByHost(t.db, GITLAB_HOST)).toBeNull();
     expect(count(t.db, 'SELECT count(*) AS n FROM repos')).toBe(5);

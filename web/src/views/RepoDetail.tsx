@@ -5,6 +5,7 @@ import type { PullRequest } from '../../../shared/api';
 import { capitalize, repoProvider } from '../../../shared/provider';
 import { usePatchRepo, usePrList, useReleases, useRepos, useStats, useSyncStatus } from '../api/hooks';
 import { ChartCard, HBars, StackedColumns, StatTile } from '../charts';
+import { RepositoryAgentAccess } from '../components/AgentAccess';
 import { RelTime, prIconClass, prIconName } from '../components/bits';
 import { BranchesCard } from '../components/Branches';
 import { DateRangeButton } from '../components/DateRange';
@@ -146,6 +147,7 @@ export function RepoDetailView() {
               <a className="rh-link" href={p.link.issues(repo.url)} target="_blank" rel="noopener noreferrer">Issues ↗</a>
               <a className="rh-link" href={p.link.releases(repo.url)} target="_blank" rel="noopener noreferrer">Releases ↗</a>
             </div>
+            <div className="repo-agent-access"><RepositoryAgentAccess repoKey={repo.key} /></div>
             {repo.topics.length > 0 && <div className="rh-topics">{repo.topics.map((t) => <span key={t} className="set-chip">{t}</span>)}</div>}
           </div>
         )}

@@ -844,9 +844,12 @@ describe('migration names', () => {
   it('number migrations by name, and stop where asked', () => {
     // The final order: T2's repos rebuild, then local comments (diff-comments), then sources (the GitLab wave), then
     // agents and the comment event log (the MCP wave), then branch reviews, then the sources agents may reach, then the
-    // branches the sync holds, then repository status and the live view permission.
-    expect(['repos-v5', 'comments', 'sources', 'agents', 'branches', 'agent-sources', 'synced-branches', 'repo-status', 'agent-view-sharing'].map(versionOf)).toEqual([5, 6, 7, 8, 9, 10, 11, 12, 13]);
-    expect(SCHEMA_VERSION).toBe(versionOf('agent-view-sharing'));
+    // branches the sync holds, repository status, the live view permission and repository agent access.
+    expect([
+      'repos-v5', 'comments', 'sources', 'agents', 'branches', 'agent-sources', 'synced-branches', 'repo-status',
+      'agent-view-sharing', 'repo-agent-access',
+    ].map(versionOf)).toEqual([5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
+    expect(SCHEMA_VERSION).toBe(versionOf('repo-agent-access'));
     expect(() => versionOf('nope')).toThrow('No migration is called nope');
     const db = new Db(new DatabaseSync(':memory:'));
     migrate(db, true, { upTo: versionOf('repos-v5') });

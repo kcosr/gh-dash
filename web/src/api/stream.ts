@@ -1,7 +1,7 @@
 /**
  * GET /stream: what the server tells open windows as it happens (StreamMessage, as server-sent events). One connection
  * per window, opened by the shell (useStream): `comments` refetches what a change to that target's threads makes stale,
- * as threadActions does after a change made here; `agents` the agents list (and, when one was deleted, what names its
+ * as threadActions does after a change made here; `agents` the agents list and repository access (and, when one was deleted, what names its
  * comments' authors); `show` goes to the show chip; `current_view_request` reads this window's current view. It reconnects
  * by itself (a server restart, the desktop app's proxy dropping it), and having missed what happened meanwhile, refetches
  * all of that once back. A server without the stream (older, or behind a proxy that won't stream) is left alone,
@@ -26,7 +26,7 @@ export const STREAM_URL = '/api/v1/stream';
  * a branch reaches its branch's view and its PRs'); none for `show`.
  */
 export function streamInvalidations(msg: StreamMessage): QueryKey[] {
-  if (msg.type === 'agents') return msg.deleted === undefined ? [qk.agents] : [qk.agents, ...AUTHOR_KEYS];
+  if (msg.type === 'agents') return msg.deleted === undefined ? [qk.agents, qk.agentAccess] : [qk.agents, ...AUTHOR_KEYS];
   if (msg.type !== 'comments') return [];
   const id = msg.kind === 'pr' && msg.number !== null ? `${msg.repo}#${msg.number}`
     : msg.kind === 'branch' && msg.branch ? branchDiffId(msg.repo, msg.branch)
@@ -35,7 +35,7 @@ export function streamInvalidations(msg: StreamMessage): QueryKey[] {
 }
 
 /** What a missed stretch may have changed (after a reconnect): every list and count the stream would have refetched. */
-const MISSED = new Set(['threads', 'thread-list', 'prs', 'pr', 'branch-list', 'repos', 'activity', 'agents']);
+const MISSED = new Set(['threads', 'thread-list', 'prs', 'pr', 'branch-list', 'repos', 'activity', 'agents', 'agent-access']);
 export const missedByStream = (key: QueryKey) => MISSED.has(key[0] as string);
 
 /** A message from the wire, or null for anything this app doesn't know (a newer server's). */

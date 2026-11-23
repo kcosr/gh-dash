@@ -4,9 +4,10 @@
  * shared/desktop.ts (MainToServer/ServerToMain).
  */
 import { utilityProcess, type UtilityProcess } from 'electron';
+import type { RepoAgentAccess, SourceAgentAccess } from '../shared/agent-access';
 import type { AgentFootprint, DeletedAgent } from '../shared/agents';
 import type { AccountStatus, Agent, SourceAccount, SourceCheck, TokenChoice } from '../shared/api';
-import type { MainToServer, ServerToMain, SourceTestDraft } from '../shared/desktop';
+import type { InitialSourceAgentAccess, MainToServer, ServerToMain, SourceTestDraft } from '../shared/desktop';
 
 export type ChildStatus = 'idle' | 'starting' | 'running' | 'stopping' | 'failed';
 export type StartResult = { ok: true; apiUrl: string | null } | { ok: false; message: string };
@@ -157,9 +158,9 @@ export class ServerChild {
   }
 
   /** config.json's sources changed: the child applies them without a restart. */
-  async reloadSources(): Promise<ReloadResult> {
+  async reloadSources(initialAgentAccess?: InitialSourceAgentAccess): Promise<ReloadResult> {
     await this.running();
-    const { ok, error, sources } = expect(await this.request({ type: 'reload-sources' }), 'sources-result');
+    const { ok, error, sources } = expect(await this.request({ type: 'reload-sources', ...(initialAgentAccess ? { initialAgentAccess } : {}) }), 'sources-result');
     return { ok, error, sources };
   }
 
@@ -226,6 +227,16 @@ export class ServerChild {
   async setAgentViewSharing(agent: number, shareView: boolean): Promise<Agent> {
     await this.running();
     return expect(await this.request({ type: 'set-agent-view-sharing', agent, shareView }), 'agent-result').agent;
+  }
+
+  async setSourceAgentAccess(host: string, access: SourceAgentAccess): Promise<void> {
+    await this.running();
+    expect(await this.request({ type: 'set-source-agent-access', host, access }), 'agent-access-updated');
+  }
+
+  async setRepoAgentAccess(repos: number[], access: RepoAgentAccess): Promise<void> {
+    await this.running();
+    expect(await this.request({ type: 'set-repo-agent-access', repos, access }), 'agent-access-updated');
   }
 
   private async running(): Promise<void> {

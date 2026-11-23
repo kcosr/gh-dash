@@ -42,6 +42,7 @@ import type {
   ThreadListResponse,
 } from '../../../shared/api';
 import type { CurrentViewReply } from '../../../shared/current-view';
+import type { AgentAccessInventory } from '../../../shared/agent-access';
 
 export class ApiError extends Error {
   status: number;
@@ -163,6 +164,7 @@ export const api = {
 
   /** Every source (github.com first) with its account, sync state and repository counts. Calls no code host. */
   sources: () => get<{ items: Source[] }>('/api/v1/sources'),
+  agentAccess: () => get<AgentAccessInventory>('/api/v1/agent-access'),
   source: (host: string) => get<Source>(`/api/v1/sources/${enc(host)}`),
   /** Resolve the source's token again and validate it now. 503 (the Source in `details`) when there is no token. */
   checkSource: (host: string) => request<Source>('POST', `/api/v1/sources/${enc(host)}/check`),

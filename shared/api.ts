@@ -780,6 +780,8 @@ export interface DiffFile {
 export interface Diff {
   kind: 'pr' | 'commit' | 'branch';
   repo: string;
+  /** Local repository identity of the displayed diff, even if its public key is later reused. */
+  repoId: number;
   /** PR number for kind 'pr'; null for commits and branches. */
   number: number | null;
   /** For kind 'branch': the branch, compared against `baseRef`. Absent for PRs and commits. */

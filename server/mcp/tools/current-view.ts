@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { agentSourceIds, getAgent } from '../../db/agents';
 import { resolveRepo } from '../../db/repo-key';
 import { HttpError } from '../../lib/errors';
-import { reaches } from '../reach';
+import { reaches, repoInReach } from '../reach';
 import { readTool } from '../tool';
 
 export const getCurrentView = readTool({
@@ -11,10 +11,11 @@ export const getCurrentView = readTool({
   description:
     'When the user asks about what they are viewing or have selected in gh-dash, read the most recently focused live window. ' +
     'Returns the review, displayed Git revisions, current file, visible line ranges, focused thread, and active code ' +
-    'selection when available. Returns a null view when no review is available within your source scope. ' +
+    'selection when available. Returns a null view when no review is available within your repository access. ' +
     'Requires the user to enable view sharing for your agent. This reads the view without changing it or starting a discussion.',
   input: z.strictObject({}),
-  run: async (_, { deps: { db, bus }, principal, sources, signal }) => {
+  run: async (_, ctx) => {
+    const { deps: { db, bus }, principal, signal } = ctx;
     const requirePermission = () => {
       const agent = getAgent(db, principal.id);
       if (!agent?.shareView || agent.builtIn || agent.disabledAt !== null) {
@@ -24,10 +25,13 @@ export const getCurrentView = readTool({
     requirePermission();
     const view = await bus.currentView(signal);
     requirePermission();
-    const repo = view && resolveRepo(db, view.target.repo);
-    // Check the chosen window after ranking it, so a different window can't be used in its place. A permission
-    // change while the browser answers can only narrow access for this call.
-    if (!repo || !reaches(sources, repo.sourceId) || !reaches(agentSourceIds(db, principal.id), repo.sourceId)) return { view: null };
-    return { view };
+    if (!view) return { view: null };
+    const { repoId, ...visible } = view;
+    const repo = resolveRepo(db, view.target.repo);
+    // Check the chosen window after ranking it. The displayed diff must belong to the current repository identity.
+    if (!repo || (repoId !== null && repoId !== repo.id) || !repoInReach(ctx, repo) || !reaches(agentSourceIds(db, principal.id), repo.sourceId)) {
+      return { view: null };
+    }
+    return { view: visible };
   },
 });

@@ -17,8 +17,8 @@ Each agent has a name and its own token. What it writes, resolves or reopens is 
 a small **agent** mark in the diff and the Comments tab, and in Activity (**Comments**). You can
 filter the Comments tab by author, or to threads **waiting on you**.
 
-Each agent reaches every source, or only the ones you choose: a work GitLab kept apart from a
-personal GitHub, say. See [Choosing an agent's sources](#choosing-an-agents-sources).
+You can choose [which repositories are available to agents](#choosing-repository-access) and
+[which sources an individual agent can reach](#choosing-an-agents-sources).
 
 ## Setting up
 
@@ -100,8 +100,8 @@ Give each agent its own gh-dash agent and token, so you can tell their comments 
 
 ### Choosing an agent's sources
 
-An agent reaches every source by default, including sources you add later. You can instead limit
-it to some of them, such as `github.com` or `gitlab.example.com`:
+An agent's source scope includes every source by default, including sources you add later. You can
+limit it to specific hosts, such as `github.com` or `gitlab.example.com`:
 
 - **Desktop app:** in **Settings → Agents**, use the button that says what the agent reaches
   (**All sources**, or **GitHub only**, say), or **Sources** when you add an agent. The built-in
@@ -131,8 +131,36 @@ comment events are numbered in one sequence across all sources. So a limited age
 it sees could tell that *something* happened elsewhere, and roughly how much, but never what, where or
 by whom.
 
-**The REST API isn't limited.** The Local API and a server's API (with their password or API key)
-are yours, so they reach everything. Only MCP is limited per agent.
+### Choosing repository access
+
+Each source has a default of **Allow** or **Block**. A tracked repository can **Use source default**,
+**Allow**, or **Block**. Newly tracked repositories inherit the source default. Explicit choices
+take precedence over the default and follow the repository when it is renamed. Removing a manually
+tracked repository deletes its choice. If it is tracked again, it starts with the source default.
+
+New sources start blocked. On upgrade, sources that have synced or claimed an account start allowed
+to preserve existing access. GitHub and each GitLab host have their own default.
+
+In the desktop app, set defaults under **Settings → Sources**. Open **Repository access** to search
+and change several repositories at once, or use **Agent access** on a repository's page or menu.
+Choose **Use source default** to clear a repository's explicit choice.
+
+On a server, use these commands on the server's database:
+
+```sh
+node dist/server/index.mjs agents repository-access list
+node dist/server/index.mjs agents repository-access default github.com block
+node dist/server/index.mjs agents repository-access set allow owner/repo owner/another-repo
+node dist/server/index.mjs agents repository-access set inherit owner/repo
+```
+
+The repository policy applies to every MCP agent, including the built-in agent. Access requires both
+an allowed repository and a source within the agent's scope. A blocked repository disappears from
+MCP listings and lookups, including its review threads, replies, and shared view.
+
+The owner dashboard and REST API have access to all tracked repositories. Use the desktop app's
+[MCP-only listener](desktop.md#local-api) or password-protect the dashboard when agents can reach
+its HTTP port. An agent's own clone and provider login have their own access rules.
 
 ### Seeing a token again
 

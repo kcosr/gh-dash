@@ -29,7 +29,7 @@ export interface CommentDeps {
    * Told of every write once it has committed. Pass the server's (AppDeps.bus) so windows and waiting agents hear of
    * it; absent only where nobody could listen (tests, one-off tools).
    */
-  bus?: CommentBus;
+  bus?: Pick<CommentBus, 'emit'>;
 }
 
 /** Longest comment body, as on GitHub. */

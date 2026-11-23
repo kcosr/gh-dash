@@ -9,7 +9,7 @@ import { HttpError } from '../../lib/errors';
 import { repoKinds } from '../../services/lists';
 import { branchDiffError, loadBranches, loadDiff } from '../diffs';
 import { branchArg, limitArg, repoArg, targetRef } from '../format';
-import { requireRepo } from '../reach';
+import { requireRepo, requireRepoInReach } from '../reach';
 import { readTool } from '../tool';
 import { diffFiles, STALE_NOTE } from './prs';
 
@@ -40,7 +40,7 @@ export const listBranches = readTool({
     const { deps, signal } = ctx;
     const ref = requireRepo(ctx, repo);
     const kind = repoKinds(deps.db)(ref.key);
-    const listed = await loadBranches(deps, ref.key, query ?? null, signal);
+    const listed = await loadBranches(deps, ref.key, query ?? null, signal).finally(() => requireRepoInReach(ctx, ref, repo));
     const more = listed.more || listed.items.length > limit;
     return {
       defaultBranch: listed.defaultBranch,
@@ -101,6 +101,8 @@ export const getBranch = readTool({
       // The default branch (or a name that isn't a branch's) has nothing to compare: a mistake, not a diff that is out of reach.
       if (err.status === 400) throw err;
       out.note = `No diff (${branchDiffError(err)}): headOid, baseOid and files are left out`;
+    } finally {
+      requireRepoInReach(ctx, ref, repo);
     }
     return out;
   },

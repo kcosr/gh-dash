@@ -7,11 +7,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { loadServerConfig } from '../server/config';
+import { listAgentAccess } from '../server/db/agent-access';
 import { listSources } from '../server/db/sources';
+import { upsertOwned } from '../server/db/write';
 import { mainMessageHandler } from '../server/desktop-child';
 import { type RunningServer, startServer } from '../server/start';
 import { fakeExec, fakeFs } from '../server/test/credentials';
 import { BASE, fakeGitLab, graphql } from '../server/test/gitlab';
+import { repoRecord } from '../server/test/seed';
 import { DESKTOP_ENV, type MainToServer, type ServerToMain } from '../shared/desktop';
 import { Desktop } from './desktop';
 import { ServerChild } from './server-child';
@@ -120,7 +123,7 @@ describe('GitLab sources, main and server child together', () => {
     expect(listSources(server.db).map((s) => s.host)).toEqual(['github.com']);
 
     // Added: in config.json, loaded without a restart, the token handed over and remembered, the first sync asked for.
-    const added = await desktop.addSource({ kind: 'gitlab', url: `${BASE}/`, method: 'app', token: PAT, remember: true });
+    const added = await desktop.addSource({ kind: 'gitlab', url: `${BASE}/`, method: 'app', token: PAT, remember: true, agentAccessDefault: 'allow' });
     expect(added).toMatchObject({ saved: true, remembered: true, check: { ok: true, url: BASE, account: { login: 'alice', scopes: ['read_api'], canWrite: false } } });
     expect(config()).toEqual({ sources: [{ kind: 'gitlab', url: BASE, tokenSource: 'app' }] });
     const runtime = server.sources.byHost(HOST)!;
@@ -129,6 +132,14 @@ describe('GitLab sources, main and server child together', () => {
     await vi.waitFor(() => expect(server.sync.startOrQueue).toHaveBeenCalledWith({ source: HOST }));
     expect(await store(HOST).load()).toBe(PAT);
     expect((await desktop.state()).sources).toEqual([{ host: HOST, url: BASE, tokenRemembered: true }]);
+    expect(listAgentAccess(server.db).sources).toContainEqual(expect.objectContaining({ host: HOST, defaultAccess: 'allow' }));
+
+    const repoId = upsertOwned(server.db, runtime, repoRecord('app'), '2026-09-26T00:00:00Z');
+    expect(() => desktop.setSourceAgentAccess(HOST, 'inherit')).toThrow('Choose Allow or Block');
+    expect(() => desktop.setRepoAgentAccess([], 'allow')).toThrow('Choose at least one repository');
+    expect(() => desktop.setRepoAgentAccess([repoId, null], 'allow')).toThrow('Invalid repository ID');
+    await desktop.setRepoAgentAccess([repoId, repoId], 'allow');
+    await desktop.setSourceAgentAccess(HOST.toUpperCase(), 'block');
 
     // Change token → glab: tested first, then the source's provider is rebuilt and the pasted token forgotten.
     const switched = await desktop.setSourceCredential(HOST, { method: 'glab' });
@@ -136,6 +147,9 @@ describe('GitLab sources, main and server child together', () => {
     expect(config().sources).toEqual([{ kind: 'gitlab', url: BASE, tokenSource: 'glab' }]);
     expect(await server.sources.byHost(HOST)!.tokens.get()).toMatchObject({ token: GLAB_PAT, source: 'glab' });
     expect(store(HOST).has()).toBe(false);
+    const access = listAgentAccess(server.db);
+    expect(access.sources).toContainEqual(expect.objectContaining({ host: HOST, defaultAccess: 'block' }));
+    expect(access.repos).toContainEqual(expect.objectContaining({ id: repoId, access: 'allow' }));
 
     // Remove: out of config.json, then gone from the database.
     const state = await desktop.removeSource(HOST);
@@ -143,6 +157,19 @@ describe('GitLab sources, main and server child together', () => {
     expect(server.sources.byHost(HOST)).toBeNull();
     expect(listSources(server.db).map((s) => s.host)).toEqual(['github.com']);
     expect(config()).toEqual({});
+  });
+
+  it('preserves the default when setting up a GitLab source already stored in the database', async () => {
+    server.sources.apply({
+      glabPath: null,
+      sources: [{ kind: 'gitlab', host: HOST, baseUrl: BASE, tokenChoice: 'glab', tokenFile: null, tokenEnv: null, from: 'file' }],
+    });
+    const stored = listAgentAccess(server.db).sources.find((src) => src.host === HOST)!;
+    expect(stored.defaultAccess).toBe('block');
+
+    const added = await desktop.addSource({ kind: 'gitlab', url: BASE, method: 'glab', agentAccessDefault: 'allow' });
+    expect(added.saved).toBe(true);
+    expect(listAgentAccess(server.db).sources).toContainEqual(stored);
   });
 
   it("answers a request the child can't do with the child's reason", async () => {

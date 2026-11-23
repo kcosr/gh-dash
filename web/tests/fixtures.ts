@@ -1,5 +1,6 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { test as base, expect } from '@playwright/test';
+import type { AgentAccessInventory } from '../../shared/agent-access';
 import type { BranchListResponse, Diff, PullRequestDetail, Repo, Source, StatsResponse, SyncStatus } from '../../shared/api';
 
 const at = '2026-10-05T10:00:00Z';
@@ -34,6 +35,12 @@ const sources: Source[] = repos.map((r) => ({
   account: null, repos: { owned: 1, added: 0 },
   sync: { source: r.source, running: false, progress: null, lastSyncAt: at, lastResult: { newItems: 0, errors: [] }, rateLimit: null, tokenSource: 'env', viewer: 'owner', problem: null },
 }));
+export function agentAccessFixture(): AgentAccessInventory {
+  return {
+    sources: sources.map(({ host, name }) => ({ host, name, defaultAccess: host === 'github.com' ? 'allow' : 'block' })),
+    repos: repos.map(({ key, source, nameWithOwner }, i) => ({ id: i + 1, key, source, nameWithOwner, access: 'inherit' })),
+  };
+}
 export const sync: SyncStatus = {
   running: false, trigger: null, progress: null, lastSyncAt: at, lastSyncDurationMs: 100,
   lastResult: { newItems: 0, errors: [] }, nextSyncAt: null, rateLimit: null, tokenSource: 'env', viewer: 'owner', sources: sources.map((s) => s.sync),
@@ -64,6 +71,7 @@ export const test = base.extend<{ mockApi: void }>({
       if (path === 'repos') body = { items: repos };
       else if (path.startsWith('repos/')) body = repos.find((r) => r.key === path.slice(6));
       else if (path === 'sources') body = { items: sources };
+      else if (path === 'agent-access' && route.request().method() === 'GET') body = agentAccessFixture();
       else if (path === 'sync/status' || path === 'sync') body = sync;
       else if (path === 'me') body = { ...actor, tokenSource: 'env' };
       else if (path === 'account') body = { source: 'env', choice: 'auto', locked: true, login: 'owner', name: actor.name, avatarUrl: null, dbLogin: 'owner', mismatch: false, kind: 'fine-grained', expiresAt: null, scopes: null, repos: { total: 1, private: 0 }, error: null, gh: { available: false, path: null, login: null }, tokenFile: null, checkedAt: at };
@@ -81,7 +89,7 @@ export const test = base.extend<{ mockApi: void }>({
         const match = /^(prs|branches)\/(.+)\/([^/]+(?:\/[^/]+)?)\/diff$/.exec(path);
         const pr = prs.find((p) => path.startsWith(`prs/${p.repo}/${p.number}/`)) ?? prs[0];
         body = {
-          kind: path.startsWith('branches/') ? 'branch' : 'pr', repo: pr.repo, number: path.startsWith('branches/') ? null : pr.number,
+          kind: path.startsWith('branches/') ? 'branch' : 'pr', repo: pr.repo, repoId: prs.indexOf(pr) + 1, number: path.startsWith('branches/') ? null : pr.number,
           branch: match?.[3], baseRef: 'main', title: pr.title, baseOid: 'a'.repeat(40), headOid: 'b'.repeat(40),
           files: ['src/cache.ts', 'src/index.ts'].map((path) => ({ path, previousPath: null, status: 'modified', additions: 1, deletions: 1, patch: '@@ -1 +1 @@\n-export const value = 1;\n+export const value = 2;' })),
           totalFiles: 2, additions: 2, deletions: 2, fetchedAt: at, url: `${pr.url}/files`,

@@ -5,18 +5,19 @@ import { GITHUB_HOST } from '../../../shared/api';
 import { inputHost, parseGitHubInput, parseGitLabInput } from '../../../shared/repos';
 import { parseSources } from '../../api/scope';
 import type { Db } from '../../db/db';
+import { agentRepoScope } from '../../db/filters';
 import { type RepoRef, resolveRepo as resolveKey, resolveRepoOn } from '../../db/repo-key';
 import { type SourceRow, sourceKey } from '../../db/sources';
 import { HttpError } from '../../lib/errors';
 import { queryRepos } from '../../services/repos';
 import { limitArg } from '../format';
-import { reachableSources, reaches, reposInReach, requireSourcesInReach } from '../reach';
+import { reachableSources, repoUnavailable, requireSourcesInReach } from '../reach';
 import { readTool } from '../tool';
 
 /** What whoami says of an agent the user limited to some sources. */
 const SCOPED_NOTE =
-  'The user limited you to these sources: gh-dash answers for repositories and threads on any other as for ones it ' +
-  "doesn't track or have. Only the user can change that (Settings → Agents).";
+  'The user limited you to these sources. ';
+const REPO_ACCESS_NOTE = 'The user controls repository access. Use list_repos to see the repositories available to you.';
 
 export const whoami = readTool({
   name: 'whoami',
@@ -30,7 +31,7 @@ export const whoami = readTool({
     agent: { id: ctx.principal.id, name: ctx.principal.name, ...(ctx.sources !== null ? { scoped: true } : {}) },
     server: { version: ctx.deps.config.version },
     sources: reachableSources(ctx).map((s) => ({ host: s.host, kind: s.kind })),
-    ...(ctx.sources !== null ? { note: SCOPED_NOTE } : {}),
+    note: `${ctx.sources === null ? '' : SCOPED_NOTE}${REPO_ACCESS_NOTE}`,
   }),
 });
 
@@ -59,10 +60,11 @@ export const listRepos = readTool({
     const { deps } = ctx;
     const { db } = deps;
     requireSourcesInReach(ctx, parseSources(source));
-    const all = reposInReach(ctx, queryRepos(deps, { q: query, source, sort: 'activity' })).filter(
-      (r) => ownership === 'all' || (ownership === 'mine') === (r.trackedBy === 'owned'),
+    const { sql, params } = agentRepoScope('r', ctx.sources);
+    const ids = new Map(db.all<{ id: number; key: string }>(`SELECT r.id, r.key FROM repos r WHERE ${sql}`, params).map((r) => [r.key, r.id]));
+    const all = queryRepos(deps, { q: query, source, sort: 'activity' }, ctx.sources).filter(
+      (r) => ids.has(r.key) && (ownership === 'all' || (ownership === 'mine') === (r.trackedBy === 'owned')),
     );
-    const ids = new Map(db.all<{ id: number; key: string }>('SELECT id, key FROM repos WHERE removed_at IS NULL').map((r) => [r.key, r.id]));
     const open = openThreads(db);
     return {
       repos: all.slice(0, limit).map((r) => ({
@@ -120,6 +122,8 @@ function locateRemote(input: string, sources: SourceRow[], scoped: boolean): { s
   const host = remote?.host ?? inputHost(text, sources.map((s) => s.host)) ?? inputHost(text, [], { guess: true }) ?? GITHUB_HOST;
   const src = sources.find((s) => s.host === host);
   if (!src) throw new HttpError(404, notASource(host, scoped));
+  // A short GitHub name that failed direct lookup is indistinguishable from a tracked but blocked one.
+  if (!remote && src.kind === 'github' && /^[a-z0-9._-]+$/i.test(text)) throw repoUnavailable(text);
   // Back into a form the shared parsers read, without credentials (a CI remote can carry a token).
   const canonical = remote ? (remote.web ? `https://${host}/${remote.path}` : `ssh://${host}/${remote.path}`) : text;
   let path: string | null;
@@ -138,24 +142,26 @@ export const resolveRepo = readTool({
   title: 'Resolve a git remote',
   description:
     'The gh-dash repository key for a git remote URL (the output of `git remote get-url origin`: https, ssh or ' +
-    'git@host:path forms). Works offline. An error says when the host or the repository isn\'t tracked in gh-dash (or is ' +
-    'out of your reach: see whoami).',
+    'git@host:path forms). Works offline. Use list_repos to see the repositories available through gh-dash.',
   input: z.object({ remote_url: z.string().min(1).max(2000).describe('A git remote URL, or a repository key') }).strict(),
   run: ({ remote_url }, ctx) => {
     const { db } = ctx.deps;
     const text = remote_url.trim();
-    const answer = (ref: RepoRef) => {
-      const row = db.get<{ url: string; kind: 'github' | 'gitlab' }>('SELECT r.url, s.kind FROM repos r JOIN sources s ON s.id = r.source_id WHERE r.id = ?', [ref.id])!;
-      return { key: ref.key, provider: row.kind, url: row.url, tracked: true };
+    const { sql, params } = agentRepoScope('r', ctx.sources);
+    const answer = (ref: RepoRef | null) => {
+      if (!ref) return null;
+      const row = db.get<{ url: string; kind: 'github' | 'gitlab' }>(
+        `SELECT r.url, s.kind FROM repos r JOIN sources s ON s.id = r.source_id WHERE r.id = ? AND r.key = ? AND ${sql}`,
+        [ref.id, ref.key, ...params],
+      );
+      return row ? { key: ref.key, provider: row.kind, url: row.url, tracked: true } : null;
     };
-    // A key (or an owned repo's short name) as it is. One out of reach is read as the others are: on a source that isn't one.
-    const known = remoteParts(text) ? null : resolveKey(db, text);
-    if (known && reaches(ctx.sources, known.sourceId)) return answer(known);
+    // A blocked key or alias follows the same input-based fallback as an unknown one.
+    const known = remoteParts(text) ? null : answer(resolveKey(db, text));
+    if (known) return known;
     const { src, path } = locateRemote(text, reachableSources(ctx), ctx.sources !== null);
-    const ref = resolveRepoOn(db, path, src);
-    if (!ref) {
-      throw new HttpError(404, `${sourceKey(src, path)} isn't tracked in gh-dash. The user can add it in gh-dash (Repositories → Add).`);
-    }
-    return answer(ref);
+    const resolved = answer(resolveRepoOn(db, path, src));
+    if (!resolved) throw repoUnavailable(sourceKey(src, path));
+    return resolved;
   },
 });

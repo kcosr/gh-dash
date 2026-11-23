@@ -16,6 +16,7 @@ import { docsPage } from './docs';
 import { HttpError, origin } from './http';
 import { openApiDocument } from './openapi';
 import { accountRoutes } from './routes/account';
+import { agentAccessRoutes } from './routes/agent-access';
 import { agentRoutes } from './routes/agents';
 import { commentRoutes } from './routes/comments';
 import { diffRoutes } from './routes/diffs';
@@ -125,6 +126,7 @@ export function createApp(input: AppDeps): Hono {
   app.route('/api/v1', diffRoutes(deps));
   app.route('/api/v1', commentRoutes(deps));
   app.route('/api/v1', agentRoutes(deps));
+  app.route('/api/v1', agentAccessRoutes(deps));
   app.route('/api/v1', streamRoutes(deps));
   app.route('/api/v1', accountRoutes(deps));
   app.route('/api/v1', sourceRoutes({ ...deps, sources }));

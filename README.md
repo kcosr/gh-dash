@@ -140,8 +140,9 @@ The sidebar decides which repositories every tab shows.
   list, or click a commit's SHA. Switch between unified and split views, wrap long lines, and expand
   the unchanged code around a change. **Show full file** in a file's header reveals all its unchanged
   lines while keeping your place, the diff, and its comments. **Show changes only** returns to the
-  patch. Use the arrows in the file header to jump between changes in either mode. The pull or
-  merge request number in the diff header opens its details. **Fold resolved** folds the code
+  patch. The arrows in the file header jump between changes in either mode and follow the file list
+  filter when crossing into another file. The pull or merge request number in the diff header opens
+  its details. **Fold resolved** folds the code
   referenced by collapsed resolved threads. Click the thread summary to reveal it again.
 - **Finding code.** Open **Find in file** with the magnifier or <kbd>Ctrl</kbd>/<kbd>⌘</kbd> <kbd>F</kbd>.
   It searches both sides of the current file, including revealed context. Use <kbd>Enter</kbd> and

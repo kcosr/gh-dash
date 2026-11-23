@@ -54,7 +54,7 @@ async function openDiff(page: Page, holdBlobs?: Promise<void>, diffFiles = files
   const diff = page.getByRole('region', { name: /Changes in/ });
   const file = (name: string) => diff.locator('diffs-container').filter({ has: page.locator(`.dvh[data-path="${name}"]`) });
   const pick = (name: string) => diff.getByRole('navigation', { name: 'Changed files' }).locator(`[data-id="${name}"]`);
-  return { diff, file: file(path), other: file(otherPath), pick, scroll: diff.locator('.dvr-scroll') };
+  return { diff, file: file(path), other: file(otherPath), fileAt: file, pick, scroll: diff.locator('.dvr-scroll') };
 }
 
 function line(file: Locator, number: number, type = '') {
@@ -96,9 +96,9 @@ const draftText = 'Keep the draft attached to this change.';
 
 async function writeInlineDraft(file: Locator) {
   await expectInReadingView(line(file, first, 'change-addition'));
-  await file.locator(`[data-column-number="${first}"][data-line-type="change-addition"]`).hover();
-  await button(file, `Comment on new line ${first}`).click();
-  const draft = file.getByRole('textbox', { name: `Comment on line ${first}` });
+  await file.locator(`[data-column-number="${first - 1}"][data-line-type="context"]`).click();
+  await file.locator(`[data-column-number="${first}"][data-line-type="change-addition"]`).click({ modifiers: ['Shift'] });
+  const draft = file.getByRole('textbox', { name: `Comment on lines ${first - 1}–${first}` });
   await expect(draft).toBeFocused();
   await draft.fill(draftText);
   return draft;
@@ -224,6 +224,7 @@ test('change navigation crosses files in both directions, skips binary files, an
   const end = button(other, 'Next change');
   await expect(end).toBeDisabled();
   await expect(end).toBeFocused();
+  await expect(end).toHaveAccessibleDescription(otherPath);
   await page.keyboard.press('Enter');
   await expect(pick(otherPath)).toHaveAttribute('aria-current', 'true');
 
@@ -236,17 +237,21 @@ test('change navigation crosses files in both directions, skips binary files, an
   await expect(button(file, 'Previous change')).toBeFocused();
 });
 
-test('change navigation follows the file list filter', async ({ page }) => {
+function openThread(path: string, id: number): CommentThread {
   const fetchedAt = '2026-10-05T10:00:00Z';
-  await page.route('**/api/v1/prs/**/threads', (route) => route.fulfill({ json: { items: [{
-    id: 9, kind: 'pr', repo: pr.repo, number: pr.number, branch: pr.headRef, commitOid: headOid, baseOid,
+  return {
+    id, kind: 'pr', repo: pr.repo, number: pr.number, branch: pr.headRef, commitOid: headOid, baseOid,
     path, side: 'new', startLine: first, endLine: first, snippet: changes[0]!.next,
     status: 'open', resolvedAt: null, resolvedBy: null, createdAt: fetchedAt, updatedAt: fetchedAt,
     comments: [{
-      id: 27, author: { id: 1, kind: 'self', name: 'You' }, body: 'Check the fresh value.',
+      id, author: { id: 1, kind: 'self', name: 'You' }, body: 'Check the fresh value.',
       createdAt: fetchedAt, editedAt: null,
     }],
-  } satisfies CommentThread] } }));
+  };
+}
+
+test('change navigation follows the file list filter when crossing a boundary', async ({ page }) => {
+  await page.route('**/api/v1/prs/**/threads', (route) => route.fulfill({ json: { items: [openThread(path, 9)] } }));
   const { diff, file, pick } = await openDiff(page);
   const next = button(file, 'Next change');
   await clickSticky(page, next);
@@ -260,6 +265,39 @@ test('change navigation follows the file list filter', async ({ page }) => {
   await expect(pick(otherPath)).toHaveCount(0);
   await expect(next).toBeDisabled();
   await expect(button(file, 'Previous change')).toBeEnabled();
+});
+
+test('change navigation keeps local stops in files outside the file list filter', async ({ page }) => {
+  const commented = 'src/kept.ts';
+  const last = 'src/last.ts';
+  await page.route('**/api/v1/prs/**/threads', (route) => route.fulfill({ json: { items: [openThread(path, 9), openThread(commented, 10)] } }));
+  const { diff, fileAt, pick } = await openDiff(page, undefined,
+    [path, otherPath, commented, last].map((path) => ({ ...files[0]!, path })));
+  const filesPanel = diff.getByRole('navigation', { name: 'Changed files' });
+  const focusOutsideFilter = async (name: string) => {
+    await pick(name).click();
+    await expect(pick(name)).toHaveAttribute('aria-current', 'true');
+    await button(filesPanel, 'Commented').click();
+    await expect(pick(name)).toHaveCount(0);
+    const file = fileAt(name);
+    await expectInReadingView(line(file, first, 'change-addition'));
+    await clickSticky(page, button(file, 'Next change'));
+    await expectInReadingView(line(file, second, 'change-addition'));
+    return file;
+  };
+
+  const between = await focusOutsideFilter(otherPath);
+  await clickSticky(page, button(between, 'Next change'));
+  await expectInReadingView(line(between, third, 'change-addition'));
+  await clickSticky(page, button(between, 'Next change'));
+  await expect(pick(commented)).toHaveAttribute('aria-current', 'true');
+  await expectInReadingView(line(fileAt(commented), first, 'change-addition'));
+
+  await button(filesPanel, 'All').click();
+  const tail = await focusOutsideFilter(last);
+  await clickSticky(page, button(tail, 'Next change'));
+  await expectInReadingView(line(tail, third, 'change-addition'));
+  await expect(button(tail, 'Next change')).toBeDisabled();
 });
 
 test('find counts both sides, wraps through virtual rows, and follows the viewed file', async ({ page }) => {

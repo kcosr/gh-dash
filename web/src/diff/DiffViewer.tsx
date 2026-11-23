@@ -845,12 +845,10 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
     return changes;
   }, [byId]);
   const changeFiles = useMemo(() => navFiles.filter((file) => file.file.patch), [navFiles]);
-  const changePaths = useMemo(() => new Set(changeFiles.map((file) => file.id)), [changeFiles]);
   const localChangeAt = useCallback((path: string, anchor: DiffLine | null, direction: ChangeDirection) => {
-    if (!changePaths.has(path)) return undefined;
     const pin = changeJump.current;
     return stepChange(stopsFor(path), anchor, direction, pin?.path === path ? pin.change : undefined, split);
-  }, [changePaths, split, stopsFor]);
+  }, [split, stopsFor]);
   const changeFocus = useRef<{ path: string; direction: ChangeDirection; opener: HTMLButtonElement; navigation: number } | null>(null);
   const onStepChange = useCallback((path: string, direction: ChangeDirection, button: HTMLButtonElement) => {
     const local = localChangeAt(path, readAnchor(path), direction);

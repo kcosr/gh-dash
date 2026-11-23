@@ -1,4 +1,4 @@
-import { useEffect, useState, type MouseEvent, type RefCallback } from 'react';
+import { useEffect, useId, useState, type MouseEvent, type RefCallback } from 'react';
 import type { Provider } from '../../../shared/provider';
 import { Icon } from '../components/Icon';
 import { cx } from '../lib/util';
@@ -43,18 +43,18 @@ function useFileAnchor(url: string, path: string, provider: Provider, active: bo
   return href;
 }
 
-function Path({ vf }: { vf: ViewerFile }) {
+function Path({ vf, id }: { vf: ViewerFile; id: string }) {
   const { path, previousPath } = vf.file;
   if (previousPath && previousPath !== path) {
     const r = renameParts(previousPath, path);
     return (
-      <span className="dvh-path" title={`${previousPath} → ${path}`}>
+      <span className="dvh-path" id={id} title={`${previousPath} → ${path}`}>
         <bdi><span className="dir">{r.head}{r.head || r.tail ? '{' : ''}</span>{r.from}<span className="dir"> → </span>{r.to}<span className="dir">{r.head || r.tail ? '}' : ''}{r.tail}</span></bdi>
       </span>
     );
   }
   return (
-    <span className="dvh-path" title={path}>
+    <span className="dvh-path" id={id} title={path}>
       <bdi><span className="dir">{vf.dir}</span>{baseName(path)}</bdi>
     </span>
   );
@@ -81,6 +81,7 @@ export function FileHeader({ vf, diffUrl, provider, collapsed, onToggle, fullCon
   changeNavigation?: { previous: boolean; next: boolean; onStep: (direction: ChangeDirection, button: HTMLButtonElement) => void } | undefined;
 }) {
   const f = vf.file;
+  const pathId = useId();
   const href = useFileAnchor(diffUrl, f.path, provider, vf.note === 'unavailable');
   const foldable = (vf.fileDiff?.hunks.length ?? 0) > 0;
   return (
@@ -92,7 +93,7 @@ export function FileHeader({ vf, diffUrl, provider, collapsed, onToggle, fullCon
           </button>
         )
         : <span className="dvh-fold" />}
-      <Path vf={vf} />
+      <Path vf={vf} id={pathId} />
       {f.additions + f.deletions > 0 && <Counts add={f.additions} del={f.deletions} />}
       <span className="spacer" />
       {vf.note === 'unavailable'
@@ -105,13 +106,13 @@ export function FileHeader({ vf, diffUrl, provider, collapsed, onToggle, fullCon
       {changeNavigation && (
         <div className="dvh-nav" role="group" aria-label="Change navigation">
           <button type="button" className="wb-btn wb-btn--icon wb-btn--ghost wb-btn--sm"
-            data-change-direction={-1} aria-label="Previous change" title="Previous change" aria-disabled={!changeNavigation.previous}
+            data-change-direction={-1} aria-label="Previous change" title="Previous change" aria-describedby={pathId} aria-disabled={!changeNavigation.previous}
             onMouseDown={focusInPlace}
             onClick={(event) => { if (changeNavigation.previous) changeNavigation.onStep(-1, event.currentTarget); }}>
             <Icon name="chevron" className="dvh-nav-up" />
           </button>
           <button type="button" className="wb-btn wb-btn--icon wb-btn--ghost wb-btn--sm"
-            data-change-direction={1} aria-label="Next change" title="Next change" aria-disabled={!changeNavigation.next}
+            data-change-direction={1} aria-label="Next change" title="Next change" aria-describedby={pathId} aria-disabled={!changeNavigation.next}
             onMouseDown={focusInPlace}
             onClick={(event) => { if (changeNavigation.next) changeNavigation.onStep(1, event.currentTarget); }}>
             <Icon name="chevron" />

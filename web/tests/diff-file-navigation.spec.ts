@@ -386,6 +386,59 @@ test('find jumps directly to a match in a collapsed file across files without ma
   await expect.poll(() => new URL(page.url()).searchParams.get('file')).toBe(otherPath);
 });
 
+test('find starts in the next file when the viewport is past the last local match', async ({ page }) => {
+  const { diff, file, other, pick } = await openDiff(page);
+  const nextChange = button(file, 'Next change');
+  await clickSticky(page, nextChange);
+  await clickSticky(page, nextChange);
+  await expectInReadingView(line(file, third, 'change-addition'));
+  await expect(pick(path)).toHaveAttribute('aria-current', 'true');
+  await button(diff, 'Find in files').click();
+  const find = diff.getByRole('searchbox', { name: 'Find in files' });
+  await find.fill('needle');
+  await expect(diff.locator('.dvr-find-count')).toHaveText('5 of 5');
+  await expectInReadingView(line(other, 1, 'change-addition'));
+});
+
+test('find queues Enter during indexing and highlights matches in each mounted file', async ({ page }) => {
+  const paths = [path, 'src/middle.ts', otherPath];
+  const { diff, scroll, pick } = await openDiff(page, undefined, paths.map((path) => ({
+    path, previousPath: null, status: 'added', additions: 1, deletions: 0, patch: '@@ -0,0 +1 @@\n+needle',
+  })));
+  await scroll.focus();
+  await page.keyboard.press('Meta+f');
+  const find = diff.getByRole('searchbox', { name: 'Find in files' });
+  await expect(find).toBeFocused();
+  // Hold the indexing frame so the keypress reliably arrives before the results are ready.
+  await page.evaluate(() => {
+    const requestFrame = window.requestAnimationFrame.bind(window);
+    const pending: FrameRequestCallback[] = [];
+    window.requestAnimationFrame = (callback) => -pending.push(callback);
+    window.addEventListener('resume-search-frames', () => {
+      window.requestAnimationFrame = requestFrame;
+      for (const callback of pending) requestFrame(callback);
+    }, { once: true });
+  });
+  try {
+    await find.fill('needle');
+    await expect(diff.locator('.dvr-find-count')).toHaveText('Searching…');
+    await find.press('Enter');
+  } finally {
+    await page.evaluate(() => window.dispatchEvent(new Event('resume-search-frames')));
+  }
+  await expect(diff.locator('.dvr-find-count')).toHaveText('2 of 3');
+  await expect(pick(paths[1]!)).toHaveAttribute('aria-current', 'true');
+  await expect.poll(() => page.evaluate(() => {
+    const matchPaths = (name: string) => Array.from(CSS.highlights.get(name) ?? [], (range) => {
+      const root = range.startContainer.getRootNode() as ShadowRoot;
+      return root.host.querySelector<HTMLElement>('.dvh')?.dataset.path;
+    });
+    return { current: matchPaths('ghd-find-current'), passive: matchPaths('ghd-find-match') };
+  })).toEqual({ current: [paths[1]], passive: [paths[0], paths[2]] });
+  await find.press('Escape');
+  await expect.poll(() => page.evaluate(() => CSS.highlights.size)).toBe(0);
+});
+
 test('find includes context revealed by a gutter expander after its file goes offscreen', async ({ page }) => {
   const filler: DiffFile = {
     path: 'src/filler.ts', previousPath: null, status: 'added', additions: 900, deletions: 0,

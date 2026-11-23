@@ -3,7 +3,7 @@ import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, u
 import { Icon } from '../components/Icon';
 import type { DiffLine } from './changeNavigation';
 import type { CurrentFile } from './FileList';
-import { clearFileMatches, findFileMatches, paintFileMatches, type FileMatch, type FileMatches } from './fileFind';
+import { findFileMatches, paintFileMatches, type FileMatch, type FileMatches } from './fileFind';
 import './fileFindBar.css';
 
 export interface FindSource {
@@ -36,6 +36,7 @@ interface FindSearch {
   viewed: string | null;
   selection: FindSelection | null;
   revealX: boolean;
+  moves: (-1 | 1)[];
 }
 
 const SEARCH_SLICE_MS = 8;
@@ -58,6 +59,18 @@ function nextFileMatch(search: FindSearch, path: string | null, direction: -1 | 
   return null;
 }
 
+function stepMatch(search: FindSearch, direction: -1 | 1) {
+  const { selection } = search;
+  const path = selection?.path ?? search.viewed;
+  const matches = path === null ? undefined : search.files.get(path)?.matches;
+  if (path !== null && matches?.length) {
+    const index = selection ? matches.indexOf(selection.match) + direction : direction === -1 ? matches.length - 1 : matches.length;
+    const local = resultAt(path, matches, index);
+    if (local) return local;
+  }
+  return nextFileMatch(search, path, direction);
+}
+
 function matchNumber(search: FindSearch, path: string, index: number): number {
   let number = index + 1;
   for (const earlier of search.paths) {
@@ -77,7 +90,7 @@ function revealHorizontally(range: Range) {
   if (rect.left < left || rect.right > clip.right) column.scrollLeft += rect.left - left - 12;
 }
 
-export function FileFindBar({ ref, id, input, open, close, current, split, paths, readSource, readRoot, readAnchor, seek }: {
+export function FileFindBar({ ref, id, input, open, close, current, split, paths, readSource, readRoots, readAnchor, seek }: {
   ref: Ref<FileFindHandle>;
   id: string;
   input: RefObject<HTMLInputElement | null>;
@@ -87,7 +100,7 @@ export function FileFindBar({ ref, id, input, open, close, current, split, paths
   split: boolean;
   paths: readonly string[];
   readSource: (path: string) => FindSource | null;
-  readRoot: (path: string) => ShadowRoot | undefined;
+  readRoots: () => { path: string; root: ShadowRoot }[];
   readAnchor: (path: string) => DiffLine | null;
   seek: (path: string, match: FileMatch) => void;
 }) {
@@ -95,13 +108,13 @@ export function FileFindBar({ ref, id, input, open, close, current, split, paths
   const requestedQuery = useRef<string | null>(null);
   const search = useRef<FindSearch | null>(null);
   const dirty = useRef(new Set<string>());
-  const painted = useRef<ShadowRoot | null>(null);
+  const clearPainted = useRef<(() => void) | undefined>(undefined);
   const frame = useRef(0);
   const [status, setStatus] = useState({ active: 0, total: 0, searching: false });
 
-  const setPaintedRoot = useCallback((root: ShadowRoot | undefined) => {
-    if (painted.current && painted.current !== root) clearFileMatches(painted.current);
-    painted.current = root ?? null;
+  const clearHighlights = useCallback(() => {
+    clearPainted.current?.();
+    clearPainted.current = undefined;
   }, []);
 
   const updateStatus = useCallback((active: number, total: number, searching = false) => {
@@ -111,19 +124,21 @@ export function FileFindBar({ ref, id, input, open, close, current, split, paths
 
   const paintSelection = useCallback((search: FindSearch) => {
     const selection = search.selection;
-    const root = selection ? readRoot(selection.path) : undefined;
-    setPaintedRoot(root);
     const matches = selection && search.files.get(selection.path)?.matches;
     const index = matches && selection ? matches.indexOf(selection.match) : -1;
-    if (root && matches) {
-      const range = paintFileMatches(root, matches, index);
-      if (range && search.revealX) {
-        revealHorizontally(range);
-        search.revealX = false;
-      }
+    const mounted = readRoots().flatMap(({ path, root }) => {
+      const matches = search.files.get(path)?.matches;
+      return matches?.length ? [{ root, matches, active: selection?.path === path ? index : -1 }] : [];
+    });
+    clearHighlights();
+    const highlights = paintFileMatches(mounted);
+    clearPainted.current = highlights?.clear;
+    if (highlights?.activeRange && search.revealX) {
+      revealHorizontally(highlights.activeRange);
+      search.revealX = false;
     }
     updateStatus(selection && index >= 0 ? matchNumber(search, selection.path, index) : 0, search.total);
-  }, [readRoot, setPaintedRoot, updateStatus]);
+  }, [clearHighlights, readRoots, updateStatus]);
 
   const seekSelection = useCallback((search: FindSearch) => {
     if (!search.selection) return;
@@ -149,7 +164,7 @@ export function FileFindBar({ ref, id, input, open, close, current, split, paths
         r.files.delete(path);
       }
     };
-    // Index the whole diff without blocking input or the viewer's background parse.
+    // Yield between files during large searches so input and background parsing can continue.
     const deadline = performance.now() + SEARCH_SLICE_MS;
     while (r.next < r.paths.length) {
       const path = r.paths[r.next++]!;
@@ -173,11 +188,14 @@ export function FileFindBar({ ref, id, input, open, close, current, split, paths
       const matches = r.files.get(path)?.matches;
       if (matches?.length) r.selection = resultAt(path, matches, matches.firstNear(readAnchor(path)));
     }
-    if (requestedQuery.current === r.query) {
+    const seekFirst = requestedQuery.current === r.query;
+    if (seekFirst) {
       requestedQuery.current = null;
       r.selection ??= nextFileMatch(r, path, 1);
-      seekSelection(r);
     }
+    const moves = r.moves.splice(0);
+    if (r.total) for (const direction of moves) r.selection = stepMatch(r, direction);
+    if (seekFirst || moves.length) seekSelection(r);
     paintSelection(r);
     return false;
   }, [current, paintSelection, readAnchor, readSource, seekSelection]);
@@ -205,7 +223,7 @@ export function FileFindBar({ ref, id, input, open, close, current, split, paths
     if (!open || !query) {
       search.current = null;
       requestedQuery.current = null;
-      setPaintedRoot(undefined);
+      clearHighlights();
       updateStatus(0, 0);
       return;
     }
@@ -214,28 +232,23 @@ export function FileFindBar({ ref, id, input, open, close, current, split, paths
     search.current = {
       paths, query, split, files: reuse ? previous.files : new Map(), next: 0, total: reuse ? previous.total : 0,
       viewed: sameQuery ? previous.viewed : current.get(), selection: sameQuery ? previous.selection : null,
-      revealX: sameQuery && previous.revealX,
+      revealX: sameQuery && previous.revealX, moves: sameQuery ? previous.moves : [],
     };
-    if (!reuse) setPaintedRoot(undefined);
-    updateStatus(0, 0, true);
+    if (!reuse) {
+      clearHighlights();
+      updateStatus(0, 0, true);
+    }
     scheduleRefresh();
-  }, [current, open, paths, query, readSource, scheduleRefresh, setPaintedRoot, split, updateStatus]);
+  }, [clearHighlights, current, open, paths, query, readSource, scheduleRefresh, split, updateStatus]);
   useEffect(() => current.subscribe(scheduleRefresh), [current, scheduleRefresh]);
   useLayoutEffect(() => () => {
     cancelAnimationFrame(frame.current);
-    setPaintedRoot(undefined);
-  }, [setPaintedRoot]);
+    clearHighlights();
+  }, [clearHighlights]);
 
   const move = (direction: -1 | 1) => {
-    if (refresh()) return;
-    const r = search.current;
-    if (!r?.total) return;
-    const selection = r.selection;
-    const matches = selection && r.files.get(selection.path)?.matches;
-    const local = selection && matches ? resultAt(selection.path, matches, matches.indexOf(selection.match) + direction) : null;
-    r.selection = local ?? nextFileMatch(r, selection?.path ?? r.viewed, direction);
-    seekSelection(r);
-    paintSelection(r);
+    search.current?.moves.push(direction);
+    scheduleRefresh();
   };
 
   return (

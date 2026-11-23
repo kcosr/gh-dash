@@ -145,7 +145,7 @@ The sidebar decides which repositories every tab shows.
   its details. **Fold resolved** folds the code
   referenced by collapsed resolved threads. Click the thread summary to reveal it again.
 - **Finding code.** Open **Find in files** with the magnifier or <kbd>Ctrl</kbd>/<kbd>⌘</kbd> <kbd>F</kbd>.
-  It searches both sides of every changed file in review order, including revealed context. Use
+  It searches both sides of the changed-file diffs in review order, including revealed context. Use
   <kbd>Enter</kbd> and <kbd>Shift</kbd> <kbd>Enter</kbd> to step through matches, and <kbd>Esc</kbd> to close.
 - **Reviewing a branch.** A pushed branch can be reviewed before it has a pull request: pick it
   from **Branches** on its repository's page, or with **Review a branch…** in the

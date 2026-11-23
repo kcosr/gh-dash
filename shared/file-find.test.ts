@@ -19,6 +19,7 @@ it('finds literal matches and visits both sides in the active layout’s reading
   expect(findFileMatches(patch, '', false).length).toBe(0);
   expect(findFileMatches(patch, '{', true).firstNear({ side: 'old', lineNumber: 12 })).toBe(0);
   expect(findFileMatches(patch, '{', true).firstNear({ side: 'new', lineNumber: 11 })).toBe(4);
+  expect(findFileMatches(patch, '{', true).firstNear({ side: 'new', lineNumber: 13 })).toBe(-1);
 });
 
 it('keeps UTF-16 offsets after a Unicode case-insensitive match', () => {

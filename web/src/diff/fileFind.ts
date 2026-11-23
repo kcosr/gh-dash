@@ -148,7 +148,7 @@ class SearchMatches implements FileMatches {
     const oldRow = this.firstRowAtOrAfter('old', old);
     const nextRow = this.firstRowAtOrAfter('new', next);
     const row = Math.min(oldRow ?? this.firstOffset.length, nextRow ?? this.firstOffset.length);
-    return row < this.firstOffset.length ? this.firstOffset.at(row) : 0;
+    return row < this.firstOffset.length ? this.firstOffset.at(row) : -1;
   }
 }
 
@@ -235,44 +235,37 @@ function* rangesForRow(row: HTMLElement, matches: FileMatches, first: number, en
 
 const ALL = 'ghd-find-match';
 const CURRENT = 'ghd-find-current';
-// A mounted minified line can contain millions of matches. Keep navigation exact and bound only the passive paint work.
+// Keep navigation exact and bound passive paint work across all the mounted files.
 const MAX_PASSIVE_HIGHLIGHTS = 512;
-const paintedRoots = new WeakMap<Document, ShadowRoot>();
 
-/** With a root, only clear highlights owned by that file; Pierre can unmount an older file after revealing another. */
-export function clearFileMatches(root?: ShadowRoot) {
-  const doc = root?.ownerDocument ?? document;
-  if (root && paintedRoots.get(doc) !== root) return;
-  const registry = doc.defaultView?.CSS.highlights;
-  registry?.delete(ALL);
-  registry?.delete(CURRENT);
-  paintedRoots.delete(doc);
+export interface MountedMatches {
+  root: ShadowRoot;
+  matches: FileMatches;
+  active: number;
 }
 
-/** Paint the mounted portion of the file and return the current match's exact range for horizontal reveal. */
-export function paintFileMatches(root: ShadowRoot, matches: FileMatches, active: number): Range | null {
-  const doc = root.ownerDocument;
-  const win = doc.defaultView;
+/** Paint mounted matches and return their cleanup and the active range for horizontal reveal. */
+export function paintFileMatches(files: MountedMatches[]) {
+  const win = files[0]?.root.ownerDocument.defaultView;
   const registry = win?.CSS.highlights;
-  if (!registry || !win.Highlight) return null;
-  if (!matches.length) {
-    clearFileMatches(root);
-    return null;
-  }
+  if (!registry || !win?.Highlight) return null;
   const all = new win.Highlight();
   const current = new win.Highlight();
   const mounted = [];
-  const activeSide = matches.at(active)?.side;
   let activeRange = null;
-  for (const row of root.querySelectorAll<HTMLElement>('[data-line][data-line-type]:not([data-resolved-fold])')) {
-    const side = row.dataset.lineType === 'change-deletion' || row.closest('[data-deletions]') ? 'old' : 'new';
-    const hits = matches.lineMatches(side, Number(row.dataset.line));
-    if (!hits) continue;
-    const nearest = Math.max(hits.start, Math.min(hits.end - 1, active));
-    mounted.push({ row, side, ...hits, nearest, distance: Math.abs(nearest - active) });
+  for (const { root, matches, active } of files) {
+    const activeSide = matches.at(active)?.side;
+    for (const row of root.querySelectorAll<HTMLElement>('[data-line][data-line-type]:not([data-resolved-fold])')) {
+      const side = row.dataset.lineType === 'change-deletion' || row.closest('[data-deletions]') ? 'old' : 'new';
+      const hits = matches.lineMatches(side, Number(row.dataset.line));
+      if (!hits) continue;
+      const nearest = Math.max(hits.start, Math.min(hits.end - 1, active));
+      const distance = active < 0 ? Number.MAX_SAFE_INTEGER : Math.abs(nearest - active);
+      mounted.push({ row, side, matches, active, activeSide, ...hits, nearest, distance });
+    }
   }
   mounted.sort((a, b) => a.distance - b.distance);
-  for (const { row, side, start, end, nearest } of mounted) {
+  for (const { row, side, matches, active, activeSide, start, end, nearest } of mounted) {
     const includesActive = nearest === active;
     const budget = MAX_PASSIVE_HIGHLIGHTS - all.size + (includesActive ? 1 : 0);
     if (!budget) break;
@@ -287,6 +280,11 @@ export function paintFileMatches(root: ShadowRoot, matches: FileMatches, active:
   }
   registry.set(ALL, all);
   registry.set(CURRENT, current);
-  paintedRoots.set(doc, root);
-  return activeRange;
+  return {
+    activeRange,
+    clear() {
+      if (registry.get(ALL) === all) registry.delete(ALL);
+      if (registry.get(CURRENT) === current) registry.delete(CURRENT);
+    },
+  };
 }

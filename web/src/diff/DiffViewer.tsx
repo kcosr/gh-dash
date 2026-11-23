@@ -791,7 +791,11 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
     }
     return { model: file.fileDiff ??= toFileDiff(file.file, file.cacheKey) };
   }, [byId, expandedPatches, expansionVersions, fullByFile, itemIdFor]);
-  const readFindRoot = useCallback((path: string) => getRenderedFile(path)?.element.shadowRoot ?? undefined, [getRenderedFile]);
+  const readFindRoots = useCallback(() => (view.current?.getInstance()?.getRenderedItems() ?? []).flatMap((item) => {
+    const path = pathForItem(item.id);
+    const root = item.element.shadowRoot;
+    return root && item.id === itemIdFor(path) ? [{ path, root }] : [];
+  }), [itemIdFor]);
 
   const pendingLine = useRef<LineJump | null>(null);
   const seekLine = useCallback((path: string, line: DiffLine, source: 'find' | 'change', change?: ChangeHunk) => {
@@ -1447,7 +1451,7 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
             {hasFiles ? (
               <>
                 <FileFindBar ref={findBar} id={findId} input={findInput} open={findOpen} close={closeFind} current={current} split={split}
-                  paths={findPaths} readSource={readFindSource} readRoot={readFindRoot} readAnchor={readAnchor} seek={seekMatch} />
+                  paths={findPaths} readSource={readFindSource} readRoots={readFindRoots} readAnchor={readAnchor} seek={seekMatch} />
                 <WorkerPoolContextProvider {...POOL}>
                   <CodeView
                     ref={view}

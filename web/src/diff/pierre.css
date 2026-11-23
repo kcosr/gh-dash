@@ -35,6 +35,9 @@
 /* The line number last clicked: where a shift-click extends a range from. */
 [data-column-number][data-anchor-line] { color: var(--wb-accent-text); font-weight: 600; }
 
+::highlight(ghd-find-match) { background-color: var(--wb-warning-weak); }
+::highlight(ghd-find-current) { background-color: var(--wb-warning); color: #fff; }
+
 /* Keep each grid position for Pierre's line and annotation indexes. A folded cell on only one side of a
    split row leaves the other visible. Empty split buffers must shrink along with any whole rows they span. */
 [data-resolved-fold] { visibility: hidden; pointer-events: none; }

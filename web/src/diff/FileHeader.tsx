@@ -1,7 +1,8 @@
-import { useEffect, useState, type RefCallback } from 'react';
+import { useEffect, useState, type MouseEvent, type RefCallback } from 'react';
 import type { Provider } from '../../../shared/provider';
 import { Icon } from '../components/Icon';
 import { cx } from '../lib/util';
+import type { ChangeDirection } from './changeNavigation';
 import { baseName, renameParts, type ViewerFile } from './model';
 
 // One formatter for thousands of rows (toLocaleString builds a new one per call).
@@ -59,8 +60,15 @@ function Path({ vf }: { vf: ViewerFile }) {
   );
 }
 
+/** Native mouse focus can scroll the virtualized header back to its original position. */
+function focusInPlace(event: MouseEvent<HTMLButtonElement>) {
+  if (event.button !== 0) return;
+  event.preventDefault();
+  event.currentTarget.focus({ preventScroll: true });
+}
+
 /** A file's sticky header: fold toggle, path (renames as old → new), line counts, and a note when there's no diff to show. */
-export function FileHeader({ vf, diffUrl, provider, collapsed, onToggle, fullContext, onToggleContext, contextButtonRef, contextFailed }: {
+export function FileHeader({ vf, diffUrl, provider, collapsed, onToggle, fullContext, onToggleContext, contextButtonRef, contextFailed, changeNavigation }: {
   vf: ViewerFile;
   diffUrl: string;
   provider: Provider;
@@ -70,6 +78,7 @@ export function FileHeader({ vf, diffUrl, provider, collapsed, onToggle, fullCon
   onToggleContext?: ((button: HTMLButtonElement) => void) | undefined;
   contextButtonRef: RefCallback<HTMLButtonElement>;
   contextFailed: boolean;
+  changeNavigation?: { previous: boolean; next: boolean; onStep: (direction: ChangeDirection) => void } | undefined;
 }) {
   const f = vf.file;
   const href = useFileAnchor(diffUrl, f.path, provider, vf.note === 'unavailable');
@@ -92,10 +101,26 @@ export function FileHeader({ vf, diffUrl, provider, collapsed, onToggle, fullCon
           ? <span className="dvh-note">{NOTES[vf.note]}</span>
           : collapsed
             ? <button type="button" className="dvh-note link" onClick={() => onToggle(vf.id)}>{vf.folded === 'deleted' ? 'Deleted' : vf.folded === 'large' ? 'Large diff' : 'Hidden'} · show</button>
-            : contextFailed && <span className="dvh-note" role="status">Context unavailable</span>}
+            : contextFailed && <span className="dvh-note" role="status" title="Context unavailable">Context unavailable</span>}
+      {changeNavigation && (
+        <div className="dvh-nav" role="group" aria-label="Change navigation">
+          <button type="button" className="wb-btn wb-btn--icon wb-btn--ghost wb-btn--sm"
+            aria-label="Previous change" title="Previous change" aria-disabled={!changeNavigation.previous}
+            onMouseDown={focusInPlace}
+            onClick={() => { if (changeNavigation.previous) changeNavigation.onStep(-1); }}>
+            <Icon name="chevron" className="dvh-nav-up" />
+          </button>
+          <button type="button" className="wb-btn wb-btn--icon wb-btn--ghost wb-btn--sm"
+            aria-label="Next change" title="Next change" aria-disabled={!changeNavigation.next}
+            onMouseDown={focusInPlace}
+            onClick={() => { if (changeNavigation.next) changeNavigation.onStep(1); }}>
+            <Icon name="chevron" />
+          </button>
+        </div>
+      )}
       {onToggleContext && (
         <button type="button" className={cx('dvh-context', fullContext === 'full' && 'on')} ref={contextButtonRef}
-          aria-disabled={fullContext === 'loading' || undefined} onClick={(e) => onToggleContext(e.currentTarget)}>
+          aria-disabled={fullContext === 'loading' || undefined} onMouseDown={focusInPlace} onClick={(e) => onToggleContext(e.currentTarget)}>
           <Icon name="chevron" />
           {fullContext === 'loading' ? 'Loading file…' : fullContext === 'full' ? 'Show changes only' : 'Show full file'}
         </button>

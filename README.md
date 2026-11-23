@@ -139,9 +139,13 @@ The sidebar decides which repositories every tab shows.
 - **Opening a diff.** Use **Files changed** in a pull request's details, press <kbd>d</kbd> in the
   list, or click a commit's SHA. Switch between unified and split views, wrap long lines, and expand
   the unchanged code around a change. **Show full file** in a file's header reveals all its unchanged
-  lines while keeping the diff and comments. **Show changes only** returns to the hunks. The pull or
+  lines while keeping your place, the diff, and its comments. **Show changes only** returns to the
+  patch. Use the arrows in the file header to jump between changes in either mode. The pull or
   merge request number in the diff header opens its details. **Fold resolved** folds the code
   referenced by collapsed resolved threads. Click the thread summary to reveal it again.
+- **Finding code.** Open **Find in file** with the magnifier or <kbd>Ctrl</kbd>/<kbd>⌘</kbd> <kbd>F</kbd>.
+  It searches both sides of the current file, including revealed context. Use <kbd>Enter</kbd> and
+  <kbd>Shift</kbd> <kbd>Enter</kbd> to step through matches, and <kbd>Esc</kbd> to close.
 - **Reviewing a branch.** A pushed branch can be reviewed before it has a pull request: pick it
   from **Branches** on its repository's page, or with **Review a branch…** in the
   <kbd>Ctrl</kbd>/<kbd>⌘</kbd> <kbd>K</kbd> palette. Its diff is against the default branch, as a
@@ -166,7 +170,7 @@ The sidebar decides which repositories every tab shows.
 | Anywhere | <kbd>Ctrl</kbd>/<kbd>⌘</kbd> <kbd>K</kbd> search and commands · <kbd>/</kbd> filter · <kbd>[</kbd> show or hide the sidebar · <kbd>Esc</kbd> close |
 | PR list | <kbd>j</kbd>/<kbd>k</kbd> move · <kbd>Enter</kbd> details · <kbd>d</kbd> diff · <kbd>o</kbd> open on GitHub or GitLab |
 | Comments tab | <kbd>j</kbd>/<kbd>k</kbd> move · <kbd>Enter</kbd> open in the diff · <kbd>Space</kbd> show the conversation · <kbd>e</kbd> resolve or reopen · <kbd>o</kbd> open on GitHub or GitLab |
-| Diff | <kbd>j</kbd>/<kbd>k</kbd> files · <kbd>n</kbd>/<kbd>p</kbd> unresolved threads · <kbd>r</kbd> reply · <kbd>e</kbd> resolve · <kbd>c</kbd> comments column · <kbd>s</kbd> split view · <kbd>w</kbd> wrap |
+| Diff | <kbd>Ctrl</kbd>/<kbd>⌘</kbd> <kbd>F</kbd> find in file · <kbd>j</kbd>/<kbd>k</kbd> files · <kbd>n</kbd>/<kbd>p</kbd> unresolved threads · <kbd>r</kbd> reply · <kbd>e</kbd> resolve · <kbd>c</kbd> comments column · <kbd>s</kbd> split view · <kbd>w</kbd> wrap |
 
 ### Views, exports and settings
 

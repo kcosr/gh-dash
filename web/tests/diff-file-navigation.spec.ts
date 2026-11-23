@@ -36,10 +36,11 @@ const files: DiffFile[] = [
     patch: ['@@ -0,0 +1,100 @@', ...otherLines.map((line) => '+' + line)].join('\n') },
 ];
 
-async function openDiff(page: Page, holdBlobs?: Promise<void>) {
+async function openDiff(page: Page, holdBlobs?: Promise<void>, diffFiles = files) {
   await page.route('**/api/v1/prs/**/diff', (route) => route.fulfill({ json: {
     kind: 'pr', repo: pr.repo, repoId: 1, number: pr.number, title: pr.title, baseOid, headOid,
-    files, totalFiles: files.length, additions: changes.length + otherLines.length, deletions: changes.length,
+    files: diffFiles, totalFiles: diffFiles.length, additions: diffFiles.reduce((n, file) => n + file.additions, 0),
+    deletions: diffFiles.reduce((n, file) => n + file.deletions, 0),
     fetchedAt: '2026-10-05T10:00:00Z', url: pr.url,
   } satisfies Diff }));
   await page.route('**/api/v1/blob/**', async (route) => {
@@ -173,7 +174,7 @@ test('previous and next change use the same stops in the patch and full file', a
   await expectInReadingView(line(file, second, 'change-addition'));
   await clickSticky(page, next);
   await expectInReadingView(line(file, third, 'change-addition'));
-  await expect(next).toBeDisabled();
+  await expect(next).toBeEnabled();
 
   await clickSticky(page, button(file, 'Show full file'));
   await expect(button(file, 'Show changes only')).toBeVisible();
@@ -185,6 +186,80 @@ test('previous and next change use the same stops in the patch and full file', a
   await expect(previous).toBeDisabled();
   await next.click();
   await expectInReadingView(line(file, second, 'change-addition'));
+});
+
+test('change navigation crosses files in both directions, skips binary files, and unfolds its destination', async ({ page }) => {
+  const binary: DiffFile = {
+    path: 'src/logo.png', previousPath: null, status: 'modified', additions: 0, deletions: 0, patch: null,
+  };
+  const removed: DiffFile = {
+    path: otherPath, previousPath: null, status: 'removed', additions: 0, deletions: otherLines.length,
+    patch: [`@@ -1,${otherLines.length} +0,0 @@`, ...otherLines.map((text) => '-' + text)].join('\n'),
+  };
+  const { file, other, pick } = await openDiff(page, undefined, [files[0]!, binary, removed]);
+  await expect(pick(binary.path)).toBeVisible();
+  await pick(otherPath).click();
+  await expect(button(other, 'Show diff')).toBeVisible();
+  await pick(path).click();
+  await expectInReadingView(line(file, first, 'change-addition'));
+
+  const next = button(file, 'Next change');
+  await expect(button(file, 'Previous change')).toBeDisabled();
+  await clickSticky(page, next);
+  await expectInReadingView(line(file, second, 'change-addition'));
+  await clickSticky(page, next);
+  await expectInReadingView(line(file, third, 'change-addition'));
+  await clickSticky(page, button(file, 'Show full file'));
+  await expect(button(file, 'Show changes only')).toBeVisible();
+  await expectInReadingView(line(file, third, 'change-addition'));
+  // The last hunk is still hundreds of lines before the next file in the expanded view.
+  await expect(other).toHaveCount(0);
+
+  await next.evaluate((el) => el.focus({ preventScroll: true }));
+  await expect(next).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(pick(otherPath)).toHaveAttribute('aria-current', 'true');
+  await expect(button(other, 'Hide diff')).toBeVisible();
+  await expectInReadingView(line(other, 1, 'change-deletion'));
+  const end = button(other, 'Next change');
+  await expect(end).toBeDisabled();
+  await expect(end).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(pick(otherPath)).toHaveAttribute('aria-current', 'true');
+
+  await page.keyboard.press('Shift+Tab');
+  await expect(button(other, 'Previous change')).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(pick(path)).toHaveAttribute('aria-current', 'true');
+  await expect(button(file, 'Show changes only')).toBeVisible();
+  await expectInReadingView(line(file, third, 'change-addition'));
+  await expect(button(file, 'Previous change')).toBeFocused();
+});
+
+test('change navigation follows the file list filter', async ({ page }) => {
+  const fetchedAt = '2026-10-05T10:00:00Z';
+  await page.route('**/api/v1/prs/**/threads', (route) => route.fulfill({ json: { items: [{
+    id: 9, kind: 'pr', repo: pr.repo, number: pr.number, branch: pr.headRef, commitOid: headOid, baseOid,
+    path, side: 'new', startLine: first, endLine: first, snippet: changes[0]!.next,
+    status: 'open', resolvedAt: null, resolvedBy: null, createdAt: fetchedAt, updatedAt: fetchedAt,
+    comments: [{
+      id: 27, author: { id: 1, kind: 'self', name: 'You' }, body: 'Check the fresh value.',
+      createdAt: fetchedAt, editedAt: null,
+    }],
+  } satisfies CommentThread] } }));
+  const { diff, file, pick } = await openDiff(page);
+  const next = button(file, 'Next change');
+  await clickSticky(page, next);
+  await expectInReadingView(line(file, second, 'change-addition'));
+  await clickSticky(page, next);
+  await expectInReadingView(line(file, third, 'change-addition'));
+  await expect(next).toBeEnabled();
+
+  const filesPanel = diff.getByRole('navigation', { name: 'Changed files' });
+  await button(filesPanel, 'Commented').click();
+  await expect(pick(otherPath)).toHaveCount(0);
+  await expect(next).toBeDisabled();
+  await expect(button(file, 'Previous change')).toBeEnabled();
 });
 
 test('find counts both sides, wraps through virtual rows, and follows the viewed file', async ({ page }) => {

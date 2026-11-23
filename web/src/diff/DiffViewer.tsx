@@ -844,16 +844,40 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
     changesByPatch.current.set(hunks, changes);
     return changes;
   }, [byId]);
-  const changeAt = useCallback((path: string, direction: ChangeDirection) => {
+  const changeFiles = useMemo(() => navFiles.filter((file) => file.file.patch), [navFiles]);
+  const changePaths = useMemo(() => new Set(changeFiles.map((file) => file.id)), [changeFiles]);
+  const localChangeAt = useCallback((path: string, anchor: DiffLine | null, direction: ChangeDirection) => {
+    if (!changePaths.has(path)) return undefined;
     const pin = changeJump.current;
-    return stepChange(stopsFor(path), readAnchor(path), direction, pin?.path === path ? pin.change : undefined, split);
-  }, [readAnchor, split, stopsFor]);
-  const onStepChange = useCallback((path: string, direction: ChangeDirection) => {
-    const change = changeAt(path, direction);
-    if (change) seekLine(path, change.target, 'change', change);
-  }, [changeAt, seekLine]);
+    return stepChange(stopsFor(path), anchor, direction, pin?.path === path ? pin.change : undefined, split);
+  }, [changePaths, split, stopsFor]);
+  const changeFocus = useRef<{ path: string; direction: ChangeDirection; opener: HTMLButtonElement; navigation: number } | null>(null);
+  const onStepChange = useCallback((path: string, direction: ChangeDirection, button: HTMLButtonElement) => {
+    const local = localChangeAt(path, readAnchor(path), direction);
+    if (local) {
+      seekLine(path, local.target, 'change', local);
+      return;
+    }
+    const here = indexOf.get(path);
+    if (here === undefined) return;
+    for (let i = direction === 1 ? 0 : changeFiles.length - 1; i >= 0 && i < changeFiles.length; i += direction) {
+      const file = changeFiles[i]!;
+      if (direction * (indexOf.get(file.id)! - here) <= 0) continue;
+      // The background parse may not have reached this file yet. Go through the normal jump
+      // path, which mounts up to the destination, after parsing just enough to pick its stop.
+      file.fileDiff ??= toFileDiff(file.file, file.cacheKey);
+      const stops = stopsFor(file.id);
+      const change = direction === 1 ? stops[0] : stops.at(-1);
+      if (!change) continue;
+      if (document.activeElement === button) changeFocus.current = { path: file.id, direction, opener: button, navigation: navigation.current + 1 };
+      seekLine(file.id, change.target, 'change', change);
+      return;
+    }
+    scheduleChanges.current();
+  }, [changeFiles, indexOf, localChangeAt, readAnchor, seekLine, stopsFor]);
 
   const [changeAvailability, setChangeAvailability] = useState<ReadonlyMap<string, number>>(new Map());
+  // The tail may finish parsing without touching any rendered header.
   useLayoutEffect(() => {
     let frame = 0;
     const schedule = () => {
@@ -862,22 +886,48 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
         frame = 0;
         const cv = view.current?.getInstance();
         if (!cv) return;
+        const rendered = cv.getRenderedItems();
+        const canVisit = (file: ViewerFile) => !file.fileDiff || stopsFor(file.id).length > 0;
+        const earliest = indexOf.get(changeFiles.find(canVisit)?.id ?? '') ?? Infinity;
+        const latest = indexOf.get(changeFiles.findLast(canVisit)?.id ?? '') ?? -Infinity;
         const next = new Map<string, number>();
-        for (const item of cv.getRenderedItems()) {
+        for (const item of rendered) {
           const path = pathForItem(item.id);
-          const stops = stopsFor(path);
-          if (!stops.length) continue;
+          if (!stopsFor(path).length) continue;
+          const index = indexOf.get(path)!;
+          const earlier = earliest < index;
+          const later = latest > index;
+          if (earlier && later) {
+            next.set(path, 3);
+            continue;
+          }
           const anchor = scroller.current ? readViewportAnchor(item.element, scroller.current) : null;
-          const pin = changeJump.current?.path === path ? changeJump.current.change : undefined;
-          next.set(path, Number(!!stepChange(stops, anchor, -1, pin, split)) + 2 * Number(!!stepChange(stops, anchor, 1, pin, split)));
+          next.set(path, Number(earlier || !!localChangeAt(path, anchor, -1)) + 2 * Number(later || !!localChangeAt(path, anchor, 1)));
         }
         setChangeAvailability((previous) => next.size === previous.size && [...next].every(([path, state]) => previous.get(path) === state) ? previous : next);
+
+        const focus = changeFocus.current;
+        if (!focus || navigation.current < focus.navigation) return;
+        const active = document.activeElement;
+        // When Pierre virtualizes the focused header away, it returns focus to the scroller.
+        const lostOpener = !focus.opener.isConnected && (active === document.body || active === scroller.current);
+        if (navigation.current !== focus.navigation || (active !== focus.opener && !lostOpener)) {
+          changeFocus.current = null;
+          return;
+        }
+        const host = rendered.find((item) => pathForItem(item.id) === focus.path)?.element;
+        const viewport = scroller.current?.getBoundingClientRect();
+        const bounds = host?.getBoundingClientRect();
+        if (!host || !viewport || !bounds || bounds.bottom <= viewport.top || bounds.top >= viewport.bottom) return;
+        const arrow = host.querySelector<HTMLButtonElement>(`[data-change-direction="${focus.direction}"]`);
+        changeFocus.current = null;
+        (arrow ?? scroller.current)?.focus({ preventScroll: true });
       });
     };
     scheduleChanges.current = schedule;
     schedule();
     return () => { scheduleChanges.current = () => {}; cancelAnimationFrame(frame); };
-  }, [split, stopsFor]);
+  }, [changeFiles, count, indexOf, localChangeAt, stopsFor]);
 
   // ---------------------------------------------------------------- threads: focus, jumps, the composer
   const onThreadFocusRef = useRef(comments.onThreadFocus);
@@ -1231,13 +1281,17 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
     resetFocus.current = null;
     if (document.activeElement === document.body || document.activeElement === scroller.current) button.focus({ preventScroll: true });
   }, []);
+  const readChangeAnchor = useCallback((path: string, change: ChangeHunk) => readAnchor(path, ({ side, lineNumber }) => {
+    return lineNumber >= change[side].first && lineNumber <= change[side].last;
+  }), [readAnchor]);
   const toggleFullFile = useCallback(async (vf: ViewerFile, button: HTMLButtonElement) => {
     const patch = vf.fileDiff;
     const full = fullByFile.get(vf.id);
     if (!patch || full === 'loading') return;
     const generation = ++navigation.current;
-    const anchor = readAnchor(vf.id);
     const change = changeJump.current?.path === vf.id ? changeJump.current.change : undefined;
+    // A jump near the end can leave its hunk well below the topmost visible line.
+    const anchor = (change && readChangeAnchor(vf.id, change)) || readAnchor(vf.id);
     if (isCollapsed(vf)) toggleCollapsed(vf.id);
     if (full) {
       // Move a draft anchored in newly visible context to its file-level composer when those lines fold away.
@@ -1251,7 +1305,7 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
         // Preserve the first visible line of that hunk, including its position on either side.
         if (!patchShows(vf.id, anchor.side, anchor.lineNumber)) {
           const nearby = nearestChange(stopsFor(vf.id), anchor);
-          const visible = nearby && readAnchor(vf.id, ({ side, lineNumber }) => lineNumber >= nearby[side].first && lineNumber <= nearby[side].last);
+          const visible = nearby && readChangeAnchor(vf.id, nearby);
           if (visible) target = contextScrollTarget(vf.id, visible);
         }
         contextRestore.current = { files, path: vf.id, model: null, target, navigation: generation, change };
@@ -1278,13 +1332,15 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
         : highlighted;
       if (filesRef.current !== files) return;
       const unchanged = generation === navigation.current && scrollTop === scroller.current?.scrollTop;
-      const liveAnchor = !unchanged && current.get() === vf.id ? readAnchor(vf.id) : null;
+      const liveChange = changeJump.current?.path === vf.id ? changeJump.current.change : undefined;
+      const liveAnchor = !unchanged && current.get() === vf.id
+        ? (liveChange && readChangeAnchor(vf.id, liveChange)) || readAnchor(vf.id)
+        : null;
       if (unchanged || liveAnchor) {
         // If the reader scrolled within this patch during the fetch, carry their newer source line across.
-        const pin = changeJump.current;
         contextRestore.current = {
           files, path: vf.id, model, target: liveAnchor ? contextScrollTarget(vf.id, liveAnchor) : target,
-          navigation: navigation.current, change: unchanged ? change : pin?.path === vf.id ? pin.change : undefined,
+          navigation: navigation.current, change: unchanged ? change : liveChange,
         };
       }
       setFullFile(vf.id, model);
@@ -1293,7 +1349,7 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
       setFullFile(vf.id, null);
       setFailed((s) => new Set(s).add(rev + '\0' + vf.id));
     }
-  }, [current, draft, files, fullByFile, getRenderedFile, isCollapsed, loadDiffFiles, patchShows, readAnchor, rev, setFullFile, spot, stopsFor, toggleCollapsed]);
+  }, [current, draft, files, fullByFile, getRenderedFile, isCollapsed, loadDiffFiles, patchShows, readAnchor, readChangeAnchor, rev, setFullFile, spot, stopsFor, toggleCollapsed]);
 
   const renderHeader = useCallback((item: Item) => {
     const vf = byId.get(pathForItem(item.id));
@@ -1316,7 +1372,7 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
         changeNavigation={stopsFor(vf.id).length ? {
           previous: (available & 1) !== 0,
           next: (available & 2) !== 0,
-          onStep: (direction) => onStepChange(vf.id, direction),
+          onStep: (direction, button) => onStepChange(vf.id, direction, button),
         } : undefined}
       />
     );

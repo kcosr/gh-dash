@@ -78,7 +78,7 @@ export function FileHeader({ vf, diffUrl, provider, collapsed, onToggle, fullCon
   onToggleContext?: ((button: HTMLButtonElement) => void) | undefined;
   contextButtonRef: RefCallback<HTMLButtonElement>;
   contextFailed: boolean;
-  changeNavigation?: { previous: boolean; next: boolean; onStep: (direction: ChangeDirection) => void } | undefined;
+  changeNavigation?: { previous: boolean; next: boolean; onStep: (direction: ChangeDirection, button: HTMLButtonElement) => void } | undefined;
 }) {
   const f = vf.file;
   const href = useFileAnchor(diffUrl, f.path, provider, vf.note === 'unavailable');
@@ -105,15 +105,15 @@ export function FileHeader({ vf, diffUrl, provider, collapsed, onToggle, fullCon
       {changeNavigation && (
         <div className="dvh-nav" role="group" aria-label="Change navigation">
           <button type="button" className="wb-btn wb-btn--icon wb-btn--ghost wb-btn--sm"
-            aria-label="Previous change" title="Previous change" aria-disabled={!changeNavigation.previous}
+            data-change-direction={-1} aria-label="Previous change" title="Previous change" aria-disabled={!changeNavigation.previous}
             onMouseDown={focusInPlace}
-            onClick={() => { if (changeNavigation.previous) changeNavigation.onStep(-1); }}>
+            onClick={(event) => { if (changeNavigation.previous) changeNavigation.onStep(-1, event.currentTarget); }}>
             <Icon name="chevron" className="dvh-nav-up" />
           </button>
           <button type="button" className="wb-btn wb-btn--icon wb-btn--ghost wb-btn--sm"
-            aria-label="Next change" title="Next change" aria-disabled={!changeNavigation.next}
+            data-change-direction={1} aria-label="Next change" title="Next change" aria-disabled={!changeNavigation.next}
             onMouseDown={focusInPlace}
-            onClick={() => { if (changeNavigation.next) changeNavigation.onStep(1); }}>
+            onClick={(event) => { if (changeNavigation.next) changeNavigation.onStep(1, event.currentTarget); }}>
             <Icon name="chevron" />
           </button>
         </div>

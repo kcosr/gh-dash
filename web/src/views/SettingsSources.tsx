@@ -12,7 +12,7 @@ import { gitlabTokenCreateUrl, gitlabWriteWarning } from '../../../shared/creden
 import type { DesktopState, SourceMethod } from '../../../shared/desktop';
 import { ApiError, isUnreachable } from '../api/client';
 import { useDesktop, useSourceActions } from '../api/desktop';
-import { useCheckSource, useDeleteSource, useInstance, useSources, useStartSync } from '../api/hooks';
+import { useAgentAccess, useCheckSource, useDeleteSource, useInstance, useSources, useStartSync } from '../api/hooks';
 import { SourceRepositoryAccess } from '../components/AgentAccess';
 import { Avatar } from '../components/Avatar';
 import { Icon, ProviderIcon } from '../components/Icon';
@@ -167,11 +167,12 @@ const newForm = (methods: SourceMethod[]): CredentialForm => ({ method: methods[
 /** Desktop: "Add GitLab", inline under the sources. Adding is enabled after a successful test of the same inputs. */
 function AddGitLab({ desk, open, onOpen, onClose }: { desk: DesktopState; open: boolean; onOpen: () => void; onClose: () => void }) {
   const { testSource, addSource } = useSourceActions();
+  const { data: accessInventory } = useAgentAccess();
   const toast = useToast();
   const now = useNow(60_000);
   const methods = methodsFor(desk.gitlabEnv);
   const [url, setUrl] = useState('');
-  const [agentAccessDefault, setAgentAccessDefault] = useState<SourceAgentAccess>('block');
+  const [accessChoice, setAccessChoice] = useState<{ host: string; access: SourceAgentAccess } | null>(null);
   const [picked, setForm] = useState<CredentialForm>(() => newForm(methods));
   // GITLAB_TOKEN's state can change under the form (a first source added): keep to a method still offered.
   const form = methods.includes(picked.method) ? picked : { ...picked, method: methods[0]! };
@@ -188,12 +189,14 @@ function AddGitLab({ desk, open, onOpen, onClose }: { desk: DesktopState; open: 
 
   const input = gitlabUrlInput(url);
   const target = input && !('error' in input) ? input : null;
+  const savedDefault = accessInventory?.sources.find((source) => source.host === target?.host)?.defaultAccess;
+  const agentAccessDefault = accessChoice && accessChoice.host === target?.host ? accessChoice.access : savedDefault ?? 'block';
   const draft = draftOf(url, form);
   const key = 'missing' in draft ? null : draftKey(draft, form.file);
   const current = tested && tested.key === key ? tested.check : null;
   const busy = testSource.isPending || addSource.isPending;
 
-  const reset = () => { setUrl(''); setForm(newForm(methods)); setTested(null); setError(null); setAgentAccessDefault('block'); };
+  const reset = () => { setUrl(''); setForm(newForm(methods)); setTested(null); setError(null); setAccessChoice(null); };
   const change = (f: CredentialForm) => { setForm(f); setError(null); };
   const test = () => {
     if ('missing' in draft) { setError(draft.missing); return; }
@@ -237,8 +240,8 @@ function AddGitLab({ desk, open, onOpen, onClose }: { desk: DesktopState; open: 
         <label className="set-row">
           <span className="set-l">Default agent access<small>Applies to repositories through gh-dash when they inherit this source's policy.</small></span>
           <span className="set-c">
-            <select className="wb-input" value={agentAccessDefault} disabled={busy}
-              onChange={(e) => setAgentAccessDefault(e.currentTarget.value === 'allow' ? 'allow' : 'block')}>
+            <select className="wb-input" value={agentAccessDefault} disabled={busy || !target}
+              onChange={(e) => target && setAccessChoice({ host: target.host, access: e.currentTarget.value === 'allow' ? 'allow' : 'block' })}>
               <option value="block">Block</option>
               <option value="allow">Allow</option>
             </select>

@@ -59,8 +59,8 @@ export interface SourceTestDraft {
   tokenEnv?: string;
 }
 
-/** An explicit policy offered when adding a source for the first time. */
-export interface InitialSourceAgentAccess {
+/** An explicit default selected while adding a source. */
+export interface SourceAgentAccessUpdate {
   host: string;
   access: SourceAgentAccess;
 }
@@ -77,7 +77,7 @@ export type MainToServer =
    * config.json's `sources` or `glabPath` changed: re-read them and rebuild the sources that changed, without a
    * restart. Answered with `sources-result`.
    */
-  | { type: 'reload-sources'; id: number; initialAgentAccess?: InitialSourceAgentAccess }
+  | { type: 'reload-sources'; id: number; sourceAgentAccess?: SourceAgentAccessUpdate }
   /** Resolve and validate a draft source with a throwaway credential; nothing is kept. Answered with `source-test-result`. */
   | { type: 'test-source'; id: number; draft: SourceTestDraft }
   /**

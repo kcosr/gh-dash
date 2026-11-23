@@ -4,7 +4,6 @@ import { setRepoAgentAccess, setSourceAgentAccess } from './db/agent-access';
 import {
   agentFootprint, agentTokenIs, builtInAgent, createAgent, deleteAgent, getAgent, regenerateAgentToken, setAgentEnabled, setAgentSources, setAgentViewSharing,
 } from './db/agents';
-import { sourceByHost } from './db/sources';
 import { deleteSource, testSourceDraft } from './services/sources';
 import { type RunningServer, startServer } from './start';
 
@@ -22,7 +21,8 @@ const FATAL_EXIT_DELAY_MS = 200;
  * - `set-token` sets github.com's token choice and, when `token` is present, its app token (null forgets it), validates
  *   the result against GitHub and answers `token-result` (ok = no error: a valid token, or no token because nothing is
  *   chosen). With `source`, it sets that GitLab source's app token instead and answers with its SourceAccount.
- * - `reload-sources` re-reads config.json's sources, with an optional policy for a newly registered source, and answers `sources-result`.
+ * - `reload-sources` re-reads config.json's sources and applies a policy when the user selected one while adding a source.
+ *   Answered with `sources-result`.
  * - `test-source` validates a draft source with a throwaway credential (`source-test-result`); `delete-source` removes
  *   an unconfigured source with its data (`source-deleted`); `sync-source` starts a source's sync (`sync-started`).
  * - `add-agent`, `regenerate-agent-token`, `set-agent-enabled`, `set-agent-sources` and `set-agent-view-sharing` change the MCP agents
@@ -65,14 +65,18 @@ export function mainMessageHandler(
       try {
         const reload = server.reloadSources;
         if (!reload) throw new Error("This server can't reload its sources");
-        const initial = msg.initialAgentAccess;
-        const runtimes = initial ? need('db').tx(() => {
+        const access = msg.sourceAgentAccess;
+        let runtimes;
+        if (access) {
           const db = need('db');
-          const existing = sourceByHost(db, initial.host);
-          const rows = reload();
-          if (!existing) setSourceAgentAccess(db, initial.host, initial.access);
-          return rows;
-        }) : reload();
+          runtimes = db.tx(() => {
+            const rows = reload();
+            setSourceAgentAccess(db, access.host, access.access);
+            return rows;
+          });
+        } else {
+          runtimes = reload();
+        }
         const sources = runtimes.filter((r) => r.config).map((r) => r.host);
         post({ type: 'sources-result', id: msg.id, ok: true, error: null, sources });
       } catch (err) {

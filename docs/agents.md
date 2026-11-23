@@ -134,9 +134,10 @@ by whom.
 ### Choosing repository access
 
 Each source has a default of **Allow** or **Block**. A tracked repository can **Use source default**,
-**Allow**, or **Block**. Newly tracked repositories inherit the source default. Explicit choices
-take precedence over the default and follow the repository when it is renamed. Removing a manually
-tracked repository deletes its choice. If it is tracked again, it starts with the source default.
+**Allow**, or **Block**. Newly tracked repositories inherit the source default. An explicit choice
+sticks to the same repository through a rename or if it reappears after a sync stopped tracking it.
+The **Remove** action for a manually tracked repository deletes its choice. Adding it again starts
+it with the source default.
 
 New sources start blocked. On upgrade, sources that have synced or claimed an account start allowed
 to preserve existing access. GitHub and each GitLab host have their own default.

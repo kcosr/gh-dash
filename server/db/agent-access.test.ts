@@ -1,11 +1,11 @@
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
-import { addManualRepo, GITHUB, setViewer } from '../test/seed';
+import { addManualRepo, GITHUB, repoRecord, setViewer } from '../test/seed';
 import { listAgentAccess, repoAgentAccessSql, setRepoAgentAccess, setSourceAgentAccess } from './agent-access';
 import { Db, openDb } from './db';
 import { migrate, versionOf } from './schema';
 import { ensureSource } from './sources';
-import { storedRepoRecord, upsertOwned } from './write';
+import { addManual, markReposRemoved, storedRepoRecord, upsertOwned } from './write';
 
 const NOW = '2026-11-22T01:00:00Z';
 const addSource = (db: Db, host: string) => ensureSource(db, { kind: 'gitlab', host, baseUrl: `https://${host}` });
@@ -69,6 +69,27 @@ describe('repository agent access', () => {
     expect(listAgentAccess(db).repos.map((r) => [r.id, r.access])).toEqual([
       [newAtOriginal, 'inherit'], [replacement, 'inherit'],
     ]);
+    db.close();
+  });
+
+  it('retains explicit choices when the same repositories are tracked again after a sync removes them', () => {
+    const db = openDb(':memory:');
+    const allowedRecord = repoRecord('allowed');
+    const blockedRecord = repoRecord('blocked');
+    const grant = upsertOwned(db, GITHUB, allowedRecord, NOW);
+    const block = upsertOwned(db, GITHUB, blockedRecord, NOW);
+    setRepoAgentAccess(db, [grant], 'allow');
+    setRepoAgentAccess(db, [block], 'block');
+
+    markReposRemoved(db, GITHUB, [], NOW);
+    expect(allowed(db)).toEqual([]);
+    expect(listAgentAccess(db).repos).toEqual([]);
+
+    expect(upsertOwned(db, GITHUB, allowedRecord, NOW)).toBe(grant);
+    expect(addManual(db, GITHUB, blockedRecord, { status: 'auto' }, NOW)).toEqual({ added: true, id: block });
+    expect(allowed(db)).toEqual([grant]);
+    setSourceAgentAccess(db, GITHUB.host, 'allow');
+    expect(allowed(db)).toEqual([grant]);
     db.close();
   });
 });

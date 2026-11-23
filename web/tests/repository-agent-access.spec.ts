@@ -61,6 +61,15 @@ test('source defaults and bulk overrides can be managed from the desktop setting
   await expect(access.getByLabel(`Agent access through gh-dash for ${host}/research/archive`)).toHaveValue('block');
   await expect.poll(() => inventory.sources.find((item) => item.host === host)!.defaultAccess).toBe('allow');
 
+  await page.getByRole('button', { name: 'Add GitLab', exact: true }).click();
+  const address = page.getByRole('textbox', { name: 'GitLab address' });
+  const addedDefault = page.getByRole('combobox', { name: /Default agent access/ });
+  await address.fill(`https://${host}`);
+  await expect(addedDefault).toHaveValue('allow');
+  await addedDefault.selectOption('block');
+  await address.fill('https://new-gitlab.example.com');
+  await expect(addedDefault).toHaveValue('block');
+
   await page.goto(`/repos/${host}/team/beta`);
   const detail = page.locator('.repo-head');
   await expect(detail.getByLabel(`Agent access through gh-dash for ${host}/team/beta`)).toHaveValue('inherit');

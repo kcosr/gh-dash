@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { loadServerConfig } from '../server/config';
-import { listAgentAccess } from '../server/db/agent-access';
+import { listAgentAccess, setSourceAgentAccess } from '../server/db/agent-access';
 import { listSources } from '../server/db/sources';
 import { upsertOwned } from '../server/db/write';
 import { mainMessageHandler } from '../server/desktop-child';
@@ -159,17 +159,21 @@ describe('GitLab sources, main and server child together', () => {
     expect(config()).toEqual({});
   });
 
-  it('preserves the default when setting up a GitLab source already stored in the database', async () => {
+  it.each([
+    ['allow', 'block'],
+    ['block', 'allow'],
+  ] as const)('applies the selected default to a previously stored GitLab source (%s to %s)', async (previous, selected) => {
     server.sources.apply({
       glabPath: null,
       sources: [{ kind: 'gitlab', host: HOST, baseUrl: BASE, tokenChoice: 'glab', tokenFile: null, tokenEnv: null, from: 'file' }],
     });
-    const stored = listAgentAccess(server.db).sources.find((src) => src.host === HOST)!;
-    expect(stored.defaultAccess).toBe('block');
+    setSourceAgentAccess(server.db, HOST, previous);
+    server.sources.apply({ glabPath: null, sources: [] });
+    expect(server.sources.byHost(HOST)?.configured).toBe(false);
 
-    const added = await desktop.addSource({ kind: 'gitlab', url: BASE, method: 'glab', agentAccessDefault: 'allow' });
+    const added = await desktop.addSource({ kind: 'gitlab', url: BASE, method: 'glab', agentAccessDefault: selected });
     expect(added.saved).toBe(true);
-    expect(listAgentAccess(server.db).sources).toContainEqual(stored);
+    expect(listAgentAccess(server.db).sources).toContainEqual(expect.objectContaining({ host: HOST, defaultAccess: selected }));
   });
 
   it("answers a request the child can't do with the child's reason", async () => {

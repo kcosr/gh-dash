@@ -7,7 +7,7 @@ import { utilityProcess, type UtilityProcess } from 'electron';
 import type { RepoAgentAccess, SourceAgentAccess } from '../shared/agent-access';
 import type { AgentFootprint, DeletedAgent } from '../shared/agents';
 import type { AccountStatus, Agent, SourceAccount, SourceCheck, TokenChoice } from '../shared/api';
-import type { InitialSourceAgentAccess, MainToServer, ServerToMain, SourceTestDraft } from '../shared/desktop';
+import type { MainToServer, ServerToMain, SourceAgentAccessUpdate, SourceTestDraft } from '../shared/desktop';
 
 export type ChildStatus = 'idle' | 'starting' | 'running' | 'stopping' | 'failed';
 export type StartResult = { ok: true; apiUrl: string | null } | { ok: false; message: string };
@@ -158,9 +158,9 @@ export class ServerChild {
   }
 
   /** config.json's sources changed: the child applies them without a restart. */
-  async reloadSources(initialAgentAccess?: InitialSourceAgentAccess): Promise<ReloadResult> {
+  async reloadSources(sourceAgentAccess?: SourceAgentAccessUpdate): Promise<ReloadResult> {
     await this.running();
-    const { ok, error, sources } = expect(await this.request({ type: 'reload-sources', ...(initialAgentAccess ? { initialAgentAccess } : {}) }), 'sources-result');
+    const { ok, error, sources } = expect(await this.request({ type: 'reload-sources', ...(sourceAgentAccess ? { sourceAgentAccess } : {}) }), 'sources-result');
     return { ok, error, sources };
   }
 

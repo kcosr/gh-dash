@@ -18,7 +18,7 @@ import type {
   DesktopSourceResult,
   DesktopState,
   DesktopTokenResult,
-  InitialSourceAgentAccess,
+  SourceAgentAccessUpdate,
   SourceMethod,
   SourceTestDraft,
 } from '../shared/desktop';
@@ -273,9 +273,9 @@ export class Desktop {
   }
 
   /** Writes `next`, has the child apply it, and puts `loaded` back if it can't (the child then keeps what it had). */
-  private async applySources(loaded: LoadedConfigFile, next: ConfigFile, what: string, initialAgentAccess?: InitialSourceAgentAccess): Promise<void> {
+  private async applySources(loaded: LoadedConfigFile, next: ConfigFile, what: string, sourceAgentAccess?: SourceAgentAccessUpdate): Promise<void> {
     writeConfigFile(this.d.configPath, next);
-    const result = await this.d.child.reloadSources(initialAgentAccess);
+    const result = await this.d.child.reloadSources(sourceAgentAccess);
     if (result.ok) return;
     this.d.log(`[sources] ${what} failed (${result.error}); restoring config.json`);
     if (loaded.exists) writeConfigFile(this.d.configPath, loaded.data);
@@ -371,8 +371,8 @@ export class Desktop {
       const check = this.addConflict(await this.d.child.testSource(await this.testDraft(baseUrl, host, draft)), loaded.data);
       if (!check.ok) return { check, saved: false, remembered: false };
       const entry = withMethod({ kind: 'gitlab', url: check.url }, draft.method, draft.method === 'file' ? this.fileFor(host) : null);
-      const initialAgentAccess = draft.agentAccessDefault && { host: check.host, access: draft.agentAccessDefault };
-      await this.applySources(loaded, addEntry(loaded.data, entry), `Adding ${check.host}`, initialAgentAccess);
+      const sourceAgentAccess = draft.agentAccessDefault && { host: check.host, access: draft.agentAccessDefault };
+      await this.applySources(loaded, addEntry(loaded.data, entry), `Adding ${check.host}`, sourceAgentAccess);
       let remembered = false;
       if (draft.method === 'app') {
         this.sourceAppTokens.set(check.host, draft.token);

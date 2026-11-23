@@ -158,12 +158,25 @@ test('returning to a long patch keeps its already visible header in place', asyn
   const scroller = page.locator('.dvr-scroll');
   const showFull = file.getByRole('button', { name: 'Show full file', exact: true });
   const changesOnly = file.getByRole('button', { name: 'Show changes only', exact: true });
-  await expect(file.locator('[data-line="101"]').first()).toBeInViewport();
+  const firstChange = file.locator('[data-line-type="change-deletion"][data-line="101"]');
+  await expect(firstChange).toBeInViewport();
   const before = await showFull.boundingBox();
   await showFull.click();
-  await changesOnly.click();
+  await expect(changesOnly).toBeVisible();
+  await expect.poll(() => scroller.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+  await expect(firstChange).toBeInViewport();
+  await expect.poll(() => changesOnly.evaluate((el) => {
+    const rect = el.getBoundingClientRect();
+    const pane = el.closest('.dvr-scroll')!.getBoundingClientRect();
+    const y = rect.top + rect.height / 2;
+    return y >= pane.top && y < pane.bottom && el.contains(document.elementFromPoint(rect.left + rect.width / 2, y));
+  })).toBe(true);
+  const box = await changesOnly.boundingBox();
+  if (!box) throw new Error('Sticky file control has no bounding box');
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
   await expect(showFull).toBeFocused();
-  await expect(file.locator('[data-line="101"]').first()).toBeInViewport();
-  expect(await scroller.evaluate((el) => el.scrollTop)).toBe(0);
-  expect((await showFull.boundingBox())?.y).toBe(before?.y);
+  await expect(firstChange).toBeInViewport();
+  // Pierre rounds a measured line position to a device pixel.
+  await expect.poll(() => scroller.evaluate((el) => el.scrollTop)).toBeLessThanOrEqual(1);
+  await expect.poll(async () => Math.abs(((await showFull.boundingBox())?.y ?? Infinity) - (before?.y ?? 0))).toBeLessThanOrEqual(1);
 });

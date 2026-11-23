@@ -1,11 +1,19 @@
-import type { Hunk } from '@pierre/diffs';
+import type { CodeViewScrollTarget, Hunk } from '@pierre/diffs';
 import { MAX_VIEW_RANGES, MAX_VIEW_SELECTION_CHARS } from '../../../shared/api';
 import type { CurrentView } from '../../../shared/current-view';
+import { changeHunks, nearestChange } from './changeNavigation';
+import { pierreSide } from './threadModel';
 
 export type DiffViewContext = Pick<CurrentView, 'file' | 'viewport' | 'selection' | 'threadId'>;
 type Viewport = NonNullable<DiffViewContext['viewport']>;
 type TextSelection = Extract<DiffViewContext['selection'], { kind: 'text' }>;
 type Side = Viewport['first']['side'];
+type CodeLine = Viewport['first'];
+
+/** The source line and its vertical offset below the space reserved for the sticky header. */
+export type ViewportAnchor = CodeLine & { offset: number };
+
+interface VisibleCodeRow { row: HTMLElement; line: CodeLine; top: number }
 
 export interface RenderedDiff {
   path: string;
@@ -14,12 +22,121 @@ export interface RenderedDiff {
 
 const CODE_ROWS = '[data-line][data-line-type]:not([data-resolved-fold])';
 
-function codeLine(row: HTMLElement): Viewport['first'] | null {
+function codeLine(row: HTMLElement): CodeLine | null {
   const lineNumber = Number(row.dataset.line);
   if (!Number.isSafeInteger(lineNumber) || lineNumber < 1) return null;
   // Unified context displays the new number. Split context already uses that column's own number.
   const side = row.dataset.lineType === 'change-deletion' || row.closest('[data-deletions]') ? 'old' : 'new';
   return { side, lineNumber };
+}
+
+/** Pierre mounts a buffer around the viewport; only intersecting rows below the sticky header count. */
+function* visibleCodeRows(root: ShadowRoot, top: number, bottom: number): Iterable<VisibleCodeRow> {
+  if (bottom <= top) return;
+  for (const row of root.querySelectorAll<HTMLElement>(CODE_ROWS)) {
+    const rect = row.getBoundingClientRect();
+    if (rect.height === 0 || rect.bottom <= top || rect.top >= bottom || !row.checkVisibility({ visibilityProperty: true })) continue;
+    const line = codeLine(row);
+    if (line) yield { row, line, top: rect.top };
+  }
+}
+
+function firstVisibleRow(rows: Iterable<VisibleCodeRow>, top: number): VisibleCodeRow | null {
+  let first: VisibleCodeRow | null = null;
+  let firstTop = Infinity;
+  for (const row of rows) {
+    const rowTop = Math.max(top, row.top);
+    // If both split columns intersect the same top edge, prefer the new side.
+    if (rowTop < firstTop || (rowTop === firstTop && row.line.side === 'new' && first?.line.side === 'old')) {
+      first = row;
+      firstTop = rowTop;
+    }
+  }
+  return first;
+}
+
+function* visibleAnnotationRows(root: ShadowRoot, top: number, bottom: number): Iterable<VisibleCodeRow> {
+  for (const row of root.querySelectorAll<HTMLElement>('[data-line-annotation]')) {
+    const rect = row.getBoundingClientRect();
+    if (rect.height === 0 || rect.bottom <= top || rect.top >= bottom) continue;
+    for (const slot of row.querySelectorAll<HTMLSlotElement>('slot[name]')) {
+      // Pierre's named slots retain the source coordinate, including old-side notes on unified context.
+      const match = /^annotation-(deletions|additions)-(\d+)$/.exec(slot.name);
+      if (!match) continue;
+      const lineNumber = Number(match[2]);
+      if (!Number.isSafeInteger(lineNumber) || lineNumber < 1) continue;
+      for (const element of slot.assignedElements()) {
+        const content = element.getBoundingClientRect();
+        if (content.height === 0 || content.bottom <= top || content.top >= bottom || !element.checkVisibility({ visibilityProperty: true })) continue;
+        yield { row, line: { side: match[1] === 'deletions' ? 'old' : 'new', lineNumber }, top: content.top };
+      }
+    }
+  }
+}
+
+function nearbyCodeLine(root: ShadowRoot, top: number, bottom: number): CodeLine | null {
+  let closest: CodeLine | null = null;
+  let distance = Infinity;
+  let before = false;
+  let after = false;
+  // A rendered gap can fill the viewport between rows. Stay unanchored before the first code row,
+  // such as in a file-level note where Next change should still start at the first hunk.
+  for (const row of root.querySelectorAll<HTMLElement>(CODE_ROWS)) {
+    const rect = row.getBoundingClientRect();
+    if (rect.height === 0 || !row.checkVisibility({ visibilityProperty: true })) continue;
+    before ||= rect.bottom <= top;
+    after ||= rect.top >= bottom;
+    const gap = Math.max(top - rect.bottom, rect.top - bottom, 0);
+    if (gap >= distance) continue;
+    const line = codeLine(row);
+    if (line) {
+      closest = line;
+      distance = gap;
+    }
+  }
+  return before && after ? closest : null;
+}
+
+function hunkAtLine(hunks: readonly Hunk[], { side, lineNumber }: CodeLine): Hunk | undefined {
+  return hunks.find((hunk) => side === 'new'
+    ? lineNumber >= hunk.additionStart && lineNumber < hunk.additionStart + hunk.additionCount
+    : lineNumber >= hunk.deletionStart && lineNumber < hunk.deletionStart + hunk.deletionCount);
+}
+
+export function readViewportAnchor(element: HTMLElement, scroller: HTMLElement, pick?: (line: CodeLine) => boolean): ViewportAnchor | null {
+  if (!element.shadowRoot) return null;
+  const viewport = scroller.getBoundingClientRect();
+  const bottom = Math.min(viewport.bottom, window.innerHeight);
+  const bounds = element.getBoundingClientRect();
+  if (bounds.top >= bottom || bounds.bottom <= viewport.top) return null;
+  const header = element.querySelector('.dvh')?.getBoundingClientRect();
+  const top = Math.max(0, viewport.top, header?.bottom ?? 0);
+  if (bottom <= top) return null;
+  const rows = visibleCodeRows(element.shadowRoot, top, bottom);
+  const first = firstVisibleRow(pick ? [...rows].filter(({ line }) => pick(line)) : rows, top);
+  // A line-aligned Pierre scroll target already reserves a sticky header's height. Retain the unclipped
+  // row position so a partially visible wrapped line stays at the same point in the viewport.
+  const origin = viewport.top + (header?.height ?? 0);
+  if (first) return { ...first.line, offset: first.top - origin };
+  // A predicate is asking for an actual visible line, such as a nearby hunk already visible under a gap.
+  if (pick) return null;
+  const annotation = firstVisibleRow(visibleAnnotationRows(element.shadowRoot, top, bottom), top);
+  if (annotation) {
+    // Land at the annotation's code line. The new model has yet to measure the note, so restoring a
+    // negative offset deep inside it can seek past the row and leave the annotation unmounted.
+    return { ...annotation.line, offset: 0 };
+  }
+  const nearby = nearbyCodeLine(element.shadowRoot, top, bottom);
+  return nearby ? { ...nearby, offset: 0 } : null;
+}
+
+/** `patch` is supplied when removing context, so a line in the hidden gap can land at a nearby change. */
+export function contextScrollTarget(id: string, anchor: ViewportAnchor | null, patch?: readonly Hunk[]): Exclude<CodeViewScrollTarget, { type: 'position' }> {
+  if (!anchor) return { type: 'item', id, align: 'start' };
+  const line = !patch || hunkAtLine(patch, anchor) ? anchor : nearestChange(changeHunks(patch), anchor)?.target;
+  if (!line) return { type: 'item', id, align: 'start' };
+  const offset = line === anchor ? anchor.offset : Math.max(0, anchor.offset);
+  return { type: 'line', id, lineNumber: line.lineNumber, side: pierreSide(line.side), align: 'start', offset };
 }
 
 function visibleRanges(lines: Record<Side, Set<number>>): Viewport['visible'] {
@@ -38,34 +155,19 @@ function visibleRanges(lines: Record<Side, Set<number>>): Viewport['visible'] {
   return ranges;
 }
 
-/** Pierre mounts a buffer around the viewport; only intersecting rows below the sticky header count. */
 export function readViewport(root: ShadowRoot, top: number, bottom: number, hunks: readonly Hunk[]): Viewport | null {
-  let first: Viewport['first'] | null = null;
-  let firstTop = Infinity;
+  const rows = [...visibleCodeRows(root, top, bottom)];
+  const first = firstVisibleRow(rows, top)?.line;
+  if (!first) return null;
   const lines = { old: new Set<number>(), new: new Set<number>() };
-  for (const row of root.querySelectorAll<HTMLElement>(CODE_ROWS)) {
-    const rect = row.getBoundingClientRect();
-    if (rect.height === 0 || rect.bottom <= top || rect.top >= bottom || !row.checkVisibility({ visibilityProperty: true })) continue;
-    const line = codeLine(row);
-    if (!line) continue;
-    const { side, lineNumber } = line;
+  for (const { row, line: { side, lineNumber } } of rows) {
     lines[side].add(lineNumber);
     if (side === 'new' && row.dataset.lineType?.startsWith('context') && !row.closest('[data-additions]')) {
       const oldLine = Number(row.dataset.altLine);
       if (oldLine > 0) lines.old.add(oldLine);
     }
-    const rowTop = Math.max(top, rect.top);
-    // At the same vertical position in split view, prefer the new side for the primary anchor.
-    if (rowTop < firstTop || (rowTop === firstTop && side === 'new' && first?.side === 'old')) {
-      first = line;
-      firstTop = rowTop;
-    }
   }
-  if (!first) return null;
-  const { side, lineNumber } = first;
-  const hunk = hunks.find((h) => side === 'new'
-    ? lineNumber >= h.additionStart && lineNumber < h.additionStart + h.additionCount
-    : lineNumber >= h.deletionStart && lineNumber < h.deletionStart + h.deletionCount);
+  const hunk = hunkAtLine(hunks, first);
   return {
     first,
     visible: visibleRanges(lines),

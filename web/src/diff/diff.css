@@ -112,6 +112,7 @@
 .diff-viewer.compact .dvr-bar .wb-btn.wb-btn--icon { width: 40px; height: 40px; }
 .diff-viewer.compact .dvh { height: 40px; padding-left: 0; }
 .diff-viewer.compact .dvh-fold { width: 40px; height: 40px; }
+.diff-viewer.compact .dvh-nav .wb-btn { width: 40px; height: 40px; }
 .diff-viewer.compact .dvh-context { min-height: 40px; }
 .diff-viewer.compact .dvh-note.link, .diff-viewer.compact a.dvh-note { min-height: 40px; }
 .diff-viewer.compact .dvh-why { display: none; }
@@ -126,6 +127,9 @@
 .dvh-path { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left; font-weight: 550; }
 .dvh-path .dir { color: var(--wb-fg-2); font-weight: 450; }
 .dvh .diffstat { flex: none; }
+.dvh-nav { display: inline-flex; flex: none; align-items: center; }
+.dvh-nav .wb-btn { width: 24px; height: 24px; }
+.dvh-nav-up { transform: rotate(180deg); }
 .dvh-context {
   flex: none; display: inline-flex; align-items: center; gap: 4px; min-height: 24px;
   padding: 0 6px; border: 1px solid var(--wb-border-strong); border-radius: 5px;
@@ -137,6 +141,7 @@
 .dvh-context:hover:not([aria-disabled="true"]) { background: var(--wb-surface-2); }
 .dvh-context[aria-disabled="true"] { color: var(--wb-muted); cursor: progress; }
 .dvh-note { flex: none; display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--wb-muted); }
+.dvh-note[role="status"] { flex: 0 1 auto; min-width: 0; display: block; overflow: hidden; text-overflow: ellipsis; }
 .dvh-note svg { width: 12px; height: 12px; }
 a.dvh-note:hover, .dvh-note.link:hover { color: var(--wb-accent-text); }
 .dvh.st-removed .dvh-path { color: var(--wb-fg-2); }

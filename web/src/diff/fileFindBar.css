@@ -1,0 +1,12 @@
+.dvr-code { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; }
+.dvr-code > .dvr-scroll { height: auto; min-height: 0; }
+.dvr-bar .dvr-find-btn.on { background: var(--wb-accent-weak); color: var(--wb-accent-text); }
+.dvr-find { display: flex; flex: none; align-items: center; justify-content: flex-end; gap: 4px; padding: 4px 8px; background: var(--wb-surface); border-bottom: 1px solid var(--wb-border); }
+.dvr-find[hidden] { display: none; }
+.dvr-find .wb-input { width: 215px; min-width: 0; height: 28px; padding: 0 7px; font-size: 12px; }
+.dvr-find-count { flex: none; min-width: 40px; padding-inline: 4px; text-align: end; color: var(--wb-muted); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.dvr-find .wb-btn--icon { flex: none; width: 25px; height: 28px; }
+.dvr-find-prev svg { transform: rotate(180deg); }
+.diff-viewer.compact .dvr-find { padding-block: 0; }
+.diff-viewer.compact .dvr-find .wb-input { height: 38px; font-size: 16px; }
+.diff-viewer.compact .dvr-find .wb-btn--icon { width: 40px; height: 40px; }

@@ -5,7 +5,7 @@
  * Local comment threads show as Pierre annotations under their lines, and all of them in the
  * comments column (Threads.tsx, CommentsColumn.tsx; placement in shared/comment-placement.ts).
  */
-import type { CodeView as CodeViewClass, CodeViewItem, CodeViewOptions, CodeViewScrollTarget, DiffLineAnnotation, FileDiffLoadedFiles, FileDiffMetadata, LineAnnotation, PostRenderPhase } from '@pierre/diffs';
+import type { CodeView as CodeViewClass, CodeViewItem, CodeViewOptions, CodeViewScrollTarget, DiffLineAnnotation, FileDiffLoadedFiles, FileDiffMetadata, LineAnnotation, PostRenderPhase, VirtualizedFileDiff } from '@pierre/diffs';
 import { CodeView, WorkerPoolContextProvider, type CodeViewHandle } from '@pierre/diffs/react';
 import HighlightWorker from '@pierre/diffs/worker/worker.js?worker';
 import { useCallback, useEffect, useId, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type Ref, type RefObject } from 'react';
@@ -247,6 +247,7 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
   }, [files, count]);
   const byId = useMemo(() => new Map(files.map((f) => [f.id, f])), [files]);
   const indexOf = useMemo(() => new Map(files.map((f, i) => [f.id, i])), [files]);
+  const findPaths = useMemo(() => files.map((f) => f.id), [files]);
   const [fullContext, setFullContext] = useState(() => ({ files, byFile: new Map<string, FullContext>(), resets: new Map<string, number>() }));
   if (fullContext.files !== files) setFullContext({ files, byFile: new Map(), resets: new Map() });
   const { byFile: fullByFile, resets } = fullContext;
@@ -492,6 +493,8 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
   const scroller = useRef<HTMLDivElement>(null);
   const expandControls = useExpandControls(scroller);
   const expansionVersions = useMemo(() => new Map<string, number>(), [files]);
+  // Pierre keeps a hydrated patch and its expansions when the file scrolls out of view.
+  const expandedPatches = useMemo(() => new Map<string, { id: string; instance: VirtualizedFileDiff<Note, undefined> }>(), [files]);
   const noteExpansion = useCallback((event: ReactMouseEvent) => {
     const control = event.nativeEvent.composedPath().find((element): element is HTMLElement => element instanceof HTMLElement &&
       (element.hasAttribute('data-expand-button') || element.hasAttribute('data-unmodified-lines')));
@@ -582,9 +585,13 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
   // lands, by an observer on each file's shadow root.
   const namedRoots = useRef(new WeakSet<ShadowRoot>());
   const scheduleChanges = useRef(() => {});
-  const onPostRender = useCallback((node: HTMLElement, instance: unknown, phase: PostRenderPhase, context: { item: Item }) => {
+  const onPostRender = useCallback((node: HTMLElement, instance: unknown, phase: PostRenderPhase,
+    context: { item: Item } & ({ type: 'diff'; instance: VirtualizedFileDiff<Note, undefined> } | { type: 'file' })) => {
     expandControls.onPostRender(node, instance, phase);
     const path = pathForItem(context.item.id);
+    if (phase !== 'unmount' && context.type === 'diff' && context.instance.fileDiff?.isPartial === false && expansionVersions.has(path)) {
+      expandedPatches.set(path, { id: context.item.id, instance: context.instance });
+    }
     findBar.current?.rendered(path);
     scheduleChanges.current();
     if (phase === 'unmount') return;
@@ -606,7 +613,7 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
         }
       }).observe(root, { childList: true, subtree: true });
     }
-  }, [expandControls.onPostRender, paintThreadLines]);
+  }, [expandControls.onPostRender, expandedPatches, expansionVersions, paintThreadLines]);
 
   const options = useMemo((): CodeViewOptions<Note, undefined> => ({
     theme: THEMES,
@@ -770,23 +777,21 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
   }, [getRenderedFile]);
 
   const readFindSource = useCallback((path: string): FindSource | null => {
-    const cv = view.current?.getInstance();
-    const item = cv?.getItem(itemIdFor(path));
-    const rendered = getRenderedFile(path);
-    const instance = rendered?.type === 'diff' ? rendered.instance : undefined;
     const full = fullByFile.get(path);
-    const root = rendered?.element.shadowRoot ?? undefined;
-    if (full && full !== 'loading') return { model: full, root };
-    const model = instance?.fileDiff ?? (item?.type === 'diff' ? item.fileDiff : byId.get(path)?.fileDiff);
-    if (!model) return null;
-    if (instance && !model.isPartial) {
+    if (full && full !== 'loading') return { model: full };
+    const file = byId.get(path);
+    if (!file?.file.patch) return null;
+    const expanded = expandedPatches.get(path);
+    const instance = expanded?.id === itemIdFor(path) ? expanded.instance : undefined;
+    if (instance?.fileDiff && !instance.fileDiff.isPartial) {
       return {
-        model, root, expansionVersion: expansionVersions.get(path),
+        model: instance.fileDiff, expansionVersion: expansionVersions.get(path),
         isContextVisible: (line) => instance.isLineRenderable(line),
       };
     }
-    return { model, root };
-  }, [byId, expansionVersions, fullByFile, getRenderedFile, itemIdFor]);
+    return { model: file.fileDiff ??= toFileDiff(file.file, file.cacheKey) };
+  }, [byId, expandedPatches, expansionVersions, fullByFile, itemIdFor]);
+  const readFindRoot = useCallback((path: string) => getRenderedFile(path)?.element.shadowRoot ?? undefined, [getRenderedFile]);
 
   const pendingLine = useRef<LineJump | null>(null);
   const seekLine = useCallback((path: string, line: DiffLine, source: 'find' | 'change', change?: ChangeHunk) => {
@@ -1416,7 +1421,7 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
           onClick={() => updatePrefs({ foldResolved: !prefs.foldResolved })} aria-label="Fold resolved code" title="Fold code linked to resolved threads">Fold resolved</button>
         {hasFiles && (
           <button type="button" ref={findButton} className={cx('wb-btn wb-btn--icon wb-btn--ghost dvr-find-btn', findOpen && 'on')}
-            title="Find in file" aria-label="Find in file" aria-expanded={findOpen} aria-controls={findId} aria-keyshortcuts="Control+F Meta+F"
+            title="Find in files" aria-label="Find in files" aria-expanded={findOpen} aria-controls={findId} aria-keyshortcuts="Control+F Meta+F"
             onClick={(event) => { if (findOpen) closeFind(); else openFind(event.currentTarget); }}>
             <Icon name="search" />
           </button>
@@ -1442,7 +1447,7 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
             {hasFiles ? (
               <>
                 <FileFindBar ref={findBar} id={findId} input={findInput} open={findOpen} close={closeFind} current={current} split={split}
-                  readSource={readFindSource} readAnchor={readAnchor} seek={seekMatch} />
+                  paths={findPaths} readSource={readFindSource} readRoot={readFindRoot} readAnchor={readAnchor} seek={seekMatch} />
                 <WorkerPoolContextProvider {...POOL}>
                   <CodeView
                     ref={view}

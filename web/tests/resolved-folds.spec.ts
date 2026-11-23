@@ -110,8 +110,8 @@ test('find reveals a line inside a long resolved fold and restores the fold on c
   const diff = await openReview(page, `@@ -1,550 +1,550 @@\n${rows.join('\n')}`, [thread(1, 1, 500, { status: 'resolved' })]);
   await diff.getByRole('button', { name: 'Fold resolved code' }).click();
   await expect(diff.locator('[data-line="502"]')).toBeInViewport();
-  await diff.getByRole('button', { name: 'Find in file', exact: true }).click();
-  const find = diff.getByRole('searchbox', { name: 'Find in file' });
+  await diff.getByRole('button', { name: 'Find in files', exact: true }).click();
+  const find = diff.getByRole('searchbox', { name: 'Find in files' });
   await find.fill('findme-here');
   const line = diff.locator('[data-line="335"]');
   await expect(line).toBeInViewport();

@@ -300,23 +300,29 @@ test('change navigation keeps local stops in files outside the file list filter'
   await expect(button(tail, 'Next change')).toBeDisabled();
 });
 
-test('find counts both sides, wraps through virtual rows, and follows the viewed file', async ({ page }) => {
+test('find counts matches across files and wraps through virtual rows on both sides', async ({ page }) => {
   const { diff, file, other, pick, scroll } = await openDiff(page);
   await button(diff, 'Split').click();
-  const findButton = button(diff, 'Find in file');
-  const find = diff.getByRole('searchbox', { name: 'Find in file' });
+  const findButton = button(diff, 'Find in files');
+  const find = diff.getByRole('searchbox', { name: 'Find in files' });
   const count = diff.getByRole('status').filter({ hasText: /\d+\s*(?:of|\/)\s*\d+|No matches/i });
   const isCount = (current: number, total: number) => new RegExp(`^${current}\\s*(?:of|/)\\s*${total}$`);
   await scroll.focus();
   await page.keyboard.press('Control+f');
   await expect(find).toBeFocused();
   await find.fill('needle');
-  await expect(count).toHaveText(isCount(1, 4));
+  await expect(count).toHaveText(isCount(1, 5));
   await find.press('Shift+Enter');
-  await expect(count).toHaveText(isCount(4, 4));
+  await expect(count).toHaveText(isCount(5, 5));
+  await expectInReadingView(line(other, 1, 'change-addition'));
+  await expect(pick(otherPath)).toHaveAttribute('aria-current', 'true');
+  await find.press('Shift+Enter');
+  await expect(count).toHaveText(isCount(4, 5));
   await expectInReadingView(line(file, second, 'change-deletion'));
   await find.press('Enter');
-  await expect(count).toHaveText(isCount(1, 4));
+  await expect(count).toHaveText(isCount(5, 5));
+  await find.press('Enter');
+  await expect(count).toHaveText(isCount(1, 5));
   await expectInReadingView(line(file, first - 1));
 
   await find.fill('= "needle"');
@@ -334,13 +340,15 @@ test('find counts both sides, wraps through virtual rows, and follows the viewed
   await find.fill('needle');
 
   await clickSticky(page, button(file, 'Show full file'));
-  await expect(count).toHaveText(isCount(1, 5));
+  await expect(count).toHaveText(isCount(1, 6));
   await expect(line(file, farMatch)).toHaveCount(0);
   await expectInReadingView(line(file, first - 1));
   await page.keyboard.press('Meta+f');
   await expect(find).toBeFocused();
   await find.press('Shift+Enter');
-  await expect(count).toHaveText(isCount(5, 5));
+  await expect(count).toHaveText(isCount(6, 6));
+  await find.press('Shift+Enter');
+  await expect(count).toHaveText(isCount(5, 6));
   await expectInReadingView(line(file, farMatch));
   await find.press('Escape');
   await expect(find).toHaveCount(0);
@@ -349,19 +357,53 @@ test('find counts both sides, wraps through virtual rows, and follows the viewed
 
   await findButton.click();
   await pick(otherPath).click();
-  await expect(count).toHaveText(isCount(1, 1));
+  await expect(count).toHaveText(isCount(6, 6));
   await expectInReadingView(line(other, 1, 'change-addition'));
 });
 
-test('find adds context revealed by a gutter expander', async ({ page }) => {
-  const { diff, file } = await openDiff(page);
-  await button(diff, 'Find in file').click();
-  const find = diff.getByRole('searchbox', { name: 'Find in file' });
+test('find jumps directly to a match in a collapsed file across files without matches', async ({ page }) => {
+  const binary: DiffFile = { path: 'src/logo.png', previousPath: null, status: 'modified', additions: 0, deletions: 0, patch: null };
+  const removed: DiffFile = {
+    path: otherPath, previousPath: null, status: 'removed', additions: 0, deletions: otherLines.length,
+    patch: [`@@ -1,${otherLines.length} +0,0 @@`, ...otherLines.map((text) => '-' + text)].join('\n'),
+  };
+  const { diff, file, other, pick } = await openDiff(page, undefined, [files[0]!, binary, removed]);
+  await button(diff, 'Find in files').click();
+  const find = diff.getByRole('searchbox', { name: 'Find in files' });
+  await find.fill('in the other file');
+  await expect(pick(otherPath)).toHaveAttribute('aria-current', 'true');
+  await expect(button(other, 'Hide diff')).toBeVisible();
+  await expectInReadingView(line(other, 1, 'change-deletion'));
+  await expect(diff.locator('.dvr-find-count')).toHaveText('1 of 1');
+  await expect(find).toBeFocused();
+
+  await find.fill('needle');
+  await expect(diff.locator('.dvr-find-count')).toHaveText('5 of 5');
+  await button(diff, 'Previous match').click();
+  await expectInReadingView(line(file, second, 'change-deletion'));
+  await button(diff, 'Next match').click();
+  await expectInReadingView(line(other, 1, 'change-deletion'));
+  await expect.poll(() => new URL(page.url()).searchParams.get('file')).toBe(otherPath);
+});
+
+test('find includes context revealed by a gutter expander after its file goes offscreen', async ({ page }) => {
+  const filler: DiffFile = {
+    path: 'src/filler.ts', previousPath: null, status: 'added', additions: 900, deletions: 0,
+    patch: ['@@ -0,0 +1,900 @@', ...Array<string>(900).fill('+// filler')].join('\n'),
+  };
+  const { diff, file, pick } = await openDiff(page, undefined, [files[0]!, filler, files[1]!]);
+  await button(diff, 'Find in files').click();
+  const find = diff.getByRole('searchbox', { name: 'Find in files' });
   await find.fill('revealed context marker');
   await expect(diff.getByRole('status').filter({ hasText: 'No matches' })).toBeVisible();
   await button(file, 'Expand down').first().click();
   await expect(diff.getByRole('status').filter({ hasText: /^1\s*(?:of|\/)\s*1$/ })).toBeVisible();
   await button(diff, 'Next match').click();
+  await expectInReadingView(line(file, first + context + 3));
+  await pick(otherPath).click();
+  await expect(file).toHaveCount(0);
+  await find.fill('context marker');
+  await expect(diff.locator('.dvr-find-count')).toHaveText('1 of 1');
   await expectInReadingView(line(file, first + context + 3));
 });
 
@@ -369,12 +411,12 @@ test('loading a full file keeps focus in find while preserving an inline draft',
   let release!: () => void;
   const holdBlobs = new Promise<void>((resolve) => { release = resolve; });
   const { diff, file, scroll } = await openDiff(page, holdBlobs);
-  const find = diff.getByRole('searchbox', { name: 'Find in file' });
+  const find = diff.getByRole('searchbox', { name: 'Find in files' });
   const draft = await writeInlineDraft(file);
   try {
     await clickSticky(page, button(file, 'Show full file'));
     await expect(button(file, 'Loading file…')).toBeDisabled();
-    await button(diff, 'Find in file').click();
+    await button(diff, 'Find in files').click();
     await expect(find).toBeFocused();
   } finally {
     release();
@@ -403,8 +445,8 @@ test('find can seek into full-file context while syntax highlighting is still qu
   await expect(page.locator('html')).toHaveAttribute('data-full-highlight-queued', 'true');
   await expect(button(file, 'Show changes only')).toBeVisible();
   await expectInReadingView(line(file, first, 'change-addition'));
-  await button(diff, 'Find in file').click();
-  const find = diff.getByRole('searchbox', { name: 'Find in file' });
+  await button(diff, 'Find in files').click();
+  const find = diff.getByRole('searchbox', { name: 'Find in files' });
   await find.fill('const hidden');
   await expectInReadingView(line(file, farMatch));
   await page.evaluate(() => window.dispatchEvent(new Event('release-full-highlight')));
@@ -415,8 +457,8 @@ test('find can seek into full-file context while syntax highlighting is still qu
 test('Escape from find closes it before the open inline draft', async ({ page }) => {
   const { diff, file } = await openDiff(page);
   const draft = await writeInlineDraft(file);
-  const find = diff.getByRole('searchbox', { name: 'Find in file' });
-  const trigger = button(diff, 'Find in file');
+  const find = diff.getByRole('searchbox', { name: 'Find in files' });
+  const trigger = button(diff, 'Find in files');
   await trigger.click();
   await expect(find).toBeFocused();
   await page.keyboard.press('Escape');

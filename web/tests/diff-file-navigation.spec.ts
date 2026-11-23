@@ -1,5 +1,5 @@
 import type { Locator, Page } from '@playwright/test';
-import type { Diff, DiffFile } from '../../shared/api';
+import type { CommentThread, Diff, DiffFile } from '../../shared/api';
 import { expect, prs, test } from './fixtures';
 
 const pr = prs[0];
@@ -237,4 +237,55 @@ test('find adds context revealed by a gutter expander', async ({ page }) => {
   await expect(diff.getByRole('status').filter({ hasText: /^1\s*(?:of|\/)\s*1$/ })).toBeVisible();
   await button(diff, 'Next match').click();
   await expectInReadingView(line(file, first + context + 3));
+});
+
+test('stay in a tall inline annotation across context modes and navigate nearby hunks', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 680 });
+  const fetchedAt = '2026-10-05T10:00:00Z';
+  await page.route('**/api/v1/prs/**/threads', (route) => route.fulfill({ json: { items: [{
+    id: 9, kind: 'pr', repo: pr.repo, number: pr.number, branch: pr.headRef, commitOid: headOid, baseOid,
+    path, side: 'new', startLine: second, endLine: second, snippet: changes[1]!.next,
+    status: 'open', resolvedAt: null, resolvedBy: null, createdAt: fetchedAt, updatedAt: fetchedAt,
+    comments: [{
+      id: 27, author: { id: 1, kind: 'self', name: 'You' },
+      body: Array.from({ length: 48 }, (_, i) => 'Thread paragraph ' + (i + 1)).join('\n\n'),
+      createdAt: fetchedAt, editedAt: null,
+    }],
+  } satisfies CommentThread] } }));
+  const { file, scroll } = await openDiff(page);
+  const note = file.locator('.dth[data-thread="9"]');
+  const noteTop = () => note.evaluate((note) => Math.round(note.getBoundingClientRect().top - note.closest('.dvr-scroll')!.getBoundingClientRect().top));
+  await expect(button(file, 'Next change')).toBeEnabled();
+  await clickSticky(page, button(file, 'Next change'));
+  await expectInReadingView(line(file, second, 'change-addition'));
+  const visibleRows = () => file.evaluate((host) => {
+    const viewport = host.closest('.dvr-scroll')!.getBoundingClientRect();
+    const top = Math.max(viewport.top, host.querySelector('.dvh')!.getBoundingClientRect().bottom);
+    return [...host.shadowRoot!.querySelectorAll('[data-line][data-line-type]')].filter((row) => {
+      const rect = row.getBoundingClientRect();
+      return rect.height > 0 && rect.bottom > top && rect.top < viewport.bottom;
+    }).length;
+  });
+  const goInsideNote = async () => {
+    await expect(note.locator('p')).toHaveCount(48);
+    await expect.poll(() => note.evaluate((note) => note.getBoundingClientRect().height)).toBeLessThan(1450);
+    await scroll.hover();
+    await page.mouse.wheel(0, await noteTop() + 350);
+    await expect.poll(noteTop).toBeLessThan(-250);
+    await expect.poll(visibleRows).toBe(0);
+  };
+  await goInsideNote();
+  await expect(button(file, 'Previous change')).toBeEnabled();
+  await expect(button(file, 'Next change')).toBeEnabled();
+  await clickSticky(page, button(file, 'Show full file'));
+  await expect(button(file, 'Show changes only')).toBeVisible();
+  await expect.poll(() => scroll.evaluate((el) => el.scrollHeight)).toBeGreaterThan(40_000);
+  await expectInReadingView(line(file, second, 'change-addition'));
+  await goInsideNote();
+  await clickSticky(page, button(file, 'Show changes only'));
+  await expect(button(file, 'Show full file')).toBeVisible();
+  await expectInReadingView(line(file, second, 'change-addition'));
+  await goInsideNote();
+  await clickSticky(page, button(file, 'Next change'));
+  await expectInReadingView(line(file, third, 'change-addition'));
 });

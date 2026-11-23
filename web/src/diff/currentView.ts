@@ -20,8 +20,7 @@ export interface RenderedDiff {
   root: ShadowRoot;
 }
 
-const LINE_ROWS = '[data-line][data-line-type]';
-const CODE_ROWS = `${LINE_ROWS}:not([data-resolved-fold])`;
+const CODE_ROWS = '[data-line][data-line-type]:not([data-resolved-fold])';
 
 function codeLine(row: HTMLElement): CodeLine | null {
   const lineNumber = Number(row.dataset.line);
@@ -123,11 +122,9 @@ export function readViewportAnchor(element: HTMLElement, scroller: HTMLElement, 
   if (pick) return null;
   const annotation = firstVisibleRow(visibleAnnotationRows(element.shadowRoot, top, bottom), top);
   if (annotation) {
-    // Pierre renders an inline annotation directly after its owning row. Preserve the reader's offset
-    // into the annotation even when that row is already above the sticky header.
-    const row = annotation.row.previousElementSibling;
-    const offset = row?.matches(LINE_ROWS) ? row.getBoundingClientRect().top - origin : 0;
-    return { ...annotation.line, offset };
+    // Land at the annotation's code line. The new model has yet to measure the note, so restoring a
+    // negative offset deep inside it can seek past the row and leave the annotation unmounted.
+    return { ...annotation.line, offset: 0 };
   }
   const nearby = nearbyCodeLine(element.shadowRoot, top, bottom);
   return nearby ? { ...nearby, offset: 0 } : null;

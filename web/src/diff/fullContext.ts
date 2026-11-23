@@ -3,6 +3,19 @@ import type { FileDiffLoadedFiles, FileDiffMetadata, Hunk } from '@pierre/diffs'
 /** Keep line endings, as Pierre's file contents do. An empty file has no lines. */
 const linesOf = (text: string): string[] => text === '' ? [] : text.split(/(?<=\n)/);
 
+/** Let a downloaded file open promptly even if its syntax highlighting is still queued. */
+export async function waitForContextHighlight(priming: Promise<void>): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      priming.then(() => true),
+      new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), 200); }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** One hunk spanning both files, using the host's original change blocks. */
 export function fullContextDiff(patch: FileDiffMetadata, { oldFile, newFile }: FileDiffLoadedFiles): FileDiffMetadata {
   if (!oldFile || !newFile) throw new Error('Both revisions are needed for full context');

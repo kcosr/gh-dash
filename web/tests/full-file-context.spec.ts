@@ -176,6 +176,7 @@ test('returning to a long patch keeps its already visible header in place', asyn
   await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
   await expect(showFull).toBeFocused();
   await expect(firstChange).toBeInViewport();
-  await expect.poll(() => scroller.evaluate((el) => el.scrollTop)).toBe(0);
-  await expect.poll(async () => (await showFull.boundingBox())?.y).toBe(before?.y);
+  // Pierre rounds a measured line position to a device pixel.
+  await expect.poll(() => scroller.evaluate((el) => el.scrollTop)).toBeLessThanOrEqual(1);
+  await expect.poll(async () => Math.abs(((await showFull.boundingBox())?.y ?? Infinity) - (before?.y ?? 0))).toBeLessThanOrEqual(1);
 });

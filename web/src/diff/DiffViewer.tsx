@@ -29,7 +29,7 @@ import {
 } from './drafts';
 import { createCurrentFile, FileList, type CurrentFile } from './FileList';
 import { contextScrollTarget, readTextSelection, readViewport, readViewportAnchor, type DiffViewContext, type RenderedDiff } from './currentView';
-import { fullContextDiff } from './fullContext';
+import { fullContextDiff, waitForContextHighlight } from './fullContext';
 import { buildFiles, parseFiles, toFileDiff, type ViewerFile } from './model';
 import { hasFoldedCode, paintResolvedFolds, resolvedFolds, type FileFolds } from './resolvedFolds';
 import { DraftComposer, FileNotes, LineThreads, ThreadsCtx, type ThreadsState } from './Threads';
@@ -96,6 +96,14 @@ type FileScrollTarget = Exclude<CodeViewScrollTarget, { type: 'position' }>;
 type LineScrollTarget = Extract<FileScrollTarget, { type: 'line' }>;
 type LineJump = { path: string; target: LineScrollTarget; change?: ChangeHunk | undefined };
 type RevealedFolds = { rev: string; path: string; ranges: FileFolds['hide']; find: boolean };
+type ContextRestoration = {
+  files: ViewerFile[];
+  path: string;
+  model: FileDiffMetadata | null;
+  target: FileScrollTarget;
+  navigation: number;
+  change?: ChangeHunk | undefined;
+};
 const NO_THREADS: CommentThread[] = [];
 const pathForItem = (id: string) => id.split('\0', 1)[0]!;
 
@@ -242,18 +250,18 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
   const [fullContext, setFullContext] = useState(() => ({ files, byFile: new Map<string, FullContext>(), resets: new Map<string, number>() }));
   if (fullContext.files !== files) setFullContext({ files, byFile: new Map(), resets: new Map() });
   const { byFile: fullByFile, resets } = fullContext;
-  // A fresh item switches context modes immediately and drops Pierre's previous gap expansions.
+  // A fresh item drops Pierre's existing and queued gap expansions when returning to the patch.
   const itemIdFor = useCallback((path: string) => {
     const reset = resets.get(path);
     return reset ? `${path}\0${reset}` : path;
   }, [resets]);
-  const setFullFile = useCallback((id: string, value: FullContext | null, reset = false) => {
+  const setFullFile = useCallback((id: string, value: FullContext | null, options?: { reset?: boolean; expected?: FullContext }) => {
     setFullContext((current) => {
-      if (current.files !== files) return current;
+      if (current.files !== files || (options?.expected !== undefined && current.byFile.get(id) !== options.expected)) return current;
       const byFile = new Map(current.byFile);
       if (value === null) byFile.delete(id);
       else byFile.set(id, value);
-      const resets = reset ? new Map(current.resets).set(id, (current.resets.get(id) ?? 0) + 1) : current.resets;
+      const resets = options?.reset ? new Map(current.resets).set(id, (current.resets.get(id) ?? 0) + 1) : current.resets;
       return { files, byFile, resets };
     });
   }, [files]);
@@ -1198,15 +1206,15 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
 
   const filesRef = useRef(files);
   filesRef.current = files;
-  const contextRestore = useRef<{ files: ViewerFile[]; path: string; model: FileDiffMetadata | null; target: FileScrollTarget; navigation: number; change?: ChangeHunk | undefined } | null>(null);
+  const contextRestore = useRef<ContextRestoration | null>(null);
   const resetPath = useRef<string | null>(null);
   const resetFocus = useRef<string | null>(null);
   useLayoutEffect(() => {
     const restore = contextRestore.current;
-    if (restore && restore.files !== files) contextRestore.current = null;
+    if (restore && (restore.files !== files || restore.navigation !== navigation.current)) contextRestore.current = null;
     else if (restore && (fullByFile.get(restore.path) ?? null) === restore.model) {
       contextRestore.current = null;
-      if (restore.navigation === navigation.current) goTo(restore.path, restore.target, restore.change);
+      goTo(restore.path, restore.target, restore.change);
     }
     const path = resetPath.current;
     if (path === null) return;
@@ -1251,7 +1259,7 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
       // The gutter may already have hydrated this model. Return to the original patch and its folded context.
       if (!patch.isPartial) vf.fileDiff = toFileDiff(vf.file, vf.cacheKey);
       resetFocus.current = document.activeElement === button ? vf.id : null;
-      setFullFile(vf.id, null, true);
+      setFullFile(vf.id, null, { reset: true });
       return;
     }
     const scrollTop = scroller.current?.scrollTop;
@@ -1259,27 +1267,33 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
     const target = contextScrollTarget(vf.id, anchor ?? (first ? { ...first, offset: 0 } : null));
     setFullFile(vf.id, 'loading');
     try {
-      const model = fullContextDiff(patch, await loadDiffFiles(patch));
-      if (filesRef.current === files) {
-        const unchanged = generation === navigation.current && scrollTop === scroller.current?.scrollTop;
-        const liveAnchor = !unchanged && current.get() === vf.id ? readAnchor(vf.id) : null;
-        if (unchanged || liveAnchor) {
-          // If the reader scrolled within this patch during the fetch, carry their newer source line across.
-          const pin = changeJump.current;
-          contextRestore.current = {
-            files, path: vf.id, model, target: liveAnchor ? contextScrollTarget(vf.id, liveAnchor) : target,
-            navigation: navigation.current, change: unchanged ? change : pin?.path === vf.id ? pin.change : undefined,
-          };
-        }
-        resetFocus.current = document.activeElement === button ? vf.id : null;
+      const highlighted = fullContextDiff(patch, await loadDiffFiles(patch));
+      if (filesRef.current !== files) return;
+      const rendered = getRenderedFile(vf.id);
+      const priming = rendered?.type === 'diff' ? rendered.instance.primeHighlightCache(highlighted) : undefined;
+      // Keep the item and its annotation controls mounted. A plain-text model lets Pierre switch
+      // layout immediately if its worker still has the previous highlighted model cached.
+      const model = priming && !(await waitForContextHighlight(priming))
+        ? { ...highlighted, lang: 'text' as const, cacheKey: `${highlighted.cacheKey}:plain` }
+        : highlighted;
+      if (filesRef.current !== files) return;
+      const unchanged = generation === navigation.current && scrollTop === scroller.current?.scrollTop;
+      const liveAnchor = !unchanged && current.get() === vf.id ? readAnchor(vf.id) : null;
+      if (unchanged || liveAnchor) {
+        // If the reader scrolled within this patch during the fetch, carry their newer source line across.
+        const pin = changeJump.current;
+        contextRestore.current = {
+          files, path: vf.id, model, target: liveAnchor ? contextScrollTarget(vf.id, liveAnchor) : target,
+          navigation: navigation.current, change: unchanged ? change : pin?.path === vf.id ? pin.change : undefined,
+        };
       }
-      // A new item can render the full geometry immediately, while syntax highlighting catches up.
-      setFullFile(vf.id, model, true);
+      setFullFile(vf.id, model);
+      if (model !== highlighted) void priming?.then(() => setFullFile(vf.id, highlighted, { expected: model }));
     } catch {
       setFullFile(vf.id, null);
       setFailed((s) => new Set(s).add(rev + '\0' + vf.id));
     }
-  }, [current, draft, files, fullByFile, isCollapsed, loadDiffFiles, patchShows, readAnchor, rev, setFullFile, spot, stopsFor, toggleCollapsed]);
+  }, [current, draft, files, fullByFile, getRenderedFile, isCollapsed, loadDiffFiles, patchShows, readAnchor, rev, setFullFile, spot, stopsFor, toggleCollapsed]);
 
   const renderHeader = useCallback((item: Item) => {
     const vf = byId.get(pathForItem(item.id));

@@ -150,7 +150,12 @@ export function FileFindBar({ ref, id, input, open, close, current, split, readS
   };
 
   return (
-    <div id={id} role="search" aria-label="Find in file" className="dvr-find" hidden={!open}>
+    <div id={id} role="search" aria-label="Find in file" className="dvr-find" hidden={!open} onKeyDown={(event) => {
+      // An inline composer may be open behind the bar. Escape belongs to the control being used.
+      if (event.key !== 'Escape' || event.defaultPrevented || event.nativeEvent.isComposing) return;
+      event.preventDefault();
+      close();
+    }}>
       <input ref={input} className="wb-input" type="search" aria-label="Find in file" placeholder="Find…" autoComplete="off" spellCheck={false}
         value={query} onChange={(event) => {
           const value = event.currentTarget.value;

@@ -64,8 +64,9 @@ function line(file: Locator, number: number, type = '') {
 async function expectInReadingView(rows: Locator) {
   await expect.poll(() => rows.evaluateAll((elements) => elements.some((row) => {
     const host = (row.getRootNode() as ShadowRoot).host;
-    const viewport = host.closest('.dvr-scroll')!.getBoundingClientRect();
-    const header = host.querySelector('.dvh')!.getBoundingClientRect();
+    const viewport = host?.closest('.dvr-scroll')?.getBoundingClientRect();
+    const header = host?.querySelector('.dvh')?.getBoundingClientRect();
+    if (!viewport || !header) return false;
     const rect = row.getBoundingClientRect();
     return rect.height > 0 && rect.bottom > Math.max(viewport.top, header.bottom) + 1 && rect.top < viewport.bottom - 1;
   }))).toBe(true);
@@ -88,6 +89,18 @@ async function clickSticky(page: Page, control: Locator) {
   const box = await control.boundingBox();
   if (!box) throw new Error('Sticky file control has no bounding box');
   await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+}
+
+const draftText = 'Keep the draft attached to this change.';
+
+async function writeInlineDraft(file: Locator) {
+  await expectInReadingView(line(file, first, 'change-addition'));
+  await file.locator(`[data-column-number="${first}"][data-line-type="change-addition"]`).hover();
+  await button(file, `Comment on new line ${first}`).click();
+  const draft = file.getByRole('textbox', { name: `Comment on line ${first}` });
+  await expect(draft).toBeFocused();
+  await draft.fill(draftText);
+  return draft;
 }
 
 test('full file starts at the patch viewport and returns to the nearest change from unchanged context', async ({ page }) => {
@@ -237,6 +250,67 @@ test('find adds context revealed by a gutter expander', async ({ page }) => {
   await expect(diff.getByRole('status').filter({ hasText: /^1\s*(?:of|\/)\s*1$/ })).toBeVisible();
   await button(diff, 'Next match').click();
   await expectInReadingView(line(file, first + context + 3));
+});
+
+test('loading a full file keeps focus in find while preserving an inline draft', async ({ page }) => {
+  let release!: () => void;
+  const holdBlobs = new Promise<void>((resolve) => { release = resolve; });
+  const { diff, file, scroll } = await openDiff(page, holdBlobs);
+  const find = diff.getByRole('searchbox', { name: 'Find in file' });
+  const draft = await writeInlineDraft(file);
+  try {
+    await clickSticky(page, button(file, 'Show full file'));
+    await expect(button(file, 'Loading file…')).toBeDisabled();
+    await button(diff, 'Find in file').click();
+    await expect(find).toBeFocused();
+  } finally {
+    release();
+  }
+  await expect(button(file, 'Show changes only')).toBeVisible();
+  await expect.poll(() => scroll.evaluate((el) => el.scrollHeight)).toBeGreaterThan(40_000);
+  await expectInReadingView(line(file, first, 'change-addition'));
+  await expect(draft).toBeVisible();
+  await expect(draft).toHaveValue(draftText);
+  await expect(find).toBeFocused();
+});
+
+test('find can seek into full-file context while syntax highlighting is still queued', async ({ page }) => {
+  await page.addInitScript(() => {
+    const send = Worker.prototype.postMessage;
+    Worker.prototype.postMessage = function (message: { diff?: { cacheKey?: string } }, options?: Transferable[] | StructuredSerializeOptions) {
+      const dispatch = () => Array.isArray(options) ? send.call(this, message, { transfer: options }) : send.call(this, message, options);
+      if (!message.diff?.cacheKey?.endsWith(':full-context')) return dispatch();
+      document.documentElement.dataset.fullHighlightQueued = 'true';
+      window.addEventListener('release-full-highlight', dispatch, { once: true });
+    };
+  });
+  const { diff, file } = await openDiff(page);
+  await expect.poll(() => line(file, first, 'change-addition').locator('span').count()).toBeGreaterThan(1);
+  await clickSticky(page, button(file, 'Show full file'));
+  await expect(page.locator('html')).toHaveAttribute('data-full-highlight-queued', 'true');
+  await expect(button(file, 'Show changes only')).toBeVisible();
+  await expectInReadingView(line(file, first, 'change-addition'));
+  await button(diff, 'Find in file').click();
+  const find = diff.getByRole('searchbox', { name: 'Find in file' });
+  await find.fill('const hidden');
+  await expectInReadingView(line(file, farMatch));
+  await page.evaluate(() => window.dispatchEvent(new Event('release-full-highlight')));
+  await expect.poll(() => line(file, farMatch).locator('span').count()).toBeGreaterThan(1);
+  await expectInReadingView(line(file, farMatch));
+});
+
+test('Escape from find closes it before the open inline draft', async ({ page }) => {
+  const { diff, file } = await openDiff(page);
+  const draft = await writeInlineDraft(file);
+  const find = diff.getByRole('searchbox', { name: 'Find in file' });
+  const trigger = button(diff, 'Find in file');
+  await trigger.click();
+  await expect(find).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(find).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+  await expect(draft).toBeVisible();
+  await expect(draft).toHaveValue(draftText);
 });
 
 test('stay in a tall inline annotation across context modes and navigate nearby hunks', async ({ page }) => {

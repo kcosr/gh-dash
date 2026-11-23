@@ -102,6 +102,25 @@ test('folding a long range compacts the virtualized viewport and lets the commen
   await expect(fold).toHaveAttribute('aria-pressed', 'true');
 });
 
+test('find reveals a line inside a long resolved fold and restores the fold on close', async ({ page }) => {
+  const rows = Array.from({ length: 550 }, (_, i) => {
+    if (i === 500) return '-old\n+new';
+    return i === 334 ? ' findme-here' : ` line ${i + 1}`;
+  });
+  const diff = await openReview(page, `@@ -1,550 +1,550 @@\n${rows.join('\n')}`, [thread(1, 1, 500, { status: 'resolved' })]);
+  await diff.getByRole('button', { name: 'Fold resolved code' }).click();
+  await expect(diff.locator('[data-line="502"]')).toBeInViewport();
+  await diff.getByRole('button', { name: 'Find in file', exact: true }).click();
+  const find = diff.getByRole('searchbox', { name: 'Find in file' });
+  await find.fill('findme-here');
+  const line = diff.locator('[data-line="335"]');
+  await expect(line).toBeInViewport();
+  await expect.poll(() => page.evaluate(() => Array.from(CSS.highlights.get('ghd-find-current') ?? [], (range) => range.toString()))).toEqual(['findme-here']);
+  await expect(diff.locator('.dth[data-thread="1"] .dth-sum')).toHaveAttribute('aria-expanded', 'false');
+  await find.press('Escape');
+  await expect(line).toBeHidden();
+});
+
 test('a resolved range ending outside the patch folds only when its thread can be shown inline', async ({ page }) => {
   await page.route('**/api/v1/blob/**', (route) => {
     const ref = new URL(route.request().url()).searchParams.get('ref');

@@ -31,7 +31,7 @@ import { createCurrentFile, FileList, type CurrentFile } from './FileList';
 import { contextScrollTarget, readTextSelection, readViewport, readViewportAnchor, type DiffViewContext, type RenderedDiff } from './currentView';
 import { fullContextDiff } from './fullContext';
 import { buildFiles, parseFiles, toFileDiff, type ViewerFile } from './model';
-import { hasFoldedCode, paintResolvedFolds, resolvedFolds } from './resolvedFolds';
+import { hasFoldedCode, paintResolvedFolds, resolvedFolds, type FileFolds } from './resolvedFolds';
 import { DraftComposer, FileNotes, LineThreads, ThreadsCtx, type ThreadsState } from './Threads';
 import {
   annotationsFor, countsByFile, type DraftAnchor, draftSnippet, draftSpot, type Note, notesByFile, type PierreRange, pierreSide, readingOrder, selectionAnchor,
@@ -95,6 +95,7 @@ type FullContext = 'loading' | FileDiffMetadata;
 type FileScrollTarget = Exclude<CodeViewScrollTarget, { type: 'position' }>;
 type LineScrollTarget = Extract<FileScrollTarget, { type: 'line' }>;
 type LineJump = { path: string; target: LineScrollTarget; change?: ChangeHunk | undefined };
+type RevealedFolds = { rev: string; path: string; ranges: FileFolds['hide']; find: boolean };
 const NO_THREADS: CommentThread[] = [];
 const pathForItem = (id: string) => id.split('\0', 1)[0]!;
 
@@ -342,16 +343,15 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
   const [prefs, setPrefs] = useState(getDiffPrefs);
   const updatePrefs = useCallback((patch: Partial<DiffPrefs>) => setPrefs((p) => ({ ...p, ...patch })), []);
   useEffect(() => setDiffPrefs(prefs), [prefs]);
-  const [revealedLine, setRevealedLine] = useState<(DiffLine & { rev: string; path: string; find: boolean }) | null>(null);
+  const [revealedFolds, setRevealedFolds] = useState<RevealedFolds | null>(null);
   const foldPlan = useMemo(() => {
     if (!prefs.foldResolved) return null;
     const plan = resolvedFolds(threads, placements, isExpanded, shown, draft && spot?.at === 'line' ? { path: draft.path, ...spot } : null);
-    if (revealedLine?.rev === rev) {
-      const { path, side, lineNumber } = revealedLine;
-      plan.files.get(path)?.keep.push({ side, startLine: lineNumber, endLine: lineNumber });
+    if (revealedFolds?.rev === rev) {
+      plan.files.get(revealedFolds.path)?.keep.push(...revealedFolds.ranges);
     }
     return plan;
-  }, [prefs.foldResolved, threads, placements, isExpanded, shown, draft, spot, revealedLine, rev]);
+  }, [prefs.foldResolved, threads, placements, isExpanded, shown, draft, spot, revealedFolds, rev]);
   const foldPlanRef = useRef(foldPlan);
   foldPlanRef.current = foldPlan;
   const split = prefs.split && !compact;
@@ -384,7 +384,7 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
   const findBar = useRef<FileFindHandle>(null);
   const closeFind = useCallback(() => {
     setFindOpen(false);
-    setRevealedLine((line) => line?.find ? null : line);
+    setRevealedFolds((folds) => folds?.find ? null : folds);
     findButton.current?.focus({ preventScroll: true });
   }, []);
   const findLayer = useLayerHandle(findOpen && files.length > 0, closeFind, false);
@@ -756,22 +756,38 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
     const folds = foldPlan?.files.get(path);
     const full = fullByFile.get(path);
     const model = full && full !== 'loading' ? full : vf.fileDiff;
-    const opensFold = folds && model && hasFoldedCode(model, folds, { side: line.side, startLine: line.lineNumber, endLine: line.lineNumber });
+    const at = { side: line.side, startLine: line.lineNumber, endLine: line.lineNumber };
+    // Reveal the enclosing range. A single row in a long run of zero-height rows can stay outside
+    // Pierre's rendered window even after it is made visible.
+    const hidden = folds && model ? folds.hide.filter((range) => hasFoldedCode(model, { hide: [range], keep: folds.keep }, at)) : [];
     const opensFile = isCollapsed(vf);
-    if (!opensFold && !opensFile) {
+    if (!hidden.length && !opensFile) {
       goTo(path, target, change);
       return;
     }
     pendingLine.current = { path, target, change };
-    if (opensFold) setRevealedLine({ ...line, path, rev, find: source === 'find' });
+    if (hidden.length) setRevealedFolds({ path, rev, ranges: hidden, find: source === 'find' });
     if (opensFile) toggleCollapsed(path);
   }, [byId, foldPlan, fullByFile, goTo, isCollapsed, rev, toggleCollapsed]);
+  const previousFolds = useRef<RevealedFolds | null>(null);
   useLayoutEffect(() => {
+    if (previousFolds.current !== revealedFolds) {
+      const cv = view.current?.getInstance();
+      const paths = new Set([previousFolds.current, revealedFolds].flatMap((entry) => entry?.rev === rev ? [entry.path] : []));
+      previousFolds.current = revealedFolds;
+      for (const path of paths) {
+        const rendered = getRenderedFile(path);
+        if (rendered?.type !== 'diff') continue;
+        // Clear measured zero-height rows before asking Pierre for a target inside a restored fold.
+        rendered.instance.invalidateEditSessionLayout();
+        cv?.instanceChanged(rendered.instance, true);
+      }
+    }
     const pending = pendingLine.current;
     if (!pending) return;
     pendingLine.current = null;
     goTo(pending.path, pending.target, pending.change);
-  }, [items, goTo]);
+  }, [getRenderedFile, items, goTo, revealedFolds, rev]);
   const seekMatch = useCallback((path: string, line: DiffLine) => seekLine(path, line, 'find'), [seekLine]);
 
   const changesByPatch = useRef(new WeakMap<FileDiffMetadata['hunks'], readonly ChangeHunk[]>());

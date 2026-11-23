@@ -25,8 +25,9 @@ import { sourceStatuses } from './lib/sources';
 import { getSidebarHidden, setSidebarHidden } from './lib/storage';
 import { plural } from './lib/time';
 import { capitalize } from '../../shared/provider';
+import type { CurrentView } from '../../shared/current-view';
 import { repoLabel } from '../../shared/repos';
-import { repoFromPath, useUrlState } from './lib/urlState';
+import { parseDiffId, repoFromPath, useUrlState } from './lib/urlState';
 import { cx, isChunkLoadError } from './lib/util';
 import { preloadMarkdown } from './components/Markdown';
 import { RepoMapProvider } from './components/RepoChip';
@@ -168,8 +169,6 @@ function Shell() {
   const status = useSyncStatus();
   const repos = useRepos();
   useSyncWatcher();
-  // Changes made elsewhere (agents, other windows) as they happen, and what agents ask this window to show.
-  useStream(useShowHandler());
   usePreloadWhenIdle();
   const { settled } = useCanonicalRepoUrl();
   // The contexts to keep places for, once every source present is known (the same list `settled` was judged on).
@@ -192,6 +191,14 @@ function Shell() {
   const hasSide = !setup && view !== 'repo' && view !== 'settings';
   const drawer = !setup && s.pr ? s.pr : null;
   const diff = !setup && s.diff ? s.diff : null;
+  const readDiff = useRef<() => CurrentView>(null);
+  // The diff's mounted viewer knows its file and revision. An overview has only the review target.
+  useStream(useShowHandler(), () => {
+    if (diff && readDiff.current) return readDiff.current();
+    const target = parseDiffId(diff ?? drawer);
+    if (!target) return null;
+    return { mode: diff ? 'diff' : 'details', target, baseOid: null, headOid: null, file: null, viewport: null, selection: null, threadId: null };
+  });
   const compact = useCompactSidebar();
   // Narrow screens open the sidebar as a full-screen panel; on desktop it can be hidden (saved in the browser).
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -259,7 +266,7 @@ function Shell() {
         )}
         {drawer && <PrDrawer key={drawer} id={drawer} compact={compact} resize={drawerResizable ? panes.drawer.separator : null} />}
         {/* A PR's diff id is its drawer id: keep the sibling keys distinct. */}
-        {diff && <DiffView key={`diff:${diff}`} id={diff} compact={compact} />}
+        {diff && <DiffView key={`diff:${diff}`} id={diff} compact={compact} readView={readDiff} />}
       </div>
       {mobileOpen && <MobileSidebar focusSearch={sidebarSearch} onClose={() => setSidebarOpen(false)} />}
       {ui.paletteOpen && <CommandPalette onClose={ui.closePalette} onRun={() => setSidebarOpen(false)} onSync={contextSync.run} onToggleTheme={toggleTheme}

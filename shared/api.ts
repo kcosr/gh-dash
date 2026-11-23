@@ -882,6 +882,8 @@ export interface Agent {
    * exist. The REST API is the user's own, and isn't limited.
    */
   sources: string[] | null;
+  /** Whether the agent may request what the user is viewing and has selected in a live window. */
+  shareView: boolean;
 }
 
 /** What happened to a comment or thread (the comment event log, shown in Activity as type 'comment'). */
@@ -1103,11 +1105,16 @@ export interface ShowTarget {
   path?: string;
 }
 
+/** Bounds on the live viewport and code selection shared with agents. */
+export const MAX_VIEW_SELECTION_CHARS = 12_000;
+export const MAX_VIEW_RANGES = 128;
+
 /**
  * GET /stream (text/event-stream): what the server tells open windows as it happens. `comments`: a thread changed, so
  * lists, counts and the diff's threads are refetched. `show`: an agent asks the window to open something (a chip,
  * unless the window follows agents). `agents`: an agent was added, given a new token, limited to some sources, disabled,
  * enabled or deleted; `deleted` (its id) says it was deleted, so what it wrote now reads as by "Deleted agent #<id>".
+ * `current_view_request`: an authorized MCP call asks a window for its current review view.
  */
 export type StreamMessage =
   | {
@@ -1123,6 +1130,7 @@ export type StreamMessage =
       by: Principal;
     }
   | { type: 'show'; id: string; agent: Principal; target: ShowTarget; message: string | null; at: string }
+  | { type: 'current_view_request'; requestId: string }
   | { type: 'agents'; deleted?: number };
 
 /** A thread in GET /threads: the thread, and what it is on. */

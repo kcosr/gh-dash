@@ -18,10 +18,8 @@
 /* Focusable and named in DiffViewer.tsx (Pierre renders them as bare divs); the ring stays inside the band. */
 [data-expand-button]:focus-visible { outline: 2px solid var(--wb-accent); outline-offset: -2px; border-radius: 4px; }
 [data-unmodified-lines] { font-size: 11.5px; }
-/* The separator after the last hunk ends every file with "More unchanged context may be available"
-   (the count is unknown until the file is loaded, then "N unmodified lines"): the chevron alone
-   says it, like GitHub's bare expander. */
-[data-separator="line-info-basic"][data-separator-last] [data-separator-content] { display: none; }
+[data-separator-last][data-expand-index] [data-unmodified-lines] { cursor: pointer; }
+[data-separator-last][data-expand-index] [data-unmodified-lines]:hover { color: var(--diffs-fg); }
 
 /* Split: a hairline between the sides (Pierre draws it in the background color). App tokens like
    --border inherit into the shadow root. */
@@ -36,3 +34,10 @@
 [data-column-number][data-thread-line] { background-image: linear-gradient(var(--dvr-thread-number-tint), var(--dvr-thread-number-tint)); color: var(--wb-fg-2); }
 /* The line number last clicked: where a shift-click extends a range from. */
 [data-column-number][data-anchor-line] { color: var(--wb-accent-text); font-weight: 600; }
+
+/* Keep each grid position for Pierre's line and annotation indexes. A folded cell on only one side of a
+   split row leaves the other visible. Empty split buffers must shrink along with any whole rows they span. */
+[data-resolved-fold] { visibility: hidden; pointer-events: none; }
+[data-resolved-fold="side"] { white-space: nowrap; overflow: clip; }
+[data-resolved-fold="row"] { min-height: 0 !important; height: 0; line-height: 0; overflow: clip; }
+[data-resolved-buffer] { min-height: calc(var(--dvr-visible-buffer-lines) * 1lh) !important; }

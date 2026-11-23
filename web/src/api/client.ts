@@ -41,6 +41,7 @@ import type {
   ThreadListQuery,
   ThreadListResponse,
 } from '../../../shared/api';
+import type { CurrentViewReply } from '../../../shared/current-view';
 
 export class ApiError extends Error {
   status: number;
@@ -151,6 +152,7 @@ async function getText(url: string): Promise<string> {
 
 export const api = {
   health: () => get<{ ok: true; version: string }>('/api/health'),
+  replyCurrentView: (body: CurrentViewReply) => request<void>('POST', '/api/v1/current-view/reply', body),
   me: () => get<Me>('/api/v1/me'),
   /** The GitHub account behind the server's token (never the token itself). */
   account: () => get<AccountStatus>('/api/v1/account'),

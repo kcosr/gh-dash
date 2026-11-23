@@ -76,10 +76,19 @@ describe('gh-dash agents', () => {
     expect(code).toBe(0);
     expect(out).not.toContain(token);
     const lines = out.split('\n');
-    expect(lines[0]).toMatch(/^ID +NAME +TOKEN +CREATED +LAST USED +STATUS +SOURCES$/);
-    expect(lines[1]).toMatch(new RegExp(`^2 +Claude +${token.slice(0, 8)}… +\\S+ +never +active +all$`));
+    expect(lines[0]).toMatch(/^ID +NAME +TOKEN +CREATED +LAST USED +STATUS +SOURCES +VIEW SHARING$/);
+    expect(lines[1]).toMatch(new RegExp(`^2 +Claude +${token.slice(0, 8)}… +\\S+ +never +active +all +off$`));
     // A disabled agent's token is kept: its prefix still tells it apart.
-    expect(lines[2]).toMatch(new RegExp(`^3 +Codex +${codex.slice(0, 8)}… +\\S+ +never +disabled \\S+ +all$`));
+    expect(lines[2]).toMatch(new RegExp(`^3 +Codex +${codex.slice(0, 8)}… +\\S+ +never +disabled \\S+ +all +off$`));
+  });
+
+  it('opts one named agent into or out of reading the current review view', async () => {
+    await run('add', 'Claude');
+    expect(await run('view-sharing', 'claude', 'on')).toEqual({ code: 0, out: 'View sharing for Claude (id 2) is on.', err: '' });
+    expect((await run('list')).out).toMatch(/^2 +Claude .* +on$/m);
+    expect(await run('view-sharing', '2', 'off')).toEqual({ code: 0, out: 'View sharing for Claude (id 2) is off.', err: '' });
+    expect((await run('view-sharing', 'Claude', 'yes')).code).toBe(2);
+    expect((await run('list')).out).toMatch(/^2 +Claude .* +off$/m);
   });
 
   it('regenerates a token by id or name: the old one stops working', async () => {
@@ -108,7 +117,7 @@ describe('gh-dash agents', () => {
     await run('disable', 'Claude');
     const next = tokenIn((await run('regenerate', 'Claude')).out)!;
     expect(principal(next)).toMatchObject({ id: 2 });
-    expect((await run('list')).out).toMatch(/^2 +Claude +ghd_\S+… +\S+ +\S+ +active +all$/m);
+    expect((await run('list')).out).toMatch(/^2 +Claude +ghd_\S+… +\S+ +\S+ +active +all +off$/m);
   });
 
   it('has no revoke: disable and enable replace it', async () => {
@@ -174,7 +183,7 @@ describe('gh-dash agents', () => {
     } finally {
       db.close();
     }
-    expect((await run('list')).out).toMatch(/^2 +Agent +- +\S+ +never +built in \(no token\) +all$/m);
+    expect((await run('list')).out).toMatch(/^2 +Agent +- +\S+ +never +built in \(no token\) +all +off$/m);
   });
 
   describe('sources', () => {
@@ -199,7 +208,7 @@ describe('gh-dash agents', () => {
       expect(principal('my-own-agent-token-0123456789')).toMatchObject({ name: 'Mine' });
       expect(reach(5)).toEqual([1]);
       const lines = (await run('list')).out.split('\n');
-      expect(lines.slice(1).map((l) => l.split(/ {2,}/).at(-1))).toEqual([GITLAB, `github.com,${GITLAB}`, 'all', 'github.com']);
+      expect(lines.slice(1).map((l) => l.split(/ {2,}/).at(-2))).toEqual([GITLAB, `github.com,${GITLAB}`, 'all', 'github.com']);
     });
 
     it('limits an agent later, or lets it reach every source again, by id or name', async () => {
@@ -214,7 +223,7 @@ describe('gh-dash agents', () => {
       expect(principal(token)).toMatchObject({ id: 2 });
       await run('disable', 'Claude');
       expect((await run('scope', 'Claude', '--source', 'github.com')).code).toBe(0);
-      expect((await run('list')).out).toMatch(/^2 +Claude +ghd_\S+… +\S+ +\S+ +disabled \S+ +github\.com$/m);
+      expect((await run('list')).out).toMatch(/^2 +Claude +ghd_\S+… +\S+ +\S+ +disabled \S+ +github\.com +off$/m);
     });
 
     it('says which hosts are sources when one is not, and changes nothing', async () => {
@@ -232,7 +241,7 @@ describe('gh-dash agents', () => {
       const gitlab = addGitLab();
       await run('add', 'Work', '--source', GITLAB);
       withDb((db) => removeSource(db, gitlab));
-      expect((await run('list')).out).toMatch(/^2 +Work +ghd_\S+… +\S+ +never +active +none$/m);
+      expect((await run('list')).out).toMatch(/^2 +Work +ghd_\S+… +\S+ +never +active +none +off$/m);
       expect(reach(2)).toEqual([]);
       addGitLab();
       expect(reach(2)).toEqual([]);

@@ -1,5 +1,7 @@
 import { Hono } from 'hono';
+import { currentViewReplySchema } from '../../../shared/current-view';
 import type { AppDeps } from '../app';
+import { jsonBody, parseWith } from '../http';
 
 /** A comment line this often keeps an idle stream open through proxies (nginx's default read timeout is 60 s). */
 export const STREAM_PING_MS = 25_000;
@@ -21,7 +23,7 @@ export interface StreamOptions {
 
 /**
  * GET /stream: the bus's messages (StreamMessage) as server-sent events, `data: <json>`, one per message, as they happen;
- * nothing is replayed. A window opens one EventSource, which reconnects by itself. The stream ends when the client goes
+ * nothing is replayed. A window opens one streaming fetch and reconnects when it ends. The stream ends when the client goes
  * or the server shuts down (the bus closes), so open windows never hold a shutdown up. Bounded: at most `maxStreams` at
  * once per server (503 beyond), and a client that stops reading is cut off once `maxQueuedBytes` wait for it.
  */
@@ -29,6 +31,11 @@ export function streamRoutes({ bus }: AppDeps, opts: StreamOptions = {}): Hono {
   if (!bus) throw new Error('streamRoutes needs the bus');
   const { pingMs = STREAM_PING_MS, maxStreams = MAX_STREAMS, maxQueuedBytes = MAX_QUEUED_BYTES } = opts;
   const r = new Hono();
+  r.post('/current-view/reply', async (c) => {
+    const reply = parseWith(currentViewReplySchema, await jsonBody(c));
+    if (!bus.replyCurrentView(reply)) return c.json({ error: 'This current view request is no longer pending' }, 404);
+    return c.body(null, 204);
+  });
   r.get('/stream', (c) => {
     // HEAD comes through GET handlers, and its body is thrown away without being cancelled: a stream opened for it would
     // hold a slot (and its ping timer) for good. The headers alone, then.

@@ -333,6 +333,20 @@ describe('main → server messages for agents', () => {
     expect(heard).toHaveLength(4);
   });
 
+  it('updates a named agent’s current view permission over desktop IPC and tells the windows', async () => {
+    const { db, handle, posted, heard } = setup();
+    await handle({ type: 'add-agent', id: 1, name: 'Claude' });
+    await handle({ type: 'set-agent-view-sharing', id: 2, agent: 2, shareView: true });
+    await handle({ type: 'set-agent-view-sharing', id: 3, agent: 2, shareView: false });
+    await handle({ type: 'set-agent-view-sharing', id: 4, agent: builtInAgent(db).id, shareView: true });
+    expect(posted.slice(1)).toEqual([
+      { type: 'agent-result', id: 2, agent: expect.objectContaining({ id: 2, shareView: true }), token: null },
+      { type: 'agent-result', id: 3, agent: expect.objectContaining({ id: 2, shareView: false }), token: null },
+      { type: 'request-failed', id: 4, message: expect.stringContaining('built in') },
+    ]);
+    expect(heard).toEqual([{ type: 'agents' }, { type: 'agents' }, { type: 'agents' }]);
+  });
+
   it("answers request-failed with the reason, and changes nothing", async () => {
     const { db, handle, posted, heard } = setup();
     await handle({ type: 'add-agent', id: 1, name: 'Claude' });

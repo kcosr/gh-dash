@@ -3,7 +3,7 @@ import type { StreamMessage } from '../../shared/api';
 import { CommentBus } from './bus';
 
 const you = { id: 1, kind: 'self' as const, name: 'You' };
-const comment = (threadId: number): StreamMessage => ({
+const comment = (threadId: number): Extract<StreamMessage, { type: 'comments' }> => ({
   type: 'comments', repo: 'alice/app', kind: 'pr', number: 2, branch: null, commitOid: 'a'.repeat(40), threadId, event: 'replied', by: you,
 });
 

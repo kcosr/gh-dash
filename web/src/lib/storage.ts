@@ -74,14 +74,16 @@ export interface DiffPrefs {
   files: boolean;
   /** Comments column shown. */
   comments: boolean;
+  /** Code referenced by collapsed resolved threads is folded. */
+  foldResolved: boolean;
 }
-const DIFF_DEFAULTS: DiffPrefs = { split: false, wrap: false, files: true, comments: false };
+const DIFF_DEFAULTS: DiffPrefs = { split: false, wrap: false, files: true, comments: false, foldResolved: false };
 
 export function getDiffPrefs(): DiffPrefs {
   try {
     const v = JSON.parse(read(DIFF_KEY) ?? '{}') as Partial<Record<keyof DiffPrefs, unknown>>;
     const pick = (k: keyof DiffPrefs) => { const x = v[k]; return typeof x === 'boolean' ? x : DIFF_DEFAULTS[k]; };
-    return { split: pick('split'), wrap: pick('wrap'), files: pick('files'), comments: pick('comments') };
+    return { split: pick('split'), wrap: pick('wrap'), files: pick('files'), comments: pick('comments'), foldResolved: pick('foldResolved') };
   } catch {
     return DIFF_DEFAULTS;
   }

@@ -1,7 +1,7 @@
 import { DESKTOP_ENV, type MainToServer, type ServerToMain } from '../shared/desktop';
 import { loadServerConfig } from './config';
 import {
-  agentFootprint, agentTokenIs, builtInAgent, createAgent, deleteAgent, getAgent, regenerateAgentToken, setAgentEnabled, setAgentSources,
+  agentFootprint, agentTokenIs, builtInAgent, createAgent, deleteAgent, getAgent, regenerateAgentToken, setAgentEnabled, setAgentSources, setAgentViewSharing,
 } from './db/agents';
 import { deleteSource, testSourceDraft } from './services/sources';
 import { type RunningServer, startServer } from './start';
@@ -23,7 +23,7 @@ const FATAL_EXIT_DELAY_MS = 200;
  * - `reload-sources` re-reads config.json's sources and answers `sources-result`.
  * - `test-source` validates a draft source with a throwaway credential (`source-test-result`); `delete-source` removes
  *   an unconfigured source with its data (`source-deleted`); `sync-source` starts a source's sync (`sync-started`).
- * - `add-agent`, `regenerate-agent-token`, `set-agent-enabled` and `set-agent-sources` change the MCP agents
+ * - `add-agent`, `regenerate-agent-token`, `set-agent-enabled`, `set-agent-sources` and `set-agent-view-sharing` change the MCP agents
  *   (`agent-result`, with the new token for the first two), and `delete-agent` deletes one (`agent-deleted`); then they
  *   tell open windows (an `agents` stream message, saying which was deleted). `agent-footprint` says what one has
  *   written, for the warning before deleting it; `check-agent-token` whether a token main kept (by its sha256) is still
@@ -108,6 +108,11 @@ export function mainMessageHandler(
       const id = msg.agent === 'built-in' ? builtInAgent(db).id : msg.agent;
       const agent = setAgentSources(db, id, msg.sources ?? null);
       if (!agent) throw noAgent(id);
+      agentChanged();
+      post({ type: 'agent-result', id: msg.id, agent, token: null });
+    } else if (msg.type === 'set-agent-view-sharing') {
+      const agent = setAgentViewSharing(agentsDb(), msg.agent, msg.shareView === true);
+      if (!agent) throw noAgent(msg.agent);
       agentChanged();
       post({ type: 'agent-result', id: msg.id, agent, token: null });
     } else if (msg.type === 'shutdown') {

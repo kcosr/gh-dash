@@ -107,6 +107,8 @@ export type MainToServer =
    * hosts, or let it reach every source again (null). Answered with `agent-result` (no token).
    */
   | { type: 'set-agent-sources'; id: number; agent: number | 'built-in'; sources: string[] | null }
+  /** Allow a named agent to request the current review view. Answered with `agent-result`. */
+  | { type: 'set-agent-view-sharing'; id: number; agent: number; shareView: boolean }
   /** Close the listeners and databases, then exit 0. */
   | { type: 'shutdown' };
 
@@ -134,8 +136,8 @@ export type ServerToMain =
   /** Result of sync-source. */
   | { type: 'sync-started'; id: number; result: 'started' | 'queued' }
   /**
-   * Result of add-agent, regenerate-agent-token, set-agent-enabled and set-agent-sources: the agent as it is now, and its
-   * new token (null for the last two). The token goes to the renderer once, to be shown to the user; nobody logs it.
+   * Result of an agent change: the agent as it is now, and its new token, if one was made. The token goes to the
+   * renderer once, to be shown to the user; nobody logs it.
    */
   | { type: 'agent-result'; id: number; agent: Agent; token: string | null }
   /** Result of agent-footprint. */
@@ -366,6 +368,7 @@ export interface DesktopBridge {
    * agent's next MCP request. The REST API isn't limited.
    */
   setAgentSources(id: number | 'built-in', sources: string[] | null): Promise<Agent>;
+  setAgentViewSharing(id: number, shareView: boolean): Promise<Agent>;
 }
 
 /** IPC channel names used by the preload script (ipcRenderer.invoke) and main (ipcMain.handle). */
@@ -392,6 +395,7 @@ export const DESKTOP_IPC = {
   deleteAgent: 'gh-dash:delete-agent',
   keptAgentToken: 'gh-dash:kept-agent-token',
   setAgentSources: 'gh-dash:set-agent-sources',
+  setAgentViewSharing: 'gh-dash:set-agent-view-sharing',
   enableMcp: 'gh-dash:enable-mcp',
 } as const;
 

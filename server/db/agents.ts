@@ -10,7 +10,8 @@ import { listSources } from './sources';
  * Agents: principals of kind 'agent', each with one token for MCP. A token is `ghd_` and 32 random bytes (base64url),
  * or one the user chose (24–256 printable ASCII characters, no spaces), shown once when made; only its sha256 and its
  * first characters are stored. Agents are made, get a new token, are limited to some sources, disabled, enabled and
- * deleted by the desktop app (main, over IPC) or the headless `agents` command, never over HTTP.
+ * deleted by the desktop app (main, over IPC) or the headless `agents` command, never over HTTP. Those same controls
+ * manage each token-bearing agent's permission to read the current view.
  *
  * Disabling an agent refuses its token until it's enabled again; the token (its hash and prefix) and the sources stay,
  * and enabling lets the same token in again. agent_tokens.revoked_at is when it was disabled, NULL while enabled (the
@@ -58,6 +59,7 @@ interface AgentRow {
   revoked_at: string | null;
   built_in: number;
   all_sources: number;
+  share_view: number;
 }
 
 /** The built-in agent's principal id, once made (meta `builtInAgentId`). */
@@ -67,7 +69,7 @@ const BUILT_IN_ID = `(SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'built
 const DELETED = `(t.principal_id IS NULL AND p.name = '${DELETED_AGENT_PREFIX}' || p.id)`;
 
 /** Every agent but the deleted ones. */
-const AGENT_SELECT = `SELECT p.id, p.name, p.created_at, t.prefix, t.last_used_at, t.revoked_at, p.id IS ${BUILT_IN_ID} AS built_in, p.all_sources
+const AGENT_SELECT = `SELECT p.id, p.name, p.created_at, t.prefix, t.last_used_at, t.revoked_at, p.id IS ${BUILT_IN_ID} AS built_in, p.all_sources, p.share_view
   FROM principals p LEFT JOIN agent_tokens t ON t.principal_id = p.id WHERE p.kind = 'agent' AND NOT ${DELETED}`;
 
 /** The hosts of the sources each limited agent may reach, by principal id: github.com first, then as they were added. */
@@ -90,6 +92,7 @@ const toAgent = (r: AgentRow, hosts: Map<number, string[]>): Agent => ({
   disabledAt: r.revoked_at,
   builtIn: !!r.built_in,
   sources: r.all_sources ? null : (hosts.get(r.id) ?? []),
+  shareView: !!r.share_view,
 });
 
 const nowIso = () => new Date().toISOString();
@@ -279,6 +282,17 @@ export function setAgentSources(db: Db, id: number, hosts: readonly string[] | n
   });
 }
 
+/** Opts a named agent into or out of reading the live view; null when there is no such agent. */
+export function setAgentViewSharing(db: Db, id: number, shareView: boolean): Agent | null {
+  return db.tx(() => {
+    const agent = getAgent(db, id);
+    if (!agent) return null;
+    if (agent.builtIn) throw notForBuiltIn(agent);
+    db.run('UPDATE principals SET share_view = ? WHERE id = ?', [Number(shareView), id]);
+    return { ...agent, shareView };
+  });
+}
+
 /**
  * The ids of the sources a principal reaches through MCP: null for every source (an agent that isn't limited, and the
  * dashboard's user), else those it is limited to, possibly none (they were deleted since, or the agent was). A principal
@@ -373,7 +387,7 @@ export function deleteAgent(db: Db, id: number, opts: { unlessItWrote?: boolean 
     if (opts.unlessItWrote && footprint.comments > 0) throw new AgentWrote(agent, footprint);
     db.run('DELETE FROM agent_tokens WHERE principal_id = ?', [id]);
     db.run('DELETE FROM agent_sources WHERE principal_id = ?', [id]);
-    db.run('UPDATE principals SET name = ?, all_sources = 0 WHERE id = ?', [deletedAs, id]);
+    db.run('UPDATE principals SET name = ?, all_sources = 0, share_view = 0 WHERE id = ?', [deletedAs, id]);
     return { id, name: agent.name, deletedAs, footprint };
   });
 }

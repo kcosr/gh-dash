@@ -1,7 +1,16 @@
 import type { StreamMessage } from '../../shared/api';
+import type { CurrentView, CurrentViewReply } from '../../shared/current-view';
+import { ViewRequests } from './view-requests';
 
 /** A window's stream returns false when the message didn't reach it (it has ended, or was just cut off as too slow). */
 export type StreamListener = (message: StreamMessage) => unknown;
+type StreamNotice = Exclude<StreamMessage, { type: 'current_view_request' }>;
+
+interface Subscription {
+  listener: StreamListener;
+  window: boolean;
+  onClose?: () => void;
+}
 
 export interface SubscribeOptions {
   /** A window's stream (GET /stream): counted by `emit` and `windows`, as a `show` reaches it. */
@@ -23,22 +32,38 @@ export interface WaitOptions {
  * wait_for_reply waits on it. Nothing is buffered: a subscriber sees what is emitted after it subscribed.
  */
 export class CommentBus {
-  private readonly subscribers = new Set<{ listener: StreamListener; window: boolean; onClose?: () => void }>();
+  private readonly subscribers = new Set<Subscription>();
+  private readonly views = new ViewRequests();
   private closed = false;
 
   constructor(private readonly log: (line: string) => void = (line) => console.error(line)) {}
 
   /** Tells every subscriber, in the order they subscribed; returns how many windows (streams) took it. */
-  emit(message: StreamMessage): number {
+  emit(message: StreamNotice): number {
     let windows = 0;
     for (const s of [...this.subscribers]) {
-      try {
-        if (s.listener(message) !== false && s.window) windows++;
-      } catch (err) {
-        this.log(`[bus] a ${message.type} listener failed: ${(err as Error).message}`);
-      }
+      if (this.deliver(s, message) && s.window) windows++;
     }
     return windows;
+  }
+
+  private deliver(s: Subscription, message: StreamMessage): boolean {
+    try {
+      return s.listener(message) !== false;
+    } catch (err) {
+      this.log(`[bus] a ${message.type} listener failed: ${(err as Error).message}`);
+      return false;
+    }
+  }
+
+  /** Ask only the open window streams; agents waiting on comments do not see these events. */
+  currentView(signal: AbortSignal): Promise<CurrentView | null> {
+    return this.views.ask([...this.subscribers].filter((s) => s.window).map((s) =>
+      (requestId) => this.subscribers.has(s) && this.deliver(s, { type: 'current_view_request', requestId })), signal);
+  }
+
+  replyCurrentView(reply: CurrentViewReply): boolean {
+    return this.views.reply(reply);
   }
 
   /** Listens until the returned function is called (or the bus closes). */
@@ -87,6 +112,7 @@ export class CommentBus {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    this.views.close();
     const subscribers = [...this.subscribers];
     this.subscribers.clear();
     for (const s of subscribers) {

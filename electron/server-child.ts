@@ -223,6 +223,11 @@ export class ServerChild {
     return expect(await this.request({ type: 'set-agent-sources', agent, sources }), 'agent-result').agent;
   }
 
+  async setAgentViewSharing(agent: number, shareView: boolean): Promise<Agent> {
+    await this.running();
+    return expect(await this.request({ type: 'set-agent-view-sharing', agent, shareView }), 'agent-result').agent;
+  }
+
   private async running(): Promise<void> {
     if ((await this.whenSettled()) !== 'running') throw new Error(this.lastError ?? 'The gh-dash server is not running.');
   }

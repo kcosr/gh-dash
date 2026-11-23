@@ -8,7 +8,7 @@
 import type { CodeView as CodeViewClass, CodeViewItem, CodeViewOptions, CodeViewScrollTarget, DiffLineAnnotation, FileDiffLoadedFiles, FileDiffMetadata, LineAnnotation, PostRenderPhase } from '@pierre/diffs';
 import { CodeView, WorkerPoolContextProvider, type CodeViewHandle } from '@pierre/diffs/react';
 import HighlightWorker from '@pierre/diffs/worker/worker.js?worker';
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from 'react';
+import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent, type Ref, type RefObject } from 'react';
 import type { CommentThread, Diff, Me } from '../../../shared/api';
 import { branchRef } from '../../../shared/comment-markdown';
 import { createPlacer, patchLines, placeThreads, type SideLines } from '../../../shared/comment-placement';
@@ -26,7 +26,10 @@ import {
   setOpenNewDraft, setSendingDraft, subscribeNewDrafts,
 } from './drafts';
 import { createCurrentFile, FileList, type CurrentFile } from './FileList';
-import { buildFiles, parseFiles, type ViewerFile } from './model';
+import { readTextSelection, readViewport, type DiffViewContext, type RenderedDiff } from './currentView';
+import { fullContextDiff } from './fullContext';
+import { buildFiles, parseFiles, toFileDiff, type ViewerFile } from './model';
+import { hasFoldedCode, paintResolvedFolds, resolvedFolds } from './resolvedFolds';
 import { DraftComposer, FileNotes, LineThreads, ThreadsCtx, type ThreadsState } from './Threads';
 import {
   annotationsFor, countsByFile, type DraftAnchor, draftSnippet, draftSpot, type Note, notesByFile, type PierreRange, pierreSide, readingOrder, selectionAnchor,
@@ -50,6 +53,8 @@ export interface DiffViewerProps {
   file: string | null;
   /** Reports the file currently in view, so the shell can keep it in the URL. */
   onFileChange: (path: string) => void;
+  /** Reads the mounted viewport and selection when an agent asks the shell for its current view. */
+  readView?: Ref<() => DiffViewContext>;
   comments: DiffComments;
 }
 
@@ -84,7 +89,10 @@ export interface DiffComments {
 type Item = CodeViewItem<Note>;
 type CodeViewInstance = CodeViewClass<Note, undefined>;
 type Annotation = DiffLineAnnotation<Note> | LineAnnotation<Note>;
+type FullContext = 'loading' | FileDiffMetadata;
+type FileScrollTarget = Exclude<CodeViewScrollTarget, { type: 'position' }>;
 const NO_THREADS: CommentThread[] = [];
+const pathForItem = (id: string) => id.split('\0', 1)[0]!;
 
 /** Row metrics shared by the CSS (pierre.css, diff.css) and the virtualizer's height estimates. */
 const LINE_HEIGHT = 18;
@@ -180,7 +188,9 @@ function useExpandControls(scroller: RefObject<HTMLDivElement | null>) {
       root.addEventListener('focusin', track);
     }
     for (const el of root.querySelectorAll<HTMLElement>('[data-expand-button]:not([tabindex])')) {
-      const label = el.hasAttribute('data-expand-up') ? 'Expand down' : el.hasAttribute('data-expand-down') ? 'Expand up' : 'Expand all';
+      const label = el.hasAttribute('data-expand-up')
+        ? el.closest('[data-separator-last]') ? 'Expand toward end of file' : 'Expand down'
+        : el.hasAttribute('data-expand-down') ? 'Expand up' : 'Expand all';
       el.tabIndex = 0;
       el.title = label;
       el.setAttribute('aria-label', label);
@@ -208,7 +218,7 @@ function Position({ current, indexOf, total }: { current: CurrentFile; indexOf: 
   return <span className="dvr-pos">File <b>{(i + 1).toLocaleString()}</b> of {total.toLocaleString()}</span>;
 }
 
-export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile, compact, isActive, file, onFileChange, comments }: DiffViewerProps) {
+export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile, compact, isActive, file, onFileChange, comments, readView }: DiffViewerProps) {
   // Keyed by what buildFiles reads, not the diff object: a PR diff revalidated on reopen comes back
   // as a new object (fetchedAt moved) with structurally shared, unchanged files, and must not re-render.
   const files = useMemo(() => buildFiles(diff), [diff.files, diff.baseOid, diff.headOid]);
@@ -224,6 +234,24 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
   }, [files, count]);
   const byId = useMemo(() => new Map(files.map((f) => [f.id, f])), [files]);
   const indexOf = useMemo(() => new Map(files.map((f, i) => [f.id, i])), [files]);
+  const [fullContext, setFullContext] = useState(() => ({ files, byFile: new Map<string, FullContext>(), resets: new Map<string, number>() }));
+  if (fullContext.files !== files) setFullContext({ files, byFile: new Map(), resets: new Map() });
+  const { byFile: fullByFile, resets } = fullContext;
+  // A fresh CodeView item drops Pierre's existing and queued gap expansions when returning to the patch.
+  const itemIdFor = useCallback((path: string) => {
+    const reset = resets.get(path);
+    return reset ? `${path}\0${reset}` : path;
+  }, [resets]);
+  const setFullFile = useCallback((id: string, value: FullContext | null, reset = false) => {
+    setFullContext((current) => {
+      if (current.files !== files) return current;
+      const byFile = new Map(current.byFile);
+      if (value === null) byFile.delete(id);
+      else byFile.set(id, value);
+      const resets = reset ? new Map(current.resets).set(id, (current.resets.get(id) ?? 0) + 1) : current.resets;
+      return { files, byFile, resets };
+    });
+  }, [files]);
   const toast = useToast();
 
   // Comment threads: placed in this diff (shared/comment-placement.ts), then per file as Pierre annotations.
@@ -231,9 +259,9 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
   const { files: diffFiles, headOid, baseOid } = diff;
   const placements = useMemo(() => placeThreads(threads, { files: diffFiles, headOid, baseOid }), [threads, diffFiles, headOid, baseOid]);
   const threadById = useMemo(() => new Map(threads.map((t) => [t.id, t])), [threads]);
-  // Pierre renders (and annotates) only the lines a file's patch shows, until its context is expanded.
+  // The compact diff anchors annotations to its patch. A full file can place them on any line of either revision.
   const shownLines = useMemo(() => new Map<string, { old: SideLines; new: SideLines }>(), [byId]);
-  const shown = useCallback((path: string, side: 'old' | 'new', line: number) => {
+  const patchShows = useCallback((path: string, side: 'old' | 'new', line: number) => {
     let sides = shownLines.get(path);
     if (!sides) {
       const patch = byId.get(path)?.file.patch;
@@ -242,6 +270,11 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
     }
     return sides[side].has(line);
   }, [byId, shownLines]);
+  const shown = useCallback((path: string, side: 'old' | 'new', line: number) => {
+    const full = fullByFile.get(path);
+    if (!full || full === 'loading') return patchShows(path, side, line);
+    return line > 0 && line <= (side === 'old' ? full.deletionLines.length : full.additionLines.length);
+  }, [fullByFile, patchShows]);
   const notes = useMemo(() => notesByFile(threads, placements, shown), [threads, placements, shown]);
   const counts = useMemo(() => (threads.length ? countsByFile(threads, placements) : null), [threads, placements]);
   const ordered = useMemo(() => readingOrder(threads, placements, indexOf), [threads, placements, indexOf]);
@@ -253,14 +286,12 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
     : files), [files, counts, only]);
 
   const [focused, setFocused] = useState<number | null>(comments.initialThread);
-  const [expanded, setExpandedIds] = useState<ReadonlySet<number>>(new Set());
+  const [expanded, setExpandedIds] = useState<ReadonlyMap<number, boolean>>(new Map());
   const setExpanded = useCallback((id: number, open: boolean) => setExpandedIds((s) => {
-    if (s.has(id) === open) return s;
-    const next = new Set(s);
-    if (open) next.add(id);
-    else next.delete(id);
-    return next;
+    if (s.get(id) === open) return s;
+    return new Map(s).set(id, open);
   }), []);
+  const isExpanded = useCallback((t: CommentThread) => expanded.get(t.id) ?? (t.status === 'open' || focused === t.id), [expanded, focused]);
   const [outdatedOpen, setOutdatedPaths] = useState<ReadonlySet<string>>(new Set());
   const setOutdatedOpen = useCallback((path: string, open: boolean) => setOutdatedPaths((s) => {
     if (s.has(path) === open) return s;
@@ -307,6 +338,10 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
   const [prefs, setPrefs] = useState(getDiffPrefs);
   const updatePrefs = useCallback((patch: Partial<DiffPrefs>) => setPrefs((p) => ({ ...p, ...patch })), []);
   useEffect(() => setDiffPrefs(prefs), [prefs]);
+  const foldPlan = useMemo(() => prefs.foldResolved ? resolvedFolds(threads, placements, isExpanded, shown,
+    draft && spot?.at === 'line' ? { path: draft.path, ...spot } : null) : null, [prefs.foldResolved, threads, placements, isExpanded, shown, draft, spot]);
+  const foldPlanRef = useRef(foldPlan);
+  foldPlanRef.current = foldPlan;
   const split = prefs.split && !compact;
   // Compact always wraps (code would run off a phone's screen); the saved preference is the desktop's.
   const wrap = prefs.wrap || compact;
@@ -344,21 +379,35 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
     const flip = flips.get(vf.id) ?? 0;
     const n = notes.get(vf.id);
     const d = draft?.path === vf.id ? spot : null;
-    const sig = n || d ? JSON.stringify([n, d]) : '';
+    const folds = foldPlan?.files.get(vf.id);
+    const sig = n || d || folds ? JSON.stringify([n, d, folds]) : '';
+    const full = fullByFile.get(vf.id);
+    const fileDiff = full && full !== 'loading' ? full : vf.fileDiff!;
+    const id = itemIdFor(vf.id);
     const cached = itemCache.current.get(vf.id);
-    if (cached && cached.flip === flip && cached.notes === sig && cached.item.type === 'diff' && cached.item.fileDiff === vf.fileDiff) return cached.item;
+    if (cached && cached.flip === flip && cached.notes === sig && cached.item.id === id && cached.item.type === 'diff' && cached.item.fileDiff === fileDiff) return cached.item;
     const item: Item = {
-      id: vf.id, type: 'diff', fileDiff: vf.fileDiff!, version: (cached?.item.version ?? -1) + 1, collapsed: isCollapsed(vf),
+      id, type: 'diff', fileDiff, version: (cached?.item.version ?? -1) + 1, collapsed: isCollapsed(vf),
       annotations: annotationsFor(n, d, vf.file.status === 'removed' ? 'deletions' : 'additions'),
     };
     itemCache.current.set(vf.id, { item, flip, notes: sig });
     return item;
-  }), [files, count, flips, isCollapsed, notes, draft, spot]);
+  }), [files, count, flips, isCollapsed, notes, draft, spot, fullByFile, itemIdFor, foldPlan]);
+  const folded = useMemo(() => {
+    const ids = new Set<number>();
+    for (const [id, p] of foldPlan?.ranges ?? []) {
+      const i = indexOf.get(p.path);
+      const item = i === undefined ? undefined : items[i];
+      const folds = foldPlan?.files.get(p.path);
+      if (item?.type === 'diff' && folds && hasFoldedCode(item.fileDiff, folds, p)) ids.add(id);
+    }
+    return ids;
+  }, [foldPlan, indexOf, items]);
 
   // Full contents Pierre loaded, per path: a new thread on expanded context takes its snippet from them. Keyed on
   // the revision, so a refreshed diff starts empty.
   const contents = useMemo(() => new Map<string, { old: string[] | null; new: string[] | null }>(), [rev]);
-  // Context expansion: Pierre asks for both sides of a partial (patch-only) diff on the first expand.
+  // Both the gutter expander and the full-file action load the same two immutable revisions.
   // A failure leaves the hunks as they are and says so in the header. loadFile resolves null for
   // files the server can't serve (missing, binary, too large): those aren't asked for again. It
   // rejects on transient failures (network, rate limit), which the next click retries.
@@ -410,7 +459,7 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
   const shiftClick = useRef(false);
   const onLineSelected = useCallback((range: PierreRange | null, context: { item?: { id: string } }) => {
     if (!range || !context.item) return;
-    const id = context.item.id;
+    const id = pathForItem(context.item.id);
     const several = range.start !== range.end || (range.endSide !== undefined && range.endSide !== range.side);
     const a = clickAnchor.current;
     if (several) openDraftRef.current(id, range);
@@ -424,7 +473,7 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
     requestAnimationFrame(() => dropClickRef.current());
   }, []);
   const onGutterPlus = useCallback((range: PierreRange | null, context: { item?: { id: string } }) => {
-    if (range && context.item) openDraftRef.current(context.item.id, range);
+    if (range && context.item) openDraftRef.current(pathForItem(context.item.id), range);
   }, []);
 
   // The focused thread's lines get a quiet tint: marked in Pierre's shadow DOM ([data-thread-line], styled in
@@ -464,11 +513,15 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
   // Pierre's gutter "+" is a bare icon button, created (or moved) under the pointer: it's named for its line as it
   // lands, by an observer on each file's shadow root.
   const namedRoots = useRef(new WeakSet<ShadowRoot>());
-  const onPostRender = useCallback((node: HTMLElement, instance: unknown, phase: PostRenderPhase) => {
+  const onPostRender = useCallback((node: HTMLElement, instance: unknown, phase: PostRenderPhase, context: { item: Item }) => {
     expandControls.onPostRender(node, instance, phase);
     if (phase === 'unmount') return;
     paintThreadLines(node);
     const root = node.shadowRoot;
+    if (root && paintResolvedFolds(root, foldPlanRef.current?.files.get(pathForItem(context.item.id)))) {
+      // Once Pierre measures the compacted rows, fill in the newly exposed viewport on the next frame.
+      view.current?.getInstance()?.render();
+    }
     if (root && !namedRoots.current.has(root)) {
       namedRoots.current.add(root);
       new MutationObserver((records) => {
@@ -543,7 +596,7 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
     let lo = 0, hi = count - 1;
     while (lo < hi) {
       const mid = (lo + hi + 1) >> 1;
-      if ((cv.getTopForItem(files[mid].id) ?? 0) <= scrollTop + GAP + 1) lo = mid;
+      if ((cv.getTopForItem(itemIdFor(files[mid].id)) ?? 0) <= scrollTop + GAP + 1) lo = mid;
       else hi = mid - 1;
     }
     let id = files[lo].id;
@@ -552,7 +605,7 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
     if (pinned.current && (atEnd || holdPin.current) && indexOf.get(pinned.current)! > lo) id = pinned.current;
     else pinned.current = null;
     current.set(id);
-  }, [files, count, indexOf, current]);
+  }, [files, count, indexOf, current, itemIdFor]);
   const followRef = useRef(follow);
   followRef.current = follow;
 
@@ -602,27 +655,27 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
   // scrolls to a place in the file (a thread's line) instead of its top.
   const countRef = useRef(count);
   countRef.current = count;
-  const jumpTo = useRef<{ id: string; target: CodeViewScrollTarget } | null>(null);
-  const goTo = useCallback((id: string, target: CodeViewScrollTarget = { type: 'item', id, align: 'start' }) => {
+  const jumpTo = useRef<{ id: string; target: FileScrollTarget } | null>(null);
+  const goTo = useCallback((id: string, target: FileScrollTarget = { type: 'item', id, align: 'start' }) => {
     pinned.current = id;
     holdPin.current = target.type === 'line';
     current.set(id);
     settle();
     const i = indexOf.get(id) ?? 0;
-    if (i < countRef.current) view.current?.scrollTo(target);
+    if (i < countRef.current) view.current?.scrollTo({ ...target, id: itemIdFor(id) });
     else {
       jumpTo.current = { id, target };
       setParsed((p) => (p.files === files ? { files, count: parseFiles(files, p.count, Infinity, i + 1) } : p));
     }
     if (compact) setListOpen(false);
-  }, [current, compact, files, indexOf, settle]);
+  }, [current, compact, files, indexOf, itemIdFor, settle]);
   useEffect(() => {
     const j = jumpTo.current;
     if (j == null || (indexOf.get(j.id) ?? Infinity) >= count) return;
     jumpTo.current = null;
     settle();
-    view.current?.scrollTo(j.target);
-  }, [count, indexOf, settle]);
+    view.current?.scrollTo({ ...j.target, id: itemIdFor(j.id) });
+  }, [count, indexOf, itemIdFor, settle]);
 
   // ---------------------------------------------------------------- threads: focus, jumps, the composer
   const onThreadFocusRef = useRef(comments.onThreadFocus);
@@ -634,6 +687,7 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
     const l = live.current;
     const p = l.placements.get(id);
     if (!p) return;
+    setExpanded(id, true);
     const inColumn = p.kind === 'target' || (p.kind === 'outdated' && p.reason === 'file');
     if (inColumn) setColumn(true);
     // The column's entry too, when it's open (or just opened), so both show where the reader is.
@@ -647,7 +701,7 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
     if (p.kind === 'outdated') setOutdatedOpen(p.path, true);
     const onLine = p.kind === 'line' && l.shown(p.path, p.side, p.endLine);
     goTo(vf.id, onLine ? { type: 'line', id: vf.id, lineNumber: p.endLine, side: pierreSide(p.side), align: 'center' } : { type: 'item', id: vf.id, align: 'start' });
-  }, [goTo, setColumn, setOutdatedOpen, toggleCollapsed]);
+  }, [goTo, setColumn, setExpanded, setOutdatedOpen, toggleCollapsed]);
   const focusThread = useCallback((id: number | null, opts: { scroll?: boolean } = {}) => {
     setFocused(id);
     onThreadFocusRef.current(id);
@@ -657,15 +711,55 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
   // The composer's lines (where they are now) stay selected, also when it comes back after a reload (Pierre keeps the
   // selection of a file that isn't rendered yet and paints it when it is).
   const draftLines = draft && spot?.at === 'line' ? { path: draft.path, ...spot } : null;
+  useImperativeHandle(readView, () => () => {
+    const file = byId.get(current.get() ?? '');
+    const rendered = view.current?.getInstance()?.getRenderedItems() ?? [];
+    const scroll = scroller.current?.getBoundingClientRect();
+    const top = Math.max(scroll?.top ?? 0, 0);
+    const bottom = Math.min(scroll?.bottom ?? 0, window.innerHeight);
+    const sources: RenderedDiff[] = [];
+    const visibleRoots = new Map<string, ShadowRoot>();
+    let viewport: DiffViewContext['viewport'] = null;
+    for (const item of rendered) {
+      const root = item.element.shadowRoot;
+      if (!root) continue;
+      const path = pathForItem(item.id);
+      sources.push({ path, root });
+      const bounds = item.element.getBoundingClientRect();
+      if (bounds.height === 0 || bounds.bottom <= top || bounds.top >= bottom) continue;
+      visibleRoots.set(path, root);
+      if (path === file?.id) {
+        const headerBottom = item.element.querySelector('.dvh')?.getBoundingClientRect().bottom ?? top;
+        viewport = readViewport(root, Math.max(top, headerBottom), bottom, file.fileDiff?.hunks ?? []);
+      }
+    }
+
+    let selection: DiffViewContext['selection'] = readTextSelection(sources);
+    if (!selection) {
+      const selected = view.current?.getSelectedLines();
+      const selectedFile = selected ? byId.get(pathForItem(selected.id)) : undefined;
+      if (selected && selectedFile && visibleRoots.has(selectedFile.id)) {
+        selection = { kind: 'lines', ...selectionAnchor(selectedFile.id, selectedFile.file.patch, selected.range) };
+      } else {
+        const anchor = clickAnchor.current;
+        if (anchor && visibleRoots.get(anchor.id)?.querySelector('[data-anchor-line]')?.checkVisibility({ visibilityProperty: true })) {
+          const side = anchor.side === 'deletions' ? 'old' : 'new';
+          selection = { kind: 'lines', path: anchor.id, side, startLine: anchor.line, endLine: anchor.line };
+        }
+      }
+    }
+    return { file: file ? { path: file.id, previousPath: file.file.previousPath } : null, viewport, selection, threadId: focused };
+  }, [byId, current, focused]);
   const draftSel = draftLines ? `${draftLines.path}\0${draftLines.side}\0${draftLines.startLine}\0${draftLines.endLine}` : '';
   const selectDraft = useCallback((sel: string) => {
     const [path, side, start, end] = sel.split('\0');
     const cv = view.current;
     if (!sel) return;
+    const id = itemIdFor(path!);
     const cur = cv?.getSelectedLines();
-    if (cur?.id === path && Math.min(cur.range.start, cur.range.end) === Number(start) && Math.max(cur.range.start, cur.range.end) === Number(end)) return;
-    cv?.setSelectedLines({ id: path!, range: { start: Number(start), end: Number(end), side: pierreSide(side as 'old' | 'new') } });
-  }, []);
+    if (cur?.id === id && Math.min(cur.range.start, cur.range.end) === Number(start) && Math.max(cur.range.start, cur.range.end) === Number(end)) return;
+    cv?.setSelectedLines({ id, range: { start: Number(start), end: Number(end), side: pierreSide(side as 'old' | 'new') } });
+  }, [itemIdFor]);
   useEffect(() => {
     const path = draftSel.split('\0')[0]!;
     if (draftSel && (indexOf.get(path) ?? Infinity) < count) selectDraft(draftSel);
@@ -765,19 +859,30 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
     // On compact, the open column covers the diff: an inline thread has to come out from under it.
     const covered = live.current.compact && columnIsTop() && !inColumn;
     const onScreen = !!r && r.height > 0 && !covered && (inColumn || (!!box && r.bottom > box.top && r.top < box.bottom));
-    if (!onScreen) jumpToThread(id);
+    if (onScreen) setExpanded(id, true);
+    else jumpToThread(id);
     setReplyRequest(id);
-  }, [jumpToThread, columnIsTop]);
-  const toggleResolved = useCallback((t: CommentThread) => {
-    actions.setStatus(t.id, t.status === 'open' ? 'resolved' : 'open').catch((e: unknown) => toast(`Couldn't update: ${(e as Error).message}`, { tone: 'error' }));
-  }, [actions, toast]);
+  }, [jumpToThread, columnIsTop, setExpanded]);
+  const focusedRef = useRef(focused);
+  focusedRef.current = focused;
+  const setStatus = useCallback(async (id: number, status: CommentThread['status']) => {
+    try {
+      await actions.setStatus(id, status);
+      if (!mounted.current) return;
+      setExpanded(id, status === 'open');
+      if (status === 'resolved' && focusedRef.current === id) focusThread(null);
+    } catch (e) {
+      toast(`Couldn't update: ${(e as Error).message}`, { tone: 'error' });
+    }
+  }, [actions, focusThread, setExpanded, toast]);
+  const toggleResolved = useCallback((t: CommentThread) => { void setStatus(t.id, t.status === 'open' ? 'resolved' : 'open'); }, [setStatus]);
 
   const threadsState = useMemo((): ThreadsState => ({
-    byId: threadById, placements, actions, me: comments.me, focused, focus: focusThread, expanded, setExpanded,
+    byId: threadById, placements, actions, me: comments.me, focused, focus: focusThread, isExpanded, setExpanded, setStatus, folded,
     draftScope: comments.key, draftKey: openKey ?? null, draft, draftSpot: spot, submitDraft, closeDraft, discardDraft,
     draftSending: openKey !== undefined && sending.has(openKey), outdatedOpen, setOutdatedOpen, replyRequest, takeReply,
   }), [
-    threadById, placements, actions, comments.me, focused, focusThread, expanded, setExpanded, comments.key, openKey, draft, spot, submitDraft, closeDraft,
+    threadById, placements, actions, comments.me, focused, focusThread, isExpanded, setExpanded, setStatus, folded, comments.key, openKey, draft, spot, submitDraft, closeDraft,
     discardDraft, sending, outdatedOpen, setOutdatedOpen, replyRequest, takeReply,
   ]);
 
@@ -787,7 +892,7 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
     if (!note) return null;
     if (note.kind === 'draft') return <DraftComposer />;
     if (note.kind === 'threads') return <LineThreads ids={note.ids} />;
-    return <FileNotes path={item.id} ids={note.ids} outdated={note.outdated} draft={note.draft} />;
+    return <FileNotes path={pathForItem(item.id)} ids={note.ids} outdated={note.outdated} draft={note.draft} />;
   }, []);
 
   // Deep link: the shell's URL as of opening; after that the URL only follows the viewer. Its thread wins (its line
@@ -883,9 +988,57 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
     return () => document.removeEventListener('keydown', onKey);
   }, [isActive, columnIsTop, indexOf, current, goTo, updatePrefs, focusThread, setColumn, replyToFocused, toggleResolved]);
 
+  const resetPath = useRef<string | null>(null);
+  const resetFocus = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    const path = resetPath.current;
+    if (path === null) return;
+    resetPath.current = null;
+    const cv = view.current?.getInstance();
+    if (!cv) return;
+    const id = itemIdFor(path);
+    const top = cv.getTopForItem(id);
+    // After a deep scroll in the full file, the reset can leave its header above the viewport.
+    if (top !== undefined && top < cv.getScrollTop()) cv.scrollTo({ type: 'item', id, align: 'start' });
+  }, [itemIdFor]);
+  const restoreContextFocus = useCallback((button: HTMLButtonElement | null) => {
+    if (!button || resetFocus.current !== button.closest<HTMLElement>('[data-path]')?.dataset.path) return;
+    resetFocus.current = null;
+    if (document.activeElement === document.body || document.activeElement === scroller.current) button.focus({ preventScroll: true });
+  }, []);
+  const toggleFullFile = useCallback(async (vf: ViewerFile, button: HTMLButtonElement) => {
+    const patch = vf.fileDiff;
+    const full = fullByFile.get(vf.id);
+    if (!patch || full === 'loading') return;
+    if (isCollapsed(vf)) toggleCollapsed(vf.id);
+    if (full) {
+      // Move a draft anchored in newly visible context to its file-level composer when those lines fold away.
+      if (draft?.path === vf.id && spot?.at === 'line' && !patchShows(vf.id, spot.side, spot.endLine)) {
+        setDraftOpenedAt(null);
+        view.current?.clearSelectedLines();
+      }
+      // The gutter may already have hydrated this model. Return to the original patch and its folded context.
+      if (!patch.isPartial) vf.fileDiff = toFileDiff(vf.file, vf.cacheKey);
+      resetPath.current = vf.id;
+      resetFocus.current = document.activeElement === button ? vf.id : null;
+      setFullFile(vf.id, null, true);
+      return;
+    }
+    setFullFile(vf.id, 'loading');
+    try {
+      setFullFile(vf.id, fullContextDiff(patch, await loadDiffFiles(patch)));
+    } catch {
+      setFullFile(vf.id, null);
+      setFailed((s) => new Set(s).add(rev + '\0' + vf.id));
+    }
+  }, [draft, fullByFile, isCollapsed, loadDiffFiles, patchShows, rev, setFullFile, spot, toggleCollapsed]);
+
   const renderHeader = useCallback((item: Item) => {
-    const vf = byId.get(item.id);
+    const vf = byId.get(pathForItem(item.id));
     if (!vf) return null;
+    const patch = vf.fileDiff;
+    const canShowFull = !!baseOid && !!patch?.hunks.length && (patch.type === 'change' || patch.type === 'rename-changed');
+    const full = fullByFile.get(vf.id);
     return (
       <FileHeader
         vf={vf}
@@ -893,10 +1046,13 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
         provider={provider}
         collapsed={item.collapsed === true}
         onToggle={toggleCollapsed}
+        fullContext={full === 'loading' ? 'loading' : full ? 'full' : 'changes'}
+        onToggleContext={canShowFull ? (button) => void toggleFullFile(vf, button) : undefined}
+        contextButtonRef={restoreContextFocus}
         contextFailed={failed.has(`${rev}\0${vf.id}`)}
       />
     );
-  }, [byId, diff.url, provider, rev, failed, toggleCollapsed]);
+  }, [baseOid, byId, diff.url, provider, rev, failed, fullByFile, toggleCollapsed, toggleFullFile, restoreContextFocus]);
 
   // Desktop only (the compact list is a touch overlay); memoized so the file list doesn't re-render.
   const hints = useMemo(() => (compact ? undefined : (
@@ -934,6 +1090,8 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
             <button type="button" className={cx('tbl-btn', prefs.wrap && 'on')} aria-pressed={prefs.wrap} onClick={() => updatePrefs({ wrap: !prefs.wrap })} title="Wrap long lines (w)">Wrap</button>
           </>
         )}
+        <button type="button" className={cx('tbl-btn', prefs.foldResolved && 'on')} aria-pressed={prefs.foldResolved}
+          onClick={() => updatePrefs({ foldResolved: !prefs.foldResolved })} aria-label="Fold resolved code" title="Fold code linked to resolved threads">Fold resolved</button>
         <button type="button" className={cx('wb-btn wb-btn--ghost dvr-cm-btn', showColumn && 'on')} onClick={() => setColumn(!showColumn)} aria-pressed={showColumn}
           title={`${showColumn ? 'Hide' : 'Show'} comments (c)${comments.error ? " · couldn't load them" : ''}`} aria-label="Comments">
           <Icon name="comment" />

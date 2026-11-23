@@ -55,6 +55,7 @@ node dist/server/index.mjs agents add Work --source gitlab.example.com   # this 
 node dist/server/index.mjs agents list                # with the sources each reaches
 node dist/server/index.mjs agents regenerate Claude
 node dist/server/index.mjs agents scope Claude --source github.com       # or --all
+node dist/server/index.mjs agents view-sharing Claude on                # or off
 node dist/server/index.mjs agents disable Claude      # until `agents enable Claude`
 node dist/server/index.mjs agents delete Claude       # says what it wrote; --yes to go ahead
 printf '%s\n' "$MY_TOKEN" | node dist/server/index.mjs agents add Codex --token-stdin   # a token of your own
@@ -202,6 +203,15 @@ Agents work from their own clone of the repository and their own `gh` or `glab`.
 them which pull request and exact commits a comment belongs to, and where it sits in the latest
 code.
 
+### Asking about code you are looking at
+
+Turn on **Share view** for a named agent in **Settings → Agents**. On a headless server, use
+`agents view-sharing <name> on`. In a diff, highlight code and tell the agent, “Look at what I
+have selected in gh-dash.” It can call `get_current_view` to read the review, displayed revision,
+file, and your selection or visible lines. Each call asks the open gh-dash windows and uses
+the responding window you focused most recently. The agent's source limits still apply. Selecting
+text does not start a thread or send a message to the agent.
+
 ### Reviewing a branch before it has a pull request
 
 A pushed branch can be reviewed on its own, against the repository's default branch, and its
@@ -257,3 +267,4 @@ The tools' own descriptions tell the agent the details.
 | `resolve_thread`, `reopen_thread` | Optionally with a reply first |
 | `wait_for_reply` | Waits (45 seconds by default, up to 5 minutes) for someone else to write on the threads it's following: everywhere, or in a repository, pull request, branch or commit |
 | `show` | Asks your open gh-dash windows to show a thread, or a pull request's, branch's or commit's diff |
+| `get_current_view` | Reads the current review, file, visible lines, and code selection on demand, with **Share view** enabled for the calling agent |

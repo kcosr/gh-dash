@@ -5,22 +5,24 @@
  */
 import { useQueryClient } from '@tanstack/react-query';
 import type { QueryClient } from '@tanstack/react-query';
-import { Component, Suspense, lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { ReactNode } from 'react';
+import { Component, Suspense, lazy, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type { ReactNode, Ref } from 'react';
 import { Link } from 'react-router';
 import { isUnreachable, rateLimitResetAt } from '../api/client';
 import { findCachedCommit, findCachedPr, useBranch, useDiff, useLoadFile, useMe, usePrDetail, useRefreshDiff, useRepoMap, useThreadActions, useThreads } from '../api/hooks';
 import { OverlayScope, useLayerHandle, useOverlayOwner, EmptyState, ErrorState, ProgressBar, useToast } from '../workbench';
 import { fmtDateTime, fmtTime, plural, rel, relFuture, relLong } from '../lib/time';
-import { commitDiffId, parseDiffId, useUrlState } from '../lib/urlState';
+import { commitDiffId, parseDiffId, patchSearch, useUrlState } from '../lib/urlState';
 import type { DiffTarget, FileFilter } from '../lib/urlState';
 import type { DiffRequest } from '../diff/DiffViewer';
+import type { DiffViewContext } from '../diff/currentView';
 import { useDiffNudge } from '../lib/show';
 import { isChunkLoadError } from '../lib/util';
 import { Diffstat, prIconClass, prIconName } from './bits';
 import { Icon } from './Icon';
 import { RepoChip } from './RepoChip';
 import type { BranchSummary } from '../../../shared/api';
+import type { CurrentView } from '../../../shared/current-view';
 import { branchRef } from '../../../shared/comment-markdown';
 import { capitalize, refText, repoProvider } from '../../../shared/provider';
 import type { Provider } from '../../../shared/provider';
@@ -45,8 +47,8 @@ function cachedSummary(qc: QueryClient, t: DiffTarget, p: Provider): Summary | u
   return c && { title: c.headline, additions: c.additions, deletions: c.deletions, url: c.url };
 }
 
-export function DiffView({ id, compact }: { id: string; compact: boolean }) {
-  const { s, set } = useUrlState();
+export function DiffView({ id, compact, readView }: { id: string; compact: boolean; readView: Ref<() => CurrentView> }) {
+  const { s, set, view, location } = useUrlState();
   const qc = useQueryClient();
   const toast = useToast();
   const repos = useRepoMap();
@@ -61,6 +63,11 @@ export function DiffView({ id, compact }: { id: string; compact: boolean }) {
   const cached = useMemo(() => cachedSummary(qc, t, p), [qc, t, p, prDetail.data]);
   const panel = useRef<HTMLElement>(null);
   const body = useRef<HTMLDivElement>(null);
+  const readDiffView = useRef<() => DiffViewContext>(null);
+  useImperativeHandle(readView, () => () => ({
+    mode: 'diff', target: t, baseOid: diff.data?.baseOid ?? null, headOid: diff.data?.headOid ?? null,
+    ...(readDiffView.current?.() ?? { file: null, viewport: null, selection: null, threadId: null }),
+  }), [t, diff.data]);
   const [opener] = useState(() => document.activeElement as HTMLElement | null);
   // The deep-linked file and thread as of opening; after that the URL only follows the viewer.
   const [initialFile] = useState(s.file);
@@ -182,7 +189,10 @@ export function DiffView({ id, compact }: { id: string; compact: boolean }) {
       <section ref={panel} className="diff-view" aria-label={`Changes in ${ref}`}>
         <header className="dv-head">
           <RepoChip repo={t.repo} />
-          {t.kind === 'branch' ? <span className="num dv-br" title="Branch"><Icon name="branch" /></span> : <span className="num">{label}</span>}
+          {t.kind === 'pr' ? (
+            <Link className="num dv-details-link" to={{ search: patchSearch(location.search, view, { pr: id, diff: null }) }}
+              title={`Open ${p.pr.one} details`} aria-label={`Open ${p.pr.one} ${label} details`}>{label}</Link>
+          ) : t.kind === 'branch' ? <span className="num dv-br" title="Branch"><Icon name="branch" /></span> : <span className="num">{label}</span>}
           <h2 className="dv-title" title={title}>{title ?? (diff.isError ? null : <span className="wb-skel" style={{ width: 220 }} />)}</h2>
           {baseRef && <span className="dv-base" title={`Compared with ${baseRef} from where they diverge, as a ${p.pr.one} would be`}>compared with <code>{baseRef}</code></span>}
           {t.kind === 'branch' && branch?.pr && <BranchPr pr={branch.pr} p={p} onOpen={openPr} />}
@@ -217,6 +227,7 @@ export function DiffView({ id, compact }: { id: string; compact: boolean }) {
               <Suspense fallback={<DiffSkeleton />}>
                 <DiffViewer
                   diff={d} provider={p} loadFile={loadFile} compact={compact} isActive={isActive} file={initialFile} onFileChange={onFileChange}
+                  readView={readDiffView}
                   comments={{
                     key: threadsId ?? id, threads: threads.data, error: threads.isError, retry: () => void threads.refetch(), actions: threadActions, me: me.data,
                     initialThread, request, onThreadFocus, only: s.only, onOnlyChange,

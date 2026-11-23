@@ -17,7 +17,7 @@ function sh(prelude: string, line: string): string {
 }
 
 const agent = (id: number, name: string, o: Partial<Agent> = {}): Agent =>
-  ({ id, name, tokenPrefix: 'ghd_abcd', createdAt: '2026-09-01T00:00:00.000Z', lastUsedAt: null, disabledAt: null, builtIn: false, sources: null, ...o });
+  ({ id, name, tokenPrefix: 'ghd_abcd', createdAt: '2026-09-01T00:00:00.000Z', lastUsedAt: null, disabledAt: null, builtIn: false, sources: null, shareView: false, ...o });
 
 describe('Settings → Agents', () => {
   it("serves MCP at the API's URL, /mcp; none when nothing listens", () => {

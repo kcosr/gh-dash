@@ -3,16 +3,14 @@ import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, u
 import { Icon } from '../components/Icon';
 import type { DiffLine } from './changeNavigation';
 import type { CurrentFile } from './FileList';
-import { clearFileMatches, findFileMatches, paintFileMatches, type FileMatch } from './fileFind';
+import { clearFileMatches, findFileMatches, paintFileMatches, type FileMatch, type FileMatches } from './fileFind';
 import './fileFindBar.css';
-
-export const FILE_FIND_ID = 'diff-file-find';
 
 export interface FindSource {
   model: FileDiffMetadata;
   root: ShadowRoot | undefined;
   /** Changes when the renderer reveals more context in a hydrated patch. */
-  expandedHeight?: number;
+  expansionVersion?: number;
   isContextVisible?: (lineNumber: number) => boolean;
 }
 
@@ -24,10 +22,10 @@ interface FindResults {
   path: string;
   model: FileDiffMetadata;
   partial: boolean;
-  expandedHeight: number | undefined;
+  expansionVersion: number | undefined;
   query: string;
   split: boolean;
-  matches: FileMatch[];
+  matches: FileMatches;
   active: number;
 }
 
@@ -41,18 +39,9 @@ function revealHorizontally(range: Range) {
   if (rect.left < left || rect.right > clip.right) column.scrollLeft += rect.left - left - 12;
 }
 
-function firstNear(matches: readonly FileMatch[], anchor: DiffLine | null): number {
-  if (!matches.length) return -1;
-  if (!anchor) return 0;
-  const onSide = (match: FileMatch) => match.side === anchor.side ? match.lineNumber : anchor.side === 'old' ? match.oldLineNumber : undefined;
-  const sameLine = matches.findIndex((match) => onSide(match) === anchor.lineNumber);
-  if (sameLine >= 0) return sameLine;
-  const after = matches.findIndex((match) => (onSide(match) ?? match.lineNumber) >= anchor.lineNumber);
-  return after >= 0 ? after : 0;
-}
-
-export function FileFindBar({ ref, input, open, close, current, split, readSource, readAnchor, seek }: {
+export function FileFindBar({ ref, id, input, open, close, current, split, readSource, readAnchor, seek }: {
   ref: Ref<FileFindHandle>;
+  id: string;
   input: RefObject<HTMLInputElement | null>;
   open: boolean;
   close: () => void;
@@ -66,7 +55,7 @@ export function FileFindBar({ ref, input, open, close, current, split, readSourc
   const queryRef = useRef(query);
   const results = useRef<FindResults | null>(null);
   const painted = useRef<ShadowRoot | null>(null);
-  const revealX = useRef<FileMatch | null>(null);
+  const revealX = useRef<number | null>(null);
   const frame = useRef(0);
   const [status, setStatus] = useState({ active: -1, total: 0 });
 
@@ -75,9 +64,8 @@ export function FileFindBar({ ref, input, open, close, current, split, readSourc
     painted.current = root ?? null;
     const r = results.current;
     if (!root || !r) return;
-    const active = r.matches[r.active] ?? null;
-    const range = paintFileMatches(root, r.matches, active);
-    if (range && active && revealX.current === active) {
+    const range = paintFileMatches(root, r.matches, r.active);
+    if (range && revealX.current === r.active) {
       revealHorizontally(range);
       revealX.current = null;
     }
@@ -96,16 +84,15 @@ export function FileFindBar({ ref, input, open, close, current, split, readSourc
     const query = queryRef.current;
     const previous = results.current;
     if (source && path !== null) {
-      const { model, expandedHeight } = source;
+      const { model, expansionVersion } = source;
       if (previous?.path !== path || previous.model !== model || previous.partial !== model.isPartial ||
-        previous.expandedHeight !== expandedHeight || previous.query !== query || previous.split !== split) {
+        previous.expansionVersion !== expansionVersion || previous.query !== query || previous.split !== split) {
         const matches = findFileMatches(model, query, split, source.isContextVisible);
-        const selected = previous?.path === path && previous.query === query ? previous.matches[previous.active] : undefined;
-        const retained = selected ? matches.findIndex((match) => match.side === selected.side && match.lineNumber === selected.lineNumber && match.start === selected.start) : -1;
-        const active = retained >= 0 ? retained : firstNear(matches, readAnchor(path));
-        if (selected === revealX.current) revealX.current = matches[active] ?? null;
-        else revealX.current = null;
-        results.current = { path, model, partial: model.isPartial, expandedHeight, query, split, matches, active };
+        const selected = previous?.path === path && previous.query === query ? previous.matches.at(previous.active) : undefined;
+        const retained = selected ? matches.indexOf(selected) : -1;
+        const active = retained >= 0 ? retained : matches.firstNear(readAnchor(path));
+        revealX.current = selected && previous?.active === revealX.current && active >= 0 ? active : null;
+        results.current = { path, model, partial: model.isPartial, expansionVersion, query, split, matches, active };
       }
     } else {
       results.current = null;
@@ -147,9 +134,9 @@ export function FileFindBar({ ref, input, open, close, current, split, readSourc
 
   const seekActive = () => {
     const r = results.current;
-    const match = r?.matches[r.active];
+    const match = r?.matches.at(r.active);
     if (!r || !match) return;
-    revealX.current = match;
+    revealX.current = r.active;
     seek(r.path, match);
     paint(readSource(r.path)?.root);
   };
@@ -163,7 +150,7 @@ export function FileFindBar({ ref, input, open, close, current, split, readSourc
   };
 
   return (
-    <div id={FILE_FIND_ID} role="search" aria-label="Find in file" className="dvr-find" hidden={!open}>
+    <div id={id} role="search" aria-label="Find in file" className="dvr-find" hidden={!open}>
       <input ref={input} className="wb-input" type="search" aria-label="Find in file" placeholder="Find…" autoComplete="off" spellCheck={false}
         value={query} onChange={(event) => {
           const value = event.currentTarget.value;

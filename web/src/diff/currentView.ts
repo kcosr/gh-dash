@@ -20,7 +20,8 @@ export interface RenderedDiff {
   root: ShadowRoot;
 }
 
-const CODE_ROWS = '[data-line][data-line-type]:not([data-resolved-fold])';
+const LINE_ROWS = '[data-line][data-line-type]';
+const CODE_ROWS = `${LINE_ROWS}:not([data-resolved-fold])`;
 
 function codeLine(row: HTMLElement): CodeLine | null {
   const lineNumber = Number(row.dataset.line);
@@ -55,6 +56,48 @@ function firstVisibleRow(rows: Iterable<VisibleCodeRow>, top: number): VisibleCo
   return first;
 }
 
+function* visibleAnnotationRows(root: ShadowRoot, top: number, bottom: number): Iterable<VisibleCodeRow> {
+  for (const row of root.querySelectorAll<HTMLElement>('[data-line-annotation]')) {
+    const rect = row.getBoundingClientRect();
+    if (rect.height === 0 || rect.bottom <= top || rect.top >= bottom) continue;
+    for (const slot of row.querySelectorAll<HTMLSlotElement>('slot[name]')) {
+      // Pierre's named slots retain the source coordinate, including old-side notes on unified context.
+      const match = /^annotation-(deletions|additions)-(\d+)$/.exec(slot.name);
+      if (!match) continue;
+      const lineNumber = Number(match[2]);
+      if (!Number.isSafeInteger(lineNumber) || lineNumber < 1) continue;
+      for (const element of slot.assignedElements()) {
+        const content = element.getBoundingClientRect();
+        if (content.height === 0 || content.bottom <= top || content.top >= bottom || !element.checkVisibility({ visibilityProperty: true })) continue;
+        yield { row, line: { side: match[1] === 'deletions' ? 'old' : 'new', lineNumber }, top: content.top };
+      }
+    }
+  }
+}
+
+function nearbyCodeLine(root: ShadowRoot, top: number, bottom: number): CodeLine | null {
+  let closest: CodeLine | null = null;
+  let distance = Infinity;
+  let before = false;
+  let after = false;
+  // A rendered gap can fill the viewport between rows. Stay unanchored before the first code row,
+  // such as in a file-level note where Next change should still start at the first hunk.
+  for (const row of root.querySelectorAll<HTMLElement>(CODE_ROWS)) {
+    const rect = row.getBoundingClientRect();
+    if (rect.height === 0 || !row.checkVisibility({ visibilityProperty: true })) continue;
+    before ||= rect.bottom <= top;
+    after ||= rect.top >= bottom;
+    const gap = Math.max(top - rect.bottom, rect.top - bottom, 0);
+    if (gap >= distance) continue;
+    const line = codeLine(row);
+    if (line) {
+      closest = line;
+      distance = gap;
+    }
+  }
+  return before && after ? closest : null;
+}
+
 function hunkAtLine(hunks: readonly Hunk[], { side, lineNumber }: CodeLine): Hunk | undefined {
   return hunks.find((hunk) => side === 'new'
     ? lineNumber >= hunk.additionStart && lineNumber < hunk.additionStart + hunk.additionCount
@@ -69,12 +112,25 @@ export function readViewportAnchor(element: HTMLElement, scroller: HTMLElement, 
   if (bounds.top >= bottom || bounds.bottom <= viewport.top) return null;
   const header = element.querySelector('.dvh')?.getBoundingClientRect();
   const top = Math.max(0, viewport.top, header?.bottom ?? 0);
+  if (bottom <= top) return null;
   const rows = visibleCodeRows(element.shadowRoot, top, bottom);
   const first = firstVisibleRow(pick ? [...rows].filter(({ line }) => pick(line)) : rows, top);
-  if (!first) return null;
   // A line-aligned Pierre scroll target already reserves a sticky header's height. Retain the unclipped
   // row position so a partially visible wrapped line stays at the same point in the viewport.
-  return { ...first.line, offset: first.top - viewport.top - (header?.height ?? 0) };
+  const origin = viewport.top + (header?.height ?? 0);
+  if (first) return { ...first.line, offset: first.top - origin };
+  // A predicate is asking for an actual visible line, such as a nearby hunk already visible under a gap.
+  if (pick) return null;
+  const annotation = firstVisibleRow(visibleAnnotationRows(element.shadowRoot, top, bottom), top);
+  if (annotation) {
+    // Pierre renders an inline annotation directly after its owning row. Preserve the reader's offset
+    // into the annotation even when that row is already above the sticky header.
+    const row = annotation.row.previousElementSibling;
+    const offset = row?.matches(LINE_ROWS) ? row.getBoundingClientRect().top - origin : 0;
+    return { ...annotation.line, offset };
+  }
+  const nearby = nearbyCodeLine(element.shadowRoot, top, bottom);
+  return nearby ? { ...nearby, offset: 0 } : null;
 }
 
 /** `patch` is supplied when removing context, so a line in the hidden gap can land at a nearby change. */

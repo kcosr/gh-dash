@@ -8,7 +8,7 @@
 import type { CodeView as CodeViewClass, CodeViewItem, CodeViewOptions, CodeViewScrollTarget, DiffLineAnnotation, FileDiffLoadedFiles, FileDiffMetadata, LineAnnotation, PostRenderPhase } from '@pierre/diffs';
 import { CodeView, WorkerPoolContextProvider, type CodeViewHandle } from '@pierre/diffs/react';
 import HighlightWorker from '@pierre/diffs/worker/worker.js?worker';
-import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent, type Ref, type RefObject } from 'react';
+import { useCallback, useEffect, useId, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type Ref, type RefObject } from 'react';
 import type { CommentThread, Diff, Me } from '../../../shared/api';
 import { branchRef } from '../../../shared/comment-markdown';
 import { createPlacer, patchLines, placeThreads, type SideLines } from '../../../shared/comment-placement';
@@ -21,7 +21,7 @@ import type { FileFilter } from '../lib/urlState';
 import { cx } from '../lib/util';
 import { CommentsColumn } from './CommentsColumn';
 import { changeHunks, nearestChange, stepChange, type ChangeDirection, type ChangeHunk, type DiffLine } from './changeNavigation';
-import { FILE_FIND_ID, FileFindBar, type FileFindHandle, type FindSource } from './FileFindBar';
+import { FileFindBar, type FileFindHandle, type FindSource } from './FileFindBar';
 import { FileHeader, HEADER_HEIGHT } from './FileHeader';
 import {
   getOpenNewDraft, isSendingDraft, listNewDrafts, loadNewDraft, newDraftsVersion, type NewThreadDraft, openNewDraft, removeNewDraft, sendingDrafts,
@@ -242,7 +242,7 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
   const [fullContext, setFullContext] = useState(() => ({ files, byFile: new Map<string, FullContext>(), resets: new Map<string, number>() }));
   if (fullContext.files !== files) setFullContext({ files, byFile: new Map(), resets: new Map() });
   const { byFile: fullByFile, resets } = fullContext;
-  // A fresh CodeView item drops Pierre's existing and queued gap expansions when returning to the patch.
+  // A fresh item switches context modes immediately and drops Pierre's previous gap expansions.
   const itemIdFor = useCallback((path: string) => {
     const reset = resets.get(path);
     return reset ? `${path}\0${reset}` : path;
@@ -290,12 +290,13 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
     ? files.filter((f) => { const c = counts?.get(f.id); return !!c && (only === 'commented' || c.unresolved > 0); })
     : files), [files, counts, only]);
 
+  const [revealedFolds, setRevealedFolds] = useState<RevealedFolds | null>(null);
   const [focused, setFocused] = useState<number | null>(comments.initialThread);
   const [expanded, setExpandedIds] = useState<ReadonlyMap<number, boolean>>(new Map());
-  const setExpanded = useCallback((id: number, open: boolean) => setExpandedIds((s) => {
-    if (s.get(id) === open) return s;
-    return new Map(s).set(id, open);
-  }), []);
+  const setExpanded = useCallback((id: number, open: boolean) => {
+    setRevealedFolds((folds) => folds?.find ? folds : null);
+    setExpandedIds((s) => s.get(id) === open ? s : new Map(s).set(id, open));
+  }, []);
   const isExpanded = useCallback((t: CommentThread) => expanded.get(t.id) ?? (t.status === 'open' || focused === t.id), [expanded, focused]);
   const [outdatedOpen, setOutdatedPaths] = useState<ReadonlySet<string>>(new Set());
   const setOutdatedOpen = useCallback((path: string, open: boolean) => setOutdatedPaths((s) => {
@@ -341,17 +342,19 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
   }, [draft, draftOpenedAt, rev, shown, diff.kind, diffFiles, headOid, baseOid]);
   const theme = useSyncExternalStore(subscribeTheme, readTheme);
   const [prefs, setPrefs] = useState(getDiffPrefs);
-  const updatePrefs = useCallback((patch: Partial<DiffPrefs>) => setPrefs((p) => ({ ...p, ...patch })), []);
+  const updatePrefs = useCallback((patch: Partial<DiffPrefs>) => {
+    if (patch.foldResolved !== undefined) setRevealedFolds(null);
+    setPrefs((p) => ({ ...p, ...patch }));
+  }, []);
   useEffect(() => setDiffPrefs(prefs), [prefs]);
-  const [revealedFolds, setRevealedFolds] = useState<RevealedFolds | null>(null);
+  const baseFoldPlan = useMemo(() => prefs.foldResolved ? resolvedFolds(threads, placements, isExpanded, shown,
+    draft && spot?.at === 'line' ? { path: draft.path, ...spot } : null) : null, [prefs.foldResolved, threads, placements, isExpanded, shown, draft, spot]);
   const foldPlan = useMemo(() => {
-    if (!prefs.foldResolved) return null;
-    const plan = resolvedFolds(threads, placements, isExpanded, shown, draft && spot?.at === 'line' ? { path: draft.path, ...spot } : null);
-    if (revealedFolds?.rev === rev) {
-      plan.files.get(revealedFolds.path)?.keep.push(...revealedFolds.ranges);
-    }
-    return plan;
-  }, [prefs.foldResolved, threads, placements, isExpanded, shown, draft, spot, revealedFolds, rev]);
+    if (!baseFoldPlan || revealedFolds?.rev !== rev) return baseFoldPlan;
+    const folds = baseFoldPlan.files.get(revealedFolds.path);
+    if (!folds) return baseFoldPlan;
+    return { ...baseFoldPlan, files: new Map(baseFoldPlan.files).set(revealedFolds.path, { ...folds, keep: [...folds.keep, ...revealedFolds.ranges] }) };
+  }, [baseFoldPlan, revealedFolds, rev]);
   const foldPlanRef = useRef(foldPlan);
   foldPlanRef.current = foldPlan;
   const split = prefs.split && !compact;
@@ -379,20 +382,39 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
   const setColumn = useCallback((open: boolean) => (compact ? setColumnOpen(open) : updatePrefs({ comments: open })), [compact, updatePrefs]);
 
   const [findOpen, setFindOpen] = useState(false);
+  const findId = useId();
   const findButton = useRef<HTMLButtonElement>(null);
   const findInput = useRef<HTMLInputElement>(null);
   const findBar = useRef<FileFindHandle>(null);
+  const findOpener = useRef<HTMLElement | null>(null);
+  const openFind = useCallback((opener: HTMLElement | null) => {
+    findOpener.current = opener;
+    setFindOpen(true);
+  }, []);
   const closeFind = useCallback(() => {
     setFindOpen(false);
     setRevealedFolds((folds) => folds?.find ? null : folds);
-    findButton.current?.focus({ preventScroll: true });
+    if (findInput.current?.parentElement?.contains(document.activeElement)) {
+      const opener = findOpener.current;
+      (opener?.isConnected && opener.checkVisibility({ visibilityProperty: true }) ? opener : findButton.current)?.focus({ preventScroll: true });
+    }
+    findOpener.current = null;
   }, []);
-  const findLayer = useLayerHandle(findOpen && files.length > 0, closeFind, false);
   const focusFind = useCallback(() => {
     findInput.current?.focus({ preventScroll: true });
     findInput.current?.select();
   }, []);
   useLayoutEffect(() => { if (findOpen) focusFind(); }, [findOpen, focusFind]);
+  useEffect(() => {
+    if (!findOpen || !files.length) return;
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing || !isActive()) return;
+      event.preventDefault();
+      closeFind();
+    };
+    document.addEventListener('keydown', escape, true);
+    return () => document.removeEventListener('keydown', escape, true);
+  }, [closeFind, files.length, findOpen, isActive]);
 
   // Collapsing: some files start folded (model.ts); each click flips a file and bumps its item version.
   const [flips, setFlips] = useState<ReadonlyMap<string, number>>(new Map());
@@ -461,6 +483,16 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
 
   const scroller = useRef<HTMLDivElement>(null);
   const expandControls = useExpandControls(scroller);
+  const expansionVersions = useMemo(() => new Map<string, number>(), [files]);
+  const noteExpansion = useCallback((event: ReactMouseEvent) => {
+    const control = event.nativeEvent.composedPath().find((element): element is HTMLElement => element instanceof HTMLElement &&
+      (element.hasAttribute('data-expand-button') || element.hasAttribute('data-unmodified-lines')));
+    if (!control?.closest('[data-expand-index]')) return;
+    const root = control.getRootNode();
+    if (!(root instanceof ShadowRoot)) return;
+    const path = root.host.querySelector<HTMLElement>('.dvh')?.dataset.path;
+    if (path) expansionVersions.set(path, (expansionVersions.get(path) ?? 0) + 1);
+  }, [expansionVersions]);
 
   // A comment starts, as on GitHub, from the gutter's "+" (one line, or drag it over several) or from a range of
   // line numbers (drag, shift-click). A plain click on a number only selects that line.
@@ -615,6 +647,7 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
   onFileChangeRef.current = onFileChange;
   useEffect(() => current.subscribe(() => {
     const id = current.get();
+    setRevealedFolds((folds) => folds?.path === id ? folds : null);
     if (id != null && id !== reported.current) {
       reported.current = id;
       onFileChangeRef.current(id);
@@ -731,29 +764,29 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
   const readFindSource = useCallback((path: string): FindSource | null => {
     const cv = view.current?.getInstance();
     const item = cv?.getItem(itemIdFor(path));
-    if (item?.type !== 'diff') return null;
     const rendered = getRenderedFile(path);
     const instance = rendered?.type === 'diff' ? rendered.instance : undefined;
     const full = fullByFile.get(path);
     const root = rendered?.element.shadowRoot ?? undefined;
     if (full && full !== 'loading') return { model: full, root };
-    const model = instance?.fileDiff ?? item.fileDiff;
+    const model = instance?.fileDiff ?? (item?.type === 'diff' ? item.fileDiff : byId.get(path)?.fileDiff);
+    if (!model) return null;
     if (instance && !model.isPartial) {
       return {
-        model, root, expandedHeight: instance.getVirtualizedHeight(),
+        model, root, expansionVersion: expansionVersions.get(path),
         isContextVisible: (line) => instance.isLineRenderable(line),
       };
     }
     return { model, root };
-  }, [fullByFile, getRenderedFile, itemIdFor]);
+  }, [byId, expansionVersions, fullByFile, getRenderedFile, itemIdFor]);
 
   const pendingLine = useRef<LineJump | null>(null);
   const seekLine = useCallback((path: string, line: DiffLine, source: 'find' | 'change', change?: ChangeHunk) => {
     const vf = byId.get(path);
     if (!vf) return;
     const target: LineScrollTarget = { type: 'line', id: path, lineNumber: line.lineNumber, side: pierreSide(line.side),
-      ...(source === 'find' ? { align: 'nearest', offset: 24 } as const : { align: 'start', offset: EXPAND_LINES } as const) };
-    const folds = foldPlan?.files.get(path);
+      ...(source === 'find' ? { align: 'nearest', offset: 24 } as const : { align: 'start', offset: LINE_HEIGHT } as const) };
+    const folds = baseFoldPlan?.files.get(path);
     const full = fullByFile.get(path);
     const model = full && full !== 'loading' ? full : vf.fileDiff;
     const at = { side: line.side, startLine: line.lineNumber, endLine: line.lineNumber };
@@ -761,14 +794,17 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
     // Pierre's rendered window even after it is made visible.
     const hidden = folds && model ? folds.hide.filter((range) => hasFoldedCode(model, { hide: [range], keep: folds.keep }, at)) : [];
     const opensFile = isCollapsed(vf);
-    if (!hidden.length && !opensFile) {
+    const nextReveal = hidden.length ? { path, rev, ranges: hidden, find: source === 'find' } : null;
+    const sameReveal = revealedFolds === nextReveal || (nextReveal && revealedFolds?.path === path && revealedFolds.rev === rev &&
+      revealedFolds.find === nextReveal.find && revealedFolds.ranges.length === hidden.length && hidden.every((range, index) => range === revealedFolds.ranges[index]));
+    if (sameReveal && !opensFile) {
       goTo(path, target, change);
       return;
     }
     pendingLine.current = { path, target, change };
-    if (hidden.length) setRevealedFolds({ path, rev, ranges: hidden, find: source === 'find' });
+    if (!sameReveal) setRevealedFolds(nextReveal);
     if (opensFile) toggleCollapsed(path);
-  }, [byId, foldPlan, fullByFile, goTo, isCollapsed, rev, toggleCollapsed]);
+  }, [baseFoldPlan, byId, fullByFile, goTo, isCollapsed, revealedFolds, rev, toggleCollapsed]);
   const previousFolds = useRef<RevealedFolds | null>(null);
   useLayoutEffect(() => {
     if (previousFolds.current !== revealedFolds) {
@@ -802,8 +838,8 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
   }, [byId]);
   const changeAt = useCallback((path: string, direction: ChangeDirection) => {
     const pin = changeJump.current;
-    return stepChange(stopsFor(path), readAnchor(path), direction, pin?.path === path ? pin.change : undefined);
-  }, [readAnchor, stopsFor]);
+    return stepChange(stopsFor(path), readAnchor(path), direction, pin?.path === path ? pin.change : undefined, split);
+  }, [readAnchor, split, stopsFor]);
   const onStepChange = useCallback((path: string, direction: ChangeDirection) => {
     const change = changeAt(path, direction);
     if (change) seekLine(path, change.target, 'change', change);
@@ -825,7 +861,7 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
           if (!stops.length) continue;
           const anchor = scroller.current ? readViewportAnchor(item.element, scroller.current) : null;
           const pin = changeJump.current?.path === path ? changeJump.current.change : undefined;
-          next.set(path, Number(!!stepChange(stops, anchor, -1, pin)) + 2 * Number(!!stepChange(stops, anchor, 1, pin)));
+          next.set(path, Number(!!stepChange(stops, anchor, -1, pin, split)) + 2 * Number(!!stepChange(stops, anchor, 1, pin, split)));
         }
         setChangeAvailability((previous) => next.size === previous.size && [...next].every(([path, state]) => previous.get(path) === state) ? previous : next);
       });
@@ -833,7 +869,7 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
     scheduleChanges.current = schedule;
     schedule();
     return () => { scheduleChanges.current = () => {}; cancelAnimationFrame(frame); };
-  }, [stopsFor]);
+  }, [split, stopsFor]);
 
   // ---------------------------------------------------------------- threads: focus, jumps, the composer
   const onThreadFocusRef = useRef(comments.onThreadFocus);
@@ -1103,7 +1139,7 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
   keyState.current = { navFiles, prefs, compact, ordered, focused, placements, showColumn, threadById };
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const active = isActive() || findLayer.isTop();
+      const active = isActive();
       if (active && hasFiles && !e.defaultPrevented && !e.isComposing && (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'f') {
         const focused = document.activeElement;
         const surface = root.current?.closest('.diff-view') ?? root.current;
@@ -1111,7 +1147,10 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
         if (isTypingTarget(focused) && focused !== findInput.current) return;
         e.preventDefault();
         if (findOpen) focusFind();
-        else setFindOpen(true);
+        else {
+          const opener = focused?.shadowRoot?.activeElement ?? focused;
+          openFind(opener instanceof HTMLElement && opener !== document.body ? opener : scroller.current);
+        }
         return;
       }
       if (e.metaKey || e.ctrlKey || e.altKey || isTypingTarget(document.activeElement)) return;
@@ -1155,7 +1194,7 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [isActive, findLayer, hasFiles, findOpen, focusFind, columnIsTop, indexOf, current, goTo, updatePrefs, focusThread, setColumn, replyToFocused, toggleResolved]);
+  }, [isActive, hasFiles, findOpen, focusFind, openFind, columnIsTop, indexOf, current, goTo, updatePrefs, focusThread, setColumn, replyToFocused, toggleResolved]);
 
   const filesRef = useRef(files);
   filesRef.current = files;
@@ -1221,9 +1260,6 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
     setFullFile(vf.id, 'loading');
     try {
       const model = fullContextDiff(patch, await loadDiffFiles(patch));
-      const rendered = getRenderedFile(vf.id);
-      // Pierre can keep the old patch geometry until the worker has prepared the new diff.
-      if (rendered?.type === 'diff') await rendered.instance.primeHighlightCache(model);
       if (filesRef.current === files) {
         const unchanged = generation === navigation.current && scrollTop === scroller.current?.scrollTop;
         const liveAnchor = !unchanged && current.get() === vf.id ? readAnchor(vf.id) : null;
@@ -1235,13 +1271,15 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
             navigation: navigation.current, change: unchanged ? change : pin?.path === vf.id ? pin.change : undefined,
           };
         }
+        resetFocus.current = document.activeElement === button ? vf.id : null;
       }
-      setFullFile(vf.id, model);
+      // A new item can render the full geometry immediately, while syntax highlighting catches up.
+      setFullFile(vf.id, model, true);
     } catch {
       setFullFile(vf.id, null);
       setFailed((s) => new Set(s).add(rev + '\0' + vf.id));
     }
-  }, [current, draft, files, fullByFile, getRenderedFile, isCollapsed, loadDiffFiles, patchShows, readAnchor, rev, setFullFile, spot, stopsFor, toggleCollapsed]);
+  }, [current, draft, files, fullByFile, isCollapsed, loadDiffFiles, patchShows, readAnchor, rev, setFullFile, spot, stopsFor, toggleCollapsed]);
 
   const renderHeader = useCallback((item: Item) => {
     const vf = byId.get(pathForItem(item.id));
@@ -1287,7 +1325,7 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
     : diff.kind === 'branch' ? branchRef(diff.repo, diff.branch ?? diff.title) : `${diff.repo}@${diff.headOid.slice(0, 7)}`;
 
   return (
-    <div className={cx('diff-viewer', compact && 'compact')} ref={root} onKeyDown={expandControls.onKeyDown}>
+    <div className={cx('diff-viewer', compact && 'compact')} ref={root} onClickCapture={noteExpansion} onKeyDown={expandControls.onKeyDown}>
       <div className="dvr-bar">
         <button type="button" className={cx('wb-btn wb-btn--icon wb-btn--ghost dvr-list-btn', showList && 'on')} onClick={toggleList} aria-pressed={showList} title={showList ? 'Hide file list' : 'Show file list'} aria-label="File list">
           <Icon name="list" />
@@ -1310,8 +1348,8 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
           onClick={() => updatePrefs({ foldResolved: !prefs.foldResolved })} aria-label="Fold resolved code" title="Fold code linked to resolved threads">Fold resolved</button>
         {hasFiles && (
           <button type="button" ref={findButton} className={cx('wb-btn wb-btn--icon wb-btn--ghost dvr-find-btn', findOpen && 'on')}
-            title="Find in file" aria-label="Find in file" aria-expanded={findOpen} aria-controls={FILE_FIND_ID} aria-keyshortcuts="Control+F Meta+F"
-            onClick={() => { if (findOpen) closeFind(); else setFindOpen(true); }}>
+            title="Find in file" aria-label="Find in file" aria-expanded={findOpen} aria-controls={findId} aria-keyshortcuts="Control+F Meta+F"
+            onClick={(event) => { if (findOpen) closeFind(); else openFind(event.currentTarget); }}>
             <Icon name="search" />
           </button>
         )}
@@ -1335,7 +1373,7 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
           <div className="dvr-code">
             {hasFiles ? (
               <>
-                <FileFindBar ref={findBar} input={findInput} open={findOpen} close={closeFind} current={current} split={split}
+                <FileFindBar ref={findBar} id={findId} input={findInput} open={findOpen} close={closeFind} current={current} split={split}
                   readSource={readFindSource} readAnchor={readAnchor} seek={seekMatch} />
                 <WorkerPoolContextProvider {...POOL}>
                   <CodeView

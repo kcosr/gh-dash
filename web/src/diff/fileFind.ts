@@ -10,23 +10,166 @@ export interface FileMatch {
   oldLineNumber?: number;
 }
 
+type LineLocation = Pick<FileMatch, 'side' | 'lineNumber'>;
+type MatchSpan = { start: number; end: number };
+
+export interface FileMatches {
+  readonly length: number;
+  at(index: number): FileMatch | undefined;
+  indexOf(match: FileMatch): number;
+  firstNear(anchor: LineLocation | null): number;
+  lineMatches(side: FileMatch['side'], lineNumber: number): MatchSpan | undefined;
+}
+
+// Small searches start with tiny arrays. Large searches append into blocks so growth never copies the accumulated offsets.
+const BLOCK_SIZE = 16_384;
+class PackedNumbers {
+  private readonly blocks: Uint32Array[] = [];
+  length = 0;
+
+  push(value: number) {
+    const blockIndex = Math.floor(this.length / BLOCK_SIZE);
+    const offset = this.length % BLOCK_SIZE;
+    let block = this.blocks[blockIndex];
+    if (!block || offset === block.length) {
+      const next = new Uint32Array(Math.min(BLOCK_SIZE, block ? block.length * 2 : 16));
+      if (block) next.set(block);
+      this.blocks[blockIndex] = block = next;
+    }
+    block[offset] = value;
+    this.length++;
+  }
+
+  at(index: number): number {
+    return this.blocks[Math.floor(index / BLOCK_SIZE)]![index % BLOCK_SIZE]!;
+  }
+}
+
+/** First index whose element is not before the target. */
+function lowerBound(start: number, end: number, before: (index: number) => boolean): number {
+  while (start < end) {
+    const middle = start + Math.floor((end - start) / 2);
+    if (before(middle)) start = middle + 1;
+    else end = middle;
+  }
+  return start;
+}
+
+/** The earliest line on each side still at or after a viewer position. */
+function linesAtAnchor(diff: FileDiffMetadata, split: boolean, anchor: LineLocation): [old: number, next: number] {
+  let old = 1, next = 1;
+  const offsetFrom = () => anchor.lineNumber - (anchor.side === 'old' ? old : next);
+  for (const hunk of diff.hunks) {
+    old = hunk.deletionStart + (hunk.deletionCount === 0 ? 1 : 0);
+    next = hunk.additionStart + (hunk.additionCount === 0 ? 1 : 0);
+    const beforeHunk = offsetFrom();
+    if (beforeHunk < 0) return [old + beforeHunk, next + beforeHunk];
+    for (const block of hunk.hunkContent) {
+      const oldCount = block.type === 'context' ? block.lines : block.deletions;
+      const nextCount = block.type === 'context' ? block.lines : block.additions;
+      const offset = offsetFrom();
+      if (offset < (anchor.side === 'old' ? oldCount : nextCount)) {
+        if (block.type === 'context') return [old + offset, next + offset];
+        if (split) return [old + Math.min(offset, oldCount), next + Math.min(offset, nextCount)];
+        // Unified layout shows all deletions before any additions in the block.
+        return anchor.side === 'old' ? [old + offset, next] : [old + oldCount, next + offset];
+      }
+      old += oldCount;
+      next += nextCount;
+    }
+  }
+  const afterLastHunk = offsetFrom();
+  return [old + afterLastHunk, next + afterLastHunk];
+}
+
+/** Store one offset per hit. Matching lines are ordered visually, with a separate sorted index for each side. */
+class SearchMatches implements FileMatches {
+  private readonly offsets = new PackedNumbers();
+  private readonly firstOffset = new PackedNumbers();
+  private readonly lineNumber = { old: new PackedNumbers(), new: new PackedNumbers() };
+  private readonly sideRows = { old: new PackedNumbers(), new: new PackedNumbers() };
+
+  constructor(private readonly diff: FileDiffMetadata, private readonly split: boolean, private readonly queryLength: number) {}
+
+  get length() { return this.offsets.length; }
+
+  addLine(side: FileMatch['side'], lineNumber: number, oldLineNumber?: number) {
+    const row = this.firstOffset.length;
+    this.firstOffset.push(this.length);
+    this.lineNumber.old.push(side === 'old' ? lineNumber : oldLineNumber ?? 0);
+    this.lineNumber.new.push(side === 'new' ? lineNumber : 0);
+    this.sideRows[side].push(row);
+    if (oldLineNumber !== undefined) this.sideRows.old.push(row);
+  }
+
+  addMatch(offset: number) { this.offsets.push(offset); }
+
+  at(index: number): FileMatch | undefined {
+    if (index < 0 || index >= this.length) return;
+    const row = lowerBound(0, this.firstOffset.length, (i) => this.firstOffset.at(i) <= index) - 1;
+    const next = this.lineNumber.new.at(row);
+    const old = this.lineNumber.old.at(row);
+    const start = this.offsets.at(index);
+    return {
+      side: next ? 'new' : 'old', lineNumber: next || old, start, end: start + this.queryLength,
+      ...(next && old ? { oldLineNumber: old } : {}),
+    };
+  }
+
+  private firstRowAtOrAfter(side: FileMatch['side'], lineNumber: number): number | undefined {
+    const rows = this.sideRows[side];
+    const numbers = this.lineNumber[side];
+    const i = lowerBound(0, rows.length, (index) => numbers.at(rows.at(index)) < lineNumber);
+    if (i < rows.length) return rows.at(i);
+  }
+
+  lineMatches(side: FileMatch['side'], lineNumber: number): MatchSpan | undefined {
+    const row = this.firstRowAtOrAfter(side, lineNumber);
+    if (row === undefined || this.lineNumber[side].at(row) !== lineNumber) return;
+    return {
+      start: this.firstOffset.at(row),
+      end: row + 1 < this.firstOffset.length ? this.firstOffset.at(row + 1) : this.length,
+    };
+  }
+
+  indexOf(match: FileMatch): number {
+    const span = this.lineMatches(match.side, match.lineNumber);
+    if (!span) return -1;
+    const i = lowerBound(span.start, span.end, (index) => this.offsets.at(index) < match.start);
+    return i < span.end && this.offsets.at(i) === match.start ? i : -1;
+  }
+
+  firstNear(anchor: LineLocation | null): number {
+    if (!this.length) return -1;
+    if (!anchor) return 0;
+    const sameLine = this.lineMatches(anchor.side, anchor.lineNumber);
+    if (sameLine) return sameLine.start;
+    const [old, next] = linesAtAnchor(this.diff, this.split, anchor);
+    const oldRow = this.firstRowAtOrAfter('old', old);
+    const nextRow = this.firstRowAtOrAfter('new', next);
+    const row = Math.min(oldRow ?? this.firstOffset.length, nextRow ?? this.firstOffset.length);
+    return row < this.firstOffset.length ? this.firstOffset.at(row) : 0;
+  }
+}
+
 /** A literal search in reading order, using the diff model even for unmounted rows. */
 export function findFileMatches(
   diff: FileDiffMetadata,
   query: string,
   split: boolean,
   isContextVisible?: (newLine: number) => boolean,
-): FileMatch[] {
-  if (!query || !diff.hunks.length) return [];
+): FileMatches {
+  const matches = new SearchMatches(diff, split, query.length);
+  if (!query || !diff.hunks.length) return matches;
   const literal = new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'giu');
-  const matches: FileMatch[] = [];
   const add = (side: FileMatch['side'], lineNumber: number, text: string | undefined, oldLineNumber?: number, inGap = false) => {
     if (text === undefined) return;
     literal.lastIndex = 0;
     let match = literal.exec(text);
     if (!match || (inGap && !isContextVisible?.(lineNumber))) return;
+    matches.addLine(side, lineNumber, oldLineNumber);
     do {
-      matches.push({ side, lineNumber, start: match.index, end: match.index + match[0].length, oldLineNumber });
+      matches.addMatch(match.index);
       match = literal.exec(text);
     } while (match);
   };
@@ -67,27 +210,8 @@ export function findFileMatches(
   return matches;
 }
 
-type RowMatches = Record<FileMatch['side'], Map<number, FileMatch[]>>;
-const indexes = new WeakMap<readonly FileMatch[], RowMatches>();
-
-/** Index once per search so painting a newly virtualized window only visits its own matches. */
-function indexMatches(matches: readonly FileMatch[]): RowMatches {
-  const cached = indexes.get(matches);
-  if (cached) return cached;
-  const index: RowMatches = { old: new Map(), new: new Map() };
-  for (const match of matches) {
-    const side = index[match.side];
-    let row = side.get(match.lineNumber);
-    if (!row) side.set(match.lineNumber, row = []);
-    row.push(match);
-    if (match.oldLineNumber !== undefined) index.old.set(match.oldLineNumber, row);
-  }
-  indexes.set(matches, index);
-  return index;
-}
-
 /** Match offsets span any number of syntax tokens without changing Pierre's DOM or native selection. */
-function* rangesForRow(row: HTMLElement, matches: readonly FileMatch[]): Generator<[FileMatch, Range]> {
+function* rangesForRow(row: HTMLElement, matches: FileMatches, first: number, end: number): Generator<[number, Range]> {
   const doc = row.ownerDocument;
   const walker = doc.createTreeWalker(row, NodeFilter.SHOW_TEXT);
   let node = walker.nextNode() as Text | null;
@@ -96,7 +220,8 @@ function* rangesForRow(row: HTMLElement, matches: readonly FileMatch[]): Generat
     offset += node!.length;
     node = walker.nextNode() as Text | null;
   };
-  for (const match of matches) {
+  for (let index = first; index < end; index++) {
+    const match = matches.at(index)!;
     while (node && offset + node.length <= match.start) advance();
     if (!node) break;
     const range = doc.createRange();
@@ -104,12 +229,14 @@ function* rangesForRow(row: HTMLElement, matches: readonly FileMatch[]): Generat
     while (node && offset + node.length < match.end) advance();
     if (!node) break;
     range.setEnd(node, match.end - offset);
-    yield [match, range];
+    yield [index, range];
   }
 }
 
 const ALL = 'ghd-find-match';
 const CURRENT = 'ghd-find-current';
+// A mounted minified line can contain millions of matches. Keep navigation exact and bound only the passive paint work.
+const MAX_PASSIVE_HIGHLIGHTS = 512;
 const paintedRoots = new WeakMap<Document, ShadowRoot>();
 
 /** With a root, only clear highlights owned by that file; Pierre can unmount an older file after revealing another. */
@@ -123,7 +250,7 @@ export function clearFileMatches(root?: ShadowRoot) {
 }
 
 /** Paint the mounted portion of the file and return the current match's exact range for horizontal reveal. */
-export function paintFileMatches(root: ShadowRoot, matches: readonly FileMatch[], active: FileMatch | null): Range | null {
+export function paintFileMatches(root: ShadowRoot, matches: FileMatches, active: number): Range | null {
   const doc = root.ownerDocument;
   const win = doc.defaultView;
   const registry = win?.CSS.highlights;
@@ -132,19 +259,29 @@ export function paintFileMatches(root: ShadowRoot, matches: readonly FileMatch[]
     clearFileMatches(root);
     return null;
   }
-  const lookup = indexMatches(matches);
   const all = new win.Highlight();
   const current = new win.Highlight();
+  const mounted = [];
+  const activeSide = matches.at(active)?.side;
   let activeRange = null;
   for (const row of root.querySelectorAll<HTMLElement>('[data-line][data-line-type]:not([data-resolved-fold])')) {
     const side = row.dataset.lineType === 'change-deletion' || row.closest('[data-deletions]') ? 'old' : 'new';
-    const hits = lookup[side].get(Number(row.dataset.line));
+    const hits = matches.lineMatches(side, Number(row.dataset.line));
     if (!hits) continue;
-    for (const [match, range] of rangesForRow(row, hits)) {
-      if (match !== active) all.add(range);
+    const nearest = Math.max(hits.start, Math.min(hits.end - 1, active));
+    mounted.push({ row, side, ...hits, nearest, distance: Math.abs(nearest - active) });
+  }
+  mounted.sort((a, b) => a.distance - b.distance);
+  for (const { row, side, start, end, nearest } of mounted) {
+    const includesActive = nearest === active;
+    const budget = MAX_PASSIVE_HIGHLIGHTS - all.size + (includesActive ? 1 : 0);
+    if (!budget) break;
+    const first = Math.max(start, Math.min(end - budget, nearest - Math.floor(budget / 2)));
+    for (const [index, range] of rangesForRow(row, matches, first, Math.min(end, first + budget))) {
+      if (index !== active) all.add(range);
       else {
         current.add(range);
-        if (!activeRange || side === match.side) activeRange = range;
+        if (!activeRange || side === activeSide) activeRange = range;
       }
     }
   }

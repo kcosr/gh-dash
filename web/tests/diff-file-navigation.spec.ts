@@ -175,12 +175,13 @@ test('previous and next change use the same stops in the patch and full file', a
 });
 
 test('find counts both sides, wraps through virtual rows, and follows the viewed file', async ({ page }) => {
-  const { diff, file, other, pick } = await openDiff(page);
+  const { diff, file, other, pick, scroll } = await openDiff(page);
   await button(diff, 'Split').click();
   const findButton = button(diff, 'Find in file');
   const find = diff.getByRole('searchbox', { name: 'Find in file' });
   const count = diff.getByRole('status').filter({ hasText: /\d+\s*(?:of|\/)\s*\d+|No matches/i });
   const isCount = (current: number, total: number) => new RegExp(`^${current}\\s*(?:of|/)\\s*${total}$`);
+  await scroll.focus();
   await page.keyboard.press('Control+f');
   await expect(find).toBeFocused();
   await find.fill('needle');
@@ -217,7 +218,7 @@ test('find counts both sides, wraps through virtual rows, and follows the viewed
   await expectInReadingView(line(file, farMatch));
   await find.press('Escape');
   await expect(find).toHaveCount(0);
-  await expect(findButton).toBeFocused();
+  await expect(scroll).toBeFocused();
   await expect(diff).toBeVisible();
 
   await findButton.click();

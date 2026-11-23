@@ -132,6 +132,25 @@ test('finishing a full-file load preserves the file picked while it was pending'
   await expectInReadingView(line(other, 1, 'change-addition'));
 });
 
+test('finishing a full-file load preserves a newer source position in the same file', async ({ page }) => {
+  let release!: () => void;
+  const holdBlobs = new Promise<void>((resolve) => { release = resolve; });
+  const { file, scroll } = await openDiff(page, holdBlobs);
+  try {
+    await button(file, 'Next change').click();
+    await expectInReadingView(line(file, second, 'change-addition'));
+    await clickSticky(page, button(file, 'Show full file'));
+    await expect(button(file, 'Loading file…')).toBeDisabled();
+    await scroll.evaluate((el) => { el.scrollTop = 0; });
+    await expectInReadingView(line(file, first, 'change-addition'));
+  } finally {
+    release();
+  }
+  await expect(button(file, 'Show changes only')).toBeVisible();
+  await expect.poll(() => scroll.evaluate((el) => el.scrollHeight)).toBeGreaterThan(40_000);
+  await expectInReadingView(line(file, first, 'change-addition'));
+});
+
 test('previous and next change use the same stops in the patch and full file', async ({ page }) => {
   const { file } = await openDiff(page);
   const previous = button(file, 'Previous change');

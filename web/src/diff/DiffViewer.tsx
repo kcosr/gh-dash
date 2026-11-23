@@ -1188,6 +1188,7 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
     const patch = vf.fileDiff;
     const full = fullByFile.get(vf.id);
     if (!patch || full === 'loading') return;
+    const generation = ++navigation.current;
     const anchor = readAnchor(vf.id);
     const change = changeJump.current?.path === vf.id ? changeJump.current.change : undefined;
     if (isCollapsed(vf)) toggleCollapsed(vf.id);
@@ -1206,7 +1207,7 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
           const visible = nearby && readAnchor(vf.id, ({ side, lineNumber }) => lineNumber >= nearby[side].first && lineNumber <= nearby[side].last);
           if (visible) target = contextScrollTarget(vf.id, visible);
         }
-        contextRestore.current = { files, path: vf.id, model: null, target, navigation: navigation.current, change };
+        contextRestore.current = { files, path: vf.id, model: null, target, navigation: generation, change };
       } else resetPath.current = vf.id;
       // The gutter may already have hydrated this model. Return to the original patch and its folded context.
       if (!patch.isPartial) vf.fileDiff = toFileDiff(vf.file, vf.cacheKey);
@@ -1214,7 +1215,6 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
       setFullFile(vf.id, null, true);
       return;
     }
-    const generation = navigation.current;
     const scrollTop = scroller.current?.scrollTop;
     const first = stopsFor(vf.id)[0]?.target;
     const target = contextScrollTarget(vf.id, anchor ?? (first ? { ...first, offset: 0 } : null));
@@ -1224,15 +1224,24 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
       const rendered = getRenderedFile(vf.id);
       // Pierre can keep the old patch geometry until the worker has prepared the new diff.
       if (rendered?.type === 'diff') await rendered.instance.primeHighlightCache(model);
-      if (filesRef.current === files && generation === navigation.current && scrollTop === scroller.current?.scrollTop) {
-        contextRestore.current = { files, path: vf.id, model, target, navigation: generation, change };
+      if (filesRef.current === files) {
+        const unchanged = generation === navigation.current && scrollTop === scroller.current?.scrollTop;
+        const liveAnchor = !unchanged && current.get() === vf.id ? readAnchor(vf.id) : null;
+        if (unchanged || liveAnchor) {
+          // If the reader scrolled within this patch during the fetch, carry their newer source line across.
+          const pin = changeJump.current;
+          contextRestore.current = {
+            files, path: vf.id, model, target: liveAnchor ? contextScrollTarget(vf.id, liveAnchor) : target,
+            navigation: navigation.current, change: unchanged ? change : pin?.path === vf.id ? pin.change : undefined,
+          };
+        }
       }
       setFullFile(vf.id, model);
     } catch {
       setFullFile(vf.id, null);
       setFailed((s) => new Set(s).add(rev + '\0' + vf.id));
     }
-  }, [draft, files, fullByFile, getRenderedFile, isCollapsed, loadDiffFiles, patchShows, readAnchor, rev, setFullFile, spot, stopsFor, toggleCollapsed]);
+  }, [current, draft, files, fullByFile, getRenderedFile, isCollapsed, loadDiffFiles, patchShows, readAnchor, rev, setFullFile, spot, stopsFor, toggleCollapsed]);
 
   const renderHeader = useCallback((item: Item) => {
     const vf = byId.get(pathForItem(item.id));

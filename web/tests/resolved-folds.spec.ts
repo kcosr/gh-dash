@@ -181,6 +181,7 @@ test('clicking Resolve collapses the thread even if focus returns to its draft b
   } finally {
     finishResolve();
   }
+  await expect(card.getByRole('button', { name: 'Reopen', exact: true })).toBeVisible();
   await expect(title).toHaveAttribute('aria-expanded', 'false');
   await expect(added).toBeHidden();
   await expect.poll(() => new URL(page.url()).searchParams.has('thread')).toBe(false);

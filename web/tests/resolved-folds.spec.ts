@@ -172,16 +172,25 @@ test('clicking Resolve collapses the thread even if focus returns to its draft b
   await reply.fill('Still reviewing');
   await expect(reply).toBeFocused();
   const resolve = card.getByRole('button', { name: 'Resolve', exact: true });
+  const saved = page.waitForResponse('**/api/v1/threads/1');
   let readingPosition: number;
   try {
     await resolve.click();
     await expect(resolve).toBeDisabled();
     await reply.focus();
+    await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
     await expect(reply).toBeFocused();
     readingPosition = await scroll.evaluate((el) => el.scrollTop);
   } finally {
     finishResolve();
   }
+  await saved;
+  // Allow the cache notification and focus handoff to commit without using up the typing pause.
+  await expect.poll(async () => {
+    await page.clock.runFor(20);
+    return title.evaluate((el) => document.activeElement === el && el.getAttribute('aria-expanded') === 'false');
+  }).toBe(true);
+  await page.clock.runFor(40);
   await expect(card.getByRole('button', { name: 'Reopen', exact: true })).toBeVisible();
   await expect(title).toHaveAttribute('aria-expanded', 'false');
   await expect(title).toBeFocused();
@@ -197,8 +206,9 @@ test('clicking Resolve collapses the thread even if focus returns to its draft b
   // Folding the changed row may adjust the pane by its height. Resolving should not center the thread.
   expect(Math.abs(await scroll.evaluate((el) => el.scrollTop) - readingPosition)).toBeLessThanOrEqual(24);
 
-  await page.clock.fastForward(1000);
+  await page.clock.runFor(1000);
   await title.press('Space');
+  await page.clock.resume();
   await expect(reply).toHaveValue('Still reviewing');
   await expect(added).toBeVisible();
 });

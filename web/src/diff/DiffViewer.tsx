@@ -1122,18 +1122,33 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
     else jumpToThread(id);
     setReplyRequest(id);
   }, [jumpToThread, columnIsTop, setExpanded]);
-  const focusedRef = useRef(focused);
-  focusedRef.current = focused;
+  // Both mutations in this view and streamed updates replace the thread data. Apply the same
+  // expansion change only when a status changes, so a resolved thread can still be opened by hand.
+  const previousThreads = useRef(threadById);
+  useLayoutEffect(() => {
+    const previous = previousThreads.current;
+    if (previous === threadById) return;
+    previousThreads.current = threadById;
+    const changed = threads.filter((thread) => {
+      const before = previous.get(thread.id);
+      return before && before.status !== thread.status;
+    });
+    if (!changed.length) return;
+    setRevealedFolds((folds) => folds?.find ? folds : null);
+    setExpandedIds((expanded) => {
+      const next = new Map(expanded);
+      for (const thread of changed) next.set(thread.id, thread.status === 'open');
+      return next;
+    });
+    if (changed.some((thread) => thread.id === focused && thread.status === 'resolved')) focusThread(null);
+  }, [focused, focusThread, threadById, threads]);
   const setStatus = useCallback(async (id: number, status: CommentThread['status']) => {
     try {
       await actions.setStatus(id, status);
-      if (!mounted.current) return;
-      setExpanded(id, status === 'open');
-      if (status === 'resolved' && focusedRef.current === id) focusThread(null);
     } catch (e) {
       toast(`Couldn't update: ${(e as Error).message}`, { tone: 'error' });
     }
-  }, [actions, focusThread, setExpanded, toast]);
+  }, [actions, toast]);
   const toggleResolved = useCallback((t: CommentThread) => { void setStatus(t.id, t.status === 'open' ? 'resolved' : 'open'); }, [setStatus]);
 
   const threadsState = useMemo((): ThreadsState => ({

@@ -10,7 +10,7 @@
 
 ### Changed
 
-- Search across changed files with Command+F or Ctrl+F in the diff viewer. ([#28](https://github.com/kcosr/gh-dash/pull/28))
+- Search across changed files with Command+F or Ctrl+F and automatically collapse threads when they resolve. ([#28](https://github.com/kcosr/gh-dash/pull/28))
 
 ## 0.1.0 - 2026-10-11
 

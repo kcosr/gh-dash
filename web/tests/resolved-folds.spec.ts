@@ -1,5 +1,5 @@
 import type { Page } from '@playwright/test';
-import type { CommentThread, Diff } from '../../shared/api';
+import type { CommentThread, Diff, StreamMessage } from '../../shared/api';
 import { expect, prs, test } from './fixtures';
 
 const pr = prs[1]!;
@@ -77,6 +77,49 @@ test('a resolved thread folds its own lines and keeps overlapping and opposite-s
   await expect(added).toBeVisible();
   await expect(title(1)).toHaveAttribute('aria-expanded', 'true');
 });
+
+for (const foldCode of [false, true]) {
+  test(`an agent resolution collapses the thread with code folding ${foldCode ? 'enabled' : 'disabled'}`, async ({ page }) => {
+    const agent = { id: 42, kind: 'agent' as const, name: 'Review agent' };
+    const pending = thread(1, 2, 2);
+    const threads = [pending, thread(2, 3, 3, { status: 'resolved' })];
+    let sendResolution!: () => void;
+    const resolution = new Promise<void>((resolve) => { sendResolution = resolve; });
+    await page.route('**/api/v1/stream', async (route) => {
+      await resolution;
+      const event: StreamMessage = {
+        type: 'comments', repo: pr.repo, kind: 'pr', number: pr.number, branch: pr.headRef,
+        commitOid: headOid, threadId: pending.id, event: 'resolved', by: agent,
+      };
+      await route.fulfill({ contentType: 'text/event-stream', body: `data: ${JSON.stringify(event)}\n\n` });
+    }, { times: 1 });
+    const diff = await openReview(page, '@@ -1,3 +1,3 @@\n before\n-old\n+new\n after', threads);
+    if (foldCode) await diff.getByRole('button', { name: 'Fold resolved code' }).click();
+    const card = diff.locator('.dth[data-thread="1"]');
+    const title = card.locator('.dth-sum');
+    const other = diff.locator('.dth[data-thread="2"] .dth-sum');
+    const added = diff.locator('[data-line="2"][data-line-type="change-addition"]');
+    await other.click();
+    await title.click();
+    await title.click();
+    await expect(title).toHaveAttribute('aria-expanded', 'true');
+    await expect.poll(() => new URL(page.url()).searchParams.get('thread')).toBe('1');
+    await expect(added).toBeVisible();
+
+    threads[0] = { ...pending, status: 'resolved', resolvedAt: at, resolvedBy: agent };
+    sendResolution();
+    await expect(card.getByRole('img', { name: 'Resolved by Review agent' })).toBeVisible();
+    await expect(title).toHaveAttribute('aria-expanded', 'false');
+    await expect(other).toHaveAttribute('aria-expanded', 'true');
+    await expect.poll(() => new URL(page.url()).searchParams.has('thread')).toBe(false);
+    if (foldCode) await expect(added).toBeHidden();
+    else await expect(added).toBeVisible();
+
+    await title.click();
+    await expect(title).toHaveAttribute('aria-expanded', 'true');
+    await expect(added).toBeVisible();
+  });
+}
 
 test('folding a long range compacts the virtualized viewport and lets the comments jump reveal it', async ({ page }) => {
   const rows = Array.from({ length: 550 }, (_, n) => n === 500 ? '-old\n+new' : ` line ${n + 1}`);

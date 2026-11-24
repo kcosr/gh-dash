@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { loadEnvironment } from './server/config.ts';
+import { pierreFoldWindow } from './scripts/pierre-fold-window.ts';
 
 // @pierre/diffs and its Shiki highlighter (the diffs group below).
 const DIFFS = /node_modules[\\/](@pierre|shiki|@shikijs|oniguruma-to-es|oniguruma-parser|regex|regex-recursion|regex-utilities|diff|lru_map|hast-util-to-html|html-void-elements|stringify-entities|character-entities-html4|character-entities-legacy|zwitch)[\\/]/;
@@ -15,7 +16,8 @@ export default defineConfig(({ command }) => {
   const env = command === 'serve' ? loadEnvironment() : process.env;
   return {
     root: 'web',
-    plugins: [react()],
+    plugins: [pierreFoldWindow(), react()],
+    optimizeDeps: { rolldownOptions: { plugins: [pierreFoldWindow()] } },
     build: {
       outDir: '../dist/web',
       emptyOutDir: true,

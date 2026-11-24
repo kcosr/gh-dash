@@ -183,12 +183,20 @@ test('clicking Resolve collapses the thread even if focus returns to its draft b
   }
   await expect(card.getByRole('button', { name: 'Reopen', exact: true })).toBeVisible();
   await expect(title).toHaveAttribute('aria-expanded', 'false');
+  await expect(title).toBeFocused();
+  await page.keyboard.type('jscw ');
+  await expect(title).toHaveAttribute('aria-expanded', 'false');
+  await expect(title).toBeFocused();
+  await expect(diff.getByRole('button', { name: 'Unified', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(diff.getByRole('button', { name: 'Wrap', exact: true })).toHaveAttribute('aria-pressed', 'false');
+  await expect(diff.getByRole('button', { name: 'Comments', exact: true })).toHaveAttribute('aria-pressed', 'false');
+  await expect(diff.locator('button[data-id="src/cache.ts"]')).toHaveAttribute('aria-current', 'true');
   await expect(added).toBeHidden();
   await expect.poll(() => new URL(page.url()).searchParams.has('thread')).toBe(false);
   // Folding the changed row may adjust the pane by its height. Resolving should not center the thread.
   expect(Math.abs(await scroll.evaluate((el) => el.scrollTop) - readingPosition)).toBeLessThanOrEqual(24);
 
-  await title.click();
+  await title.press('Enter');
   await expect(reply).toHaveValue('Still reviewing');
   await expect(added).toBeVisible();
 });
@@ -234,6 +242,49 @@ test('folding a long range compacts the virtualized viewport and lets the commen
   const linked = diff.locator('.dth[data-thread="2"]');
   await expect(linked.getByRole('button', { name: 'Resolve' })).toBeInViewport();
   await expect(fold).toHaveAttribute('aria-pressed', 'true');
+});
+
+test('scrolling past folded code keeps the tail of the file and its thread above the next file', async ({ page }) => {
+  const first = Array.from({ length: 500 }, (_, i) => i === 498 ? '-old\n+new' : ` context ${i + 1}`);
+  const tail = Array.from({ length: 8 }, (_, i) => i === 2 ? '-second old\n+second new' : ` tail ${i + 600}`);
+  const patch = `@@ -1,500 +1,500 @@\n${first.join('\n')}\n@@ -600,8 +600,8 @@\n${tail.join('\n')}`;
+  const diff = await openReview(page, patch, [
+    thread(1, 103, 496, { status: 'resolved' }), thread(2, 607, 607),
+    thread(3, 1, 1, { path: 'src/other.ts', status: 'resolved' }),
+  ]);
+  await diff.getByRole('button', { name: 'Fold resolved code' }).click();
+  await expect(diff.locator('.dth[data-thread="1"] .dth-sum')).toHaveAttribute('aria-expanded', 'false');
+
+  const result = await diff.locator('.dvr-scroll').evaluate(async (pane) => {
+    const viewport = pane.getBoundingClientRect();
+    let sawBoundary = false;
+    let direction = 1;
+    let bottom = 0;
+    for (let i = 0; i < 260; i++) {
+      const before = pane.scrollTop;
+      pane.scrollTop += 17 * direction;
+      await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+      const hosts = Array.from(pane.querySelectorAll('diffs-container'));
+      const file = hosts.find((host) => host.querySelector('.dvh[data-path="src/cache.ts"]'));
+      const next = hosts.find((host) => host.querySelector('.dvh[data-path="src/other.ts"]'));
+      const nextTop = next?.getBoundingClientRect().top;
+      if (file && nextTop !== undefined && nextTop > viewport.top + 60 && nextTop < viewport.bottom) {
+        sawBoundary = true;
+        const last = file.shadowRoot?.querySelector('[data-line="607"]');
+        const thread = file.querySelector('.dth[data-thread="2"]');
+        if (!last?.checkVisibility({ visibilityProperty: true }) || !thread?.checkVisibility()) {
+          return { sawBoundary, lostTailAt: pane.scrollTop };
+        }
+      }
+      if (direction === -1 && pane.scrollTop < bottom - 380) break;
+      if (direction === 1 && pane.scrollTop === before && before + pane.clientHeight >= pane.scrollHeight - 2) {
+        bottom = before;
+        direction = -1;
+      }
+    }
+    return { sawBoundary, lostTailAt: null };
+  });
+  expect(result).toEqual({ sawBoundary: true, lostTailAt: null });
 });
 
 test('find reveals a line inside a long resolved fold and restores the fold on close', async ({ page }) => {

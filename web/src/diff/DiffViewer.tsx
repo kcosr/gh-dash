@@ -140,6 +140,25 @@ const COLUMN_KEYS = new Set(['c', 'n', 'p', 'r', 'e']);
 /** Keys that scroll the focused diff scroller (they end a jump's settling like a wheel does). */
 const SCROLL_KEYS = new Set(['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End']);
 
+/** An explicit Resolve can close an editor that regained focus while the save was pending. */
+function focusResolvedSummary(summary: HTMLButtonElement) {
+  summary.focus({ preventScroll: true });
+  if (document.activeElement !== summary) return;
+  const ignoreTyping = (event: KeyboardEvent) => {
+    if (event.key.length !== 1 || event.metaKey || event.ctrlKey || event.altKey || summary.getAttribute('aria-expanded') !== 'false') return;
+    event.preventDefault();
+    event.stopPropagation();
+  };
+  const release = () => {
+    summary.removeEventListener('keydown', ignoreTyping);
+    summary.removeEventListener('blur', release);
+    summary.removeEventListener('click', release);
+  };
+  summary.addEventListener('keydown', ignoreTyping);
+  summary.addEventListener('blur', release);
+  summary.addEventListener('click', release);
+}
+
 registerThemes();
 
 // Syntax highlighting runs in a small pool of workers: Shiki's tokenizer takes hundreds of
@@ -1139,6 +1158,7 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
   // expansion change only when a status changes, so a resolved thread can still be opened by hand.
   const previousThreads = useRef(threadById);
   const pendingCollapse = useRef(new Set<number>());
+  const focusAfterCollapse = useRef<HTMLButtonElement | null>(null);
   // Focus can move while Resolve is saving. Keep the user's intent until the resolved data arrives.
   const resolveRequests = useRef(new Map<number, symbol>());
   useLayoutEffect(() => {
@@ -1147,7 +1167,8 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
     if (previous !== threadById) {
       previousThreads.current = threadById;
       const active = document.activeElement;
-      const editing = active instanceof HTMLTextAreaElement ? active.closest<HTMLElement>('.dth')?.dataset.thread : undefined;
+      const editor = active instanceof HTMLTextAreaElement ? active : null;
+      const editing = editor?.closest<HTMLElement>('.dth')?.dataset.thread;
       for (const thread of threads) {
         const before = previous.get(thread.id);
         const resolvedHere = thread.status === 'resolved' && resolveRequests.current.delete(thread.id);
@@ -1155,6 +1176,9 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
         if (thread.status === 'resolved' && !resolvedHere && editing === String(thread.id) && threadComposers.has(thread.id)) {
           pendingCollapse.current.add(thread.id);
         } else {
+          if (resolvedHere && editing === String(thread.id)) {
+            focusAfterCollapse.current = editor?.closest('.dth')?.querySelector<HTMLButtonElement>('.dth-sum') ?? null;
+          }
           pendingCollapse.current.delete(thread.id);
           expansion.set(thread.id, thread.status === 'open');
         }
@@ -1184,6 +1208,12 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
     });
     if (focused !== null && expansion.get(focused) === false) focusThread(null);
   }, [focused, focusThread, placements, threadById, threadComposers, threads]);
+  useLayoutEffect(() => {
+    const summary = focusAfterCollapse.current;
+    if (summary?.isConnected && summary.getAttribute('aria-expanded') !== 'false') return;
+    focusAfterCollapse.current = null;
+    if (summary?.isConnected && document.activeElement === document.body) focusResolvedSummary(summary);
+  }, [expanded]);
   const setStatus = useCallback(async (id: number, status: CommentThread['status']) => {
     const request = Symbol();
     if (status === 'resolved') resolveRequests.current.set(id, request);

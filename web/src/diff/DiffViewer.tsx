@@ -1144,14 +1144,17 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
     const expansion = new Map<number, boolean>();
     if (previous !== threadById) {
       previousThreads.current = threadById;
+      const active = document.activeElement;
+      const editing = active instanceof HTMLTextAreaElement ? active.closest<HTMLElement>('.dth')?.dataset.thread : undefined;
       for (const thread of threads) {
         const before = previous.get(thread.id);
         if (!before || before.status === thread.status) continue;
-        if (thread.status === 'open') expansion.set(thread.id, true);
-        else pendingCollapse.current.add(thread.id);
+        if (thread.status === 'resolved' && editing === String(thread.id) && threadComposers.has(thread.id)) {
+          pendingCollapse.current.add(thread.id);
+        } else expansion.set(thread.id, thread.status === 'open');
       }
     }
-    // Leave a reply or edit available until its composer closes.
+    // Let a reader continue typing until their reply or edit closes.
     for (const id of pendingCollapse.current) {
       if (threadById.get(id)?.status !== 'resolved') pendingCollapse.current.delete(id);
       else if (!threadComposers.has(id)) {

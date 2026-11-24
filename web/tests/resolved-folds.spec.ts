@@ -153,6 +153,25 @@ test('a resolved thread collapses after its open reply closes', async ({ page })
   await expect(added).toBeHidden();
 });
 
+test('clicking Resolve collapses the thread and keeps its reply draft', async ({ page }) => {
+  const diff = await openReview(page, '@@ -1,3 +1,3 @@\n before\n-old\n+new\n after', [thread(1, 2, 2)]);
+  await diff.getByRole('button', { name: 'Fold resolved code' }).click();
+  const card = diff.locator('.dth[data-thread="1"]');
+  const title = card.locator('.dth-sum');
+  const added = diff.locator('[data-line="2"][data-line-type="change-addition"]');
+  await card.getByRole('button', { name: 'Reply…', exact: true }).click();
+  const reply = card.getByRole('textbox', { name: 'Reply' });
+  await reply.fill('Still reviewing');
+  await expect(reply).toBeFocused();
+  await card.getByRole('button', { name: 'Resolve', exact: true }).click();
+  await expect(title).toHaveAttribute('aria-expanded', 'false');
+  await expect(added).toBeHidden();
+
+  await title.click();
+  await expect(reply).toHaveValue('Still reviewing');
+  await expect(added).toBeVisible();
+});
+
 test('agent resolution preserves a change revealed in another file', async ({ page }) => {
   const pending = thread(2, 1, 1, { path: 'src/other.ts' });
   const threads = [thread(1, 11, 11, { status: 'resolved' }), pending];

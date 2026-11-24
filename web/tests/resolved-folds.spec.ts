@@ -155,6 +155,7 @@ test('a resolved thread collapses after its open reply closes', async ({ page })
 });
 
 test('clicking Resolve collapses the thread even if focus returns to its draft before the response', async ({ page }) => {
+  await page.clock.install();
   let finishResolve!: () => void;
   const resolvePending = new Promise<void>((resolve) => { finishResolve = resolve; });
   const line = 60;
@@ -196,7 +197,8 @@ test('clicking Resolve collapses the thread even if focus returns to its draft b
   // Folding the changed row may adjust the pane by its height. Resolving should not center the thread.
   expect(Math.abs(await scroll.evaluate((el) => el.scrollTop) - readingPosition)).toBeLessThanOrEqual(24);
 
-  await title.press('Enter');
+  await page.clock.fastForward(1000);
+  await title.press('Space');
   await expect(reply).toHaveValue('Still reviewing');
   await expect(added).toBeVisible();
 });

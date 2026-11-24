@@ -139,17 +139,25 @@ function namePlus(button: Element) {
 const COLUMN_KEYS = new Set(['c', 'n', 'p', 'r', 'e']);
 /** Keys that scroll the focused diff scroller (they end a jump's settling like a wheel does). */
 const SCROLL_KEYS = new Set(['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End']);
+const RESOLVE_TYPING_PAUSE_MS = 650;
 
 /** An explicit Resolve can close an editor that regained focus while the save was pending. */
 function focusResolvedSummary(summary: HTMLButtonElement) {
   summary.focus({ preventScroll: true });
   if (document.activeElement !== summary) return;
+  let timer = 0;
+  const renew = () => {
+    clearTimeout(timer);
+    timer = window.setTimeout(release, RESOLVE_TYPING_PAUSE_MS);
+  };
   const ignoreTyping = (event: KeyboardEvent) => {
     if (event.key.length !== 1 || event.metaKey || event.ctrlKey || event.altKey || summary.getAttribute('aria-expanded') !== 'false') return;
     event.preventDefault();
     event.stopPropagation();
+    renew();
   };
   const release = () => {
+    clearTimeout(timer);
     summary.removeEventListener('keydown', ignoreTyping);
     summary.removeEventListener('blur', release);
     summary.removeEventListener('click', release);
@@ -157,6 +165,7 @@ function focusResolvedSummary(summary: HTMLButtonElement) {
   summary.addEventListener('keydown', ignoreTyping);
   summary.addEventListener('blur', release);
   summary.addEventListener('click', release);
+  renew();
 }
 
 registerThemes();

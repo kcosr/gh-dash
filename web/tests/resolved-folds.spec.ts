@@ -16,7 +16,7 @@ const thread = (id: number, startLine: number, endLine: number, options: Partial
   ...options,
 });
 
-async function openReview(page: Page, patch: string, threads: CommentThread[]) {
+async function openReview(page: Page, patch: string, threads: CommentThread[], waitForStatus?: Promise<void>) {
   await page.route('**/api/v1/prs/**/diff', (route) => route.fulfill({ json: {
     kind: 'pr', repo: pr.repo, repoId: 2, number: pr.number, title: pr.title, baseOid, headOid, fetchedAt: at,
     files: [
@@ -26,7 +26,8 @@ async function openReview(page: Page, patch: string, threads: CommentThread[]) {
     totalFiles: 2, additions: 2, deletions: 2, url: pr.url,
   } satisfies Diff }));
   await page.route('**/api/v1/prs/**/threads', (route) => route.fulfill({ json: { items: threads } }));
-  await page.route('**/api/v1/threads/*', (route) => {
+  await page.route('**/api/v1/threads/*', async (route) => {
+    await waitForStatus;
     const id = Number(new URL(route.request().url()).pathname.split('/').at(-1));
     const t = threads.find((t) => t.id === id)!;
     const { status } = route.request().postDataJSON() as Pick<CommentThread, 'status'>;
@@ -153,19 +154,38 @@ test('a resolved thread collapses after its open reply closes', async ({ page })
   await expect(added).toBeHidden();
 });
 
-test('clicking Resolve collapses the thread and keeps its reply draft', async ({ page }) => {
-  const diff = await openReview(page, '@@ -1,3 +1,3 @@\n before\n-old\n+new\n after', [thread(1, 2, 2)]);
+test('clicking Resolve collapses the thread even if focus returns to its draft before the response', async ({ page }) => {
+  let finishResolve!: () => void;
+  const resolvePending = new Promise<void>((resolve) => { finishResolve = resolve; });
+  const line = 60;
+  const rows = Array.from({ length: 160 }, (_, i) => i + 1 === line ? '-old\n+new' : ` line ${i + 1}`);
+  const diff = await openReview(page, `@@ -1,160 +1,160 @@\n${rows.join('\n')}`, [thread(1, line, line)], resolvePending);
   await diff.getByRole('button', { name: 'Fold resolved code' }).click();
+  const scroll = diff.locator('.dvr-scroll');
+  await scroll.evaluate((el) => { el.scrollTop = 850; });
   const card = diff.locator('.dth[data-thread="1"]');
   const title = card.locator('.dth-sum');
-  const added = diff.locator('[data-line="2"][data-line-type="change-addition"]');
+  const added = diff.locator(`[data-line="${line}"][data-line-type="change-addition"]`);
   await card.getByRole('button', { name: 'Reply…', exact: true }).click();
   const reply = card.getByRole('textbox', { name: 'Reply' });
   await reply.fill('Still reviewing');
   await expect(reply).toBeFocused();
-  await card.getByRole('button', { name: 'Resolve', exact: true }).click();
+  const resolve = card.getByRole('button', { name: 'Resolve', exact: true });
+  let readingPosition: number;
+  try {
+    await resolve.click();
+    await expect(resolve).toBeDisabled();
+    await reply.focus();
+    await expect(reply).toBeFocused();
+    readingPosition = await scroll.evaluate((el) => el.scrollTop);
+  } finally {
+    finishResolve();
+  }
   await expect(title).toHaveAttribute('aria-expanded', 'false');
   await expect(added).toBeHidden();
+  await expect.poll(() => new URL(page.url()).searchParams.has('thread')).toBe(false);
+  // Folding the changed row may adjust the pane by its height. Resolving should not center the thread.
+  expect(Math.abs(await scroll.evaluate((el) => el.scrollTop) - readingPosition)).toBeLessThanOrEqual(24);
 
   await title.click();
   await expect(reply).toHaveValue('Still reviewing');

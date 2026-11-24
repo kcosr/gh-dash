@@ -5,9 +5,9 @@
  */
 import { useQueryClient } from '@tanstack/react-query';
 import type { QueryClient } from '@tanstack/react-query';
-import { Component, Suspense, lazy, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Component, Suspense, lazy, useCallback, useEffect, useId, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode, Ref } from 'react';
-import { Link } from 'react-router';
+import { Link, useNavigationType } from 'react-router';
 import { isUnreachable, rateLimitResetAt } from '../api/client';
 import { findCachedCommit, findCachedPr, useBranch, useDiff, useLoadFile, useMe, usePrDetail, useRefreshDiff, useRepoMap, useThreadActions, useThreads } from '../api/hooks';
 import { OverlayScope, useLayerHandle, useOverlayOwner, EmptyState, ErrorState, ProgressBar, useToast } from '../workbench';
@@ -93,37 +93,34 @@ export function DiffView({ id, compact, readView }: { id: string; compact: boole
   // the entry, so Back still closes the diff).
   const setRef = useRef(set);
   setRef.current = set;
-  // What the viewer last put in the URL: a thread or file that differs was asked for from outside (an agent's `show`
-  // for this diff), and the viewer goes there, as it would on opening.
-  const reported = useRef({ thread: s.thread, file: s.file });
+  // Tag writes that mirror the viewer's position so a delayed URL commit cannot send it back to that position.
+  const viewerId = useId();
+  const mirror = useMemo(() => ({ replace: true, state: { diffViewer: viewerId } }), [viewerId]);
+  const navigationType = useNavigationType();
   const fileTimer = useRef(0);
   const onFileChange = useCallback((path: string) => {
     clearTimeout(fileTimer.current);
-    fileTimer.current = window.setTimeout(() => {
-      reported.current.file = path;
-      setRef.current({ file: path }, { replace: true });
-    }, 300);
-  }, []);
+    fileTimer.current = window.setTimeout(() => setRef.current({ file: path }, mirror), 300);
+  }, [mirror]);
   useEffect(() => () => clearTimeout(fileTimer.current), []);
   // The focused thread and the file-list filter replace the entry too: Back always closes the diff.
-  const onThreadFocus = useCallback((thread: number | null) => {
-    reported.current.thread = thread;
-    setRef.current({ thread }, { replace: true });
-  }, []);
-  const onOnlyChange = useCallback((only: FileFilter | null) => setRef.current({ only }, { replace: true }), []);
+  const onThreadFocus = useCallback((thread: number | null) => setRef.current({ thread }, mirror), [mirror]);
+  const onOnlyChange = useCallback((only: FileFilter | null) => setRef.current({ only }, mirror), [mirror]);
   const [request, setRequest] = useState<DiffRequest | null>(null);
   // Or asked again for the place the URL names (lib/show.ts nudgeDiff).
   const nudge = useDiffNudge();
   const nudged = useRef(nudge);
+  const lastPosition = useRef({ thread: s.thread, file: s.file });
   useEffect(() => {
-    const r = reported.current;
+    const previous = lastPosition.current;
+    lastPosition.current = { thread: s.thread, file: s.file };
     const again = nudged.current !== nudge;
     nudged.current = nudge;
-    const thread = s.thread !== r.thread || again ? s.thread : null;
-    const file = s.file !== r.file || again ? s.file : null;
-    reported.current = { thread: s.thread, file: s.file };
+    if (!again && navigationType === 'REPLACE' && location.state?.diffViewer === viewerId) return;
+    const thread = s.thread !== previous.thread || again ? s.thread : null;
+    const file = s.file !== previous.file || again ? s.file : null;
     if (thread !== null || file !== null) setRequest((q) => ({ thread, file, n: (q?.n ?? 0) + 1 }));
-  }, [s.thread, s.file, nudge]);
+  }, [s.thread, s.file, nudge, navigationType, location.state, viewerId]);
 
   useEffect(() => {
     // The list and drawer are hidden underneath: start keyboard focus (and scrolling) in the diff.

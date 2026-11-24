@@ -366,11 +366,11 @@ export function useUrlState() {
   latest.current = location.search;
 
   const set = useCallback(
-    (patch: UrlPatch, opts: { replace?: boolean } = {}) => {
+    (patch: UrlPatch, opts: { replace?: boolean; state?: unknown } = {}) => {
       const search = patchSearch(latest.current, view, patch);
       if (search === latest.current) return;
       latest.current = search;
-      navigate({ pathname: location.pathname, search }, { replace: !!opts.replace });
+      navigate({ pathname: location.pathname, search }, { replace: !!opts.replace, state: opts.state });
     },
     [navigate, location.pathname, view],
   );

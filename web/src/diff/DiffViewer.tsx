@@ -1139,6 +1139,8 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
   // expansion change only when a status changes, so a resolved thread can still be opened by hand.
   const previousThreads = useRef(threadById);
   const pendingCollapse = useRef(new Set<number>());
+  // Focus can move while Resolve is saving. Keep the user's intent until the resolved data arrives.
+  const resolveRequests = useRef(new Map<number, symbol>());
   useLayoutEffect(() => {
     const previous = previousThreads.current;
     const expansion = new Map<number, boolean>();
@@ -1148,10 +1150,14 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
       const editing = active instanceof HTMLTextAreaElement ? active.closest<HTMLElement>('.dth')?.dataset.thread : undefined;
       for (const thread of threads) {
         const before = previous.get(thread.id);
-        if (!before || before.status === thread.status) continue;
-        if (thread.status === 'resolved' && editing === String(thread.id) && threadComposers.has(thread.id)) {
+        const resolvedHere = thread.status === 'resolved' && resolveRequests.current.delete(thread.id);
+        if (!resolvedHere && (!before || before.status === thread.status)) continue;
+        if (thread.status === 'resolved' && !resolvedHere && editing === String(thread.id) && threadComposers.has(thread.id)) {
           pendingCollapse.current.add(thread.id);
-        } else expansion.set(thread.id, thread.status === 'open');
+        } else {
+          pendingCollapse.current.delete(thread.id);
+          expansion.set(thread.id, thread.status === 'open');
+        }
       }
     }
     // Let a reader continue typing until their reply or edit closes.
@@ -1179,10 +1185,16 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
     if (focused !== null && expansion.get(focused) === false) focusThread(null);
   }, [focused, focusThread, placements, threadById, threadComposers, threads]);
   const setStatus = useCallback(async (id: number, status: CommentThread['status']) => {
+    const request = Symbol();
+    if (status === 'resolved') resolveRequests.current.set(id, request);
+    else resolveRequests.current.delete(id);
+    let resolved = false;
     try {
-      await actions.setStatus(id, status);
+      resolved = (await actions.setStatus(id, status)).status === 'resolved';
     } catch (e) {
       toast(`Couldn't update: ${(e as Error).message}`, { tone: 'error' });
+    } finally {
+      if (!resolved && resolveRequests.current.get(id) === request) resolveRequests.current.delete(id);
     }
   }, [actions, toast]);
   const toggleResolved = useCallback((t: CommentThread) => { void setStatus(t.id, t.status === 'open' ? 'resolved' : 'open'); }, [setStatus]);

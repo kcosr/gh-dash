@@ -41,6 +41,24 @@ async function openReview(page: Page, patch: string, threads: CommentThread[]) {
   return diff;
 }
 
+async function prepareAgentResolution(page: Page, threads: CommentThread[], pending: CommentThread) {
+  const agent = { id: 42, kind: 'agent' as const, name: 'Review agent' };
+  let sendResolution!: () => void;
+  const resolution = new Promise<void>((resolve) => { sendResolution = resolve; });
+  await page.route('**/api/v1/stream', async (route) => {
+    await resolution;
+    const event: StreamMessage = {
+      type: 'comments', repo: pr.repo, kind: 'pr', number: pr.number, branch: pr.headRef,
+      commitOid: headOid, threadId: pending.id, event: 'resolved', by: agent,
+    };
+    await route.fulfill({ contentType: 'text/event-stream', body: `data: ${JSON.stringify(event)}\n\n` });
+  }, { times: 1 });
+  return () => {
+    threads[threads.indexOf(pending)] = { ...pending, status: 'resolved', resolvedAt: at, resolvedBy: agent };
+    sendResolution();
+  };
+}
+
 test('a resolved thread folds its own lines and keeps overlapping and opposite-side code', async ({ page }) => {
   const patch = '@@ -1,6 +1,7 @@\n alpha\n context 2\n-old\n+new\n overlap\n another\n+added\n end';
   const diff = await openReview(page, patch, [thread(1, 2, 4), thread(2, 4, 4, { side: 'old' }), thread(3, 4, 4, { status: 'resolved' })]);
@@ -80,19 +98,9 @@ test('a resolved thread folds its own lines and keeps overlapping and opposite-s
 
 for (const foldCode of [false, true]) {
   test(`an agent resolution collapses the thread with code folding ${foldCode ? 'enabled' : 'disabled'}`, async ({ page }) => {
-    const agent = { id: 42, kind: 'agent' as const, name: 'Review agent' };
     const pending = thread(1, 2, 2);
     const threads = [pending, thread(2, 3, 3, { status: 'resolved' })];
-    let sendResolution!: () => void;
-    const resolution = new Promise<void>((resolve) => { sendResolution = resolve; });
-    await page.route('**/api/v1/stream', async (route) => {
-      await resolution;
-      const event: StreamMessage = {
-        type: 'comments', repo: pr.repo, kind: 'pr', number: pr.number, branch: pr.headRef,
-        commitOid: headOid, threadId: pending.id, event: 'resolved', by: agent,
-      };
-      await route.fulfill({ contentType: 'text/event-stream', body: `data: ${JSON.stringify(event)}\n\n` });
-    }, { times: 1 });
+    const resolveByAgent = await prepareAgentResolution(page, threads, pending);
     const diff = await openReview(page, '@@ -1,3 +1,3 @@\n before\n-old\n+new\n after', threads);
     if (foldCode) await diff.getByRole('button', { name: 'Fold resolved code' }).click();
     const card = diff.locator('.dth[data-thread="1"]');
@@ -106,8 +114,7 @@ for (const foldCode of [false, true]) {
     await expect.poll(() => new URL(page.url()).searchParams.get('thread')).toBe('1');
     await expect(added).toBeVisible();
 
-    threads[0] = { ...pending, status: 'resolved', resolvedAt: at, resolvedBy: agent };
-    sendResolution();
+    resolveByAgent();
     await expect(card.getByRole('img', { name: 'Resolved by Review agent' })).toBeVisible();
     await expect(title).toHaveAttribute('aria-expanded', 'false');
     await expect(other).toHaveAttribute('aria-expanded', 'true');
@@ -120,6 +127,50 @@ for (const foldCode of [false, true]) {
     await expect(added).toBeVisible();
   });
 }
+
+test('a resolved thread collapses after its open reply closes', async ({ page }) => {
+  const pending = thread(1, 2, 2);
+  const threads = [pending];
+  const resolveByAgent = await prepareAgentResolution(page, threads, pending);
+  const diff = await openReview(page, '@@ -1,3 +1,3 @@\n before\n-old\n+new\n after', threads);
+  await diff.getByRole('button', { name: 'Fold resolved code' }).click();
+  const card = diff.locator('.dth[data-thread="1"]');
+  const added = diff.locator('[data-line="2"][data-line-type="change-addition"]');
+  await card.getByRole('button', { name: 'Reply…', exact: true }).click();
+  const reply = card.getByRole('textbox', { name: 'Reply' });
+  await reply.fill('Still reviewing');
+  await expect(reply).toBeFocused();
+
+  resolveByAgent();
+  await expect(card.getByRole('img', { name: 'Resolved by Review agent' })).toBeVisible();
+  await expect(reply).toBeFocused();
+  await page.keyboard.type(' several rows');
+  await expect(reply).toHaveValue('Still reviewing several rows');
+  await expect(added).toBeVisible();
+
+  await card.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(card.locator('.dth-sum')).toHaveAttribute('aria-expanded', 'false');
+  await expect(added).toBeHidden();
+});
+
+test('agent resolution preserves a change revealed in another file', async ({ page }) => {
+  const pending = thread(2, 1, 1, { path: 'src/other.ts' });
+  const threads = [thread(1, 11, 11, { status: 'resolved' }), pending];
+  const resolveByAgent = await prepareAgentResolution(page, threads, pending);
+  const diff = await openReview(page, '@@ -1,2 +1,2 @@\n-one\n+first\n context\n@@ -10 +10,2 @@\n middle\n+folded', threads);
+  await diff.getByRole('button', { name: 'Fold resolved code' }).click();
+  const file = diff.locator('diffs-container').filter({ has: page.locator('.dvh[data-path="src/cache.ts"]') });
+  const added = file.locator('[data-line="11"][data-line-type="change-addition"]');
+  await expect(added).toBeHidden();
+  await file.getByRole('button', { name: 'Next change', exact: true }).click();
+  await expect(added).toBeVisible();
+
+  resolveByAgent();
+  const other = diff.locator('.dth[data-thread="2"]');
+  await expect(other.getByRole('img', { name: 'Resolved by Review agent' })).toBeVisible();
+  await expect(other.locator('.dth-sum')).toHaveAttribute('aria-expanded', 'false');
+  await expect(added).toBeVisible();
+});
 
 test('folding a long range compacts the virtualized viewport and lets the comments jump reveal it', async ({ page }) => {
   const rows = Array.from({ length: 550 }, (_, n) => n === 500 ? '-old\n+new' : ` line ${n + 1}`);

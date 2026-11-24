@@ -302,11 +302,24 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
   const [revealedFolds, setRevealedFolds] = useState<RevealedFolds | null>(null);
   const [focused, setFocused] = useState<number | null>(comments.initialThread);
   const [expanded, setExpandedIds] = useState<ReadonlyMap<number, boolean>>(new Map());
+  const [threadComposers, setThreadComposers] = useState<ReadonlyMap<number, number>>(new Map());
+  const trackComposer = useCallback((id: number) => {
+    const update = (delta: number) => setThreadComposers((counts) => {
+      const next = new Map(counts);
+      const count = (counts.get(id) ?? 0) + delta;
+      if (count > 0) next.set(id, count);
+      else next.delete(id);
+      return next;
+    });
+    update(1);
+    return () => update(-1);
+  }, []);
   const setExpanded = useCallback((id: number, open: boolean) => {
     setRevealedFolds((folds) => folds?.find ? folds : null);
     setExpandedIds((s) => s.get(id) === open ? s : new Map(s).set(id, open));
   }, []);
-  const isExpanded = useCallback((t: CommentThread) => expanded.get(t.id) ?? (t.status === 'open' || focused === t.id), [expanded, focused]);
+  const isExpanded = useCallback((t: CommentThread) => expanded.get(t.id) ?? (t.status === 'open' || focused === t.id || threadComposers.has(t.id)),
+    [expanded, focused, threadComposers]);
   const [outdatedOpen, setOutdatedPaths] = useState<ReadonlySet<string>>(new Set());
   const setOutdatedOpen = useCallback((path: string, open: boolean) => setOutdatedPaths((s) => {
     if (s.has(path) === open) return s;
@@ -1125,23 +1138,43 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
   // Both mutations in this view and streamed updates replace the thread data. Apply the same
   // expansion change only when a status changes, so a resolved thread can still be opened by hand.
   const previousThreads = useRef(threadById);
+  const pendingCollapse = useRef(new Set<number>());
   useLayoutEffect(() => {
     const previous = previousThreads.current;
-    if (previous === threadById) return;
-    previousThreads.current = threadById;
-    const changed = threads.filter((thread) => {
-      const before = previous.get(thread.id);
-      return before && before.status !== thread.status;
+    const expansion = new Map<number, boolean>();
+    if (previous !== threadById) {
+      previousThreads.current = threadById;
+      for (const thread of threads) {
+        const before = previous.get(thread.id);
+        if (!before || before.status === thread.status) continue;
+        if (thread.status === 'open') expansion.set(thread.id, true);
+        else pendingCollapse.current.add(thread.id);
+      }
+    }
+    // Leave a reply or edit available until its composer closes.
+    for (const id of pendingCollapse.current) {
+      if (threadById.get(id)?.status !== 'resolved') pendingCollapse.current.delete(id);
+      else if (!threadComposers.has(id)) {
+        pendingCollapse.current.delete(id);
+        expansion.set(id, false);
+      }
+    }
+    if (!expansion.size) return;
+    setRevealedFolds((folds) => {
+      if (!folds || folds.find) return folds;
+      for (const id of expansion.keys()) {
+        const placement = placements.get(id);
+        if (placement && 'path' in placement && placement.path === folds.path) return null;
+      }
+      return folds;
     });
-    if (!changed.length) return;
-    setRevealedFolds((folds) => folds?.find ? folds : null);
     setExpandedIds((expanded) => {
       const next = new Map(expanded);
-      for (const thread of changed) next.set(thread.id, thread.status === 'open');
+      for (const [id, open] of expansion) next.set(id, open);
       return next;
     });
-    if (changed.some((thread) => thread.id === focused && thread.status === 'resolved')) focusThread(null);
-  }, [focused, focusThread, threadById, threads]);
+    if (focused !== null && expansion.get(focused) === false) focusThread(null);
+  }, [focused, focusThread, placements, threadById, threadComposers, threads]);
   const setStatus = useCallback(async (id: number, status: CommentThread['status']) => {
     try {
       await actions.setStatus(id, status);
@@ -1152,11 +1185,11 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
   const toggleResolved = useCallback((t: CommentThread) => { void setStatus(t.id, t.status === 'open' ? 'resolved' : 'open'); }, [setStatus]);
 
   const threadsState = useMemo((): ThreadsState => ({
-    byId: threadById, placements, actions, me: comments.me, focused, focus: focusThread, isExpanded, setExpanded, setStatus, folded,
+    byId: threadById, placements, actions, me: comments.me, focused, focus: focusThread, isExpanded, setExpanded, setStatus, folded, trackComposer,
     draftScope: comments.key, draftKey: openKey ?? null, draft, draftSpot: spot, submitDraft, closeDraft, discardDraft,
     draftSending: openKey !== undefined && sending.has(openKey), outdatedOpen, setOutdatedOpen, replyRequest, takeReply,
   }), [
-    threadById, placements, actions, comments.me, focused, focusThread, isExpanded, setExpanded, setStatus, folded, comments.key, openKey, draft, spot, submitDraft, closeDraft,
+    threadById, placements, actions, comments.me, focused, focusThread, isExpanded, setExpanded, setStatus, folded, trackComposer, comments.key, openKey, draft, spot, submitDraft, closeDraft,
     discardDraft, sending, outdatedOpen, setOutdatedOpen, replyRequest, takeReply,
   ]);
 

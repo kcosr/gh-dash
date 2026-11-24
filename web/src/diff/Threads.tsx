@@ -35,6 +35,8 @@ export interface ThreadsState {
   setExpanded: (id: number, open: boolean) => void;
   setStatus: (id: number, status: CommentThread['status']) => Promise<void>;
   folded: ReadonlySet<number>;
+  /** Register an open reply or edit until its composer unmounts. */
+  trackComposer: (id: number) => () => void;
   /** Prefix for this diff's draft keys. */
   draftScope: string;
   /** The new thread being written, if any (one at a time): its record's key, its anchor, and where it shows now. */
@@ -96,8 +98,9 @@ const keyStore = (key: string): TextStore => ({ load: () => getDraft(key), save:
  * it and keeps the draft, Cancel discards it (`onDiscard`, when discarding is more than forgetting the text).
  */
 export function Composer({
-  draftKey, store: given, initial = '', placeholder, submitLabel, onSubmit, onClose, onDiscard, onSent, sending = false, autoFocus = true, focusKey = 0,
+  threadId, draftKey, store: given, initial = '', placeholder, submitLabel, onSubmit, onClose, onDiscard, onSent, sending = false, autoFocus = true, focusKey = 0,
 }: {
+  threadId?: number;
   draftKey?: string;
   store?: TextStore;
   initial?: string;
@@ -114,6 +117,8 @@ export function Composer({
   /** A change focuses the textarea again (`r` on a thread whose reply box is already open). */
   focusKey?: number;
 }) {
+  const { trackComposer } = useThreadsState();
+  useLayoutEffect(() => threadId === undefined ? undefined : trackComposer(threadId), [threadId, trackComposer]);
   const [store] = useState(() => given ?? keyStore(draftKey!));
   const [text, setText] = useState(() => store.load() || initial);
   const [submitting, setSubmitting] = useState(false);
@@ -246,7 +251,7 @@ function CommentRow({ thread, c, first }: { thread: CommentThread; c: ThreadComm
         </div>
       )}
       {editing
-        ? <Composer draftKey={editKey} initial={c.body} placeholder="Edit comment" submitLabel="Save" onSubmit={(body) => actions.edit(c.id, body)} onClose={() => setEditing(false)} />
+        ? <Composer threadId={thread.id} draftKey={editKey} initial={c.body} placeholder="Edit comment" submitLabel="Save" onSubmit={(body) => actions.edit(c.id, body)} onClose={() => setEditing(false)} />
         : <Markdown source={c.body} className="md dth-md" />}
     </div>
   );
@@ -301,7 +306,7 @@ export function ThreadCard({ thread, snippet = false, note }: { thread: CommentT
         {snippet && thread.snippet !== null && <pre className="dth-snippet">{thread.snippet}</pre>}
         {thread.comments.map((c, i) => <CommentRow key={c.id} thread={thread} c={c} first={i === 0} />)}
         {replying
-          ? <Composer draftKey={replyKey} placeholder="Reply" submitLabel="Reply" focusKey={replyFocus} onSubmit={(body) => s.actions.reply(thread.id, body)} onClose={() => setReplying(false)} />
+          ? <Composer threadId={thread.id} draftKey={replyKey} placeholder="Reply" submitLabel="Reply" focusKey={replyFocus} onSubmit={(body) => s.actions.reply(thread.id, body)} onClose={() => setReplying(false)} />
           : (
             <div className="dth-foot">
               <button type="button" className="dth-reply" onClick={() => setReplying(true)} title="Reply (r)">Reply…</button>

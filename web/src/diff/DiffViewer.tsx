@@ -5,7 +5,7 @@
  * Local comment threads show as Pierre annotations under their lines, and all of them in the
  * comments column (Threads.tsx, CommentsColumn.tsx; placement in shared/comment-placement.ts).
  */
-import type { CodeView as CodeViewClass, CodeViewItem, CodeViewOptions, CodeViewScrollTarget, DiffLineAnnotation, FileDiffLoadedFiles, FileDiffMetadata, LineAnnotation, PostRenderPhase } from '@pierre/diffs';
+import type { CodeView as CodeViewClass, CodeViewItem, CodeViewOptions, CodeViewScrollTarget, DiffLineAnnotation, FileDiffLoadedFiles, FileDiffMetadata, LineAnnotation, PostRenderPhase, VirtualizedFileDiff } from '@pierre/diffs';
 import { CodeView, WorkerPoolContextProvider, type CodeViewHandle } from '@pierre/diffs/react';
 import HighlightWorker from '@pierre/diffs/worker/worker.js?worker';
 import { useCallback, useEffect, useId, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type Ref, type RefObject } from 'react';
@@ -139,6 +139,34 @@ function namePlus(button: Element) {
 const COLUMN_KEYS = new Set(['c', 'n', 'p', 'r', 'e']);
 /** Keys that scroll the focused diff scroller (they end a jump's settling like a wheel does). */
 const SCROLL_KEYS = new Set(['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End']);
+const RESOLVE_TYPING_PAUSE_MS = 650;
+
+/** An explicit Resolve can close an editor that regained focus while the save was pending. */
+function focusResolvedSummary(summary: HTMLButtonElement) {
+  summary.focus({ preventScroll: true });
+  if (document.activeElement !== summary) return;
+  let timer = 0;
+  const renew = () => {
+    clearTimeout(timer);
+    timer = window.setTimeout(release, RESOLVE_TYPING_PAUSE_MS);
+  };
+  const ignoreTyping = (event: KeyboardEvent) => {
+    if (event.key.length !== 1 || event.metaKey || event.ctrlKey || event.altKey || summary.getAttribute('aria-expanded') !== 'false') return;
+    event.preventDefault();
+    event.stopPropagation();
+    renew();
+  };
+  const release = () => {
+    clearTimeout(timer);
+    summary.removeEventListener('keydown', ignoreTyping);
+    summary.removeEventListener('blur', release);
+    summary.removeEventListener('click', release);
+  };
+  summary.addEventListener('keydown', ignoreTyping);
+  summary.addEventListener('blur', release);
+  summary.addEventListener('click', release);
+  renew();
+}
 
 registerThemes();
 
@@ -247,6 +275,7 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
   }, [files, count]);
   const byId = useMemo(() => new Map(files.map((f) => [f.id, f])), [files]);
   const indexOf = useMemo(() => new Map(files.map((f, i) => [f.id, i])), [files]);
+  const findPaths = useMemo(() => files.map((f) => f.id), [files]);
   const [fullContext, setFullContext] = useState(() => ({ files, byFile: new Map<string, FullContext>(), resets: new Map<string, number>() }));
   if (fullContext.files !== files) setFullContext({ files, byFile: new Map(), resets: new Map() });
   const { byFile: fullByFile, resets } = fullContext;
@@ -301,11 +330,24 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
   const [revealedFolds, setRevealedFolds] = useState<RevealedFolds | null>(null);
   const [focused, setFocused] = useState<number | null>(comments.initialThread);
   const [expanded, setExpandedIds] = useState<ReadonlyMap<number, boolean>>(new Map());
+  const [threadComposers, setThreadComposers] = useState<ReadonlyMap<number, number>>(new Map());
+  const trackComposer = useCallback((id: number) => {
+    const update = (delta: number) => setThreadComposers((counts) => {
+      const next = new Map(counts);
+      const count = (counts.get(id) ?? 0) + delta;
+      if (count > 0) next.set(id, count);
+      else next.delete(id);
+      return next;
+    });
+    update(1);
+    return () => update(-1);
+  }, []);
   const setExpanded = useCallback((id: number, open: boolean) => {
     setRevealedFolds((folds) => folds?.find ? folds : null);
     setExpandedIds((s) => s.get(id) === open ? s : new Map(s).set(id, open));
   }, []);
-  const isExpanded = useCallback((t: CommentThread) => expanded.get(t.id) ?? (t.status === 'open' || focused === t.id), [expanded, focused]);
+  const isExpanded = useCallback((t: CommentThread) => expanded.get(t.id) ?? (t.status === 'open' || focused === t.id || threadComposers.has(t.id)),
+    [expanded, focused, threadComposers]);
   const [outdatedOpen, setOutdatedPaths] = useState<ReadonlySet<string>>(new Set());
   const setOutdatedOpen = useCallback((path: string, open: boolean) => setOutdatedPaths((s) => {
     if (s.has(path) === open) return s;
@@ -492,6 +534,8 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
   const scroller = useRef<HTMLDivElement>(null);
   const expandControls = useExpandControls(scroller);
   const expansionVersions = useMemo(() => new Map<string, number>(), [files]);
+  // Pierre keeps a hydrated patch and its expansions when the file scrolls out of view.
+  const expandedPatches = useMemo(() => new Map<string, { id: string; instance: VirtualizedFileDiff<Note, undefined> }>(), [files]);
   const noteExpansion = useCallback((event: ReactMouseEvent) => {
     const control = event.nativeEvent.composedPath().find((element): element is HTMLElement => element instanceof HTMLElement &&
       (element.hasAttribute('data-expand-button') || element.hasAttribute('data-unmodified-lines')));
@@ -582,9 +626,13 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
   // lands, by an observer on each file's shadow root.
   const namedRoots = useRef(new WeakSet<ShadowRoot>());
   const scheduleChanges = useRef(() => {});
-  const onPostRender = useCallback((node: HTMLElement, instance: unknown, phase: PostRenderPhase, context: { item: Item }) => {
+  const onPostRender = useCallback((node: HTMLElement, instance: unknown, phase: PostRenderPhase,
+    context: { item: Item } & ({ type: 'diff'; instance: VirtualizedFileDiff<Note, undefined> } | { type: 'file' })) => {
     expandControls.onPostRender(node, instance, phase);
     const path = pathForItem(context.item.id);
+    if (phase !== 'unmount' && context.type === 'diff' && context.instance.fileDiff?.isPartial === false && expansionVersions.has(path)) {
+      expandedPatches.set(path, { id: context.item.id, instance: context.instance });
+    }
     findBar.current?.rendered(path);
     scheduleChanges.current();
     if (phase === 'unmount') return;
@@ -606,7 +654,7 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
         }
       }).observe(root, { childList: true, subtree: true });
     }
-  }, [expandControls.onPostRender, paintThreadLines]);
+  }, [expandControls.onPostRender, expandedPatches, expansionVersions, paintThreadLines]);
 
   const options = useMemo((): CodeViewOptions<Note, undefined> => ({
     theme: THEMES,
@@ -770,23 +818,25 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
   }, [getRenderedFile]);
 
   const readFindSource = useCallback((path: string): FindSource | null => {
-    const cv = view.current?.getInstance();
-    const item = cv?.getItem(itemIdFor(path));
-    const rendered = getRenderedFile(path);
-    const instance = rendered?.type === 'diff' ? rendered.instance : undefined;
     const full = fullByFile.get(path);
-    const root = rendered?.element.shadowRoot ?? undefined;
-    if (full && full !== 'loading') return { model: full, root };
-    const model = instance?.fileDiff ?? (item?.type === 'diff' ? item.fileDiff : byId.get(path)?.fileDiff);
-    if (!model) return null;
-    if (instance && !model.isPartial) {
+    if (full && full !== 'loading') return { model: full };
+    const file = byId.get(path);
+    if (!file?.file.patch) return null;
+    const expanded = expandedPatches.get(path);
+    const instance = expanded?.id === itemIdFor(path) ? expanded.instance : undefined;
+    if (instance?.fileDiff && !instance.fileDiff.isPartial) {
       return {
-        model, root, expansionVersion: expansionVersions.get(path),
+        model: instance.fileDiff, expansionVersion: expansionVersions.get(path),
         isContextVisible: (line) => instance.isLineRenderable(line),
       };
     }
-    return { model, root };
-  }, [byId, expansionVersions, fullByFile, getRenderedFile, itemIdFor]);
+    return { model: file.fileDiff ??= toFileDiff(file.file, file.cacheKey) };
+  }, [byId, expandedPatches, expansionVersions, fullByFile, itemIdFor]);
+  const readFindRoots = useCallback(() => (view.current?.getInstance()?.getRenderedItems() ?? []).flatMap((item) => {
+    const path = pathForItem(item.id);
+    const root = item.element.shadowRoot;
+    return root && item.id === itemIdFor(path) ? [{ path, root }] : [];
+  }), [itemIdFor]);
 
   const pendingLine = useRef<LineJump | null>(null);
   const seekLine = useCallback((path: string, line: DiffLine, source: 'find' | 'change', change?: ChangeHunk) => {
@@ -1113,26 +1163,87 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
     else jumpToThread(id);
     setReplyRequest(id);
   }, [jumpToThread, columnIsTop, setExpanded]);
-  const focusedRef = useRef(focused);
-  focusedRef.current = focused;
+  // Both mutations in this view and streamed updates replace the thread data. Apply the same
+  // expansion change only when a status changes, so a resolved thread can still be opened by hand.
+  const previousThreads = useRef(threadById);
+  const pendingCollapse = useRef(new Set<number>());
+  const focusAfterCollapse = useRef<HTMLButtonElement | null>(null);
+  // Focus can move while Resolve is saving. Keep the user's intent until the resolved data arrives.
+  const resolveRequests = useRef(new Map<number, symbol>());
+  useLayoutEffect(() => {
+    const previous = previousThreads.current;
+    const expansion = new Map<number, boolean>();
+    if (previous !== threadById) {
+      previousThreads.current = threadById;
+      const active = document.activeElement;
+      const editor = active instanceof HTMLTextAreaElement ? active : null;
+      const editing = editor?.closest<HTMLElement>('.dth')?.dataset.thread;
+      for (const thread of threads) {
+        const before = previous.get(thread.id);
+        const resolvedHere = thread.status === 'resolved' && resolveRequests.current.delete(thread.id);
+        if (!resolvedHere && (!before || before.status === thread.status)) continue;
+        if (thread.status === 'resolved' && !resolvedHere && editing === String(thread.id) && threadComposers.has(thread.id)) {
+          pendingCollapse.current.add(thread.id);
+        } else {
+          if (resolvedHere && editing === String(thread.id)) {
+            focusAfterCollapse.current = editor?.closest('.dth')?.querySelector<HTMLButtonElement>('.dth-sum') ?? null;
+          }
+          pendingCollapse.current.delete(thread.id);
+          expansion.set(thread.id, thread.status === 'open');
+        }
+      }
+    }
+    // Let a reader continue typing until their reply or edit closes.
+    for (const id of pendingCollapse.current) {
+      if (threadById.get(id)?.status !== 'resolved') pendingCollapse.current.delete(id);
+      else if (!threadComposers.has(id)) {
+        pendingCollapse.current.delete(id);
+        expansion.set(id, false);
+      }
+    }
+    if (!expansion.size) return;
+    setRevealedFolds((folds) => {
+      if (!folds || folds.find) return folds;
+      for (const id of expansion.keys()) {
+        const placement = placements.get(id);
+        if (placement && 'path' in placement && placement.path === folds.path) return null;
+      }
+      return folds;
+    });
+    setExpandedIds((expanded) => {
+      const next = new Map(expanded);
+      for (const [id, open] of expansion) next.set(id, open);
+      return next;
+    });
+    if (focused !== null && expansion.get(focused) === false) focusThread(null);
+  }, [focused, focusThread, placements, threadById, threadComposers, threads]);
+  useLayoutEffect(() => {
+    const summary = focusAfterCollapse.current;
+    if (summary?.isConnected && summary.getAttribute('aria-expanded') !== 'false') return;
+    focusAfterCollapse.current = null;
+    if (summary?.isConnected && document.activeElement === document.body) focusResolvedSummary(summary);
+  }, [expanded]);
   const setStatus = useCallback(async (id: number, status: CommentThread['status']) => {
+    const request = Symbol();
+    if (status === 'resolved') resolveRequests.current.set(id, request);
+    else resolveRequests.current.delete(id);
+    let resolved = false;
     try {
-      await actions.setStatus(id, status);
-      if (!mounted.current) return;
-      setExpanded(id, status === 'open');
-      if (status === 'resolved' && focusedRef.current === id) focusThread(null);
+      resolved = (await actions.setStatus(id, status)).status === 'resolved';
     } catch (e) {
       toast(`Couldn't update: ${(e as Error).message}`, { tone: 'error' });
+    } finally {
+      if (!resolved && resolveRequests.current.get(id) === request) resolveRequests.current.delete(id);
     }
-  }, [actions, focusThread, setExpanded, toast]);
+  }, [actions, toast]);
   const toggleResolved = useCallback((t: CommentThread) => { void setStatus(t.id, t.status === 'open' ? 'resolved' : 'open'); }, [setStatus]);
 
   const threadsState = useMemo((): ThreadsState => ({
-    byId: threadById, placements, actions, me: comments.me, focused, focus: focusThread, isExpanded, setExpanded, setStatus, folded,
+    byId: threadById, placements, actions, me: comments.me, focused, focus: focusThread, isExpanded, setExpanded, setStatus, folded, trackComposer,
     draftScope: comments.key, draftKey: openKey ?? null, draft, draftSpot: spot, submitDraft, closeDraft, discardDraft,
     draftSending: openKey !== undefined && sending.has(openKey), outdatedOpen, setOutdatedOpen, replyRequest, takeReply,
   }), [
-    threadById, placements, actions, comments.me, focused, focusThread, isExpanded, setExpanded, setStatus, folded, comments.key, openKey, draft, spot, submitDraft, closeDraft,
+    threadById, placements, actions, comments.me, focused, focusThread, isExpanded, setExpanded, setStatus, folded, trackComposer, comments.key, openKey, draft, spot, submitDraft, closeDraft,
     discardDraft, sending, outdatedOpen, setOutdatedOpen, replyRequest, takeReply,
   ]);
 
@@ -1416,7 +1527,7 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
           onClick={() => updatePrefs({ foldResolved: !prefs.foldResolved })} aria-label="Fold resolved code" title="Fold code linked to resolved threads">Fold resolved</button>
         {hasFiles && (
           <button type="button" ref={findButton} className={cx('wb-btn wb-btn--icon wb-btn--ghost dvr-find-btn', findOpen && 'on')}
-            title="Find in file" aria-label="Find in file" aria-expanded={findOpen} aria-controls={findId} aria-keyshortcuts="Control+F Meta+F"
+            title="Find in files" aria-label="Find in files" aria-expanded={findOpen} aria-controls={findId} aria-keyshortcuts="Control+F Meta+F"
             onClick={(event) => { if (findOpen) closeFind(); else openFind(event.currentTarget); }}>
             <Icon name="search" />
           </button>
@@ -1442,7 +1553,7 @@ export default function DiffViewer({ diff, provider = PROVIDERS.github, loadFile
             {hasFiles ? (
               <>
                 <FileFindBar ref={findBar} id={findId} input={findInput} open={findOpen} close={closeFind} current={current} split={split}
-                  readSource={readFindSource} readAnchor={readAnchor} seek={seekMatch} />
+                  paths={findPaths} readSource={readFindSource} readRoots={readFindRoots} readAnchor={readAnchor} seek={seekMatch} />
                 <WorkerPoolContextProvider {...POOL}>
                   <CodeView
                     ref={view}

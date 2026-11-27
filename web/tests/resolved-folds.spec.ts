@@ -163,6 +163,8 @@ test('clicking Resolve collapses the thread even if focus returns to its draft b
   const diff = await openReview(page, `@@ -1,160 +1,160 @@\n${rows.join('\n')}`, [thread(1, line, line)], resolvePending);
   await diff.getByRole('button', { name: 'Fold resolved code' }).click();
   const scroll = diff.locator('.dvr-scroll');
+  // The scroller can mount before CodeView lays out the file and has a scroll range.
+  await expect.poll(() => scroll.evaluate((el) => el.scrollHeight - el.clientHeight)).toBeGreaterThan(850);
   await scroll.evaluate((el) => { el.scrollTop = 850; });
   const card = diff.locator('.dth[data-thread="1"]');
   const title = card.locator('.dth-sum');
